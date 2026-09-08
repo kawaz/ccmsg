@@ -1,0 +1,35 @@
+---
+title: InstancePingResult.network が常に unknown で NetOnlineEvent が未発行
+status: open
+category: bug
+created: 2026-09-09T00:19:04+09:00
+last_read:
+open_entered: 2026-09-09T00:19:04+09:00
+wip_entered:
+blocked_entered:
+pending_entered:
+discarded_entered:
+resolved_entered:
+discard_reason:
+pending_reason:
+close_reason:
+blocked_by:
+origin: 2026-09-08 の設計監査 (fable5-high)
+---
+
+# InstancePingResult.network が常に unknown で NetOnlineEvent が未発行
+
+## 概要
+
+`InstancePingResult.network` が常に `unknown` を返し、`NetOnlineEvent` が
+実装で発行されていない。
+
+## 背景
+
+2026-09-08 の設計監査で「mesh 前でなくてよい」と判定された所見の一つ。
+
+## 受け入れ条件
+
+- [ ] `InstancePingResult.network` が実際のネットワーク状態を返すよう実装する
+- [ ] `NetOnlineEvent` を適切なタイミングで発行する
+- [ ] オンライン/オフライン遷移のテストを追加する
