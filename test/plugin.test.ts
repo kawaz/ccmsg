@@ -36,6 +36,8 @@ import {
   status,
   uninstall,
 } from "../src/plugin/index.ts";
+import { VERSION as BUILD_VERSION } from "../src/version.ts";
+import published from "../package.json";
 import { connectUds, type LineClient } from "./client.ts";
 import { SID } from "./frames.ts";
 
@@ -405,6 +407,35 @@ describe("what a session says about where it works", () => {
 
   test("outside a repository only the working directory is stated", () => {
     expect(statedMeta("/tmp/nowhere", () => undefined)).toEqual({ cwd: "/tmp/nowhere" });
+  });
+});
+
+describe("the version ccmsg names", () => {
+  test("the daemon, the CLI and the plugin all say the one the package is published as", async () => {
+    const paths = home();
+    expect(BUILD_VERSION).toBe(published.version);
+
+    const outcome = await start({ echoLog: false });
+    if (!isRunning(outcome)) throw new Error("another instance holds this config home");
+    running.push(outcome);
+    const client = await connectUds(outcome.socketPath);
+    clients.push(client);
+    client.send({
+      op: "hello",
+      request_id: "hello",
+      protocol_version: PROTOCOL_VERSION,
+      role: "user",
+    });
+    // What the daemon answers `hello` with is the same build the plugin it
+    // installs is stamped with, which is what keeps a person from reading two
+    // numbers for one release.
+    expect((await client.next())["version"]).toBe(BUILD_VERSION);
+
+    await install(paths, BUILD_VERSION, agent().run);
+    const manifest = JSON.parse(
+      await Bun.file(join(paths.pluginsDir, "claude", ".claude-plugin", "plugin.json")).text(),
+    ) as { version: string };
+    expect(manifest.version).toBe(BUILD_VERSION);
   });
 });
 

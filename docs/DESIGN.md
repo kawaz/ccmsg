@@ -639,7 +639,8 @@ subscription.
 
 **Lazy startup (starting when a session in that config home first calls `ccmsg`) is not
 adopted** (DV-Q10). The instance is long-running (resident), and `ccmsg plugin install`
-registers it for startup.
+registers it for startup. **Registering that startup (via launchd or the like) is its own
+piece of work; what `ccmsg plugin install` hands out today is the agent-side plugin alone.**
 
 The reason is that mesh cannot tell the difference. With lazy startup, an instance we cannot
 dial could be either "just sleeping (wakes on a call)" or "down," and there is no way to tell

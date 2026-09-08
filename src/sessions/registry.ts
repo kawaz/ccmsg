@@ -1,6 +1,6 @@
 import { realpathSync, statSync } from "node:fs";
 import { hostname } from "node:os";
-import { isAbsolute, join } from "node:path";
+import { basename, dirname, isAbsolute, join } from "node:path";
 import {
   type AgentInfo,
   type Capability,
@@ -147,6 +147,22 @@ export class Sessions implements UpstreamResource {
   /** The topic names currently subscribed. Both topics rest on the same
    * directory watch, so it runs while either has a listener (§6.3). */
   readonly #wanted = new Set<string>();
+  /** What a session said about itself when it last greeted, kept for as long
+   * as the harness still names the session.
+   *
+   * A greeting is one instant and a connection is shorter than a session: a
+   * session-start hook says where it works and leaves, and every client process
+   * of the session comes and goes. What it said does not stop being true when
+   * the process that said it exits, so holding it only while a connection is
+   * open would mean the instance forgetting a session's repository the moment
+   * it stopped being told it — and then writing it down as gone with nothing
+   * but a sid on the entry.
+   *
+   * What bounds it is the harness: the words are kept while `sessions/` still
+   * names the sid, and dropped in the same breath as the `last_live` entry that
+   * spends them. Nothing here is written to disk (M4) — a restart forgets it,
+   * and the next greeting says it again. */
+  readonly #stated = new Map<Sid, SessionMeta>();
   /** Sessions that have said they are about to go, and when they said it.
    *
    * Held here rather than written to `last_live`, because the declaration
@@ -326,7 +342,7 @@ export class Sessions implements UpstreamResource {
    * follows one needs the path, and the greeting is the only thing that
    * states it. */
   transcriptPath(sid: Sid): string | undefined {
-    return this.#connected.get(sid)?.meta.transcript_path;
+    return this.#stated.get(sid)?.transcript_path;
   }
 
   /** Where a session works, as it greeted: the container its files are reached
@@ -454,22 +470,31 @@ export class Sessions implements UpstreamResource {
 
   /** Bind a session to this instance, and take what it says about itself. Its
    * entry in `last_live` goes the moment it registers, which is the whole of
-   * "an entry leaves the list when its session comes back". */
+   * "an entry leaves the list when its session comes back".
+   *
+   * What a greeting names is taken field by field, and not naming a field
+   * means it is unchanged rather than withdrawn. One session reaches this
+   * instance as a run of short-lived processes — a session-start hook, a
+   * `post`, a session-end hook — and none of them knows every field: only the
+   * hooks are told where the transcript is, and only a command running in the
+   * session's own directory can work out the repository. A greeting that took
+   * silence for a retraction would let each of them erase what the last one
+   * knew, and the session would be described by whichever process spoke most
+   * recently rather than by everything it has said. */
   private register(sid: Sid, args: HelloArgs, configHome: string): void {
     const now = Date.now();
     const held = this.#connected.get(sid);
-    const meta = metaOf(args, configHome);
+    const meta = { ...this.#stated.get(sid), ...metaOf(args, configHome) };
     this.#connected.set(sid, {
       sid,
       connected_at: held?.connected_at ?? now,
       protocol_version: args.protocol_version,
       ...(args.client_version === undefined ? {} : { client_version: args.client_version }),
-      // A reconnection restates everything, so the newer greeting wins field by
-      // field and a session that stops naming something does not keep it.
       meta,
       last_activity_at: now,
       conns: (held?.conns ?? 0) + 1,
     });
+    this.#stated.set(sid, meta);
     this.#lastLive.remove(sid);
     this.changed(now);
   }
@@ -506,6 +531,10 @@ export class Sessions implements UpstreamResource {
         last_seen_at: now,
         ...(stoppedAt === undefined ? {} : { stopped_at: stoppedAt }),
       });
+      // The words are spent: the entry just written carries them, and the
+      // session they were about is one the harness no longer names. A sid that
+      // comes back says them again.
+      this.#stated.delete(sid);
     }
     this.#live = live;
     this.deps.publish("peers", this.peers(now, rows));
@@ -530,8 +559,9 @@ export class Sessions implements UpstreamResource {
     // asked first and the greeting only fills in for a transcript that has
     // said nothing yet.
     const answered = this.deps.transcript?.facts(sid);
-    const model = answered?.model ?? held?.meta.model;
-    const effort = answered?.model === undefined ? held?.meta.effort : answered.effort;
+    const stated = this.#stated.get(sid);
+    const model = answered?.model ?? stated?.model;
+    const effort = answered?.model === undefined ? stated?.effort : answered.effort;
     return {
       sid,
       instance: this.deps.self,
@@ -613,7 +643,7 @@ export class Sessions implements UpstreamResource {
     sid: Sid,
     rows: ReadonlyMap<Sid, AgentInfo>,
   ): Pick<PeerInfo, "repo" | "ws" | "cwd" | "transcript_path" | "repo_root" | "branch" | "title"> {
-    const meta = this.#connected.get(sid)?.meta ?? {};
+    const meta = this.#stated.get(sid) ?? {};
     const cwd = meta.cwd ?? rows.get(sid)?.cwd ?? "";
     return {
       repo: meta.repo ?? "",
@@ -654,22 +684,58 @@ function metaOf(args: HelloArgs, configHome: string): SessionMeta {
 }
 
 /** A transcript path this instance will read, or nothing.
+
+ * The test is where the file would be, not whether it is there. M6 is a
+ * boundary on what this instance reads, and a path inside `projects/` stays
+ * inside it whether or not anything has been written there yet — a session
+ * greeting at its very start names a transcript the harness has created
+ * neither the file nor the directory for, and refusing it would mean the one
+ * greeting that says where a session's transcript is is the one greeting whose
+ * answer is thrown away. Nothing is read early by accepting it: the tail
+ * starts when somebody follows the session, and a file that is not there yet
+ * is one it waits for.
  *
- * Both sides are resolved before they are compared, so a path spelled through a
- * symlink and one spelled directly are the same path, and a link out of the
- * tree resolves out of it and is refused. */
+ * As much of the path as exists is resolved, so a path spelled through a
+ * symlink and one spelled directly are the same path, and a link anywhere
+ * along it that leads out of the tree lands outside and is refused. What is
+ * already there must be a file: a directory by that name is not a transcript.
+ */
 function ownTranscript(named: string, configHome: string): string | undefined {
   if (!isAbsolute(named)) return undefined;
-  let real: string;
   let projects: string;
   try {
-    real = realpathSync(named);
     projects = realpathSync(join(configHome, "projects"));
   } catch {
     return undefined;
   }
-  if (!within(real, projects)) return undefined;
-  return statSync(real, { throwIfNoEntry: false })?.isFile() === true ? real : undefined;
+  const settled = resolveAsFarAsItGoes(named);
+  if (settled === undefined || !within(settled, projects)) return undefined;
+  const stat = statSync(settled, { throwIfNoEntry: false });
+  return stat === undefined || stat.isFile() ? settled : undefined;
+}
+
+/** The path with every segment of it that exists resolved.
+ *
+ * A segment that is there may be a link and is followed; a segment that is not
+ * there cannot be a link to anywhere, because there is nothing at it, so it is
+ * kept as it was spelled. The result is compared against the tree as a whole,
+ * which is what makes a `..` among the unwritten segments land wherever it
+ * actually points rather than pass for being spelled inside. */
+function resolveAsFarAsItGoes(path: string): string | undefined {
+  const unwritten: string[] = [];
+  let at = path;
+  for (;;) {
+    try {
+      return join(realpathSync(at), ...unwritten);
+    } catch {
+      const parent = dirname(at);
+      // The root itself always resolves, so this is a path that named
+      // something no filesystem root holds.
+      if (parent === at) return undefined;
+      unwritten.unshift(basename(at));
+      at = parent;
+    }
+  }
 }
 
 /** What each role must and must not say when it greets.

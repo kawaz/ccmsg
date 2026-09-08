@@ -270,6 +270,26 @@ describe("the fold (§3.3)", () => {
   });
 });
 
+describe("a transcript that is not written yet", () => {
+  test("following one starts before the file exists, and reads it once it does", async () => {
+    // What a session names when it greets at its very start: the harness has
+    // not created the file, and it is still where this session's transcript
+    // will be. The tail waits for it rather than deciding there is nothing.
+    const root = mkdtempSync(join(tmpdir(), "ccmsg-transcript-"));
+    roots.push(root);
+    const path = join(root, `${SID}.jsonl`);
+    const { transcripts, facts } = domain(path);
+
+    transcripts.hold(SID);
+    await settled(() => transcripts.following(SID));
+    expect(facts).toEqual([]);
+
+    writeFileSync(path, jsonl([prompt("the first thing typed")]));
+    await settled(() => facts.length > 0);
+    expect(transcripts.facts(SID).last_user_input_at).toBe(NOW);
+  });
+});
+
 describe("the transcript topic (§6.2)", () => {
   test("what is appended arrives with the offsets that place it", async () => {
     const file = transcript([prompt("first")]);

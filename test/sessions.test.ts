@@ -1,10 +1,19 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, mkdirSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   type HelloResult,
   LAST_LIVE_RETENTION_MS,
+  type LastLiveSession,
   OP_SCHEMAS,
   PROTOCOL_VERSION,
   type SessionState,
@@ -147,6 +156,23 @@ function writeState(dir: string, pid: number, sid: Sid, extra: Record<string, un
       ...extra,
     }),
   );
+}
+
+/** A greeting that states one thing about itself and nothing else, for the
+ * cases about what the instance does with that one field. */
+function greetWith(domain: Sessions, meta: Record<string, string>, sid: Sid = SID) {
+  void domain.hello({
+    op: "hello",
+    conn: greeting(),
+    args: {
+      op: "hello",
+      request_id: "1",
+      role: "session",
+      protocol_version: PROTOCOL_VERSION,
+      sid,
+      ...meta,
+    },
+  });
 }
 
 interface Published {
@@ -345,6 +371,91 @@ describe("hello", () => {
     });
     expect(context.domain.transcriptPath(SID)).toBeUndefined();
     expect(context.domain.peers().peers[0]?.transcript_path).toBeUndefined();
+  });
+
+  test("a transcript inside projects/ is taken before anything is written to it", () => {
+    // The greeting a session-start hook makes: the harness has not created the
+    // file yet, and the path is still inside the tree this instance reads. The
+    // boundary is where the file goes, not whether it is there — nothing is
+    // read early by taking it, since the tail is what opens it.
+    const context = sessions();
+    const unwritten = join(context.root, "projects", "a", "not-yet.jsonl");
+    greetWith(context.domain, { transcript_path: unwritten });
+    expect(context.domain.transcriptPath(SID)).toBe(
+      join(realpathSync(join(context.root, "projects", "a")), "not-yet.jsonl"),
+    );
+  });
+
+  test("nor does the directory it goes in have to exist yet", () => {
+    // What a session-start hook actually names: at that instant the harness has
+    // made neither the file nor the per-project directory it goes in.
+    const context = sessions();
+    const unwritten = join(context.root, "projects", "-not-created-yet", "b.jsonl");
+    greetWith(context.domain, { transcript_path: unwritten });
+    expect(context.domain.transcriptPath(SID)).toBe(
+      join(realpathSync(join(context.root, "projects")), "-not-created-yet", "b.jsonl"),
+    );
+  });
+
+  test("an unwritten path that climbs back out of the tree is refused", () => {
+    const context = sessions();
+    // Spelled inside `projects/` and pointing outside it. Nothing along the
+    // way exists, so what settles it is where the whole path lands.
+    greetWith(context.domain, {
+      transcript_path: join(context.root, "projects", "nope", "..", "..", "..", "b.jsonl"),
+    });
+    expect(context.domain.transcriptPath(SID)).toBeUndefined();
+  });
+
+  test("a later greeting that says less does not take back what an earlier one said", () => {
+    // The three processes of one session: the hook that knows the transcript,
+    // a `post` that knows only where it runs, and a hook again. None of them
+    // knows every field, so silence is "unchanged" rather than "withdrawn".
+    const context = sessions();
+    greetWith(context.domain, { transcript_path: transcriptPath, repo: "a-repo", ws: "main" });
+
+    greetWith(context.domain, { cwd: "/somewhere/else" });
+
+    expect(context.domain.transcriptPath(SID)).toBe(transcriptPath);
+    expect(context.domain.peers().peers[0]).toMatchObject({
+      repo: "a-repo",
+      ws: "main",
+      cwd: "/somewhere/else",
+    });
+  });
+
+  test("a field a greeting does name is the one that changes", () => {
+    const context = sessions();
+    greetWith(context.domain, { repo: "a-repo", ws: "main", title: "the first title" });
+
+    greetWith(context.domain, { title: "renamed" });
+
+    expect(context.domain.peers().peers[0]).toMatchObject({
+      repo: "a-repo",
+      ws: "main",
+      title: "renamed",
+    });
+  });
+
+  test("a path outside projects/ is left unstated whether or not it is there", () => {
+    const context = sessions();
+    const elsewhere = mkdtempSync(join(tmpdir(), "ccmsg-other-home-"));
+    homes.push(elsewhere);
+    greetWith(context.domain, { transcript_path: join(elsewhere, "not-yet.jsonl") });
+    expect(context.domain.transcriptPath(SID)).toBeUndefined();
+  });
+
+  test("a directory that links out of the tree resolves out of it and is refused", () => {
+    const context = sessions();
+    const elsewhere = mkdtempSync(join(tmpdir(), "ccmsg-other-home-"));
+    homes.push(elsewhere);
+    // A link sitting inside `projects/` is spelled inside it and is not: what
+    // is compared is where the path resolves to.
+    symlinkSync(elsewhere, join(context.root, "projects", "out"));
+    greetWith(context.domain, {
+      transcript_path: join(context.root, "projects", "out", "b.jsonl"),
+    });
+    expect(context.domain.transcriptPath(SID)).toBeUndefined();
   });
 
   test("every request restamps the session's last activity", () => {
@@ -885,5 +996,59 @@ describe("the terminal a live session runs in", () => {
     context.domain.agents();
     await context.until(() => reads.length === 2);
     expect(reads).toEqual([pid, pid]);
+  });
+});
+
+describe("what a session said about itself when it greeted", () => {
+  /** The `last_live` rows of the most recent `peers` payload. */
+  function lastLive(published: Published[]): LastLiveSession[] {
+    const frames = peersOf(published);
+    const data = frames.at(-1)?.data as { last_live?: LastLiveSession[] } | undefined;
+    return data?.last_live ?? [];
+  }
+
+  test("outlives the connection that said it, while the harness still names the session", async () => {
+    const context = sessions();
+    writeState(context.sessionsDir, process.pid, SID);
+    context.domain.start("peers");
+    const conn = greeting();
+    helloFrom(context.domain, conn, SID);
+
+    // A session-start hook greets and leaves, and every client process of a
+    // session comes and goes. Neither is the session ending.
+    conn.close();
+
+    expect(context.domain.transcriptPath(SID)).toBe(transcriptPath);
+    expect(lastLive(context.published).some((row) => row.sid === SID)).toBe(false);
+
+    // And when the harness stops naming it, the entry written carries what it
+    // said rather than a bare sid.
+    rmSync(join(context.sessionsDir, `${process.pid}.json`));
+    const frames = await context.until((published) =>
+      lastLive(published).some((row) => row.sid === SID),
+    );
+    expect(lastLive(frames).find((row) => row.sid === SID)).toMatchObject({
+      repo: "someone/a-repo",
+      ws: "main",
+      branch: "main",
+      title: "a title",
+      transcript_path: transcriptPath,
+      model: "a-model",
+      effort: "high",
+    });
+
+    // Spent with that entry: the words were about a session this instance no
+    // longer has, and a sid that comes back says them again.
+    expect(context.domain.transcriptPath(SID)).toBeUndefined();
+  });
+
+  test("a session the harness names but that never greeted is shown without them", () => {
+    const context = sessions();
+    writeState(context.sessionsDir, process.pid, OTHER_SID);
+
+    // Nothing is guessed out of the row's path: `repo` and `ws` are what a
+    // session said, and this one has said nothing.
+    expect(context.domain.transcriptPath(OTHER_SID)).toBeUndefined();
+    expect(context.domain.agents().agents.map((row) => row.sid)).toEqual([OTHER_SID]);
   });
 });

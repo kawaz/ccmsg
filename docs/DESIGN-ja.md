@@ -559,7 +559,9 @@ config を変えたら instance を再起動する、が唯一の反映手順に
 ### 8.4 instance は常駐する
 
 **lazy 起動 (その config home のセッションが最初に `ccmsg` を呼んだ時に起動する) は採らない**
-(DV-Q10)。instance は常駐し、`ccmsg plugin install` が起動を登録する。
+(DV-Q10)。instance は常駐し、`ccmsg plugin install` が起動を登録する。**起動の登録
+(launchd 等) 自体は別単位であり、`ccmsg plugin install` が今配るのはエージェント側の
+plugin だけである。**
 
 理由は mesh から見た区別が付かないこと。lazy だと、dial できない instance が
 「寝ているだけ (呼べば起きる)」なのか「落ちている」のかを外から判別できない。判別できないまま

@@ -84,9 +84,7 @@ import { Log } from "./log.ts";
 import { prepareSocketDir, publishSocket, sweepOrphanSockets } from "./socket.ts";
 import { entryToken, tokenMatches } from "./token.ts";
 import { type Env, type InstancePaths, resolvePaths } from "./paths.ts";
-
-/** The daemon build, as `hello` and `instance_ping` report it. */
-const VERSION = "0.0.1";
+import { VERSION } from "../version.ts";
 
 export interface StartOptions {
   readonly env?: Env;

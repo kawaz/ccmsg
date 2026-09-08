@@ -218,10 +218,14 @@ export async function stopping(args: readonly string[], read?: Read): Promise<nu
   if (typeof parsed === "string") return fail(parsed);
   const event = parsed.flags.has("hook") ? await hookEvent(read) : {};
   const reason = parsed.named.get("reason") ?? event.reason;
+  // A hook is told things this process cannot work out for itself — where the
+  // transcript is, above all — so the departure says them rather than only
+  // what the working directory reveals.
   return await call(
     parsed.named.get("sid") ?? event.sid,
     { op: "session_stopping", ...(reason === undefined ? {} : { reason }) },
     () => "ccmsg: 停止を伝えました",
+    stated(parsed.named, event),
   );
 }
 
@@ -365,6 +369,7 @@ async function call(
   named: string | undefined,
   request: Record<string, unknown>,
   report: (answer: Record<string, unknown>) => string,
+  meta: StatedMeta = statedMeta(),
 ): Promise<number> {
   const sid = named ?? process.env["CLAUDE_CODE_SESSION_ID"];
   if (sid === undefined || sid === "") {
@@ -381,7 +386,7 @@ async function call(
       role: "session",
       sid,
       protocol_version: PROTOCOL_VERSION,
-      ...statedMeta(),
+      ...meta,
     });
     if (greeting["ok"] !== true) {
       return fail(`ccmsg: hello が拒否されました: ${JSON.stringify(greeting)}`);
