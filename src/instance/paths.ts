@@ -27,6 +27,10 @@ export interface InstancePaths {
   readonly socketReal: string;
   /** Where both of the above live, so the orphan sweep has one directory. */
   readonly socketDir: string;
+  /** Where the agent plugins this instance hands out are laid down, one
+   * directory per agent. They live with the state because they are derived
+   * from the binary: losing them costs an `install` and nothing else. */
+  readonly pluginsDir: string;
   readonly pidFile: string;
   readonly lockFile: string;
   readonly logFile: string;
@@ -89,6 +93,7 @@ export function resolvePaths(env: Env = process.env): InstancePaths {
     socketDir,
     socket: join(socketDir, SOCKET_NAME),
     socketReal: join(socketDir, realSocketName(process.pid)),
+    pluginsDir: join(stateDir, "plugins"),
     pidFile: join(stateDir, "daemon.pid"),
     lockFile: join(stateDir, "daemon.lock"),
     logFile: join(stateDir, "daemon.log"),

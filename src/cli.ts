@@ -5,7 +5,15 @@ import {
   type NotifySendArgs,
   PROTOCOL_VERSION,
 } from "@ccmsg/protocol";
+import { hookEvent, type StatedMeta, statedMeta } from "./greeting/index.ts";
 import { isRunning, resolvePaths, start } from "./instance/index.ts";
+import { AGENTS, install, type Outcome, status, uninstall } from "./plugin/index.ts";
+import { VERSION } from "./version.ts";
+
+/** Where a hook event is read from. Named for the same reason a speech binary
+ * is: a test drives the two commands a harness fires without a standard input
+ * of its own to write to. */
+export type Read = () => Promise<string>;
 
 /** The system speech binary. Absolute on purpose: a `say` shim earlier on PATH
  * is what delegates here, so resolving through PATH again would re-enter the
@@ -21,15 +29,29 @@ const USAGE = `ccmsg — one instance per config home
   stopping             これから終わると instance に伝える (以後は Paused 扱い)
   say [say-options] [text...]
                        ${SYSTEM_SAY} で発声し、どのセッションが喋ったかを知らせる
+  hello                自分がどこで動いているかを instance に名乗る
+  plugin install <agent>    そのエージェントに ccmsg のプラグインを入れる
+  plugin status [<agent>]   入れたものと今の状態を見比べる
+  plugin uninstall <agent>  入れたものだけを元に戻す
   daemon run           この config home の instance を foreground で起動する
   daemon stop          起動中の instance に停止を要求する (unix socket 経由)
 
-post / reply / notify / stopping のオプション:
+エージェント: ${AGENTS.join(", ")}
+
+post / reply / notify / stopping / hello のオプション:
   --sid <sid>     自分のセッション ID (既定は CLAUDE_CODE_SESSION_ID)
   --to <sid>      reply の宛先セッション (受け取った封筒の ccmsg-from の値)
                   省略すると人 (user) への返信として通知で届く
   --about <sid>   notify が知らせるセッション (既定は自分)
   --reason <text> stopping で終わる理由 (表示用、任意)
+  --hook          harness の hook イベント JSON を標準入力から読み、
+                  セッション ID・作業ディレクトリ・理由をそこから取る
+
+hello が名乗る内容のオプション (既定は cwd と git から導出):
+  --cwd <path>    作業ディレクトリ
+  --repo <name>   リポジトリの表示名     --ws <name>    ワークスペース名
+  --repo-root <path>  リポジトリの入れ物   --branch <name>  チェックアウト中のブランチ
+  --transcript-path <path>  会話の記録     --title <text>  セッションの題
 
 say の引数は ${SYSTEM_SAY} へそのまま渡す (ccmsg 独自のオプションは無い)。
 唯一の例外は単独の --help / -h で、この ccmsg のヘルプを表示する。
@@ -75,6 +97,10 @@ export async function main(argv: readonly string[]): Promise<number> {
       return notify(argv.slice(1));
     case "stopping":
       return stopping(argv.slice(1));
+    case "hello":
+      return hello(argv.slice(1));
+    case "plugin":
+      return plugin(argv.slice(1));
     // `say` takes over its arguments before any parsing of ours: they belong to
     // the speech binary, and an option of ours in the middle of them would
     // change what a shim's users get.
@@ -187,15 +213,128 @@ function notify(args: readonly string[]): Promise<number> {
  *
  * A session that says this and then carries on is not held to it: it stays
  * connected and stays live, and the declaration is spent whenever it does go. */
-function stopping(args: readonly string[]): Promise<number> {
-  const parsed = options(args, ["sid", "reason"]);
+export async function stopping(args: readonly string[], read?: Read): Promise<number> {
+  const parsed = options(args, ["sid", "reason"], ["hook"]);
   if (typeof parsed === "string") return fail(parsed);
-  const reason = parsed.named.get("reason");
-  return call(
-    parsed.named.get("sid"),
+  const event = parsed.flags.has("hook") ? await hookEvent(read) : {};
+  const reason = parsed.named.get("reason") ?? event.reason;
+  return await call(
+    parsed.named.get("sid") ?? event.sid,
     { op: "session_stopping", ...(reason === undefined ? {} : { reason }) },
     () => "ccmsg: 停止を伝えました",
   );
+}
+
+/** `ccmsg hello`: say where this session is working.
+ *
+ * A greeting is how a session states its repository, workspace and branch, and
+ * those are what the instance shows it by — a session that has never said them
+ * is shown by its sid, which tells nobody which of a person's sessions it is.
+ * The connection is not held afterwards: the session's own client processes
+ * make their own, and this one exists to have said the words.
+ *
+ * Best effort throughout, like the record a `say` leaves. It is run from a
+ * session-start hook, where there is nothing a person asked for to fail: no
+ * instance running, no session id and a greeting that is turned away all leave
+ * the session working exactly as it was, so none of them is worth a line in
+ * front of somebody's first prompt. */
+export async function hello(args: readonly string[], read?: Read): Promise<number> {
+  const parsed = options(
+    args,
+    ["sid", "cwd", "repo", "ws", "repo-root", "branch", "transcript-path", "title"],
+    ["hook"],
+  );
+  if (typeof parsed === "string") return fail(parsed);
+  const event = parsed.flags.has("hook") ? await hookEvent(read) : {};
+  const sid = parsed.named.get("sid") ?? event.sid ?? process.env["CLAUDE_CODE_SESSION_ID"];
+  if (sid === undefined || sid === "") {
+    process.stderr.write("ccmsg: 自分のセッション ID が分かりません (--sid か --hook)\n");
+    return 0;
+  }
+  const meta = stated(parsed.named, event);
+  const paths = resolvePaths();
+  const conn = await connect(paths.socket);
+  if (conn === undefined) {
+    process.stderr.write(`ccmsg: ${paths.socket} に繋がりません (instance は動いていません)\n`);
+    return 0;
+  }
+  try {
+    await conn.ask({
+      op: "hello",
+      role: "session",
+      sid,
+      protocol_version: PROTOCOL_VERSION,
+      ...meta,
+    });
+  } catch {
+    // The instance went away mid-greeting. Nothing was asked of it beyond
+    // being told, so there is nothing to retry and nothing to report.
+  } finally {
+    conn.close();
+  }
+  return 0;
+}
+
+/** What this process says about itself, as options over what it can work out.
+ *
+ * The derivation is the floor: whoever runs the command may know better —
+ * a hook is told the working directory and the transcript by the harness, and
+ * a caller may state any field outright — and what is stated wins over what is
+ * derived, field by field. */
+function stated(
+  named: ReadonlyMap<string, string>,
+  event: { cwd?: string; transcript_path?: string },
+): StatedMeta {
+  const cwd = named.get("cwd") ?? event.cwd;
+  const transcript = named.get("transcript-path") ?? event.transcript_path;
+  const derived = statedMeta(cwd ?? process.cwd());
+  return {
+    ...derived,
+    ...only("repo", named.get("repo")),
+    ...only("ws", named.get("ws")),
+    ...only("repo_root", named.get("repo-root")),
+    ...only("branch", named.get("branch")),
+    ...only("title", named.get("title")),
+    ...only("transcript_path", transcript),
+  };
+}
+
+function only(field: keyof StatedMeta, value: string | undefined): StatedMeta {
+  return value === undefined || value === "" ? {} : { [field]: value };
+}
+
+/** `ccmsg plugin <what> <agent>`: what ccmsg installs into an agent, and what
+ * it takes back out.
+ *
+ * The agent is named rather than assumed: there will be more than one, and a
+ * command that guessed which one a person meant would be the command that
+ * writes into the wrong config home. */
+async function plugin(args: readonly string[]): Promise<number> {
+  const [what, agent] = args;
+  if (what === undefined) {
+    process.stdout.write(USAGE);
+    return 0;
+  }
+  if (what !== "install" && what !== "status" && what !== "uninstall") {
+    return fail(
+      `ccmsg: 知らないサブコマンドです: plugin ${what}\n\n使えるのは install / status / uninstall`,
+    );
+  }
+  if (agent !== undefined && agent !== "claude") {
+    return fail(`ccmsg: ${agent} 用のプラグインはまだありません (今あるのは ${AGENTS.join(", ")})`);
+  }
+  if (what !== "status" && agent === undefined) {
+    return fail(`使い方: ccmsg plugin ${what} <agent> (今あるのは ${AGENTS.join(", ")})`);
+  }
+  const paths = resolvePaths();
+  const outcome: Outcome =
+    what === "install"
+      ? await install(paths, VERSION)
+      : what === "status"
+        ? await status(paths)
+        : await uninstall(paths);
+  process.stdout.write(`${outcome.report.join("\n")}\n`);
+  return outcome.ok ? 0 : 1;
 }
 
 /** One `message_send`. */
@@ -215,7 +354,13 @@ function announce(named: string | undefined, args: NotifySendArgs): Promise<numb
  * The greeting is `role: "session"` because that is what the caller is: the
  * instance takes the sender and the subject from the connection rather than
  * from the arguments, so a connection that greeted as anything else has nobody
- * to answer and nothing to be about. */
+ * to answer and nothing to be about.
+ *
+ * It also says where the session is working, because that is what a message's
+ * recipient is shown as its sender: the label is built from the repository and
+ * workspace the sending connection greeted from, and a greeting that named
+ * neither leaves the recipient a sid to read. The words cost one `git` call and
+ * they are the difference between "ccmsg/main said this" and a line of hex. */
 async function call(
   named: string | undefined,
   request: Record<string, unknown>,
@@ -236,6 +381,7 @@ async function call(
       role: "session",
       sid,
       protocol_version: PROTOCOL_VERSION,
+      ...statedMeta(),
     });
     if (greeting["ok"] !== true) {
       return fail(`ccmsg: hello が拒否されました: ${JSON.stringify(greeting)}`);
@@ -303,6 +449,7 @@ async function posted(text: string): Promise<void> {
       role: "session",
       sid,
       protocol_version: PROTOCOL_VERSION,
+      ...statedMeta(),
     });
     if (greeting["ok"] === true) await conn.ask({ op: "say_post", text });
   };
@@ -338,8 +485,10 @@ function describe(result: MessageSendResult): string {
 function options(
   args: readonly string[],
   named: readonly string[],
-): { named: Map<string, string>; rest: string[] } | string {
+  flags: readonly string[] = [],
+): { named: Map<string, string>; flags: Set<string>; rest: string[] } | string {
   const values = new Map<string, string>();
+  const raised = new Set<string>();
   const rest: string[] = [];
   for (let at = 0; at < args.length; at += 1) {
     const arg = args[at] as string;
@@ -352,13 +501,17 @@ function options(
       continue;
     }
     const name = arg.slice(2);
+    if (flags.includes(name)) {
+      raised.add(name);
+      continue;
+    }
     if (!named.includes(name)) return `ccmsg: 知らないオプションです: ${arg}`;
     const value = args[at + 1];
     if (value === undefined) return `ccmsg: ${arg} には値が要ります`;
     values.set(name, value);
     at += 1;
   }
-  return { named: values, rest };
+  return { named: values, flags: raised, rest };
 }
 
 function fail(message: string): Promise<number> {

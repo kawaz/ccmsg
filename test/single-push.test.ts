@@ -76,6 +76,11 @@ describe("nothing pushes a topic frame outside the topic mechanism (M5)", () => 
       // one JSON object per line, the same as the instance's own connections.
       "messaging/direct.ts",
       "messaging/inbox.ts",
+      // Persistence again, of what an install left behind: the plugin's own
+      // manifests, and the receipt that says which of them were written and
+      // what was run. Both are files an uninstall reads back, and neither is a
+      // value pushed to anybody.
+      "plugin/install.ts",
       // The one writer whose file is not instance state: a dump is the
       // artifact `session_dump_write` was asked for, written once and never
       // read back, so it neither survives a restart for the instance's sake
