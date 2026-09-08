@@ -207,6 +207,52 @@ describe("the start order (§8.3)", () => {
     expect(instance.socketPath).toBe(paths.socket);
   });
 
+  test("twenty starters racing for one config home produce one instance", async () => {
+    // The lock file has to name its holder the instant it exists. A file
+    // created empty and filled afterwards has a moment where it names nobody,
+    // and a starter reading it then sees a lock nobody is behind, removes it as
+    // stale and takes the config home a live starter already holds.
+    const { env } = disposable();
+    const paths = resolvePaths(env);
+    mkdirSync(paths.stateDir, { recursive: true });
+    const script = join(paths.stateDir, "contend.ts");
+    // Each child waits to be told to go, so all twenty contend at once rather
+    // than spread over however long twenty runtimes take to start — spread out,
+    // they would simply succeed one after another and the window would never be
+    // entered. Having said what it got, a child holds still: a winner that
+    // exited would leave a lock the others are right to take over.
+    writeFileSync(
+      script,
+      `import { acquireLock, isHeldByUs } from ${JSON.stringify(join(import.meta.dir, "../src/instance/lock.ts"))};
+console.log("ready");
+process.stdin.once("data", () => {
+  const outcome = acquireLock(process.argv[2]);
+  console.log(isHeldByUs(outcome) ? "won" : "lost");
+});
+process.stdin.on("end", () => process.exit(0));
+`,
+    );
+
+    const children = Array.from({ length: 20 }, () =>
+      Bun.spawn(["bun", script, paths.lockFile], { stdin: "pipe", stdout: "pipe", stderr: "pipe" }),
+    );
+    try {
+      const lines = children.map((child) => lineReader(child.stdout));
+      expect(await Promise.all(lines.map((read) => read()))).toEqual(Array(20).fill("ready"));
+      // `write` answers with either a count or a promise of one; `flush` is
+      // what actually puts it on the pipe, so neither is waited on here.
+      for (const child of children) void child.stdin.write("go\n");
+      for (const child of children) void child.stdin.flush();
+      // Read while every child is still running, which is what keeps a winner
+      // holding its lock while the others decide.
+      const outcomes = await Promise.all(lines.map((read) => read()));
+      expect(outcomes.filter((each) => each === "won")).toHaveLength(1);
+      expect(outcomes.filter((each) => each === "lost")).toHaveLength(19);
+    } finally {
+      for (const child of children) child.kill();
+    }
+  }, 30_000);
+
   test("the pid file is written before anything can connect", async () => {
     const { env } = disposable();
     const paths = resolvePaths(env);
@@ -551,6 +597,27 @@ async function replyTo(client: LineClient, requestId: string): Promise<Record<st
  * directory this process does not own the writes to, and a watch on a
  * directory that does not exist yet has the same race one level up. The
  * interval is the shortest one that is not a spin. */
+/** Reads one line at a time off a stream, without waiting for it to end —
+ * which a process that is deliberately still running will not do. */
+function lineReader(stream: ReadableStream<Uint8Array>): () => Promise<string> {
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+  let held = "";
+  return async () => {
+    for (;;) {
+      const newline = held.indexOf("\n");
+      if (newline >= 0) {
+        const line = held.slice(0, newline);
+        held = held.slice(newline + 1);
+        return line;
+      }
+      const { value, done } = await reader.read();
+      if (value !== undefined) held += decoder.decode(value, { stream: true });
+      if (done) return held;
+    }
+  };
+}
+
 async function waitFor(ready: () => boolean): Promise<void> {
   for (let attempt = 0; attempt < 400; attempt += 1) {
     if (ready()) return;

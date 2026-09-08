@@ -19,6 +19,7 @@ import {
   type TranscriptFacts,
   TranscriptFold,
   Transcripts,
+  readSlice,
 } from "../src/transcript/index.ts";
 import { connAs, greeting, SELF, SID, TestConn } from "./frames.ts";
 
@@ -904,5 +905,56 @@ describe("the tail window bounds what the fold can know", () => {
     file.append(...spawn.map((row) => ({ ...row, timestamp: at(2) })));
     await settled(() => transcripts.facts(SID).background.length > 0);
     expect(transcripts.facts(SID).background[0]?.task_id).toBe("m-old");
+  });
+});
+
+describe("reading a slice by byte offset (§3.3)", () => {
+  /** Records whose text is multibyte, so the byte a slice starts on lands
+   * inside a character rather than before one. */
+  const ROWS = [
+    { type: "user", message: { role: "user", content: "日本語の一行目です" } },
+    { type: "assistant", message: { role: "assistant", content: "二行目の返事です" } },
+    { type: "user", message: { role: "user", content: "三行目、絵文字も 🎉 です" } },
+  ];
+
+  test("paging backwards through multibyte records reaches the beginning without overlap", () => {
+    const file = transcript(ROWS);
+    const whole = jsonl(ROWS);
+    const size = Buffer.byteLength(whole);
+    const lines = whole.split("\n").slice(0, -1);
+
+    const tail = readSlice(SID, file.path, undefined, Buffer.byteLength(`${lines[2]}\n`));
+    expect(tail.lines).toEqual([lines[2]]);
+    expect(tail.end).toBe(size);
+    // The record before it ends where this slice starts, in bytes.
+    expect(tail.start).toBe(Buffer.byteLength(`${lines[0]}\n${lines[1]}\n`));
+
+    const earlier = readSlice(SID, file.path, tail.start);
+    expect(earlier.lines).toEqual([lines[0], lines[1]]);
+    expect(earlier.start).toBe(0);
+    expect(earlier.end).toBe(tail.start);
+  });
+
+  test("a slice whose probe byte falls inside a character still starts where it says", () => {
+    const file = transcript(ROWS);
+    const whole = jsonl(ROWS);
+    const lines = whole.split("\n").slice(0, -1);
+    const firstTwo = Buffer.byteLength(`${lines[0]}\n${lines[1]}\n`);
+    // Enough to reach into the middle record and no further, so the probe byte
+    // is the one before the ask — which here is a continuation byte of a
+    // multibyte character, not a boundary.
+    const want = Buffer.byteLength(whole) - firstTwo + 8;
+
+    const slice = readSlice(SID, file.path, undefined, want);
+
+    expect(slice.lines).toEqual([lines[2]]);
+    // The offsets are the ones the file actually has: reading from `start`
+    // again yields the same records, which it cannot do if `start` was
+    // computed from replacement characters of a different length.
+    expect(slice.start).toBe(firstTwo);
+    expect(readSlice(SID, file.path, undefined, Buffer.byteLength(whole) - firstTwo).lines).toEqual(
+      [lines[2]],
+    );
+    expect(readSlice(SID, file.path, slice.start).lines).toEqual([lines[0], lines[1]]);
   });
 });

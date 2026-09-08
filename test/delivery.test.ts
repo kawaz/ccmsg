@@ -471,6 +471,53 @@ describe("the sessions a message can be addressed to", () => {
     expect(domain.watching).toBe(false);
     expect(result).toEqual({ delivered: true });
   });
+
+  test("a session of another config home the gateway saw is not one", async () => {
+    // The gateway stands above every config home and its events name nothing
+    // but a sid, so it answers for sessions that are not ours. Taking that as
+    // liveness would make this instance accept a message for a session whose
+    // inbox is somewhere else entirely (§5.1).
+    const home = mkdtempSync(join(tmpdir(), "ccmsg-foreign-home-"));
+    dirs.push(home);
+    mkdirSync(join(home, "sessions"));
+    const domain = new Sessions({
+      self: SELF,
+      configHome: home,
+      stateDir: stateDir(),
+      capabilities: [],
+      version: "0.0.1",
+      startedAt: 1_757_000_000_000,
+      publish: () => {},
+      gateway: { activeAt: () => Date.now() },
+    });
+    const inbox = new Inbox(inboxPath(stateDir()));
+    inbox.load();
+    const delivery = new Delivery({
+      self: SELF,
+      sessions: domain,
+      inbox,
+      direct: new StubDirectRoute("delivered"),
+      publish: () => {},
+      listeners: () => 0,
+    });
+    const conn = connAs("session", SID);
+
+    // Nothing greeted and the harness names nobody, so the gateway's word is
+    // the only thing that could make OTHER_SID live here.
+    expect(domain.classify(OTHER_SID)).toBeUndefined();
+    expect(domain.peers(Date.now()).peers).toEqual([]);
+    expect(
+      messagingHandlers(
+        delivery,
+        new Notify({ self: SELF, label: (sid) => sid, publish: () => {} }),
+      ).message_send({
+        op: "message_send",
+        conn,
+        args: { op: "message_send", request_id: "1", to: OTHER_SID, text: "are you there" },
+        identity: conn.identity.state === "settled" ? conn.identity : undefined,
+      }),
+    ).rejects.toThrow("no session");
+  });
 });
 
 describe("candidates", () => {

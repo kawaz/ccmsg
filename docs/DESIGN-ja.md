@@ -329,7 +329,7 @@ webui が生の値を組み合わせて分類すると、instance ごとに解�
 |---|---|---|
 | 接続 | ccmsg と話しているか、いつ話したか | transport (イベント) |
 | `sessions/` の各 `<pid>.json` | **セッションの存在**と `waiting` (dialog)、messaging socket | 自 config home のみ (M6)。**判定が要る時にその場で読む** |
-| llm-gateway の request / response | **実際に推論が走っているか** (= 忙しさ) | webhook (push) |
+| llm-gateway の request / response | **実際に推論が走っているか** (= 忙しさ) | webhook (push)。**この instance が知っている sid にだけ効く** |
 | `last_live` + `stopped_at` | 前回稼働中・意図して止めた | 自分が書いたファイル |
 | transcript の fold | API error で止まっているか、最後の人間入力 | tail |
 
@@ -345,6 +345,15 @@ webui が生の値を組み合わせて分類すると、instance ごとに解�
 ファイル監視は取りこぼしうるので、低頻度の確認 poll を**併走**させる — これは旧 daemon が
 transcript tail で実測を根拠に採った形と同じで、間隔の根拠は「監視が落とした変化を、
 利用者が気づく前に拾う」であって、取得の主経路ではない。
+
+**gateway のイベントは自分が知っている sid にだけ効かせる**。gateway は全 config home の
+上に立っていて、イベントは sid しか名乗らない。よって「gateway が見た」だけでは
+**この instance のセッションについての証拠にならない** — 別 config home の sid を live と
+分類し、`peers` に行を出し、`message_send` がこの instance に inbox を持たない宛先を
+受け付けてしまう。生存 (`gateway_active_at`) の入力として効かせるのは、**hello 済み
+(接続中または `last_live` に残っている) か、自 config home の `sessions/` が名乗っている
+sid だけ**。イベント自体は捨てず `llm_requests` topic には流す — あれは「この instance の
+セッション」ではなく「gateway が見ているもの」の写しだからである。
 
 **生 status の使い道を絞る** (DV-Q5)。`sessions/<pid>.json` の status は
 「そのセッションが存在すること」と `waiting` (dialog が開いている) の判定にだけ使い、

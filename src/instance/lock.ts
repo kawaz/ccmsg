@@ -1,5 +1,6 @@
-import { closeSync, mkdirSync, openSync, readFileSync, unlinkSync, writeSync } from "node:fs";
+import { linkSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { randomUUID } from "node:crypto";
 
 /** The right to be the instance for one config home (§8.3 step 2).
  *
@@ -14,23 +15,41 @@ export interface Held {
   readonly pid: number;
 }
 
+/** How many rounds of "somebody else's file is stale, drop it and contend
+ * again" one acquisition may run. Each round either wins, names a live holder
+ * or removes one dead file, so reaching this means the file is being recreated
+ * as fast as it is removed, or is something no starter can read or unlink. A
+ * loop is the wrong answer to either; the caller is told instead. */
+const ROUNDS = 100;
+
 /** Take the lock, or report who has it.
  *
- * `O_EXCL` is the whole of the exclusion, so two processes racing for the same
- * config home cannot both win. What it does not settle is a lock file left by
- * a process that died without releasing it: the file names its pid, so the
- * next starter asks the OS whether that pid is still there and takes over the
- * file when it is not. Asking is signal 0, which tests for the process without
- * touching it. */
+ * The lock file is created by linking a file that already names its pid, so it
+ * exists only in the finished state: a starter that finds it never reads an
+ * empty file and never mistakes a lock being taken for a stale one. `link` is
+ * what excludes — it fails when the name is there — so two processes racing
+ * for the same config home cannot both win.
+ *
+ * What that does not settle is a file left by a process that died without
+ * releasing it: the file names its pid, so the next starter asks the OS whether
+ * that pid is still there and takes over the file when it is not. Asking is
+ * signal 0, which tests for the process without touching it. */
 export function acquireLock(file: string): Lock | Held {
   mkdirSync(dirname(file), { recursive: true });
-  for (;;) {
+  for (let round = 0; round < ROUNDS; round++) {
+    const staged = `${file}.${process.pid}.${randomUUID()}`;
+    writeFileSync(staged, `${process.pid}\n`);
     try {
-      const fd = openSync(file, "wx");
-      writeSync(fd, `${process.pid}\n`);
-      return { release: () => release(file, fd) };
+      linkSync(staged, file);
+      return { release: () => release(file) };
     } catch (cause) {
       if ((cause as NodeJS.ErrnoException).code !== "EEXIST") throw cause;
+    } finally {
+      try {
+        unlinkSync(staged);
+      } catch {
+        // The link is what matters; the staging name is scratch either way.
+      }
     }
     const holder = readHolder(file);
     if (holder !== undefined && alive(holder)) return { pid: holder };
@@ -42,6 +61,7 @@ export function acquireLock(file: string): Lock | Held {
       // Another starter got there first; the next attempt sees its file.
     }
   }
+  throw new Error(`${file} could neither be taken nor cleared`);
 }
 
 /** Whether a lock outcome is the lock itself rather than someone else's. */
@@ -49,18 +69,11 @@ export function isHeldByUs(outcome: Lock | Held): outcome is Lock {
   return "release" in outcome;
 }
 
-function release(file: string, fd: number): void {
+function release(file: string): void {
   try {
     unlinkSync(file);
   } catch {
     // Already gone.
-  }
-  try {
-    // After the unlink: the file name is what excludes, and closing first
-    // would leave a window with neither.
-    closeSync(fd);
-  } catch {
-    // Already closed.
   }
 }
 

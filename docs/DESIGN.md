@@ -371,7 +371,7 @@ drifts per instance.
 |---|---|---|
 | Connection | Whether it's talking to ccmsg, and when it last did | transport (events) |
 | Each `sessions/<pid>.json` in `sessions/` | **The session's existence** and `waiting` (dialog), the messaging socket | Own config home only (M6). **Read where a judgement needs it** |
-| llm-gateway's request / response | **Whether inference is actually running** (= busyness) | webhook (push) |
+| llm-gateway's request / response | **Whether inference is actually running** (= busyness) | webhook (push). **Counts only for sids this instance knows** |
 | `last_live` + `stopped_at` | Previously running / intentionally stopped | a file we wrote ourselves |
 | transcript's fold | Whether it's stopped on an API error, the last human input | tail |
 
@@ -390,6 +390,15 @@ Since file watching can miss events, a low-frequency confirmation poll **runs al
 this is the same shape the old daemon adopted for transcript tail based on measurement, and
 the rationale for the interval is "catch changes that the watch dropped before the user
 notices," not the primary acquisition route.
+
+**The gateway's events count only for sids we know.** The gateway stands above every config
+home and its events name nothing but a sid, so "the gateway saw it" is not by itself evidence
+about *this* instance's sessions — a sid belonging to another config home would classify as
+live here, put a row on `peers`, and make `message_send` accept an addressee that has no inbox
+here. What counts as an input to liveness (`gateway_active_at`) is only a sid that **has
+greeted us — still connected or remembered in `last_live` — or that our own config home's
+`sessions/` names**. The events themselves are not dropped: they go out on the `llm_requests`
+topic, which is a view of what the gateway sees rather than of this instance's sessions.
 
 **Narrow the use of the raw status** (DV-Q5). The status in `sessions/<pid>.json` is used only
 to determine "that this session exists" and `waiting` (a dialog is open), and is **never used

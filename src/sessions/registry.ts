@@ -286,7 +286,7 @@ export class Sessions implements UpstreamResource {
     const row = rows.get(sid);
     const stored = this.#lastLive.get(sid);
     const facts = this.deps.transcript?.facts(sid);
-    const gatewayActiveAt = this.deps.gateway?.activeAt(sid);
+    const gatewayActiveAt = this.#gatewayActiveAt(sid, row !== undefined);
     return {
       connected: this.#connected.has(sid),
       ...(gatewayActiveAt === undefined ? {} : { gateway_active_at: gatewayActiveAt }),
@@ -547,7 +547,7 @@ export class Sessions implements UpstreamResource {
     // What the gateway last saw run for this session: an attribute of the row
     // beside the classification, not folded into it (§5.1). Absent from an
     // instance with no gateway, where nothing observes inference at all.
-    const gatewayActiveAt = this.deps.gateway?.activeAt(session.sid);
+    const gatewayActiveAt = this.#gatewayActiveAt(session.sid, rows.has(session.sid));
     return {
       sid: session.sid,
       instance: this.deps.self,
@@ -561,6 +561,25 @@ export class Sessions implements UpstreamResource {
       ...(session.client_version === undefined ? {} : { client_version: session.client_version }),
       protocol_version: session.protocol_version,
     };
+  }
+
+  /** When the gateway last saw inference for a session, for a session this
+   * instance knows (§5.1).
+   *
+   * The gateway sits above every config home and its events name only a session
+   * id, so what it reports is not by itself evidence about *this* instance's
+   * sessions: a session id belonging to another config home would otherwise
+   * classify as live here, put a row on this instance's `peers`, and make
+   * `message_send` accept a message for a session that has no inbox here and
+   * never will. So the reading is narrowed to the sids this instance knows —
+   * one that has greeted us, still connected or remembered in `last_live`, or
+   * one the harness's own `sessions/` names. The events themselves are not
+   * dropped: `llm_requests` carries what the gateway saw whoever it was for,
+   * because that topic is a view of the gateway rather than of this instance's
+   * sessions. */
+  #gatewayActiveAt(sid: Sid, inHarness: boolean): Timestamp | undefined {
+    const known = inHarness || this.#connected.has(sid) || this.#lastLive.get(sid) !== undefined;
+    return known ? this.deps.gateway?.activeAt(sid) : undefined;
   }
 
   /** Whether a person has pinned this session. Nothing can set a pin yet, so

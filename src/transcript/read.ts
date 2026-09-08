@@ -40,35 +40,42 @@ export function readSlice(
   // first byte is indistinguishable from one starting inside the record
   // before it, and the whole first record would be dropped as a fragment.
   const probe = from === 0 ? 0 : from - 1;
-  const text = slice(file, probe, until);
+  // The offsets are found in the bytes and never in decoded text. The probe
+  // byte, and a slice that begins part-way into a file, both land wherever the
+  // arithmetic puts them — inside a character as readily as before one — and
+  // decoding first would turn those bytes into replacement characters of a
+  // different length, moving every offset derived from them.
+  const bytes = slice(file, probe, until);
   // What of the read is whole records: everything up to the last newline. A
   // record the writer has not finished ends the file without one.
-  const lastNewline = text.lastIndexOf("\n");
+  const lastNewline = bytes.lastIndexOf(NEWLINE);
   if (lastNewline < 0) return { sid, lines: [], start: until, end: until, size };
-  const complete = text.slice(0, lastNewline + 1);
-  const end = probe + Buffer.byteLength(complete);
-  const lines = complete.split("\n").slice(0, -1);
-  let start = probe;
-  if (probe < from) {
-    // Whatever of a record preceded `from`: empty when `from` already sat on a
-    // boundary, and the tail of a record the caller has already read
-    // otherwise. Either way it is dropped, and its bytes — its own plus the
-    // newline that ended it — are where the slice actually starts.
-    const before = lines.shift() ?? "";
-    start = probe + Buffer.byteLength(before) + 1;
+  const complete = bytes.subarray(0, lastNewline + 1);
+  const end = probe + complete.byteLength;
+  // Whatever of a record preceded `from` is dropped: empty when `from` already
+  // sat on a boundary, and the tail of a record the caller has already read
+  // otherwise. Either way the slice starts after the newline that ended it.
+  const first = probe < from ? complete.indexOf(NEWLINE) + 1 : 0;
+  const lines: string[] = [];
+  for (let at = first; at < complete.byteLength;) {
+    const newline = complete.indexOf(NEWLINE, at);
+    lines.push(complete.toString("utf8", at, newline));
+    at = newline + 1;
   }
-  return { sid, lines, start, end, size };
+  return { sid, lines, start: probe + first, end, size };
 }
 
-/** The bytes in a range, as text. A range that reads short — the file was
- * truncated between the stat and the read — yields what was actually there. */
-function slice(file: string, from: number, to: number): string {
-  if (to <= from) return "";
+const NEWLINE = 0x0a;
+
+/** The bytes in a range. A range that reads short — the file was truncated
+ * between the stat and the read — yields what was actually there. */
+function slice(file: string, from: number, to: number): Buffer {
+  if (to <= from) return Buffer.alloc(0);
   const handle = openSync(file, "r");
   try {
     const buffer = Buffer.alloc(to - from);
     const read = readSync(handle, buffer, 0, buffer.length, from);
-    return buffer.subarray(0, read).toString("utf8");
+    return buffer.subarray(0, read);
   } finally {
     closeSync(handle);
   }

@@ -24,6 +24,25 @@ const HITS = 50;
 const MATCHES_PER_HIT = 5;
 const MATCH_CHARS = 400;
 
+/** The longest one clause may be. A query is something a person types, and the
+ * pattern's own size is one of the things that decides what matching it costs;
+ * past this it is a program rather than a query. */
+const MAX_CLAUSE_CHARS = 1000;
+
+/** What one regular-expression clause may spend on matching, over the whole
+ * search.
+ *
+ * The contract lets a caller state a regular expression and says nothing about
+ * which ones, so the patterns that backtrack super-linearly are admitted — and
+ * they are not only the crafted ones: `[a-z]+ing` over records of ordinary
+ * prose is quadratic in each record's length, and measured here it spends 86
+ * seconds on the scan budget below where a literal or an alternation spends
+ * 7 to 12 milliseconds on the same bytes. Two seconds is two orders of
+ * magnitude above what a well-formed clause needs and far below what the
+ * instance can afford to be blocked for, since it answers one op at a time.
+ * Reaching it is `truncated`, which is what every other cap on this op is. */
+const CLAUSE_BUDGET_MS = 2000;
+
 export interface SearchDeps {
   readonly self: InstanceId;
   /** The one config home this instance answers for (M6). */
@@ -44,7 +63,7 @@ export function search(args: SessionSearchArgs, deps: SearchDeps): SessionSearch
     // which the contract says to ignore — leaving nothing to search.
     return { hits: [], truncated: false };
   }
-  const clauses = compile(args);
+  const { clauses, budgets } = compile(args);
   const sid = args.sid?.toLowerCase();
   const cwdWords = (args.cwd ?? "").trim().split(/\s+/).filter(Boolean);
   const since = args.modified_within_ms === undefined ? 0 : Date.now() - args.modified_within_ms;
@@ -57,7 +76,10 @@ export function search(args: SessionSearchArgs, deps: SearchDeps): SessionSearch
     if (sid !== undefined && !candidate.sid.toLowerCase().includes(sid)) continue;
     if (candidate.updated_at < since) continue;
     if (!looksLike(candidate.project, cwdWords)) continue;
-    if (hits.length >= HITS || budget <= 0) {
+    // Every clause having given up leaves nothing that could still match, so
+    // the rest of the walk would read transcripts to decide nothing.
+    const spent = budgets.length > 0 && budgets.every((each) => each.spent);
+    if (hits.length >= HITS || budget <= 0 || spent) {
       truncated = true;
       break;
     }
@@ -67,7 +89,9 @@ export function search(args: SessionSearchArgs, deps: SearchDeps): SessionSearch
     // kept when the transcript's own `cwd` holds every word asked for.
     if (hit !== undefined && holds(hit.cwd, cwdWords)) hits.push(hit);
   }
-  return { hits, truncated };
+  // A clause that ran out of time answered about fewer records than it was
+  // asked about, whether or not the walk itself reached an end.
+  return { hits, truncated: truncated || budgets.some((each) => each.spent) };
 }
 
 /** One clause of a query: the terms that must all appear for it to match.
@@ -77,15 +101,46 @@ export function search(args: SessionSearchArgs, deps: SearchDeps): SessionSearch
  * matches every record, so a search by working directory alone is a search. */
 type Clause = (text: string) => boolean;
 
-function compile(args: SessionSearchArgs): Clause[] {
+/** What one clause has left to spend, and whether it has stopped.
+ *
+ * Only a regular-expression clause carries one. A clause of terms is a
+ * substring search per term, linear in what it is given, and the bytes it may
+ * be given are already bounded — there is nothing a clock would tell it that
+ * the scan budget does not. */
+class Budget {
+  #left = CLAUSE_BUDGET_MS;
+  /** The clause gave up part-way, so what it did not match it did not decide
+   * about. */
+  spent = false;
+
+  run(test: () => boolean): boolean {
+    if (this.spent) return false;
+    const at = performance.now();
+    try {
+      return test();
+    } finally {
+      this.#left -= performance.now() - at;
+      if (this.#left <= 0) this.spent = true;
+    }
+  }
+}
+
+function compile(args: SessionSearchArgs): { clauses: Clause[]; budgets: Budget[] } {
   const query = args.query?.trim();
-  if (query === undefined || query === "") return [];
+  if (query === undefined || query === "") return { clauses: [], budgets: [] };
   const sensitive = args.case_sensitive === true;
-  return query
+  const budgets: Budget[] = [];
+  const clauses = query
     .split("\n")
     .map((clause) => clause.trim())
     .filter((clause) => clause !== "")
-    .map((clause) => {
+    .map((clause): Clause => {
+      if (clause.length > MAX_CLAUSE_CHARS) {
+        throw new OpError(
+          "invalid_args",
+          `a query clause may be at most ${MAX_CLAUSE_CHARS} characters, and this one is ${clause.length}`,
+        );
+      }
       if (args.regex === true) {
         let matcher: RegExp;
         try {
@@ -96,7 +151,9 @@ function compile(args: SessionSearchArgs): Clause[] {
             `${clause} is not a regular expression: ${String(cause)}`,
           );
         }
-        return (text: string) => matcher.test(text);
+        const budget = new Budget();
+        budgets.push(budget);
+        return (text: string) => budget.run(() => matcher.test(text));
       }
       const terms = clause.split(/\s+/).map((term) => (sensitive ? term : term.toLowerCase()));
       return (text: string) => {
@@ -104,6 +161,7 @@ function compile(args: SessionSearchArgs): Clause[] {
         return terms.every((term) => against.includes(term));
       };
     });
+  return { clauses, budgets };
 }
 
 /** Read one transcript, and state it as a hit when it matched.

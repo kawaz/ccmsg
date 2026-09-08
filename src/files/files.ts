@@ -78,7 +78,11 @@ export function fileHandlers(paths: Containment) {
       const at = paths.locate(args, viewer(input));
       const stat = existing(at);
       if (!stat.isFile()) throw new OpError("not_found", `${args.path} is not a file`);
-      const head = readFileSync(at.real).subarray(0, READ_LIMIT);
+      // As much as the answer may carry and no more: a file larger than the
+      // limit is answered from its head, so reading it whole would cost the
+      // instance the whole of a file whose size is what the limit exists to
+      // refuse.
+      const head = bytesOf(at.real, READ_LIMIT);
       const binary = isBinary(head);
       return {
         sid: args.sid,
@@ -118,7 +122,7 @@ export function fileHandlers(paths: Containment) {
       const at = paths.locate(args, viewer(input));
       const stat = existing(at);
       if (!stat.isFile()) throw new OpError("not_found", `${args.path} is not a file`);
-      if (isBinary(head(at.real))) {
+      if (isBinary(bytesOf(at.real, SNIFF))) {
         throw new OpError("not_a_text_file", `${args.path} holds binary content`);
       }
       if (mtimeOf(stat) !== args.expected_mtime_at || stat.size !== args.expected_size) {
@@ -211,11 +215,12 @@ function mtimeOf(stat: { mtimeMs: number }): Timestamp {
   return Math.floor(stat.mtimeMs);
 }
 
-function head(path: string): Buffer {
+/** A file's leading bytes, at most `limit` of them. */
+function bytesOf(path: string, limit: number): Buffer {
   const fd = openSync(path, "r");
   try {
-    const buffer = Buffer.alloc(SNIFF);
-    const read = readSync(fd, buffer, 0, SNIFF, 0);
+    const buffer = Buffer.alloc(limit);
+    const read = readSync(fd, buffer, 0, limit, 0);
     return buffer.subarray(0, read);
   } finally {
     closeSync(fd);

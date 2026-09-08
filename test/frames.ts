@@ -106,6 +106,13 @@ export class TestConn implements Requester {
     for (const listener of this.#listeners.splice(0)) listener();
   }
 
+  /** How many close listeners are registered. A connection is long-lived and
+   * the listeners are held until it goes, so what registers one per event
+   * rather than one per connection accumulates them for as long as it lasts. */
+  get listenerCount(): number {
+    return this.#listeners.length;
+  }
+
   /** The topic frames pushed so far, which is all a topic test looks at. */
   topics(): Record<string, unknown>[] {
     return this.sent.filter((frame) => frame["ev"] === "topic");

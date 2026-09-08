@@ -77,6 +77,9 @@ export class Topics {
    * another's (§6.2), so neither does it make the other a repeat. */
   readonly #lastSent = new Map<string, Map<InstanceId, string>>();
   readonly #upstream = new Map<TopicKind, UpstreamResource>();
+  /** The connections a close listener has already been registered on. Weak
+   * because the entry says nothing once the connection is gone. */
+  readonly #closers = new WeakSet<Requester>();
 
   constructor(
     private readonly self: InstanceId,
@@ -151,7 +154,16 @@ export class Topics {
     }
     if (!subscribers.has(conn)) {
       subscribers.add(conn);
-      conn.onClose(() => this.unsubscribe(conn, topic));
+      // One listener for the connection rather than one per subscription: a
+      // client that subscribes and unsubscribes as it moves between views does
+      // so any number of times on one connection, and a listener registered
+      // per subscription would be kept for every one of them until it closed.
+      // What the single listener releases is every subscription still held,
+      // which is what a close means (§6.3).
+      if (!this.#closers.has(conn)) {
+        this.#closers.add(conn);
+        conn.onClose(() => this.dropAll(conn));
+      }
     }
     // The owner states the current value. A topic with no owner attached yet
     // answers nothing, as does one with no value to state (§6.2, event), and

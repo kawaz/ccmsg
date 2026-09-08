@@ -309,6 +309,27 @@ describe("a subscription ends with its connection (§6.3)", () => {
     expect(conn.topics()).toHaveLength(0);
   });
 
+  test("one close listener per connection, however often it subscribes", () => {
+    // A client moving between views subscribes and unsubscribes for as long as
+    // it is connected. A listener registered per subscription is held until the
+    // connection closes, so the connection accrues one for every move it makes.
+    const hub = topics();
+    const conn = connAs("user");
+
+    for (let round = 0; round < 50; round++) {
+      hub.subscribe(conn, KV);
+      hub.unsubscribe(conn, KV);
+    }
+    hub.subscribe(conn, `transcript:${SID}`);
+
+    expect(conn.listenerCount).toBe(1);
+    // And the one listener still releases everything the connection holds.
+    hub.subscribe(conn, KV);
+    conn.close();
+    expect(hub.subscriberCount(KV)).toBe(0);
+    expect(hub.subscriberCount(`transcript:${SID}`)).toBe(0);
+  });
+
   test("unsubscribing stops the frames, and repeating it changes nothing", () => {
     const hub = topics();
     const conn = connAs("user");

@@ -696,13 +696,41 @@ describe("the inputs of §5.1", () => {
   test("what the gateway saw reaches the classification through the domain", () => {
     const seen = Date.now() - 1_000;
     const context = sessions({ gateway: { activeAt: (sid) => (sid === SID ? seen : undefined) } });
+    // The harness naming it is what makes it a session of this config home;
+    // without that the gateway's word says nothing here (§5.1).
+    writeState(context.sessionsDir, process.pid, SID);
 
     expect(context.domain.inputs(SID).gateway_active_at).toBe(seen);
-    // Nothing is connected and the harness holds no row, so this session is
-    // alive on the gateway's word alone (§5.2).
-    expect(context.domain.classify(SID)).toBe("live_unmanaged");
     expect(context.domain.inputs(OTHER_SID).gateway_active_at).toBeUndefined();
     expect(context.domain.classify(OTHER_SID)).toBeUndefined();
+  });
+
+  test("a session that greeted keeps the gateway's word after it disconnects", () => {
+    const seen = Date.now() - 1_000;
+    const context = sessions({ gateway: { activeAt: () => seen } });
+    const conn = greeting();
+    helloFrom(context.domain, conn);
+
+    expect(context.domain.inputs(SID).gateway_active_at).toBe(seen);
+    // Gone from the connections but remembered in `last_live`, which is still
+    // this instance knowing whose sid that is.
+    conn.close();
+    expect(context.domain.inputs(SID).gateway_active_at).toBe(seen);
+    // Alive on the gateway's word alone, now that nothing else holds it (§5.2).
+    expect(context.domain.classify(SID)).toBe("live_unmanaged");
+  });
+
+  test("the gateway cannot make a session of another config home live here", () => {
+    const seen = Date.now() - 1_000;
+    // The gateway sees every config home and its events name only a sid, so it
+    // answers for one this instance has never heard of.
+    const context = sessions({ gateway: { activeAt: () => seen } });
+
+    expect(context.domain.inputs(OTHER_SID).gateway_active_at).toBeUndefined();
+    expect(context.domain.classify(OTHER_SID)).toBeUndefined();
+    // Nothing greeted, so nothing is on `peers` either — the row the gateway
+    // would otherwise have put there is what makes the sid addressable.
+    expect(context.domain.peers(Date.now()).peers).toEqual([]);
   });
 
   test("an instance with no gateway leaves the input absent rather than old", () => {

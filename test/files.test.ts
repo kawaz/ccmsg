@@ -6,6 +6,7 @@ import {
   rmSync,
   statSync,
   symlinkSync,
+  truncateSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -175,6 +176,36 @@ describe("contained", () => {
         run("file_read", bare.file_read, { sid: SID, kind: "contained", path: "ws/hello.txt" }),
       ),
     ).toBe("path_forbidden");
+  });
+
+  test("a file too large to hold in memory is answered from its head", () => {
+    // The answer carries at most `READ_LIMIT`, so what is read is at most that.
+    // A file past the largest buffer this runtime can allocate is the proof:
+    // reading it whole cannot succeed, and answering it from its head must.
+    // Sparse, so the size is the only thing about it that is large.
+    const path = join(base, "repo/ws/enormous.txt");
+    const marker = `${"the head of it\n".repeat(1000)}`;
+    writeFileSync(path, marker);
+    truncateSync(path, 5 * 1024 * 1024 * 1024);
+    const stat = statSync(path);
+    // A filesystem that gave us five real gigabytes is not one to run this on.
+    if (stat.blocks * 512 > 64 * 1024 * 1024) {
+      rmSync(path);
+      return;
+    }
+
+    const read = run("file_read", files().file_read, {
+      sid: SID,
+      kind: "contained",
+      path: "ws/enormous.txt",
+    });
+
+    expect(read["size"]).toBe(stat.size);
+    expect(read["truncated"]).toBe(true);
+    expect(read["binary"]).toBe(false);
+    expect((read["content"] as string).length).toBe(512 * 1024);
+    expect(read["content"]).toStartWith(marker);
+    rmSync(path);
   });
 
   test("a binary file is answered without its content", () => {
