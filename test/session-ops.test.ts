@@ -579,6 +579,38 @@ describe("session_fork_origin", () => {
     expect(answer["origin"]).toEqual({ sid: OTHER_SID, boundary_uuid: "a1", copied: 2 });
   });
 
+  test("the ancestor is not a fork of its own fork", async () => {
+    // Which of two files holding the same opening records is the copy is read
+    // out of the records, not out of the filesystem's clock: the ancestor
+    // carries a record the fork never copied, so its run into the fork stops
+    // where the fork's run into it carries on. Asked from the other side, the
+    // same comparison has to answer nothing.
+    const { configHome, handlers } = ops();
+    const sidechain = record({
+      type: "assistant",
+      uuid: "s1",
+      isSidechain: true,
+      timestamp: "2026-09-01T00:00:05.000Z",
+      message: { role: "assistant", model: "claude-opus-5", content: [] },
+    });
+    writeTranscript(configHome, SID, SAID_BY_PERSON + sidechain + SAID_BY_AGENT + RENAMED);
+    writeTranscript(
+      configHome,
+      OTHER_SID,
+      SAID_BY_PERSON +
+        SAID_BY_AGENT +
+        record({
+          type: "user",
+          uuid: "u2",
+          timestamp: "2026-09-02T00:00:00.000Z",
+          message: { role: "user", content: "carrying on" },
+        }),
+    );
+    expect(await run("session_fork_origin", handlers.session_fork_origin, { sid: SID })).toEqual(
+      {},
+    );
+  });
+
   test("a session that is no fork has no seam to place", async () => {
     const { configHome, handlers } = ops();
     writeTranscript(configHome, SID);

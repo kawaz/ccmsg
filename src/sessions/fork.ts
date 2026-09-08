@@ -17,41 +17,48 @@ const SWEEP_MAX_BYTES = 64 * 1024 * 1024;
  * copied record, and the seam can only be found by comparing against the
  * sibling transcripts beside it.
  *
- * Two stages. Sharing a first record id means two files begin with the same
- * record, which happens only by duplication; requiring the candidate to be the
- * older of the pair settles which is the ancestor. Then the fork's records are
- * walked against the ancestor's as a set rather than position by position: the
- * ancestor also holds records the fork did not copy — a subagent's turns
- * interleave into the parent and not into what was copied — so the copied run
- * is a subsequence of the ancestor rather than a prefix of it.
+ * Sharing a first record id means two files begin with the same record, which
+ * happens only by duplication. Which of the pair is the copy is then read out
+ * of the records themselves, by walking each file's ids against the other's as
+ * a set rather than position by position: the ancestor holds records the fork
+ * did not copy — a subagent's turns interleave into the parent and not into
+ * what was copied — so the fork's run into the ancestor reaches past where the
+ * ancestor's run into the fork stops. The longer run is the copy.
  *
- * Absent covers both a session that is no fork and one whose ancestor file is
- * gone. Nothing left on disk tells those apart, and neither has a seam to
- * place. */
+ * Only when the two runs are equal does the copying leave no trace of its
+ * direction, and only then is creation order asked for. A filesystem that
+ * states no creation time answers nothing there rather than falling back to a
+ * time that means something else: a transcript is appended to for as long as
+ * its session runs, so every other timestamp a file carries orders the two by
+ * when they were last written, which is unrelated to which was copied from
+ * which — and on a live ancestor points the wrong way.
+ *
+ * Absent covers a session that is no fork, one whose ancestor file is gone,
+ * and that undecidable pair. Nothing left on disk tells them apart, and none
+ * of them has a seam to place. */
 export function forkOrigin(sid: Sid, files: TranscriptFiles): ForkOrigin | undefined {
   const file = files.session(sid);
   const ours = recordIds(file);
   const head = ours?.[0];
   if (ours === undefined || head === undefined) return undefined;
-  const born = bornAt(file);
-  if (born === undefined) return undefined;
+  const mine = new Set(ours);
 
   const dir = dirname(file);
   let best: { sid: Sid; copied: number } | undefined;
   for (const candidate of files.all()) {
     if (candidate.file === file || dirname(candidate.file) !== dir) continue;
-    const theirBirth = bornAt(candidate.file);
-    if (theirBirth === undefined || theirBirth >= born) continue;
     const theirs = recordIds(candidate.file);
     if (theirs === undefined || theirs[0] !== head) continue;
-    const ancestor = new Set(theirs);
-    let copied = 0;
-    while (copied < ours.length && ancestor.has(ours[copied] ?? "")) copied += 1;
+    const copied = run(ours, new Set(theirs));
+    const back = run(theirs, mine);
+    // A run that reaches no further than theirs makes us their ancestor rather
+    // than their copy; an equal one says the records cannot tell, and creation
+    // order is what is left.
+    if (copied === 0 || back > copied) continue;
+    if (back === copied && !older(candidate.file, file)) continue;
     // Sibling forks of one ancestor share a prefix too, so several files can
     // match; the longest run is the nearest ancestor and the true seam.
-    if (copied > 0 && (best === undefined || copied > best.copied)) {
-      best = { sid: candidate.sid, copied };
-    }
+    if (best === undefined || copied > best.copied) best = { sid: candidate.sid, copied };
   }
   if (best === undefined) return undefined;
   // The whole file being copied means no forked turns exist yet, and there is
@@ -60,6 +67,25 @@ export function forkOrigin(sid: Sid, files: TranscriptFiles): ForkOrigin | undef
   const boundary = ours[best.copied - 1];
   if (boundary === undefined) return undefined;
   return { sid: best.sid, boundary_uuid: boundary, copied: best.copied };
+}
+
+/** How far into a file's records every id is one the other file also holds. */
+function run(ids: readonly string[], other: ReadonlySet<string>): number {
+  let reached = 0;
+  while (reached < ids.length && other.has(ids[reached] ?? "")) reached += 1;
+  return reached;
+}
+
+/** Whether one file was created before the other, when the filesystem says.
+ *
+ * A creation time of zero is a filesystem that does not record one, which is
+ * not an ancient file: two of those are simply not ordered, and the pair they
+ * belong to gets no answer. */
+function older(candidate: string, file: string): boolean {
+  const theirs = bornAt(candidate);
+  const ours = bornAt(file);
+  if (theirs === undefined || ours === undefined) return false;
+  return theirs < ours;
 }
 
 /** Every record id in a file, in order. Undefined for a file too large to
@@ -83,16 +109,18 @@ function recordIds(file: string): string[] | undefined {
   return ids;
 }
 
-/** When a file came into being, which is the only thing that says which of two
- * files holding the same records is the ancestor.
+/** When a file came into being, for the one pair the records cannot order.
  *
- * Not rounded to the millisecond the contract states instants in: two
- * transcripts written moments apart can share a millisecond, and the whole use
- * of this value is telling which of the two came first. */
+ * Only the creation time, and only when the filesystem states one: everything
+ * else a file carries says when it was last written, which for a transcript is
+ * how long its session ran rather than when it began. Not rounded to the
+ * millisecond the contract states instants in either — two transcripts written
+ * moments apart share one, and the whole use of this value is telling which
+ * came first. */
 function bornAt(file: string): number | undefined {
   try {
-    const stat = statSync(file);
-    return stat.birthtimeMs || stat.ctimeMs;
+    const born = statSync(file).birthtimeMs;
+    return born > 0 ? born : undefined;
   } catch {
     return undefined;
   }
