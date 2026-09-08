@@ -1,0 +1,183 @@
+name: Publish
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "package.json"
+  # workflow 自体の修正を package.json 変更なしで再走させる手動トリガ
+  workflow_dispatch:
+
+jobs:
+  # CI 一式を release の必須 gate にする。publish が needs で待つため、
+  # CI green でない commit から npm に何かが出ることはない。
+  ci:
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
+  check-version:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.current }}
+      changed: ${{ steps.version.outputs.changed }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # bump-semver の `vcs get latest-tag` で全 tag が要る
+
+      # release flow が bump-semver に依存するので install する。
+      # 最新 release のバイナリを curl で取得 (linux-amd64)。
+      - name: Install bump-semver
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          LATEST=$(gh release list --repo kawaz/bump-semver --limit 1 --json tagName -q '.[0].tagName' | sed 's/^v//')
+          curl -fsSL --retry 5 --retry-delay 2 --max-time 60 \
+            "https://github.com/kawaz/bump-semver/releases/download/v${LATEST}/bump-semver-linux-amd64" \
+            -o /usr/local/bin/bump-semver
+          chmod +x /usr/local/bin/bump-semver
+          bump-semver --version
+
+      - name: Check version change
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # package.json の version を正本として読む。
+          # 要 bump-semver >= v0.38.0 (= GHA の run step は stdin が writer 不在の
+          # FIFO になり、旧版は stdin pipe shortcut が誤発火して空読みする)
+          CURRENT_VERSION=$(bump-semver get package.json --no-hint)
+          echo "current=${CURRENT_VERSION}" >> "$GITHUB_OUTPUT"
+
+          # ---- semver gate (= bump-semver DR-0039 canonical pattern) ----
+          #
+          # CURRENT_VERSION が「過去の release / tag いずれよりも大」を並列 check
+          # する。両 source を短絡せず評価し、どちらかの gate を越えなかったら
+          # release を作らない:
+          #   - latest-release: GH の release 一覧 (= 過去リリース済 versions)
+          #   - latest-tag    : git tag (= origin の git ref)
+          #
+          # なぜ両方必要か (= latest-tag 単独では不足):
+          #   `gh release create` は GH 内部に release + tag object を作るが
+          #   origin の git ref には tag を push しない (cli/cli#4357)。よって
+          #   checkout 後の `vcs get latest-tag` が GH の最新 release より古い
+          #   tag を返すケースがあり、そのギャップを latest-release が埋める。
+          #
+          # Design rationale (canonical との差分): 本リポの trigger は
+          # paths [package.json] で、version bump を伴わない変更 (依存追加等)
+          # でも発火する。そのため「現 version == 最新」は良性 skip
+          # (changed=false, exit 0)、「現 version < 最新」のみ設定 error
+          # (exit 1) に分ける。VERSION file trigger の canonical は常に
+          # bump 意図なので gate 不通過 = 一律 error だが、ここでは過剰。
+          FAIL=0
+          SKIP=0
+          check_axis() {
+            local label="$1" latest="$2"
+            echo "${label}: ${latest}"
+            if bump-semver compare gt "$CURRENT_VERSION" "$latest" -qq; then
+              : # CURRENT > latest: この軸は通過
+            elif bump-semver compare eq "$CURRENT_VERSION" "$latest" -qq; then
+              SKIP=1
+            else
+              echo "::error::v${CURRENT_VERSION} is less than ${label} v${latest}"
+              FAIL=1
+            fi
+          }
+          if LATEST_REL=$(bump-semver vcs get latest-release --repository "$REPO" 2>/dev/null); then
+            check_axis "latest-release" "$LATEST_REL"
+          else
+            echo "latest-release: (none yet); bootstrap"
+          fi
+          if LATEST_TAG=$(bump-semver vcs get latest-tag --include-prerelease --vcs git 2>/dev/null); then
+            check_axis "latest-tag" "$LATEST_TAG"
+          else
+            echo "latest-tag: (none yet, or transient migration); bootstrap"
+          fi
+          if [ "$FAIL" = "1" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          if [ "$SKIP" = "1" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "Version v${CURRENT_VERSION} is already the latest; release skip"
+            exit 0
+          fi
+
+          # gh release で既存確認 (compare で通っても念のため二重防止)
+          if gh release view "v${CURRENT_VERSION}" --repo "$REPO" >/dev/null 2>&1; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "Version unchanged: v${CURRENT_VERSION} already released"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "New version detected: v${CURRENT_VERSION}"
+          fi
+
+  publish:
+    needs: [ci, check-version]
+    if: needs.check-version.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # gh release create が tag と release を作る
+      id-token: write # npm trusted publishing (OIDC) の token 交換に要る
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      # publish 自体は npm CLI で行う。trusted publishing (OIDC) は
+      # npm >= 11.5.1 / node >= 22.14.0 が要件なので、runner 同梱版に頼らず
+      # registry を明示した node をセットアップし npm を最新化する。
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+          package-manager-cache: false # 依存は bun が入れる (npm の lockfile が無い)
+      - name: Update npm (OIDC requires >= 11.5.1)
+        run: |
+          npm install -g npm@latest
+          npm --version
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      # 配布物の中身を release asset にも残すため、publish 前に tarball を作る。
+      - name: Pack tarball
+        id: pack
+        run: |
+          set -euo pipefail
+          TARBALL=$(npm pack --silent)
+          echo "tarball=${TARBALL}" >> "$GITHUB_OUTPUT"
+          ls -lh "$TARBALL"
+
+      # trusted publishing (OIDC) のみ。token は GitHub に置かない。
+      # public repo + public package なら provenance は自動で付く
+      # (docs.npmjs.com/generating-provenance-statements: OIDC 経由では
+      # --provenance フラグなしで attestation が生成される)。
+      # npmjs.com 側の Trusted Publisher (owner kawaz / repo ccmsg /
+      # workflow publish.yml) が publish を許可する。
+      - name: Publish (trusted publishing, OIDC)
+        run: npm publish --access public
+
+      # tag は workflow が作る (手で git tag / gh release create を打たない)。
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          VERSION: ${{ needs.check-version.outputs.version }}
+          COMMIT_SHA: ${{ github.sha }}
+          TARBALL: ${{ steps.pack.outputs.tarball }}
+        run: |
+          gh release create "v${VERSION}" \
+            "$TARBALL" \
+            --repo "$REPO" \
+            --title "v${VERSION}" \
+            --target "$COMMIT_SHA" \
+            --generate-notes

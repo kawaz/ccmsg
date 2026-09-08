@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # release.yml が gate として再利用する (CI green でない commit から publish させない)
+  workflow_call:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      # justfile の lint recipe が `just --fmt --check --unstable` を含むため、
+      # recipe を叩く just 自身が runner に要る。
+      - uses: extractions/setup-just@v4
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      # justfile の ci recipe = lint → typecheck → test。
+      # 依存の重複排除で各段が 1 回ずつしか走らないので、ローカルと同じ 1 コマンドにする。
+      - name: CI (lint + typecheck + test)
+        run: just ci
