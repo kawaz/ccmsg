@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { Glob } from "bun";
+import { OP_NAMES, opAttributes } from "@ccmsg/protocol";
 
 /** M1: authorization is derived from the op attribute table, so no role is
  * compared by hand (daemon-v2 §1.1 / §11.3).
@@ -24,13 +25,29 @@ const FOREIGN = new Set([
   "transcript/fold.ts",
   "upstream/events.ts",
 ]);
+/** Where a role is read on purpose: the implementations of the ops the
+ * attribute table marks `scope: "role"`, which is the one route by which a role
+ * reaches an implementation (daemon-v2 §3.2). There the role decides what the
+ * reply may contain rather than whether the call is allowed, so the comparison
+ * is the op's own rule and not a second copy of the table's. The sweep below
+ * fails if the table stops declaring that scope, which is what keeps the
+ * exception tied to the contract rather than to this list. */
+const SCOPE_ROLE = new Set(["files/containment.ts"]);
+
 const ROLE_LITERAL = /"(?:session|user|instance)"/;
 const ROLE_COMPARISON = /\brole\s*[=!]==/;
 
 const SRC = new URL("../src/", import.meta.url).pathname;
 
 describe("no role comparison outside the attribute table (M1)", () => {
-  const files = [...new Glob("**/*.ts").scanSync(SRC)].filter((path) => !FOREIGN.has(path));
+  const files = [...new Glob("**/*.ts").scanSync(SRC)].filter(
+    (path) => !FOREIGN.has(path) && !SCOPE_ROLE.has(path),
+  );
+
+  test("the contract still declares the scope the exception rests on", () => {
+    const scoped = OP_NAMES.filter((op) => opAttributes(op).scope === "role");
+    expect(scoped.length).toBeGreaterThan(0);
+  });
 
   test("the scan covers the dispatch module", () => {
     expect(files.some((path) => path.startsWith("dispatch/"))).toBe(true);

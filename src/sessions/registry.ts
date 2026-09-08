@@ -206,6 +206,21 @@ export class Sessions implements UpstreamResource {
     return this.#connected.get(sid)?.meta.transcript_path;
   }
 
+  /** Where a session works, as it greeted: the container its files are reached
+   * through, and the directory it runs in. Both are stated only by a greeting,
+   * so a session that named neither is one no path is admitted for. */
+  where(sid: Sid): { root?: string; cwd?: string } {
+    const meta = this.#connected.get(sid)?.meta;
+    const cwd = meta?.cwd ?? this.#harness.rows.get(sid)?.cwd;
+    // The container when the session named one, the working directory
+    // otherwise — the same order `repo_root` is meant in (§4.2).
+    const root = meta?.repo_root ?? cwd;
+    return {
+      ...(root === undefined || root === "" ? {} : { root }),
+      ...(cwd === undefined || cwd === "" ? {} : { cwd }),
+    };
+  }
+
   /** Recompute and state both topics. What the fold settles is an input to the
    * classification and to `peers`, so a fold that changed says so here. */
   refresh(): void {

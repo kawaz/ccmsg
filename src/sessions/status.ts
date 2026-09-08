@@ -1,4 +1,10 @@
-import type { InstanceId, SessionApiError, SessionErrorEntry, Sid } from "@ccmsg/protocol";
+import type {
+  InstanceId,
+  SessionApiError,
+  SessionErrorEntry,
+  SessionStatusSnapshot,
+  Sid,
+} from "@ccmsg/protocol";
 import type { TopicValue, UpstreamResource } from "../topics/index.ts";
 import { topicParam } from "../topics/index.ts";
 import type { TranscriptFacts } from "../transcript/index.ts";
@@ -18,7 +24,12 @@ export function stoppedOn(facts: TranscriptFacts): SessionApiError | undefined {
  * The fold settles one of its fields. The rest are the empty lists the
  * contract spells "nothing was declared", which is also what this instance can
  * honestly say about a transcript it reads for the error state alone. */
-export function sessionStatusOf(sid: Sid, facts: TranscriptFacts) {
+export function sessionStatusOf(
+  sid: Sid,
+  facts: TranscriptFacts,
+): SessionStatusSnapshot & {
+  sid: Sid;
+} {
   const stopped = stoppedOn(facts);
   return {
     sid,

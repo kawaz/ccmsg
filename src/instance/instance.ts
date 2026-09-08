@@ -15,6 +15,14 @@ import {
   type Requester,
 } from "../dispatch/index.ts";
 import {
+  Containment,
+  fileHandlers,
+  sandboxCapabilities,
+  SandboxGrants,
+  sandboxHandlers,
+  type SessionRoots,
+} from "../files/index.ts";
+import {
   ClaudeCodeSocketRoute,
   Delivery,
   DisabledDirectRoute,
@@ -24,7 +32,7 @@ import {
   sessionLabel,
 } from "../messaging/index.ts";
 import { Inbox } from "../messaging/inbox.ts";
-import { Sessions, SessionStatus } from "../sessions/index.ts";
+import { Sessions, sessionStatusOf, SessionStatus } from "../sessions/index.ts";
 import { topicHandlers, Topics } from "../topics/index.ts";
 import { Transcripts } from "../transcript/index.ts";
 import {
@@ -151,7 +159,10 @@ export class Instance {
     // Every capability rests on an upstream, so what is configured is what
     // this instance can name. A client is told before it subscribes, rather
     // than being refused when it does.
-    this.#capabilities = new Set(gatewayCapabilities(setup));
+    this.#capabilities = new Set([
+      ...gatewayCapabilities(setup),
+      ...sandboxCapabilities(config.upstream.sandbox_origin),
+    ]);
     this.#topics = new Topics(this.self, this.#capabilities);
 
     // What the gateway saw. It feeds two topics and one input of the sessions
@@ -257,10 +268,33 @@ export class Instance {
     this.#topics.attach("llm_requests", this.#gateway.requests);
     this.#topics.attach("llm_status", this.#gateway.statusResource);
 
+    // The one decision every file op starts from. The three allowlists it reads
+    // are the session's own facts, gathered from where each is stated: the
+    // greeting says where the session works, and the fold says which folders
+    // its editor names and which files outside them its transcript named.
+    const files = new Containment({
+      roots: (sid): SessionRoots | undefined => {
+        const where = this.#sessions.where(sid);
+        if (where.root === undefined && where.cwd === undefined) return undefined;
+        const status = sessionStatusOf(sid, this.#transcripts.facts(sid));
+        return {
+          ...where,
+          workspace_folders: status.workspace_folders.map((folder) => folder.path),
+          external_files: status.external_files.map((file) => file.path),
+        };
+      },
+    });
+    const origin = config.upstream.sandbox_origin;
+
     this.#handlers = completeHandlers({
       hello: this.#sessions.hello,
       ...topicHandlers(this.#topics),
       ...messagingHandlers(this.#delivery, this.#notify),
+      ...fileHandlers(files),
+      // The sandbox ops answer only where an origin is configured. Without one
+      // there is nothing to serve a minted URL, and dispatch already refuses
+      // them for the capability this instance then does not have.
+      ...(origin === undefined ? {} : sandboxHandlers(new SandboxGrants(files, origin))),
       instance_ping: (): InstancePingResult => this.ping(),
       instance_shutdown: () => {
         // The reply goes out when this handler's value reaches the driver, so
