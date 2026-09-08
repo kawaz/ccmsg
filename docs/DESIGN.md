@@ -321,7 +321,7 @@ The contract defines only one shape: "immediately after `topic_subscribe`, a fra
 
 | Element | Content |
 |---|---|
-| Current value | The topic's payload |
+| Current value | Stated by its owner (§3.3). All topics hold is the wire form of the last frame sent |
 | Subscribers | A set of connections |
 | Update entry point | A single function that domain uses to hand in "a new value" |
 | Suppression | Do not send if identical to the last value sent (**a single implementation shared by all topics**, M5) |
@@ -336,8 +336,14 @@ suppression" can never happen.
 |---|---|
 | Full replacement per instance | `peers` / `agents` / `session_errors` |
 | Full replacement | `session_status:<sid>` / `llm_status` |
-| Element add / update | `inbox` / `notify` / `llm_requests` |
+| Element add / update | `inbox` / `llm_requests` / `kv:<ns>` |
 | Append (byte offset) | `transcript:<sid>` |
+| Event (no value held) | `notify` |
+
+**Event** alone holds no current value. What matters is that it happened, so subscribing
+produces no snapshot and a repeat is not suppressed ("do not send it if it equals the last one"
+means something only where a value is held). Suppression stays one implementation, which reads
+the granularity and lets these through.
 
 **Full replacement per instance** is the key to mesh. A frame always carries its originating
 `instance`, and subscribers replace "only that instance's portion." Other instances' portions

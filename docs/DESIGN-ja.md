@@ -288,7 +288,7 @@ Disappeared  = last_live にあり stopped_at が無い
 
 | 要素 | 内容 |
 |---|---|
-| 現在値 | その topic の payload |
+| 現在値 | 持ち主が答える (§3.3)。topics が持つのは直前に送った wire だけ |
 | 購読者 | 接続の集合 |
 | 更新の入口 | domain 側から「新しい値」を渡す 1 関数 |
 | 抑制 | 直前に送った値と同じなら送らない (**全 topic 共通の 1 実装**、M5) |
@@ -302,8 +302,13 @@ topic の仕組みに内蔵するので「この topic には抑制がない」�
 |---|---|
 | instance ごとの全量置換 | `peers` / `agents` / `session_errors` |
 | 全量置換 | `session_status:<sid>` / `llm_status` |
-| 要素の追加・更新 | `inbox` / `notify` / `llm_requests` |
+| 要素の追加・更新 | `inbox` / `llm_requests` / `kv:<ns>` |
 | 追記 (byte offset) | `transcript:<sid>` |
+| event (値を保持しない) | `notify` |
+
+**event** だけは現在値を持たない。起きたこと自体が意味なので、購読しても snapshot は出ず、
+同じ値が続いても抑制しない (「直前と同じなら送らない」は保持値がある粒度にだけ意味を持つ)。
+抑制の実装は 1 つのままで、粒度を見て素通しする。
 
 **instance ごとの全量置換**が mesh の要。frame は発生元 `instance` を必ず伴い、購読側は
 「その instance 分だけ」を置き換える。他 instance の分は残る。この規則があるので、
