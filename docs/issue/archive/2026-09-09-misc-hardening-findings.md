@@ -1,6 +1,6 @@
 ---
 title: 各種堅牢化の積み残し (lock 競合窓 / readSlice 多バイト境界 / regex ReDoS / file_read 全読み / topics クロージャ蓄積)
-status: open
+status: resolved
 category: bug
 created: 2026-09-09T00:19:04+09:00
 last_read:
@@ -9,10 +9,10 @@ wip_entered:
 blocked_entered:
 pending_entered:
 discarded_entered:
-resolved_entered:
+resolved_entered: 2026-09-09T03:56:18+09:00
 discard_reason:
 pending_reason:
-close_reason:
+close_reason: ["done:v0.0.21 で lock の競合窓 / readSlice の多バイト境界 / regex 検索の時間予算 (2s、実測根拠) / file_read の上限読み / onClose の 1 回登録を実装 (commit d3537f19)"]
 blocked_by:
 origin: 2026-09-08 の設計監査 (fable5-high)
 ---
