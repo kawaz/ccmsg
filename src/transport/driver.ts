@@ -41,10 +41,13 @@ export function createDriver(conn: Conn, handle: FrameHandler) {
           conn.flushDeferred();
         },
         (cause: unknown) => {
+          // The handler settles every refusal of its own into an answer, so a
+          // rejection reaching here is this instance failing rather than the
+          // caller asking for something wrong.
           conn.send(
             failure(
               requestIdOf(frame),
-              "bad_request",
+              "internal_error",
               `the request could not be answered: ${String(cause)}`,
             ).response,
           );

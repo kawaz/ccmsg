@@ -10,6 +10,7 @@ import {
 } from "@ccmsg/protocol";
 import { dispatch, type DispatchDeps } from "../src/dispatch/dispatch.ts";
 import type { HandlerInput, Handlers } from "../src/dispatch/handler.ts";
+import { OpError } from "../src/dispatch/result.ts";
 import { connAs, frameFor, frameProblems, OTHER_INSTANCE, SELF, TestConn } from "./frames.ts";
 
 /** The roles and capabilities the contract defines, read from the contract so
@@ -183,6 +184,40 @@ describe("each step answers on its own", () => {
       deps(),
     );
     expect(result.kind).toBe("forward");
+  });
+
+  test("step 7: an implementation that throws is internal_error, not the caller's fault", async () => {
+    const { handlers } = recordingHandlers();
+    const failing: Handlers = {
+      ...handlers,
+      session_search: () => {
+        throw new Error("the index is on fire");
+      },
+    };
+    const result = await dispatch(
+      frameFor("session_search"),
+      as("user"),
+      deps({ handlers: failing }),
+    );
+    expect(errorCode(result)).toBe("internal_error");
+    // The message is the only thing that says more, so it carries the cause.
+    expect(result.kind === "error" && result.response.error.msg).toContain("the index is on fire");
+  });
+
+  test("step 7: an OpError still answers in its own code", async () => {
+    const { handlers } = recordingHandlers();
+    const failing: Handlers = {
+      ...handlers,
+      session_search: () => {
+        throw new OpError("not_found", "no such record");
+      },
+    };
+    const result = await dispatch(
+      frameFor("session_search"),
+      as("user"),
+      deps({ handlers: failing }),
+    );
+    expect(errorCode(result)).toBe("not_found");
   });
 
   test("step 6: cluster ops are answered wherever they arrive", async () => {

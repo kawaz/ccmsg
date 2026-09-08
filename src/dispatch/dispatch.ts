@@ -110,6 +110,9 @@ export async function dispatch(
     return reply(requestId, body);
   } catch (cause) {
     if (cause instanceof OpError) return failure(requestId, cause.code, cause.message);
-    throw cause;
+    // Anything else is the implementation failing for a reason that is not the
+    // caller's: the arguments passed the op's schema and the call was allowed,
+    // so re-reading the arguments would tell the caller nothing.
+    return failure(requestId, "internal_error", `the op failed: ${String(cause)}`);
   }
 }

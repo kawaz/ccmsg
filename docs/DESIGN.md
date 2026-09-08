@@ -334,9 +334,9 @@ suppression" can never happen.
 
 | Granularity | topic |
 |---|---|
-| Full replacement per instance | `peers` / `agents` / `session_errors` |
-| Full replacement | `session_status:<sid>` / `llm_status` |
-| Element add / update | `inbox` / `llm_requests` / `kv:<ns>` |
+| Full replacement per instance | `peers` / `agents` / `session_errors` / `llm_requests` / `llm_status` |
+| Full replacement | `session_status:<sid>` |
+| Element add / update | `inbox` / `kv:<ns>` |
 | Append (byte offset) | `transcript:<sid>` |
 | Event (no value held) | `notify` |
 

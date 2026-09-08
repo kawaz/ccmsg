@@ -45,12 +45,12 @@ interface Series {
  * would restart the session's countdown every time a subagent spoke.
  *
  * The frames carry the whole unexpired set rather than the series that just
- * moved. That is still the element granularity of §6.2 — every entry is an
- * add or an update keyed by its series — and it is what lets a client that
- * starts listening mid-window draw the countdown that began before it was
- * there. Nothing states an expiry: both sides compute it with the contract's
- * own `llmCacheWindowEndAt`, so a window closes at the same instant here and
- * on the screen. */
+ * moved, which is the topic's `per_instance_whole` granularity: a frame is the
+ * whole of what this instance knows and replaces its share alone. It is what
+ * lets a client that starts listening mid-window draw the countdown that began
+ * before it was there. Nothing states an expiry: both sides compute it with the
+ * contract's own `llmCacheWindowEndAt`, so a window closes at the same instant
+ * here and on the screen. */
 export class LlmRequests implements UpstreamResource {
   readonly #series = new Map<string, Series>();
   /** Prefix to the sessions it has been seen under, counted only as far as the
@@ -169,24 +169,12 @@ export class LlmRequests implements UpstreamResource {
     if (sids.size < 2) sids.add(info.sid);
   }
 
-  /** Which series is each session's own.
+  /** Which series is each session's own: the three steps the contract states
+   * on `LlmRequestInfo.main`, in that order.
    *
-   * The gateway states where a request came from, and where it does that is
-   * the answer: the session's series is the newest one it called `main`, and a
-   * session showing only subagent traffic gets none rather than a guess. The
-   * newest rather than the first, because a stated main series is legitimately
-   * replaced — a compaction rewrites the system prompt, so the series changes
-   * and the live one is the later.
-   *
-   * For a session whose events name no origin, two signals stand in. A prefix
-   * seen under more than one session belongs to a subagent: a session's own
-   * system prompt carries where it is running, so it cannot recur elsewhere,
-   * while a subagent's does recur verbatim. Among what is left, the series the
-   * session used first wins.
-   *
-   * Both are read from what is live right now rather than settled once, so an
-   * instance that started while only a subagent was talking corrects itself
-   * the moment that prefix appears under a second session. */
+   * Read from what is live right now rather than settled once, so an instance
+   * that started while only a subagent was talking corrects itself the moment
+   * that prefix appears under a second session. */
   #elect(live: readonly Series[]): Map<Sid, Series> {
     const stated = new Map<Sid, Series>();
     const statedSids = new Set<Sid>();
@@ -194,6 +182,8 @@ export class LlmRequests implements UpstreamResource {
       if (series.info.origin === undefined) continue;
       statedSids.add(series.info.sid);
       if (series.info.origin !== "main") continue;
+      // The newest rather than the first: a stated main series is legitimately
+      // replaced, since a compaction rewrites the system prompt.
       const best = stated.get(series.info.sid);
       if (best === undefined || series.info.received_at > best.info.received_at) {
         stated.set(series.info.sid, series);
@@ -209,11 +199,10 @@ export class LlmRequests implements UpstreamResource {
         elected.set(series.info.sid, series);
       }
     }
-    // A session every one of whose live series looks shared: two sessions
-    // opened on the same directory of the same repository produce the same
-    // leading system block, so their own series share a prefix and disqualify
-    // each other. Its newest series is more use than a row with no window at
-    // all, and the separation being given up here has nothing left to separate.
+    // Step 3. Two sessions opened on the same directory of the same repository
+    // produce the same leading system block, so their own series share a prefix
+    // and disqualify each other; the separation being given up here has nothing
+    // left to separate.
     const fallback = new Map<Sid, Series>();
     for (const series of live) {
       const sid = series.info.sid;

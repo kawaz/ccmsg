@@ -7,11 +7,13 @@ import type {
   MessageSendResult,
   Mid,
   PeerInfo,
+  Sender,
   SessionState,
   Sid,
   Timestamp,
   UndeliveredReason,
 } from "@ccmsg/protocol";
+import { USER_SENDER } from "@ccmsg/protocol";
 import { type HandlerInput, OpError, type Requester } from "../dispatch/index.ts";
 import type { TopicValue, UpstreamResource } from "../topics/index.ts";
 import type { DirectRoute } from "./direct.ts";
@@ -164,19 +166,25 @@ export class Delivery implements UpstreamResource {
       }));
   }
 
-  /** Who the message is from: the session the connection greeted as, never
-   * anything the caller put in the arguments (§4.1). A connection that settled
-   * no sid names no sender, and a message with no sender is one nobody can
-   * answer. */
-  #sender(input: HandlerInput): Sid {
-    const sid = input.identity?.sid;
-    if (sid === undefined) {
-      throw new OpError("bad_request", "a message is sent by a session, and this one named none");
+  /** Who the message is from: the identity the connection greeted as, never
+   * anything the caller put in the arguments (§4.1).
+   *
+   * A session names itself with its sid. A person greets without one, which is
+   * what the sender literal stands for — spelled out so a reader tells "a
+   * person sent this" from "a session sent this and the id was lost". The
+   * absence is read rather than the role, because the op is open to those two
+   * and no other, so a settled greeting with no sid is a person by elimination.
+   * An unsettled connection names no sender at all, and a message with no
+   * sender is one nobody can answer. */
+  #sender(input: HandlerInput): Sender {
+    const identity = input.identity;
+    if (identity === undefined) {
+      throw new OpError("bad_request", "a message is sent by a greeting, and this one made none");
     }
-    return sid;
+    return identity.sid ?? USER_SENDER;
   }
 
-  #message(args: MessageSendArgs, from: Sid, now: Timestamp = Date.now()): InboxMessage {
+  #message(args: MessageSendArgs, from: Sender, now: Timestamp = Date.now()): InboxMessage {
     return {
       mid: this.#mid(),
       from,
@@ -197,8 +205,11 @@ export class Delivery implements UpstreamResource {
 
   /** How the sender is shown. The repository and workspace it greeted from,
    * which is what tells two sessions of one person apart; its sid when it
-   * greeted from neither, so the label always names something. */
-  #label(from: Sid): string {
+   * greeted from neither, so the label always names something. A person is
+   * shown as the sender literal: there is one person per instance to a
+   * session's eye, so there is nothing further to tell apart. */
+  #label(from: Sender): string {
+    if (from === USER_SENDER) return USER_SENDER;
     const peer = this.deps.sessions.peers().peers.find((row) => row.sid === from);
     if (peer === undefined) return from;
     const where = [peer.repo, peer.ws].filter((part) => part !== "").join("/");

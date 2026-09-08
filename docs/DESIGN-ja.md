@@ -300,9 +300,9 @@ topic の仕組みに内蔵するので「この topic には抑制がない」�
 
 | 粒度 | topic |
 |---|---|
-| instance ごとの全量置換 | `peers` / `agents` / `session_errors` |
-| 全量置換 | `session_status:<sid>` / `llm_status` |
-| 要素の追加・更新 | `inbox` / `llm_requests` / `kv:<ns>` |
+| instance ごとの全量置換 | `peers` / `agents` / `session_errors` / `llm_requests` / `llm_status` |
+| 全量置換 | `session_status:<sid>` |
+| 要素の追加・更新 | `inbox` / `kv:<ns>` |
 | 追記 (byte offset) | `transcript:<sid>` |
 | event (値を保持しない) | `notify` |
 

@@ -52,8 +52,10 @@ export interface LlmStatusDeps {
 
 /** The gateway's report on the services behind it.
  *
- * Whole-value (§6.2): a frame replaces the last, because the report is one
- * document the gateway assembles and half of it means nothing on its own.
+ * `per_instance_whole` (§6.2): a frame replaces what this instance last said
+ * and leaves other instances' reports alone, because the report is one document
+ * the gateway behind this instance assembles and half of it means nothing on
+ * its own.
  *
  * It is read at two moments and no others (M3): when someone starts listening,
  * and once after a request event says an upstream refused. There is no poll —

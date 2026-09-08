@@ -340,10 +340,10 @@ export class Sessions implements UpstreamResource {
     return {
       sid,
       instance: this.deps.self,
-      ...this.#where(sid),
-      // The harness knows a title the session may not have stated itself.
+      // The harness knows a title for a session that stated none itself, so
+      // it goes first and what the session named overrides it.
       ...(row?.name === undefined ? {} : { title: row.name }),
-      ...(held?.meta.title === undefined ? {} : { title: held.meta.title }),
+      ...this.#where(sid),
       ...(held?.meta.model === undefined ? {} : { model: held.meta.model }),
       ...(held?.meta.effort === undefined ? {} : { effort: held.meta.effort }),
       ...(held === undefined ? {} : { connected_at: held.connected_at }),
@@ -356,6 +356,10 @@ export class Sessions implements UpstreamResource {
     // above moves on every request the session makes, this one only when a
     // person speaks, and the fold is the only place that knows the second.
     const userInput = this.deps.transcript?.facts(session.sid).last_user_input_at;
+    // What the gateway last saw run for this session: an attribute of the row
+    // beside the classification, not folded into it (§5.1). Absent from an
+    // instance with no gateway, where nothing observes inference at all.
+    const gatewayActiveAt = this.deps.gateway?.activeAt(session.sid);
     return {
       sid: session.sid,
       instance: this.deps.self,
@@ -365,6 +369,7 @@ export class Sessions implements UpstreamResource {
       connected_at: session.connected_at,
       last_activity_at: session.last_activity_at,
       ...(userInput === undefined ? {} : { last_user_input_at: userInput }),
+      ...(gatewayActiveAt === undefined ? {} : { gateway_active_at: gatewayActiveAt }),
       ...(session.client_version === undefined ? {} : { client_version: session.client_version }),
       protocol_version: session.protocol_version,
     };
@@ -392,7 +397,7 @@ export class Sessions implements UpstreamResource {
    * until one does. */
   #where(
     sid: Sid,
-  ): Pick<PeerInfo, "repo" | "ws" | "cwd" | "transcript_path" | "repo_root" | "branch"> {
+  ): Pick<PeerInfo, "repo" | "ws" | "cwd" | "transcript_path" | "repo_root" | "branch" | "title"> {
     const meta = this.#connected.get(sid)?.meta ?? {};
     const cwd = meta.cwd ?? this.#harness.rows.get(sid)?.cwd ?? "";
     return {
@@ -402,6 +407,7 @@ export class Sessions implements UpstreamResource {
       ...(meta.transcript_path === undefined ? {} : { transcript_path: meta.transcript_path }),
       ...(meta.repo_root === undefined ? {} : { repo_root: meta.repo_root }),
       ...(meta.branch === undefined ? {} : { branch: meta.branch }),
+      ...(meta.title === undefined ? {} : { title: meta.title }),
     };
   }
 }

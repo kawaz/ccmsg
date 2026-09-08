@@ -5,6 +5,7 @@ import { join } from "node:path";
 import {
   INBOX_MAX_PER_SID,
   INBOX_RETENTION_MS,
+  type InboxMessage,
   type LastLiveSession,
   type MessageSendResult,
   OP_SCHEMAS,
@@ -150,8 +151,8 @@ function inboxFrames(conn: TestConn): Record<string, unknown>[] {
 
 /** The messages one frame carries, which is the whole payload for a snapshot
  * and the one that just arrived for a change (§6.2). */
-function messagesOf(frame: Record<string, unknown> | undefined): { text: string; from: Sid }[] {
-  return (frame?.["data"] ?? []) as { text: string; from: Sid }[];
+function messagesOf(frame: Record<string, unknown> | undefined): InboxMessage[] {
+  return (frame?.["data"] ?? []) as InboxMessage[];
 }
 
 function problems(result: MessageSendResult): string[] {
@@ -180,6 +181,23 @@ describe("delivery", () => {
     const carried = messagesOf(frames[0])[0];
     expect(carried?.text).toBe("hi");
     expect(carried?.from).toBe(SID);
+  });
+
+  test("the person at the web UI is a sender in their own right", async () => {
+    const { sessions, topics, send } = rig();
+    sessions.live(OTHER_SID);
+    const recipient = listening(topics, OTHER_SID);
+
+    // A person greets with a role and no sid, which is what tells them apart
+    // from a session: the sender is the literal rather than a missing id.
+    const person = new TestConn({ state: "settled", role: "user" });
+    const result = await send(person, OTHER_SID);
+
+    expect(result).toEqual({ delivered: true });
+    const frame = inboxFrames(recipient)[0];
+    expect(validationErrors(TOPIC_SCHEMAS.inbox, frame as object)).toEqual([]);
+    const carried = messagesOf(frame)[0];
+    expect([carried?.from, carried?.from_label]).toEqual(["user", "user"]);
   });
 
   test("a message is only pushed to the session it names", async () => {

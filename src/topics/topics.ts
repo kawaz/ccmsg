@@ -5,10 +5,10 @@ import {
   TOPIC_ATTRIBUTES,
   type TopicAttributes,
   type TopicKind,
+  topicGranularity,
   topicKind,
 } from "@ccmsg/protocol";
 import type { Requester } from "../dispatch/index.ts";
-import { isSuppressed } from "./granularity.ts";
 
 /** What a subscribe decided. `ok` and the three refusals the contract names
  * for the op, so the caller turns an outcome into an error without deciding
@@ -91,11 +91,11 @@ export class Topics {
   publish(topic: string, data: unknown, instance: InstanceId = this.self, to?: Sid): void {
     const kind = topicKind(topic);
     if (kind === undefined) return;
-    if (isSuppressed(kind)) {
-      // The suppression, written once for every topic it applies to (M5). An
-      // event topic passes it by rather than carrying its own version of it:
-      // "the same as the last one" is not a reason to drop something whose
-      // point is that it happened again.
+    if (topicGranularity(topic) !== "event") {
+      // The suppression, written once for every topic it applies to (M5). The
+      // contract's granularity is the whole of the rule: an event topic's
+      // frames are occurrences, and "the same as the last one" is not a reason
+      // to drop something whose point is that it happened again.
       const wire = serialize(data);
       const sent = this.#sent(topic);
       if (sent.get(instance) === wire) return;

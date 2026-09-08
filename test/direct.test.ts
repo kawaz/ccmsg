@@ -180,6 +180,21 @@ describe("route (a) over the messaging socket (§4.1)", () => {
     expect(user.message.content).toContain(directDeliveryReplyLine(sent.mid, sent.from));
   });
 
+  test("a message from the person is delivered with nothing to send back to", async () => {
+    const { configHome, harness } = rig();
+    const route = new ClaudeCodeSocketRoute({ configHome });
+    const sent: InboxMessage = { ...message("from the browser"), from: "user", from_label: "user" };
+
+    await route.send(SID, sent);
+
+    const user = (await received(harness))[1] as { message: { content: string } };
+    expect(parseDirectDelivery(user.message.content)?.from).toBe("user");
+    // `message_send` addresses a sid, so there is no sending back to a person:
+    // the contract's wording drops the addressee rather than naming one.
+    expect(user.message.content).toContain(directDeliveryReplyLine(sent.mid, sent.from));
+    expect(user.message.content).not.toContain("--to");
+  });
+
   test("what it answers rides along when the message answers something", async () => {
     const { configHome, harness } = rig();
     const route = new ClaudeCodeSocketRoute({ configHome });

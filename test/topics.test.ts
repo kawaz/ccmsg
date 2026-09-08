@@ -5,17 +5,13 @@ import {
   type Role,
   TOPIC_ATTRIBUTES,
   TOPIC_SCHEMAS,
+  topicGranularity,
   type TopicKind,
   validationErrors,
 } from "@ccmsg/protocol";
+import { Glob } from "bun";
 import { dispatch, type DispatchDeps, type Handlers } from "../src/dispatch/index.ts";
-import {
-  isSuppressed,
-  topicHandlers,
-  type TopicValue,
-  Topics,
-  TOPIC_GRANULARITY,
-} from "../src/topics/index.ts";
+import { topicHandlers, type TopicValue, Topics } from "../src/topics/index.ts";
 import { connAs, frameFor, OTHER_INSTANCE, SELF, SID, TestConn } from "./frames.ts";
 
 const NOTIFICATION: Notification = {
@@ -133,7 +129,8 @@ describe("suppression is one implementation, and it is every topic's (M5)", () =
   });
 
   test("every topic that holds a value is suppressed, not a chosen few", () => {
-    for (const kind of (Object.keys(TOPIC_ATTRIBUTES) as TopicKind[]).filter(isSuppressed)) {
+    const holdsAValue = (kind: TopicKind) => topicGranularity(kind) !== "event";
+    for (const kind of (Object.keys(TOPIC_ATTRIBUTES) as TopicKind[]).filter(holdsAValue)) {
       const hub = topics();
       const conn = connAs(allowedRole(kind));
       const name = topicName(kind);
@@ -451,9 +448,25 @@ describe("the ops reach the mechanism through dispatch", () => {
   });
 });
 
-describe("the granularity table", () => {
-  test("it names every topic the contract has", () => {
-    expect(Object.keys(TOPIC_GRANULARITY).sort()).toEqual(Object.keys(TOPIC_ATTRIBUTES).sort());
+/** M5: how a frame folds is a property of the topic, so it is read from the
+ * contract and not restated here. The suppression sweep above covers the
+ * behaviour; this covers the shape, which behaviour cannot see — a local table
+ * that happens to agree with the contract passes every sweep and still is the
+ * second place the fact lives. */
+describe("the granularity is the contract's (M5)", () => {
+  const SRC = new URL("../src/", import.meta.url).pathname;
+
+  test("no module states a granularity of its own", () => {
+    const files = [...new Glob("**/*.ts").scanSync(SRC)];
+    // The scan reaching the topics module is what makes an empty result mean
+    // "none found" rather than "nothing looked at".
+    expect(files).toContain("topics/topics.ts");
+    expect(files.filter((path) => path.includes("granularity"))).toEqual([]);
+  });
+
+  test("the suppression reads the contract", async () => {
+    const source = await Bun.file(`${SRC}topics/topics.ts`).text();
+    expect(source).toContain("topicGranularity");
   });
 });
 

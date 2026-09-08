@@ -12,8 +12,10 @@ import {
 } from "@ccmsg/protocol";
 import { dispatch, type Handlers, type Requester } from "../src/dispatch/index.ts";
 import {
+  BaseConn,
   type Conn,
   ConnRegistry,
+  createDriver,
   listenUds,
   MAX_LINE_BYTES,
   Transport,
@@ -76,6 +78,29 @@ const running: Transport[] = [];
 
 afterEach(async () => {
   for (const transport of running.splice(0)) await transport.close();
+});
+
+describe("the driver answers what the handler could not", () => {
+  /** A connection whose lines are collected instead of written to a socket. */
+  function collecting(): { conn: Conn; sent: Record<string, unknown>[] } {
+    const sent: Record<string, unknown>[] = [];
+    const conn = new BaseConn(1, { send: (line) => sent.push(JSON.parse(line)), close: () => {} });
+    return { conn, sent };
+  }
+
+  test("a handler that rejects is internal_error, on the request it was asked", async () => {
+    const { conn, sent } = collecting();
+    const rejected = Promise.reject(new Error("the handler gave up"));
+    const driver = createDriver(conn, () => rejected);
+    driver.line(JSON.stringify(frameFor("instance_ping")));
+    await rejected.catch(() => {});
+    await Promise.resolve();
+    expect(sent[0]).toMatchObject({
+      ok: false,
+      request_id: "1",
+      error: { code: "internal_error" },
+    });
+  });
 });
 
 function bindUds(): Bound {

@@ -187,10 +187,25 @@ describe("hello", () => {
     const { domain } = sessions();
     helloFrom(domain, connAs("session"));
     const peer = domain.peers().peers[0];
-    // Where it lives, which is what a connected row carries. What it runs as
-    // (title, model, effort) belongs to `last_live`, where a resume reads it.
-    const { title: _title, model: _model, effort: _effort, ...where } = META;
-    expect(peer).toMatchObject(where);
+    // Where it lives and what it calls itself. What it runs as (model, effort)
+    // belongs to `last_live` alone, where a resume reads it.
+    const { model: _model, effort: _effort, ...shown } = META;
+    expect(peer).toMatchObject(shown);
+  });
+
+  test("a peer carries what the gateway last saw run for it", () => {
+    const seen = NOW - 1_000;
+    const { domain } = sessions({
+      gateway: { activeAt: (sid) => (sid === SID ? seen : undefined) },
+    });
+    helloFrom(domain, connAs("session"));
+    expect(domain.peers().peers[0]?.gateway_active_at).toBe(seen);
+  });
+
+  test("an instance with no gateway shows the peer without the mark, not as quiet", () => {
+    const { domain } = sessions();
+    helloFrom(domain, connAs("session"));
+    expect(domain.peers().peers[0]?.gateway_active_at).toBeUndefined();
   });
 
   test("a session that named none of it is shown without it, never with a guess", () => {
