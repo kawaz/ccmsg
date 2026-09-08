@@ -14,6 +14,7 @@ import {
   type Timestamp,
 } from "@ccmsg/protocol";
 import { type HandlerInput, OpError } from "../dispatch/index.ts";
+import type { TranscriptFacts } from "../transcript/index.ts";
 import type { TopicValue, UpstreamResource } from "../topics/index.ts";
 import { classify, type SessionInputs } from "./classify.ts";
 import { HarnessSessions, isWaiting } from "./harness.ts";
@@ -34,8 +35,20 @@ export interface SessionsDeps {
   readonly startedAt: Timestamp;
   /** The one way a value reaches subscribers (§6.1). */
   readonly publish: (topic: string, data: unknown) => void;
+  /** What the transcript fold says about a session (§5.1). Absent while
+   * nothing folds transcripts, in which case the two values it settles are
+   * simply unknown and every rule that reads them behaves as it does for a
+   * session whose transcript has said nothing. */
+  readonly transcript?: TranscriptSource;
   /** How often the confirmation poll runs, for a test that cannot wait. */
   readonly pollMs?: number;
+}
+
+/** The fold, as the sessions domain reads it: two values about one session,
+ * asked for when a payload is built rather than copied here when they change
+ * (§3.3 — the current value lives with whoever owns it). */
+export interface TranscriptSource {
+  facts(sid: Sid): TranscriptFacts;
 }
 
 /** What a session said about itself when it greeted.
@@ -146,8 +159,10 @@ export class Sessions implements UpstreamResource {
   inputs(sid: Sid): SessionInputs {
     const row = this.#harness.rows.get(sid);
     const stored = this.#lastLive.get(sid);
+    const facts = this.deps.transcript?.facts(sid);
     return {
       connected: this.#connected.has(sid),
+      ...(facts?.api_error === undefined ? {} : { api_error_stopped: true }),
       ...(row === undefined
         ? {}
         : {
@@ -158,6 +173,19 @@ export class Sessions implements UpstreamResource {
           }),
       ...(stored === undefined ? {} : { last_live: { stopped_at: stored.stopped_at } }),
     };
+  }
+
+  /** Where a session's transcript is, as it announced it (§5.1). Whoever
+   * follows one needs the path, and the greeting is the only thing that
+   * states it. */
+  transcriptPath(sid: Sid): string | undefined {
+    return this.#connected.get(sid)?.meta.transcript_path;
+  }
+
+  /** Recompute and state both topics. What the fold settles is an input to the
+   * classification and to `peers`, so a fold that changed says so here. */
+  refresh(): void {
+    this.changed();
   }
 
   /** Note that a session said it was stopping, which is what makes it Paused
@@ -299,6 +327,10 @@ export class Sessions implements UpstreamResource {
   }
 
   #peer(session: Connected, now: Timestamp): PeerInfo {
+    // The two "last activity" values are different questions (§5.3): the one
+    // above moves on every request the session makes, this one only when a
+    // person speaks, and the fold is the only place that knows the second.
+    const userInput = this.deps.transcript?.facts(session.sid).last_user_input_at;
     return {
       sid: session.sid,
       instance: this.deps.self,
@@ -307,6 +339,7 @@ export class Sessions implements UpstreamResource {
       pinned: this.#pinned(session.sid),
       connected_at: session.connected_at,
       last_activity_at: session.last_activity_at,
+      ...(userInput === undefined ? {} : { last_user_input_at: userInput }),
       ...(session.client_version === undefined ? {} : { client_version: session.client_version }),
       protocol_version: session.protocol_version,
     };

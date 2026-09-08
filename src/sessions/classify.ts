@@ -11,10 +11,9 @@ export interface HarnessPresence {
 
 /** Everything the classification reads, and nothing else (§5.1).
  *
- * Two of these are holes rather than values today: no gateway events are taken
- * in, so `gateway_active_at` is always absent, and no transcript is folded, so
- * `api_error_stopped` is always absent. Both are inputs, so filling them
- * changes no rule here. */
+ * One of these is a hole rather than a value today: no gateway events are
+ * taken in, so `gateway_active_at` is always absent. It is an input, so
+ * filling it changes no rule here. */
 export interface SessionInputs {
   /** A connection of this session is open to us right now. */
   connected: boolean;
@@ -22,7 +21,8 @@ export interface SessionInputs {
   harness?: HarnessPresence;
   /** The last time the gateway saw inference for it (§5.1, not taken in yet). */
   gateway_active_at?: Timestamp;
-  /** Its transcript's last turn ended on an API error (not folded yet). */
+  /** Its transcript's last turn ended on an API error (§5.1, from the fold).
+   * Absent for a session whose transcript nothing is following. */
   api_error_stopped?: boolean;
   /** Present when it is in `last_live`. */
   last_live?: { stopped_at?: Timestamp };

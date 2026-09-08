@@ -12,8 +12,10 @@ import { Glob } from "bun";
  * announces about itself rather than a judgement about somebody else's, and
  * route (a) is left out because the only such word in it is the harness's own
  * frame type — a foreign protocol's spelling, on a path that authorizes
- * nothing. */
-const FOREIGN = new Set(["cli.ts", "messaging/direct.ts"]);
+ * nothing. The fold is left out for the same reason: `"user"` there is the
+ * harness's own name for a kind of transcript record, read from a file that
+ * grants nobody anything. */
+const FOREIGN = new Set(["cli.ts", "messaging/direct.ts", "transcript/fold.ts"]);
 const ROLE_LITERAL = /"(?:session|user|instance)"/;
 const ROLE_COMPARISON = /\brole\s*[=!]==/;
 

@@ -24,6 +24,7 @@ import {
 import { Inbox } from "../messaging/inbox.ts";
 import { Sessions } from "../sessions/index.ts";
 import { topicHandlers, Topics } from "../topics/index.ts";
+import { Transcripts } from "../transcript/index.ts";
 import {
   ConnRegistry,
   type EntryPolicy,
@@ -105,6 +106,7 @@ export class Instance {
   readonly #transport = new Transport();
   readonly #topics: Topics;
   readonly #sessions: Sessions;
+  readonly #transcripts: Transcripts;
   readonly #delivery: Delivery;
   readonly #handlers: Handlers;
   readonly #capabilities: ReadonlySet<Capability>;
@@ -134,6 +136,22 @@ export class Instance {
     this.#capabilities = new Set();
     this.#topics = new Topics(this.self, this.#capabilities);
 
+    // The transcript tails and their folds. Built before the sessions domain
+    // and reading from it lazily: the fold is one of the sessions domain's
+    // inputs (§5.1) while the path to follow is one of its outputs, and the
+    // two meet at the moment a tail starts rather than at construction.
+    this.#transcripts = new Transcripts({
+      self: this.self,
+      pathOf: (sid) => this.#sessions.transcriptPath(sid),
+      publish: (topic, data) => {
+        this.#topics.publish(topic, data);
+      },
+      onFacts: () => {
+        this.#sessions.refresh();
+      },
+      ...(pollMs === undefined ? {} : { pollMs }),
+    });
+
     // 4. `last_live`, read by the sessions domain as it is constructed.
     this.#sessions = new Sessions({
       self: this.self,
@@ -145,6 +163,7 @@ export class Instance {
       publish: (topic, data) => {
         this.#topics.publish(topic, data);
       },
+      transcript: this.#transcripts,
       ...(pollMs === undefined ? {} : { pollMs }),
     });
 
@@ -166,6 +185,7 @@ export class Instance {
     this.#topics.attach("peers", this.#sessions);
     this.#topics.attach("agents", this.#sessions);
     this.#topics.attach("inbox", this.#delivery);
+    this.#topics.attach("transcript", this.#transcripts);
 
     this.#handlers = completeHandlers({
       hello: this.#sessions.hello,
@@ -302,6 +322,9 @@ export class Instance {
     // 2. stop the upstream watches. They run only while something is
     // subscribed (§6.3), so dropping the subscriptions is what stops them.
     for (const conn of this.#conns) this.#topics.dropAll(conn);
+    // A tail may also be held for a value this instance states rather than for
+    // a subscriber, and those holds end here.
+    this.#transcripts.stopAll();
     // 3. tell the connections, while they can still be told
     const restarting: RestartingEvent = { ev: "restarting", instance: this.self };
     for (const conn of this.#conns) conn.send(restarting);
