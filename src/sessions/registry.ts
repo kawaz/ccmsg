@@ -9,14 +9,15 @@ import {
   type LastLiveSession,
   type PeerInfo,
   PROTOCOL_VERSION,
+  type SessionState,
   type Sid,
   type Timestamp,
 } from "@ccmsg/protocol";
 import { type HandlerInput, OpError } from "../dispatch/index.ts";
 import type { TopicValue, UpstreamResource } from "../topics/index.ts";
+import { classify, type SessionInputs } from "./classify.ts";
 import { HarnessSessions, isWaiting } from "./harness.ts";
-import { classify, type SessionClass, type SessionInputs } from "./classify.ts";
-import { type LastLiveEntry, LastLiveStore } from "./last-live.ts";
+import { LastLiveStore, type StoredEntry } from "./last-live.ts";
 
 /** What the sessions domain needs from the instance around it. */
 export interface SessionsDeps {
@@ -37,12 +38,36 @@ export interface SessionsDeps {
   readonly pollMs?: number;
 }
 
+/** What a session said about itself when it greeted.
+ *
+ * The contract states these fields once and every place that describes a
+ * session refers to them, so what a greeting carries and what `peers` repeats
+ * are the same fields under the same names — nothing is renamed on the way
+ * through, and nothing is invented for a field the session left unsaid. */
+type SessionMeta = Pick<
+  HelloArgs,
+  "repo" | "ws" | "cwd" | "transcript_path" | "repo_root" | "branch" | "title" | "model" | "effort"
+>;
+
+const META_FIELDS = [
+  "repo",
+  "ws",
+  "cwd",
+  "transcript_path",
+  "repo_root",
+  "branch",
+  "title",
+  "model",
+  "effort",
+] as const;
+
 /** One session holding a connection to us. */
 interface Connected {
   readonly sid: Sid;
   readonly connected_at: Timestamp;
   readonly protocol_version: number;
   readonly client_version?: string;
+  readonly meta: SessionMeta;
   /** The most recent request on any of its connections. Distinct from when a
    * person last spoke to it, which is folded out of the transcript and is the
    * one an attention-ordered list wants (§5.3). */
@@ -57,15 +82,15 @@ interface Connected {
  * The current value lives here rather than in the topic mechanism (§3.3): what
  * is connected is held in memory and dies with the process, what the harness
  * reports is re-read from `sessions/`, and only `last_live` survives a restart.
- * The classification of §5.2 is derived from those three whenever it is asked
- * for, and never stored (M4). */
+ * The classification of §5.2 is derived from those three whenever a payload is
+ * built, and never stored (M4). */
 export class Sessions implements UpstreamResource {
   readonly #connected = new Map<Sid, Connected>();
   readonly #harness: HarnessSessions;
   readonly #lastLive: LastLiveStore;
   /** Sessions seen live since the last recompute, kept so the moment one stops
    * being live is what writes its `last_live` entry. */
-  #live = new Map<Sid, LastLiveEntry>();
+  #live = new Map<Sid, StoredEntry>();
   /** The topic names currently subscribed. Both topics rest on the same
    * directory watch, so it runs while either has a listener (§6.3). */
   readonly #wanted = new Set<string>();
@@ -83,14 +108,13 @@ export class Sessions implements UpstreamResource {
   }
 
   /** `hello`, which is where a session becomes something this instance can
-   * speak about. The reply is the contract's own result; `instances` holds
-   * only ourselves, since no mesh peer is dialled yet.
+   * speak about, and where everything this instance knows about where that
+   * session lives comes from.
    *
    * What registers a session is the greeting naming a sid, not the role it
    * claims: the sid is the session it speaks for, and reading the role here
    * would put the contract's "a session names its sid" rule in a second place
-   * (M1). A greeting that claims to be a session and names nothing settles as
-   * one all the same, and reaches nothing that needs a sid. */
+   * (M1). */
   hello = (input: HandlerInput): HelloResult => {
     const args = input.args as unknown as HelloArgs;
     if (args.protocol_version !== PROTOCOL_VERSION) {
@@ -98,7 +122,7 @@ export class Sessions implements UpstreamResource {
     }
     const sid = args.sid;
     if (sid !== undefined) {
-      this.register(sid, args.protocol_version, args.client_version);
+      this.register(sid, args);
       input.conn.onClose(() => this.release(sid));
     }
     return {
@@ -111,9 +135,9 @@ export class Sessions implements UpstreamResource {
     };
   };
 
-  /** Where a session sits in the list (§5.2). Undefined for a sid this
-   * instance has never seen live and does not hold in `last_live`. */
-  classify(sid: Sid, now: Timestamp = Date.now()): SessionClass | undefined {
+  /** Where a session stands (§5.2). Undefined for a sid this instance has
+   * never seen live and does not hold in `last_live`. */
+  classify(sid: Sid, now: Timestamp = Date.now()): SessionState | undefined {
     return classify(this.inputs(sid), now);
   }
 
@@ -121,6 +145,7 @@ export class Sessions implements UpstreamResource {
    * and its inputs can be tested apart from each other. */
   inputs(sid: Sid): SessionInputs {
     const row = this.#harness.rows.get(sid);
+    const stored = this.#lastLive.get(sid);
     return {
       connected: this.#connected.has(sid),
       ...(row === undefined
@@ -131,13 +156,11 @@ export class Sessions implements UpstreamResource {
               ...(row.terminal_id === undefined ? {} : { terminal_id: row.terminal_id }),
             },
           }),
-      ...(this.#lastLive.get(sid) === undefined
-        ? {}
-        : { last_live: { stopped_at: this.#lastLive.get(sid)?.stopped_at } }),
+      ...(stored === undefined ? {} : { last_live: { stopped_at: stored.stopped_at } }),
     };
   }
 
-  /** Note that a session was stopped on purpose, which is what makes it Paused
+  /** Note that a session said it was stopping, which is what makes it Paused
    * rather than Disappeared once it is gone (§5.2). */
   markStopped(sid: Sid, at: Timestamp = Date.now()): boolean {
     const marked = this.#lastLive.markStopped(sid, at);
@@ -171,13 +194,20 @@ export class Sessions implements UpstreamResource {
 
   /** The `peers` payload: what is connected now, and what was connected when
    * this instance last saw it. Both travel together because registering is
-   * exactly what moves a session from the second list to the first. */
+   * exactly what moves a session from the second list to the first.
+   *
+   * Every row states its `state` and its `pinned`. The contract lets an
+   * instance leave them out, and a client then shows a session it cannot group
+   * — this instance is one that classifies, so it says so on every row rather
+   * than on the rows it happens to have an answer for. */
   peers(now: Timestamp = Date.now()): { peers: PeerInfo[]; last_live: LastLiveSession[] } {
     return {
-      peers: [...this.#connected.values()].map((session) => this.#peer(session)),
-      // `stopped_at` is ours and has no field in the contract's type, so it
-      // stays on disk and out of the frame.
-      last_live: this.#lastLive.entries(now).map(({ stopped_at: _stopped, ...entry }) => entry),
+      peers: [...this.#connected.values()].map((session) => this.#peer(session, now)),
+      last_live: this.#lastLive.entries(now).map((entry) => ({
+        ...entry,
+        state: this.classify(entry.sid, now) ?? "disappeared",
+        pinned: this.#pinned(entry.sid),
+      })),
     };
   }
 
@@ -191,22 +221,26 @@ export class Sessions implements UpstreamResource {
     return { agents: [...this.#harness.rows.values()] };
   }
 
-  /** Bind a session to this instance. Its entry in `last_live` goes the moment
-   * it registers, which is the whole of "an entry leaves the list when its
-   * session comes back". */
-  private register(sid: Sid, protocolVersion: number, clientVersion?: string): void {
+  /** Bind a session to this instance, and take what it says about itself. Its
+   * entry in `last_live` goes the moment it registers, which is the whole of
+   * "an entry leaves the list when its session comes back". */
+  private register(sid: Sid, args: HelloArgs): void {
     const now = Date.now();
     const held = this.#connected.get(sid);
+    const meta = metaOf(args);
     this.#connected.set(sid, {
       sid,
       connected_at: held?.connected_at ?? now,
-      protocol_version: protocolVersion,
-      ...(clientVersion === undefined ? {} : { client_version: clientVersion }),
+      protocol_version: args.protocol_version,
+      ...(args.client_version === undefined ? {} : { client_version: args.client_version }),
+      // A reconnection restates everything, so the newer greeting wins field by
+      // field and a session that stops naming something does not keep it.
+      meta,
       last_activity_at: now,
       conns: (held?.conns ?? 0) + 1,
     });
     this.#lastLive.remove(sid);
-    this.changed();
+    this.changed(now);
   }
 
   /** One of a session's connections closed. The session is only gone when its
@@ -240,53 +274,88 @@ export class Sessions implements UpstreamResource {
 
   /** Every session live right now, in the form its `last_live` entry takes if
    * it stops being live. */
-  #liveNow(now: Timestamp = Date.now()): Map<Sid, LastLiveEntry> {
-    const live = new Map<Sid, LastLiveEntry>();
+  #liveNow(now: Timestamp = Date.now()): Map<Sid, StoredEntry> {
+    const live = new Map<Sid, StoredEntry>();
     for (const sid of this.#connected.keys()) live.set(sid, this.#entry(sid, now));
     for (const sid of this.#harness.rows.keys()) live.set(sid, this.#entry(sid, now));
     return live;
   }
 
-  #entry(sid: Sid, now: Timestamp): LastLiveEntry {
-    const row = this.#harness.rows.get(sid);
+  #entry(sid: Sid, now: Timestamp): StoredEntry {
     const held = this.#connected.get(sid);
-    const cwd = row?.cwd ?? "";
+    const row = this.#harness.rows.get(sid);
     return {
       sid,
       instance: this.deps.self,
-      ...where(cwd),
+      ...this.#where(sid),
+      // The harness knows a title the session may not have stated itself.
       ...(row?.name === undefined ? {} : { title: row.name }),
+      ...(held?.meta.title === undefined ? {} : { title: held.meta.title }),
+      ...(held?.meta.model === undefined ? {} : { model: held.meta.model }),
+      ...(held?.meta.effort === undefined ? {} : { effort: held.meta.effort }),
       ...(held === undefined ? {} : { connected_at: held.connected_at }),
       last_seen_at: now,
     };
   }
 
-  #peer(session: Connected): PeerInfo {
-    const row = this.#harness.rows.get(session.sid);
+  #peer(session: Connected, now: Timestamp): PeerInfo {
     return {
       sid: session.sid,
       instance: this.deps.self,
-      ...where(row?.cwd ?? ""),
+      ...this.#where(session.sid),
+      state: this.classify(session.sid, now) ?? "live",
+      pinned: this.#pinned(session.sid),
       connected_at: session.connected_at,
       last_activity_at: session.last_activity_at,
       ...(session.client_version === undefined ? {} : { client_version: session.client_version }),
       protocol_version: session.protocol_version,
     };
   }
+
+  /** Whether a person has pinned this session. Nothing can set a pin yet, so
+   * this is false for every session — stated rather than left out, because an
+   * absent `pinned` and a false one mean the same thing to a client and this
+   * instance states what it knows on every row. */
+  #pinned(_sid: Sid): boolean {
+    return false;
+  }
+
+  /** Where a session is, as the contract's shared fields.
+   *
+   * The session's own greeting is the source. The harness's row supplies the
+   * working directory for a session that greeted without one, and for one that
+   * never greeted at all — it is the only field the harness also knows.
+   *
+   * `repo` and `ws` have no fallback: they are display names for a layout this
+   * instance has no stated way to read out of a path, so a session that does
+   * not name them is shown without them rather than with a guess. The same
+   * goes for `repo_root`, which §4.2 says to derive from `cwd` when it is not
+   * given — no primary source states that derivation, so it is left unstated
+   * until one does. */
+  #where(
+    sid: Sid,
+  ): Pick<PeerInfo, "repo" | "ws" | "cwd" | "transcript_path" | "repo_root" | "branch"> {
+    const meta = this.#connected.get(sid)?.meta ?? {};
+    const cwd = meta.cwd ?? this.#harness.rows.get(sid)?.cwd ?? "";
+    return {
+      repo: meta.repo ?? "",
+      ws: meta.ws ?? "",
+      cwd,
+      ...(meta.transcript_path === undefined ? {} : { transcript_path: meta.transcript_path }),
+      ...(meta.repo_root === undefined ? {} : { repo_root: meta.repo_root }),
+      ...(meta.branch === undefined ? {} : { branch: meta.branch }),
+    };
+  }
 }
 
-/** Where a session is, in the three fields `peers` states for it.
- *
- * `hello` carries no working directory, so the harness's row is the only place
- * this comes from, and a session with no row yet has none: the contract makes
- * all three required, and an empty string says "not known" without inventing a
- * path that a file read could later be checked against. */
-function where(cwd: string): { repo: string; ws: string; cwd: string } {
-  const segments = cwd.split("/repos/").at(-1)?.split("/") ?? [];
-  const named = cwd.includes("/repos/") && segments.length >= 4;
-  return {
-    repo: named ? `${segments[1]}/${segments[2]}` : "",
-    ws: named ? (segments[3] as string) : "",
-    cwd,
-  };
+/** What a greeting said about the session, and nothing more: the fields the
+ * contract shares between `hello` and `peers`, copied across under their own
+ * names. */
+function metaOf(args: HelloArgs): SessionMeta {
+  const meta: Record<string, string> = {};
+  for (const field of META_FIELDS) {
+    const value = args[field];
+    if (value !== undefined) meta[field] = value;
+  }
+  return meta as SessionMeta;
 }

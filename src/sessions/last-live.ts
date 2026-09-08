@@ -1,30 +1,27 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import type { LastLiveSession, Sid, Timestamp } from "@ccmsg/protocol";
-
-/** How long an entry is kept after the session was last seen.
- *
- * Seven days, the window daemon-v2 §12 DV-Q12 gives the inbox, `last_live` and
- * a severed instance's share alike. The contract does not carry the number
- * yet, so it is stated here once and read from here. */
-export const LAST_LIVE_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+import {
+  LAST_LIVE_RETENTION_MS,
+  type LastLiveSession,
+  type Sid,
+  type Timestamp,
+} from "@ccmsg/protocol";
 
 export const LAST_LIVE_FILE = "last-live.json";
 
-/** One entry, which is the contract's `LastLiveSession` plus the one fact the
- * contract has no field for.
+/** What is stored per session: the contract's entry, minus the one field that
+ * is derived rather than observed.
  *
- * `stopped_at` separates Paused from Disappeared (§5.2) and is set only when
- * somebody stopped the session on purpose. Nothing derives it: a session that
- * simply went away has none, which is exactly what Disappeared means. It stays
- * out of the `peers` payload because the contract's type has no place for it. */
-export interface LastLiveEntry extends LastLiveSession {
-  stopped_at?: Timestamp;
-}
+ * `state` is left out on purpose (M4). It follows from `stopped_at` and from
+ * whether the session is live again, both of which are known when the list is
+ * read, so storing it would be storing a conclusion that can go stale on disk.
+ * `pinned` is left out because no pin is held anywhere yet; when one is, it
+ * belongs to the session rather than to this list. */
+export type StoredEntry = Omit<LastLiveSession, "state" | "pinned">;
 
 interface Document {
   version: number;
-  sessions: LastLiveEntry[];
+  sessions: StoredEntry[];
 }
 
 const VERSION = 1;
@@ -36,7 +33,7 @@ const VERSION = 1;
  * remembers that a session used to be here. Only observations are stored — the
  * classification is derived from them at read time, never written (M4). */
 export class LastLiveStore {
-  #entries = new Map<Sid, LastLiveEntry>();
+  #entries = new Map<Sid, StoredEntry>();
 
   constructor(private readonly file: string) {}
 
@@ -52,25 +49,25 @@ export class LastLiveStore {
     }
     const sessions = (document as Document | null)?.sessions;
     if (!Array.isArray(sessions)) return;
-    for (const entry of sessions as LastLiveEntry[]) {
+    for (const entry of sessions as StoredEntry[]) {
       if (typeof entry?.sid === "string") this.#entries.set(entry.sid, entry);
     }
     this.#prune(now);
   }
 
   /** Every entry still within the retention window. */
-  entries(now: Timestamp = Date.now()): LastLiveEntry[] {
+  entries(now: Timestamp = Date.now()): StoredEntry[] {
     if (this.#prune(now)) this.#save();
     return [...this.#entries.values()];
   }
 
-  get(sid: Sid): LastLiveEntry | undefined {
+  get(sid: Sid): StoredEntry | undefined {
     return this.#entries.get(sid);
   }
 
   /** Note a session as no longer live. A `stopped_at` already recorded for it
    * survives, since the session being gone is what that stop led to. */
-  record(entry: LastLiveEntry): void {
+  record(entry: StoredEntry): void {
     const stopped = this.#entries.get(entry.sid)?.stopped_at;
     this.#entries.set(entry.sid, stopped === undefined ? entry : { ...entry, stopped_at: stopped });
     this.#save();

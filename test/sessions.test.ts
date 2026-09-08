@@ -4,21 +4,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   type HelloResult,
+  LAST_LIVE_RETENTION_MS,
   OP_SCHEMAS,
   PROTOCOL_VERSION,
+  type SessionState,
   type Sid,
   TOPIC_SCHEMAS,
   validationErrors,
 } from "@ccmsg/protocol";
 import { Topics } from "../src/topics/index.ts";
-import {
-  classify,
-  LAST_LIVE_RETENTION_MS,
-  LastLiveStore,
-  type SessionClass,
-  type SessionInputs,
-  Sessions,
-} from "../src/sessions/index.ts";
+import { classify, LastLiveStore, type SessionInputs, Sessions } from "../src/sessions/index.ts";
 import { connAs, SELF, SID, OTHER_SID, TestConn } from "./frames.ts";
 
 /** A throwaway config home under /private/tmp, which is where the harness's
@@ -32,7 +27,15 @@ function home() {
 }
 
 const homes: string[] = [];
+const running: Sessions[] = [];
 afterEach(() => {
+  // A watch left running is a real file watch and a real timer: leaving them
+  // behind loads the very FSEvents queue the poll exists to cover for, and the
+  // next test's watch is the one that pays for it.
+  for (const domain of running.splice(0)) {
+    domain.stop("peers");
+    domain.stop("agents");
+  }
   for (const root of homes.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -79,6 +82,7 @@ function sessions(overrides: { pollMs?: number } = {}) {
     },
     pollMs: overrides.pollMs ?? 50,
   });
+  running.push(domain);
   /** Resolves when a publish satisfying `want` has happened, waiting for the
    * next one rather than polling for it. */
   const until = async (want: (frames: Published[]) => boolean) => {
@@ -88,6 +92,22 @@ function sessions(overrides: { pollMs?: number } = {}) {
     return published;
   };
   return { ...dirs, domain, published, until };
+}
+
+/** The same instance again: a new daemon over the same config home and state
+ * directory, which is all a restart is. */
+function restart(context: { root: string; stateDir: string }): Sessions {
+  const domain = new Sessions({
+    self: SELF,
+    configHome: context.root,
+    stateDir: context.stateDir,
+    capabilities: [],
+    version: "0.0.1",
+    startedAt: 1_757_000_000_000,
+    publish: () => {},
+  });
+  running.push(domain);
+  return domain;
 }
 
 function helloFrom(domain: Sessions, conn: TestConn, sid: Sid = SID): HelloResult {
@@ -100,9 +120,23 @@ function helloFrom(domain: Sessions, conn: TestConn, sid: Sid = SID): HelloResul
       role: "session",
       protocol_version: PROTOCOL_VERSION,
       sid,
+      ...META,
     },
   });
 }
+
+/** What a session states about itself when it greets — the contract's shared
+ * session fields, which `peers` repeats under the same names. */
+const META = {
+  repo: "someone/a-repo",
+  ws: "main",
+  cwd: "/Users/someone/.local/share/repos/github.com/someone/a-repo/main",
+  transcript_path: "/Users/someone/.claude/projects/a/b.jsonl",
+  branch: "main",
+  title: "a title",
+  model: "a-model",
+  effort: "high",
+};
 
 const peersOf = (frames: Published[]) => frames.filter((frame) => frame.topic === "peers");
 const agentsOf = (frames: Published[]) => frames.filter((frame) => frame.topic === "agents");
@@ -140,6 +174,35 @@ describe("hello", () => {
         args: { op: "hello", request_id: "1", role: "session", protocol_version: 99, sid: SID },
       }),
     ).toThrow();
+  });
+
+  test("what the greeting said about the session is what peers repeats", () => {
+    const { domain } = sessions();
+    helloFrom(domain, connAs("session"));
+    const peer = domain.peers().peers[0];
+    // Where it lives, which is what a connected row carries. What it runs as
+    // (title, model, effort) belongs to `last_live`, where a resume reads it.
+    const { title: _title, model: _model, effort: _effort, ...where } = META;
+    expect(peer).toMatchObject(where);
+  });
+
+  test("a session that named none of it is shown without it, never with a guess", () => {
+    const { domain } = sessions();
+    domain.hello({
+      op: "hello",
+      conn: connAs("session"),
+      args: {
+        op: "hello",
+        request_id: "1",
+        role: "session",
+        protocol_version: PROTOCOL_VERSION,
+        sid: SID,
+      },
+    });
+    const peer = domain.peers().peers[0];
+    expect(peer).toMatchObject({ repo: "", ws: "", cwd: "" });
+    expect(peer?.repo_root).toBeUndefined();
+    expect(peer?.branch).toBeUndefined();
   });
 
   test("a session that greeted is a peer, and stops being one when it closes", () => {
@@ -213,7 +276,6 @@ describe("the harness's sessions directory", () => {
     await context.until(
       (frames) => frames.length > before && context.domain.agents().agents.length === 1,
     );
-    context.domain.stop("peers");
   });
 
   test("the watch runs while a subscriber holds either topic, and not otherwise", () => {
@@ -249,6 +311,55 @@ describe("the harness's sessions directory", () => {
   });
 });
 
+describe("the classification on the wire", () => {
+  test("every row of both lists states its state and whether it is pinned", async () => {
+    const context = sessions();
+    const connected = connAs("session");
+    helloFrom(context.domain, connected);
+    const gone = connAs("session", OTHER_SID);
+    helloFrom(context.domain, gone, OTHER_SID);
+    gone.close();
+    context.domain.start("peers");
+    writeState(context.sessionsDir, process.pid, SID, {
+      status: "waiting",
+      waitingFor: "a choice",
+    });
+    await context.until(() => context.domain.classify(SID) === "waiting");
+
+    const payload = context.domain.peers();
+    for (const row of [...payload.peers, ...payload.last_live]) {
+      expect(row.state).toBeDefined();
+      expect(row.pinned).toBe(false);
+    }
+    expect(payload.peers[0]?.state).toBe("waiting");
+    expect(payload.last_live[0]?.state).toBe("disappeared");
+  });
+
+  test("a session that said it was stopping travels as paused, with when it said so", () => {
+    const context = sessions();
+    const conn = connAs("session");
+    helloFrom(context.domain, conn);
+    conn.close();
+    context.domain.markStopped(SID, NOW);
+    const entry = context.domain.peers().last_live[0];
+    expect(entry?.state).toBe("paused");
+    expect(entry?.stopped_at).toBe(NOW);
+  });
+
+  test("what the session ran as follows it into last_live", () => {
+    const context = sessions();
+    const conn = connAs("session");
+    helloFrom(context.domain, conn);
+    conn.close();
+    expect(context.domain.peers().last_live[0]).toMatchObject({
+      title: META.title,
+      model: META.model,
+      effort: META.effort,
+      repo: META.repo,
+    });
+  });
+});
+
 describe("last_live", () => {
   test("a session that greeted and went away survives a restart as Disappeared", () => {
     const context = sessions();
@@ -257,22 +368,13 @@ describe("last_live", () => {
     conn.close();
     expect(context.domain.classify(SID)).toBe("disappeared");
 
-    const restarted = new Sessions({
-      self: SELF,
-      configHome: context.root,
-      stateDir: context.stateDir,
-      capabilities: [],
-      version: "0.0.1",
-      startedAt: 1_757_000_000_000,
-      publish: () => {},
-    });
+    const restarted = restart(context);
     expect(restarted.classify(SID)).toBe("disappeared");
     expect(restarted.markStopped(SID)).toBe(true);
     expect(restarted.classify(SID)).toBe("paused");
     // And it leaves the list the moment the session registers again.
     helloFrom(restarted, connAs("session"));
     expect(restarted.peers().last_live).toEqual([]);
-    restarted.stop("peers");
   });
 
   test("an entry past the retention window is dropped", () => {
@@ -297,15 +399,7 @@ describe("last_live", () => {
     context.domain.start("peers");
     context.domain.stop("peers");
 
-    const restarted = new Sessions({
-      self: SELF,
-      configHome: context.root,
-      stateDir: context.stateDir,
-      capabilities: [],
-      version: "0.0.1",
-      startedAt: 1_757_000_000_000,
-      publish: () => {},
-    });
+    const restarted = restart(context);
     restarted.start("peers");
     restarted.stop("peers");
     expect(readdirSync(context.stateDir)).toEqual(["last-live.json"]);
@@ -313,7 +407,7 @@ describe("last_live", () => {
 });
 
 describe("the derivation of §5.2", () => {
-  const cases: [string, SessionInputs, SessionClass | undefined][] = [
+  const cases: [string, SessionInputs, SessionState | undefined][] = [
     ["a dialog is open", { connected: true, harness: { waiting: true } }, "waiting"],
     [
       "its last turn ended on an API error",
@@ -342,7 +436,7 @@ describe("the derivation of §5.2", () => {
   ];
 
   test.each(cases)("%s", (_name, inputs, expected) => {
-    expect(classify(inputs, NOW)).toBe(expected as SessionClass);
+    expect(classify(inputs, NOW)).toBe(expected as SessionState);
   });
 
   test("a session in last_live that is live again is not Paused", () => {

@@ -1,20 +1,4 @@
-import type { Timestamp } from "@ccmsg/protocol";
-
-/** Where a session belongs in the list, decided here rather than by whoever
- * displays it (§5.2): a client combining raw values of its own would read two
- * instances' lists by two rules.
- *
- * Pinned is not among them. A person pins a row and the instance holds the
- * mark, but the mark never decides which of these the row is (§5.2).
- *
- * Busy and idle are not among them either, and not by omission: a live session
- * carries how busy it is as an attribute of its row, so an instance with no
- * gateway configured loses that attribute and none of these sections.
- *
- * The contract has no word for these — `UndeliveredReason` names `paused` and
- * `disappeared` for its own purpose, and the spelling here follows it so one
- * session is not two words across one wire. */
-export type SessionClass = "waiting" | "live" | "live_unmanaged" | "paused" | "disappeared";
+import type { SessionState, Timestamp } from "@ccmsg/protocol";
 
 /** What the harness's own row says, for a session that has one. */
 export interface HarnessPresence {
@@ -48,14 +32,24 @@ export interface SessionInputs {
  * as being alive. Only reached once gateway events arrive. */
 export const GATEWAY_LIVE_WINDOW_MS = 5 * 60 * 1000;
 
-/** The derivation of §5.2, in one function.
+/** The classification is the contract's `SessionState`, derived here rather
+ * than by whoever displays it (§5.2): a client combining raw values of its own
+ * would read two instances' lists by two rules.
+ *
+ * Pinned is not one of them. A person pins a row and the instance holds the
+ * mark beside the classification, but the mark never decides which state the
+ * row is in (§5.2).
+ *
+ * Busy and idle are not among them either, and not by omission: a live session
+ * carries how busy it is as an attribute of its row, so an instance with no
+ * gateway configured loses that attribute and none of these sections.
  *
  * Undefined is the session no section holds: never seen live and not in
  * `last_live`, which is what a sid nobody has heard of looks like. */
 export function classify(
   inputs: SessionInputs,
   now: Timestamp = Date.now(),
-): SessionClass | undefined {
+): SessionState | undefined {
   const live =
     inputs.connected ||
     inputs.harness !== undefined ||
