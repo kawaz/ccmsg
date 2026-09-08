@@ -9,6 +9,7 @@ active な issue の一覧。close 済みは archive/ にあり、ここには�
 | 2026-09-09 | bug | open | [misc-hardening-findings](./2026-09-09-misc-hardening-findings.md) | 2026-09-08 の設計監査で指摘された、個別 issue を立てるほどではないが放置すべきでな... |
 | 2026-09-09 | bug | open | [last-live-session-model-effort-contract](./2026-09-09-last-live-session-model-effort-contract.md) | `LastLiveSession.model` / `.effort` は「transcript の最後の turn から読... |
 | 2026-09-09 | bug | open | [instance-ping-network-status](./2026-09-09-instance-ping-network-status.md) | `InstancePingResult.network` が常に `unknown` を返し、`NetOnlineEvent`... |
+| 2026-09-09 | design | open | [mesh-tls-trust-root](./2026-09-09-mesh-tls-trust-root.md) | mesh-peer-auth の信頼の根は TLS サーバ証明書 (2 層) だが、daemon の listener... |
 | 2026-09-09 | design | open | [throttled-backoff-and-held-flush](./2026-09-09-throttled-backoff-and-held-flush.md) | `throttled` 状態からの backoff 再送と、経路 (a) 成功時に held メッセージを流し込む処... |
 | 2026-09-09 | design | open | [sandbox-grant-delivery-path](./2026-09-09-sandbox-grant-delivery-path.md) | sandbox_grant は capability URL を発行するが、`SandboxGrants.find` の呼び... |
 | 2026-09-09 | design | open | [gateway-webhook-session-scope](./2026-09-09-gateway-webhook-session-scope.md) | gateway webhook が受け取る `session_id` が config home 単位でスコープされて... |
