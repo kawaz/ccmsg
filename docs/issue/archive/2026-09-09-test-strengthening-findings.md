@@ -1,6 +1,6 @@
 ---
 title: テスト強化の積み残し (M3 タイマー根拠テスト / M4-M6 実 op 呼び出し / fake が実装仮定を写している問題)
-status: open
+status: resolved
 category: task
 created: 2026-09-09T00:19:04+09:00
 last_read:
@@ -9,10 +9,10 @@ wip_entered:
 blocked_entered:
 pending_entered:
 discarded_entered:
-resolved_entered:
+resolved_entered: 2026-09-09T03:31:16+09:00
 discard_reason:
 pending_reason:
-close_reason:
+close_reason: ["done: v0.0.20 で M4 テストが実 op を呼ぶ形に変更、delivery テストは本物の classify() で判定 (commit dc8345eb)", "done: M3 一覧テストは既存で十分と判断"]
 blocked_by:
 origin: 2026-09-08 の設計監査 (fable5-high)
 ---

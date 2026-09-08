@@ -4,6 +4,7 @@ active な issue の一覧。close 済みは archive/ にあり、ここには�
 
 | date | category | status | slug | 概要 |
 |---|---|---|---|---|
+| 2026-09-09 | bug | open | [mesh-cluster-link-down-flake](./2026-09-09-mesh-cluster-link-down-flake.md) | `test/mesh-cluster.test.ts` の「a link going down shows up on the topic, w... |
 | 2026-09-09 | bug | open | [misc-hardening-findings](./2026-09-09-misc-hardening-findings.md) | 2026-09-08 の設計監査で指摘された、個別 issue を立てるほどではないが放置すべきでな... |
 | 2026-09-09 | bug | open | [last-live-session-model-effort-contract](./2026-09-09-last-live-session-model-effort-contract.md) | `LastLiveSession.model` / `.effort` は「transcript の最後の turn から読... |
 | 2026-09-09 | bug | open | [instance-ping-network-status](./2026-09-09-instance-ping-network-status.md) | `InstancePingResult.network` が常に `unknown` を返し、`NetOnlineEvent`... |
@@ -11,7 +12,6 @@ active な issue の一覧。close 済みは archive/ にあり、ここには�
 | 2026-09-09 | design | open | [sandbox-grant-delivery-path](./2026-09-09-sandbox-grant-delivery-path.md) | sandbox_grant は capability URL を発行するが、`SandboxGrants.find` の呼び... |
 | 2026-09-09 | design | open | [gateway-webhook-session-scope](./2026-09-09-gateway-webhook-session-scope.md) | gateway webhook が受け取る `session_id` が config home 単位でスコープされて... |
 | 2026-09-09 | design | open | [daemon-invented-limits-contract-promotion](./2026-09-09-daemon-invented-limits-contract-promotion.md) | daemon 実装が独自に決めている上限値 (`TITLE_MAX` / `READ_LIMIT` / `transcri... |
-| 2026-09-09 | task | open | [test-strengthening-findings](./2026-09-09-test-strengthening-findings.md) | 2026-09-08 の設計監査で指摘されたテスト設計上の弱点: |
 
 <!--
 INDEX の列構成・canonical 順序・行形式の唯一の正本:
