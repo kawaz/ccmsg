@@ -1,4 +1,5 @@
 import type {
+  CallerIdentity,
   CandidateSession,
   InboxMessage,
   InstanceId,
@@ -50,7 +51,12 @@ export interface Cluster {
   ownerOf(sid: Sid): InstanceId | undefined;
   /** Whether an instance that might hold it cannot be asked right now. */
   anyUnreachable(): boolean;
-  forward(to: InstanceId, frame: Record<string, unknown>): Promise<DispatchResult>;
+  /** Carry the op to that instance, run there as the caller named here. */
+  forward(
+    to: InstanceId,
+    frame: Record<string, unknown>,
+    caller: CallerIdentity | undefined,
+  ): Promise<DispatchResult>;
 }
 
 export interface DeliveryDeps {
@@ -132,7 +138,10 @@ export class Delivery implements UpstreamResource {
         ? { delivered: false, reason: "instance_unreachable" }
         : undefined;
     }
-    const answer = await cluster.forward(owner, input.args);
+    // The sender, as the owning instance will run the op as: the identity the
+    // connection greeted with, which is the same thing `message_send` reads to
+    // decide who a message is from (§4.1).
+    const answer = await cluster.forward(owner, input.args, callerOf(input));
     if (answer.kind === "reply") {
       const { ok: _ok, request_id: _id, ...body } = answer.response;
       return body as unknown as MessageSendResult;
@@ -271,6 +280,17 @@ export class Delivery implements UpstreamResource {
   #label(from: Sender): string {
     return from === USER_SENDER ? USER_SENDER : sessionLabel(this.deps.sessions, from);
   }
+}
+
+/** Who is asking, as another instance is told it (contract, `CallerIdentity`).
+ * A connection with no settled greeting names nobody, and `message_send`
+ * refuses it before this is reached. */
+function callerOf(input: HandlerInput): CallerIdentity | undefined {
+  const identity = input.identity;
+  if (identity === undefined) return undefined;
+  return identity.sid === undefined
+    ? { role: identity.role }
+    : { role: identity.role, sid: identity.sid };
 }
 
 /** How a session is shown: the repository and workspace it greeted from, which

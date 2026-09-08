@@ -39,15 +39,19 @@ const FOREIGN = new Set([
  * fails if the table stops declaring that scope, which is what keeps the
  * exception tied to the contract rather than to this list. */
 const SCOPE_ROLE = new Set(["files/containment.ts"]);
-/** Where a role is read because the greeting is the one frame whose *shape*
- * depends on it: a session states its sid, a person states none, an instance
- * states its mesh claim. That is not the table's question — the table says who
- * may call `hello`, and every role may — so it cannot live there, and the
- * contract's schema marks all three fields optional because one schema covers
- * all three roles. Refusing a malformed greeting is therefore the registry's
- * own rule about what each role has to say about itself, not a second copy of
- * whether the call was allowed. */
-const GREETING = new Set(["sessions/registry.ts"]);
+/** Where a role is read because it decides what a frame has to *carry* rather
+ * than what its sender may do.
+ *
+ * Two frames name a role: the greeting, where a session states its sid, a
+ * person states none and an instance states its mesh claim; and the envelope's
+ * `caller`, where a forwarded request names who it runs as and carries a sid
+ * exactly when that is a session. Neither is the table's question — the table
+ * says who may call an op, and it is read afterwards, against whatever
+ * identity these two settle — and neither can live in the contract's schema,
+ * because one schema covers all three roles and marks every such field
+ * optional. So each is the instance's own rule about what a role has to say
+ * about itself, not a second copy of whether the call was allowed. */
+const SHAPED_BY_ROLE = new Set(["sessions/registry.ts", "dispatch/caller.ts"]);
 
 const ROLE_LITERAL = /"(?:session|user|instance)"/;
 const ROLE_COMPARISON = /\brole\s*[=!]==/;
@@ -56,7 +60,7 @@ const SRC = new URL("../src/", import.meta.url).pathname;
 
 describe("no role comparison outside the attribute table (M1)", () => {
   const files = [...new Glob("**/*.ts").scanSync(SRC)].filter(
-    (path) => !FOREIGN.has(path) && !SCOPE_ROLE.has(path) && !GREETING.has(path),
+    (path) => !FOREIGN.has(path) && !SCOPE_ROLE.has(path) && !SHAPED_BY_ROLE.has(path),
   );
 
   test("the contract still declares the scope the exception rests on", () => {

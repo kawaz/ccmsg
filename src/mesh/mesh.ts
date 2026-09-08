@@ -1,5 +1,6 @@
 import { hostname } from "node:os";
 import {
+  type CallerIdentity,
   type InstanceId,
   type InstanceInfo,
   PROTOCOL_VERSION,
@@ -114,6 +115,9 @@ export interface MeshHost {
   handle(frame: unknown, conn: Requester): Promise<DispatchResult>;
   /** Hand a relayed frame to this instance's own subscribers (§7.4). */
   publish(topic: string, data: unknown, instance: InstanceId): void;
+  /** Which instances can be reached has changed, which is part of what this
+   * instance states on `peers` (§7.5). */
+  changed(): void;
 }
 
 export interface MeshDeps {
@@ -133,8 +137,11 @@ export interface MeshDeps {
 /** One established mesh link. */
 interface Link {
   readonly conn: Requester;
-  /** What a request carried over this link acts as (§7.3). */
-  readonly actor: PeerActor;
+  /** One actor per caller this link has spoken for, keyed by the identity
+   * itself. Cached rather than made per request because a subscription is held
+   * by a connection and released when it closes (§6.3): the topic mechanism
+   * has to see the same object each time one caller subscribes. */
+  readonly actors: Map<string, PeerActor>;
   /** Which end opened the socket, which is what the glare rule compares (§8.1). */
   readonly dialledByUs: boolean;
   readonly heartbeat: ReturnType<typeof setInterval>;
@@ -151,33 +158,25 @@ interface Forwarded {
   readonly timer: ReturnType<typeof setTimeout>;
 }
 
-/** A proven peer, as the connection a request it carried arrived on.
+/** One caller a proven peer forwarded here, as the connection its request
+ * arrived on.
  *
- * Design rationale: the envelope carries no identity — three fields, none of
- * them a role (contract, `RequestEnvelope`) — so the destination has nothing
- * from the caller to check and nothing from the caller to be fooled by. What
- * it does have is the link, which mesh-peer-auth proved is the peer it claims
- * to be, and the peer list, which the operator wrote. A request that arrives
- * over such a link is therefore treated as the operator asking, which is the
- * `user` role: the same person reaches the cluster through whichever instance
- * they opened, and the peer list is what says the two instances are one
- * deployment (§8.2).
+ * The envelope's `caller` is taken as said. It is the one thing the
+ * destination believes on the forwarder's word, and it can, because the link
+ * is authenticated: mesh-peer-auth proved the far end is an instance on the
+ * peer list, and a peer list is one deployment (§8.2). Everything else is
+ * decided here — the role check reads this identity against this instance's
+ * own attribute table, and so do the capability and locality checks, which is
+ * what §7.3 means by putting a forwarded op through the steps again rather
+ * than taking the forwarder's outcome for it.
  *
- * This is what makes "run steps 1-6 again" (§7.3) mean something rather than
- * being a formality: the destination applies its own attribute table, its own
- * capability set and its own locality to the op, and refuses a `session`-only
- * op outright, because no peer can hand it a session's identity. What the
- * destination never does is read `from_instance` as a statement of who is
- * calling — the field says where the reply goes, and the link says who sent it.
- *
- * One actor per link rather than one per request: a subscription is held by a
- * connection and released when it closes (§6.3), so the thing the topic
- * mechanism keys on has to be the same object for the life of the link. */
+ * `from_instance` is not part of that judgement: the field says where the
+ * reply goes, and the link says who sent it. */
 class PeerActor implements Requester {
-  /** No sid: a peer speaks for no one session of ours. */
-  readonly identity: SettledIdentity = { state: "settled", role: "user" };
-
-  constructor(private readonly conn: Requester) {}
+  constructor(
+    private readonly conn: Requester,
+    readonly identity: SettledIdentity,
+  ) {}
 
   send(frame: object): void {
     this.conn.send(frame);
@@ -252,8 +251,8 @@ export class Mesh {
 
   readonly #marked = new WeakSet<Requester>();
   /** The link a proven connection belongs to, for the two questions asked per
-   * frame: what it acts as, and whether it may settle a forwarded reply. */
-  readonly #actors = new Map<Requester, PeerActor>();
+   * frame: who it may speak for, and whether it may settle a forwarded reply. */
+  readonly #linkOf = new Map<Requester, Link>();
   readonly #forwarded = new Map<string, Forwarded>();
   /** The relayed topics local subscribers are asking for right now. `peers` is
    * always among them: it is the routing table of §7.3, and a question about
@@ -361,8 +360,17 @@ export class Mesh {
    * `request_id` is reissued because uniqueness has to hold among one
    * connection's in-flight requests (contract, `RequestEnvelope`) and this
    * connection is the link, not the caller's; the caller's id is put back on
-   * the reply. */
-  async forward(to: InstanceId, frame: Record<string, unknown>): Promise<DispatchResult> {
+   * the reply.
+   *
+   * `caller` is who the destination will run it as. It is stated by this
+   * instance from the connection the request came in on, never carried over
+   * from what the request said about itself — a client that wrote a `caller`
+   * of its own would otherwise choose the identity it is forwarded as. */
+  async forward(
+    to: InstanceId,
+    frame: Record<string, unknown>,
+    caller: CallerIdentity | undefined,
+  ): Promise<DispatchResult> {
     const self = this.#self;
     const requestId = frame["request_id"] as string;
     const link = this.#links.get(to);
@@ -392,14 +400,35 @@ export class Mesh {
       to_instance: to,
       from_instance: self,
       hops: [...hops, self],
+      ...(caller === undefined ? {} : { caller }),
     });
     return await settled.promise;
   }
 
-  /** What a proven peer acts as when it carries a request here, or nothing
-   * when this connection is not a link. */
-  actor(conn: Requester): Requester | undefined {
-    return this.#actors.get(conn);
+  /** Whether this connection is an established link to a peer. */
+  isLink(conn: Requester): boolean {
+    return this.#linkOf.has(conn);
+  }
+
+  /** The connection a forwarded request is dispatched as (§7.3).
+   *
+   * The caller the envelope names, on the link it arrived over. A request that
+   * names none is dispatched as the link itself, whose role is `instance` —
+   * which the attribute table already answers, since no instance-local op is
+   * open to an instance. */
+  caller(conn: Requester, caller: CallerIdentity | undefined): Requester {
+    const link = this.#linkOf.get(conn);
+    if (link === undefined || caller === undefined) return conn;
+    const key = `${caller.role}/${caller.sid ?? ""}`;
+    const held = link.actors.get(key);
+    if (held !== undefined) return held;
+    const actor = new PeerActor(conn, {
+      state: "settled",
+      role: caller.role,
+      ...(caller.sid === undefined ? {} : { sid: caller.sid }),
+    });
+    link.actors.set(key, actor);
+    return actor;
   }
 
   // --- event relay (§7.4) ---
@@ -441,6 +470,11 @@ export class Mesh {
       op: wanted ? "topic_subscribe" : "topic_unsubscribe",
       request_id: `mesh-sub-${randomId()}`,
       topic,
+      // The instance asks on behalf of whoever subscribed to it, and what they
+      // have in common is that they are this deployment's people rather than
+      // any one session: a cluster topic is the same value for all of them
+      // (§6.2), so there is nothing narrower to name.
+      caller: { role: "user" } satisfies CallerIdentity,
     };
     if (afterAck) conn.deferSend(frame);
     else conn.send(frame);
@@ -563,7 +597,7 @@ export class Mesh {
    * forwarded id and settle a request it has nothing to do with, and could
    * push a topic frame this instance would pass on as a peer's. */
   #peerFrame(conn: Requester, frame: unknown): boolean {
-    if (!this.#actors.has(conn)) return false;
+    if (!this.#linkOf.has(conn)) return false;
     if (typeof frame !== "object" || frame === null) return false;
     const fields = frame as Record<string, unknown>;
 
@@ -752,8 +786,7 @@ export class Mesh {
   /** Run one request a peer wrote on a connection we dialled, and write the
    * answer back on it. */
   #answer(conn: Requester, fields: Record<string, unknown>): void {
-    const actor = this.#actors.get(conn) ?? conn;
-    void this.#host?.handle(fields, actor).then(
+    void this.#host?.handle(fields, conn).then(
       (result) => {
         if (result.kind === "none") return;
         conn.send(
@@ -797,16 +830,22 @@ export class Mesh {
       }
       clearInterval(held.heartbeat);
       this.#links.delete(peer);
-      this.#actors.delete(held.conn);
+      this.#linkOf.delete(held.conn);
       held.conn.close(GLARE_CLOSE, "glare");
     }
     const heartbeat = setInterval(() => {
       this.#beat(peer);
     }, this.deps.heartbeatMs ?? HEARTBEAT_MS);
     heartbeat.unref?.();
-    const actor = new PeerActor(conn);
-    this.#actors.set(conn, actor);
-    this.#links.set(peer, { conn, actor, dialledByUs, heartbeat, lastHeard: Date.now() });
+    const link: Link = {
+      conn,
+      actors: new Map<string, PeerActor>(),
+      dialledByUs,
+      heartbeat,
+      lastHeard: Date.now(),
+    };
+    this.#linkOf.set(conn, link);
+    this.#links.set(peer, link);
     this.#backoff.delete(peer);
     conn.onClose(() => {
       this.#drop(peer, conn);
@@ -816,7 +855,15 @@ export class Mesh {
     this.relay.restored(peer);
     for (const topic of this.#demanded) this.#ask(conn, topic, true, !dialledByUs);
     this.deps.log?.("mesh peer established", { peer, dialled_by_us: dialledByUs });
+    this.#changed();
+  }
+
+  /** Say that the set of reachable instances moved. Two listeners: whatever
+   * the deps gave, and the instance, which restates `peers` — the topic the
+   * view rides on (§7.5). */
+  #changed(): void {
     this.deps.onChanged?.();
+    this.#host?.changed();
   }
 
   #beat(peer: InstanceId): void {
@@ -846,14 +893,14 @@ export class Mesh {
     if (link === undefined || link.conn !== conn) return;
     clearInterval(link.heartbeat);
     this.#links.delete(peer);
-    this.#actors.delete(conn);
+    this.#linkOf.delete(conn);
     // Its sessions become a kind of Disappeared and its values are marked
     // rather than dropped (§7.5), and anything on its way there is answered
     // now instead of waiting out a deadline it can no longer beat.
     this.relay.lost(peer);
     this.#abandon(peer);
     this.deps.log?.("mesh peer lost", { peer });
-    this.deps.onChanged?.();
+    this.#changed();
     if (link.dialledByUs) this.#retry(peer);
   }
 
@@ -913,7 +960,7 @@ export class Mesh {
     }
     for (const peer of this.#links.keys()) this.#abandon(peer);
     this.#links.clear();
-    this.#actors.clear();
+    this.#linkOf.clear();
     // Keys die with the connections they were made for, and none outlives this
     // (§7).
     this.#minted.clear();

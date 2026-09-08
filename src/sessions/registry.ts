@@ -386,11 +386,19 @@ export class Sessions implements UpstreamResource {
    * Every row states its `state` and its `pinned`. The contract lets an
    * instance leave them out, and a client then shows a session it cannot group
    * — this instance is one that classifies, so it says so on every row rather
-   * than on the rows it happens to have an answer for. */
+   * than on the rows it happens to have an answer for.
+   *
+   * `instances` is the same view `hello` answers with, restated here so that a
+   * link going down reaches a subscriber on the topic it is already on rather
+   * than only on its next greeting (§7.5). It is this instance's view: what a
+   * peer relayed here carries the peer's own, and neither is folded into the
+   * other. An instance with no mesh states none, which is a different thing
+   * from stating that nothing is reachable. */
   peers(
     now: Timestamp = Date.now(),
     rows: ReadonlyMap<Sid, AgentInfo> = this.#rows(),
-  ): { peers: PeerInfo[]; last_live: LastLiveSession[] } {
+  ): { peers: PeerInfo[]; last_live: LastLiveSession[]; instances?: InstanceInfo[] } {
+    const instances = this.deps.mesh?.instances(this.deps.self);
     return {
       peers: [...this.#connected.values()].map((session) => this.#peer(session, now, rows)),
       last_live: this.#lastLive.entries(now).map((entry) => ({
@@ -398,6 +406,7 @@ export class Sessions implements UpstreamResource {
         state: this.classify(entry.sid, now, rows) ?? "disappeared",
         pinned: this.#pinned(entry.sid),
       })),
+      ...(instances === undefined ? {} : { instances }),
     };
   }
 

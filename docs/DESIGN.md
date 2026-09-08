@@ -460,6 +460,8 @@ webui ──▶ instance A ──(envelope: to_instance=B, from_instance=A, hops
 - **A forwarded op is put through §3.2's steps 1–6 again at the forwarding destination.** We
   never treat "A already authorized it, so B trusts it" — because if A were compromised, that
   would make B's authorization disappear
+- What they are run against is the envelope's `caller`, the identity an authenticated link
+  named, rather than the forwarding instance's outcome
 
 How "the owning instance of the target" is decided: the sid-to-owning-instance mapping is held
 by the `peers` topic. An unknown sid means "nowhere in the cluster" = `session_not_found`.
@@ -479,6 +481,8 @@ create the same judgment in two places — the origin and A).
 - An `instance-local` op during a disconnection is `instance_unreachable`
 - Disconnection appears in the `reachable` field of the `instances[]` returned in `hello`'s
   response, and in the `peers` topic
+- The `peers` frame carries that same list in `instances`, so a subscriber learns of a link
+  going down without greeting again
 - **A disconnected instance's full value set is never dropped.** Dropping it would leave things
   empty until the full set comes back on reconnection. It is kept with an "unreachable" marker,
   **replaced on reconnection, and discarded after 7 days** (DV-Q12). 7 days matches the

@@ -405,6 +405,7 @@ webui ──▶ instance A ──(封筒: to_instance=B, from_instance=A, hops=[
 - 転送先が確立済み接続に無い / 応答が期限内に返らない → `instance_unreachable`
 - **転送された op も、転送先で §3.2 の 1〜6 をもう一度通す。** 「A が認可したから B は信じる」に
   しない。A が侵害された場合に B の認可が消えるため
+- やり直す相手は封筒の `caller` (認証済み link が名乗った呼び出し元) であって、転送元の判断ではない
 
 「対象の担当 instance」の決め方: sid → 担当 instance の対応は `peers` topic が持っている。
 知らない sid は「cluster のどこにもない」= `session_not_found`。ただし到達不能な instance が
@@ -422,6 +423,7 @@ instance A に繋いだ購読者が cluster 全体を見るために、A は各 
   復帰時に戻る
 - 断絶中の `instance-local` op は `instance_unreachable`
 - 断絶は `hello` の応答に含まれる `instances[]` の `reachable` と、`peers` topic に現れる
+- `peers` frame の `instances` が同じ一覧を運ぶので、購読者は挨拶し直さずに link の切断を知る
 - **断絶した instance の分の全量を消さない**。消すと復帰時に全量が返ってくるまで空になる。
   「到達不能」という印を付けて保持し、**再接続で置き換える。7 日で破棄する** (DV-Q12)。
   7 日は inbox / last_live の保持窓と同じ値で、揃えているのは「その instance が 7 日戻って

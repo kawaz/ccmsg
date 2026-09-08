@@ -9,6 +9,9 @@ import {
   type Timestamp,
 } from "@ccmsg/protocol";
 import {
+  callerOf,
+  CallerError,
+  callerOfIdentity,
   dispatch,
   type DispatchResult,
   failure,
@@ -331,6 +334,11 @@ export class Instance {
       handle: (frame, conn) => this.handle(frame, conn),
       publish: (topic, data, instance) => {
         this.#topics.publish(topic, data, instance);
+      },
+      // What `peers` says about the instances is this instance's own view, so
+      // it is restated when that view moves (§7.5).
+      changed: () => {
+        this.#sessions.refresh();
       },
     });
 
@@ -678,11 +686,17 @@ export class Instance {
     if (identity.state === "settled" && identity.sid !== undefined) {
       this.#sessions.touch(identity.sid);
     }
-    // A request a proven peer carried here acts as that peer rather than as
-    // the connection's own role (§7.3): the link is what the destination can
-    // check, and the envelope says nothing about who called.
-    const caller = this.#mesh?.actor(conn) ?? conn;
-    const decided = await dispatch(frame, caller, {
+    // Who this request runs as. On a peer's link it is the caller the envelope
+    // names, believed because the link is authenticated and refused as a
+    // malformed request when the two fields disagree; on every other
+    // connection it is the connection's own identity, and a `caller` written
+    // there is a field the sender does not get to fill in.
+    const fromPeer = this.#mesh?.isLink(conn) === true;
+    const stated = fromPeer ? callerOf(frame) : undefined;
+    if (stated instanceof CallerError) {
+      return failure(requestIdOf(frame), "bad_request", stated.message);
+    }
+    const decided = await dispatch(frame, this.#mesh?.caller(conn, stated) ?? conn, {
       self: this.self,
       capabilities: this.#capabilities,
       resolveInstance: (_op, fields) => this.#owner(fields),
@@ -692,7 +706,13 @@ export class Instance {
     // The op belongs to another instance. Mesh carries it and brings the
     // answer back under the id the caller used (§7.3); without a mesh there is
     // nothing that can reach it, which the driver names.
-    return this.#mesh === undefined ? decided : await this.#mesh.forward(decided.to, decided.frame);
+    //
+    // Who it is forwarded as is stated here rather than copied from the
+    // request: a caller that came over a peer's link travels on unchanged, and
+    // anyone else is named from the connection they are actually on.
+    return this.#mesh === undefined
+      ? decided
+      : await this.#mesh.forward(decided.to, decided.frame, stated ?? callerOfIdentity(identity));
   }
 
   /** Which instance owns the subject of an instance-local op.

@@ -3,6 +3,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   type InstanceId,
+  type InstanceInfo,
   LAST_LIVE_RETENTION_MS,
   PROTOCOL_VERSION,
   type Sid,
@@ -82,6 +83,7 @@ function transcriptIn(env: Env, sid: Sid): void {
 
 const SID_ON_B = "11111111-1111-4111-8111-111111111111" as Sid;
 const UNKNOWN_SID = "22222222-2222-4222-8222-222222222222" as Sid;
+const OTHER_SID = "33333333-3333-4333-8333-333333333333" as Sid;
 
 /** Two instances that have found each other, with a session greeted to the
  * second one. */
@@ -194,33 +196,114 @@ describe("forwarding an op (§7.3)", () => {
   });
 });
 
-describe("what the destination decides for itself (§7.3)", () => {
-  test("a peer's request is put through this instance's own table, and its envelope names nobody", async () => {
+describe("who a forwarded request runs as (§7.3)", () => {
+  /** A real instance with a peer under the test's control on its link. */
+  async function linked(): Promise<{ instance: Instance; peer: FakePeer }> {
     const realPort = freePort();
     const peerPort = freePort();
     const peer = new FakePeer(peerPort);
     const instance = await startAt(homeFor(realPort, [endpoint(realPort), endpoint(peerPort)]));
     expect((await peer.greet(instance.self))["ok"]).toBe(true);
+    return { instance, peer };
+  }
 
-    // A `session`-only op, forwarded with an envelope claiming to come from
-    // anywhere at all. There is no field in it that names a caller, so the only
-    // thing the destination can read is the link — which is a peer, not a
-    // session — and the op is refused here however it fared where it started.
+  test("a request naming no caller runs as the link, which the table already answers", async () => {
+    const { peer } = await linked();
+    // Every field of the envelope but the caller, including a `from_instance`
+    // pointing anywhere at all. There is nobody named, so the request runs as
+    // what the connection is — an instance — and no instance-local op is open
+    // to one.
     peer.send({
-      op: "session_stopping",
-      request_id: "as-session",
-      sid: SID_ON_B,
+      op: "session_last_live_remove",
+      request_id: "nameless",
+      sid: UNKNOWN_SID,
       from_instance: "ws://127.0.0.1:1",
       hops: ["ws://127.0.0.1:1"],
     });
-    const refused = await peer.answer("as-session");
+    const refused = await peer.answer("nameless");
     expect(refused["ok"]).toBe(false);
     expect(errorOf(refused)).toBe("forbidden");
+  });
 
-    // An op the same link may make: the refusal above is this instance's table
-    // being applied, not the link being shut out of everything.
-    peer.send({ op: "session_last_live_remove", request_id: "as-user", sid: UNKNOWN_SID });
-    expect((await peer.answer("as-user"))["ok"]).toBe(true);
+  test("a caller the peer states is believed, because the link is what was proven", async () => {
+    const { peer } = await linked();
+    // The same op, now naming a caller. Nothing about this envelope is signed
+    // and the peer could have made the caller up — which is the assumption
+    // being written down here: a peer that passed mesh-peer-auth is an
+    // instance on the peer list, and a peer list is one deployment (§8.2), so
+    // what it says about who called is taken as said. What is not taken is the
+    // outcome: the role below is read against this instance's own table.
+    peer.send({
+      op: "session_last_live_remove",
+      request_id: "named",
+      sid: UNKNOWN_SID,
+      caller: { role: "user" },
+    });
+    expect((await peer.answer("named"))["ok"]).toBe(true);
+
+    // And a role that table refuses is refused, however it fared where it
+    // started: `session_last_live_remove` is open to a person and not to a
+    // session.
+    peer.send({
+      op: "session_last_live_remove",
+      request_id: "as-session",
+      sid: UNKNOWN_SID,
+      caller: { role: "session", sid: SID_ON_B },
+    });
+    expect(errorOf(await peer.answer("as-session"))).toBe("forbidden");
+  });
+
+  test("a caller whose role and sid disagree is a malformed request", async () => {
+    const { peer } = await linked();
+    // The contract says a sid is there exactly when the role is a session, and
+    // leaves a violation to the instance. Two callers are described here and
+    // neither is chosen (contract, `CallerIdentity`).
+    peer.send({
+      op: "session_last_live_remove",
+      request_id: "both",
+      sid: UNKNOWN_SID,
+      caller: { role: "user", sid: SID_ON_B },
+    });
+    expect(errorOf(await peer.answer("both"))).toBe("bad_request");
+    peer.send({
+      op: "session_last_live_remove",
+      request_id: "neither",
+      sid: UNKNOWN_SID,
+      caller: { role: "session" },
+    });
+    expect(errorOf(await peer.answer("neither"))).toBe("bad_request");
+  });
+
+  test("a session's visible range is the same across the mesh as it is at home", async () => {
+    const { a } = await pair();
+    // A session may read its own transcript and no other's (§11.2). The
+    // subject is on B, so the rule has to survive the forwarding: the caller
+    // travels in the envelope and the destination applies its own scope to it.
+    const other = await client(a);
+    await greet(other, { role: "session", sid: OTHER_SID });
+    const refused = await ask(other, {
+      op: "transcript_read",
+      request_id: "someone-else",
+      sid: SID_ON_B,
+    });
+    expect(errorOf(refused)).toBe("not_found");
+
+    // The same op, over the same link, for the same transcript — and it comes
+    // back. So the refusal above was the scope of the caller B was told about,
+    // not a file B could not find.
+    const person = await client(a);
+    await greet(person, {});
+    await eventually(async () => {
+      const answer = await ask(person, {
+        op: "transcript_read",
+        request_id: "as-a-person",
+        sid: SID_ON_B,
+      });
+      return (
+        answer["ok"] === true &&
+        (answer["lines"] as string[] | undefined)?.includes(TRANSCRIPT_LINE) === true
+      );
+    });
   });
 });
 
@@ -244,6 +327,49 @@ describe("relaying events (§7.4)", () => {
             (row) => row.sid === SID_ON_B,
           ),
       );
+    });
+  });
+});
+
+describe("what the peers topic says about the instances (§7.5)", () => {
+  test("a frame carries the sending instance's own view, and a relayed one keeps its sender's", async () => {
+    const { a, b } = await pair();
+    const user = await client(a);
+    await greet(user, {});
+    await ask(user, { op: "topic_subscribe", request_id: "sub", topic: "peers" });
+
+    // Two frames on one topic, and each says what its own sender can reach —
+    // which is why the field travels per instance rather than being folded
+    // into one list. Both see everything here; what the test pins is whose
+    // view each frame carries.
+    const views = new Map<string, InstanceInfo[]>();
+    await eventually(async () => {
+      const frame = await user.next();
+      if (frame["topic"] !== "peers") return false;
+      const stated = (frame["data"] as { instances?: InstanceInfo[] }).instances;
+      if (stated !== undefined) views.set(frame["instance"] as string, stated);
+      return views.has(a.self) && views.has(b.self);
+    });
+    for (const [sender, stated] of views) {
+      // Every instance lists itself as reachable and names the other.
+      expect(stated.find((one) => one.id === sender)?.reachable).toBe(true);
+      expect(stated.map((one) => one.id).sort()).toEqual([a.self, b.self].sort());
+    }
+  });
+
+  test("a link going down shows up on the topic, without asking again", async () => {
+    const { a, b } = await pair();
+    const user = await client(a);
+    await greet(user, {});
+    await ask(user, { op: "topic_subscribe", request_id: "sub", topic: "peers" });
+    await b.stop();
+    // No second greeting: the subscriber is already on the topic the view
+    // rides on, which is what carrying it here is for (§7.5).
+    await eventually(async () => {
+      const frame = await user.next();
+      if (frame["topic"] !== "peers" || frame["instance"] !== a.self) return false;
+      const stated = (frame["data"] as { instances?: InstanceInfo[] }).instances ?? [];
+      return stated.find((one) => one.id === b.self)?.reachable === false;
     });
   });
 });
