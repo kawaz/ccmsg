@@ -24,6 +24,8 @@ import {
   Inbox,
   inboxPath,
   messagingHandlers,
+  Notify,
+  sessionLabel,
 } from "../src/messaging/index.ts";
 import { Topics } from "../src/topics/index.ts";
 import { connAs, OTHER_SID, SELF, SID, TestConn } from "./frames.ts";
@@ -119,9 +121,15 @@ function rig(over: { direct?: DirectRoute; dir?: string } = {}): Rig {
     publish: (topic, data, instance, to) => topics.publish(topic, data, instance, to),
     listeners: (topic, to) => topics.subscriberCount(topic, to),
   });
+  const notify = new Notify({
+    self: SELF,
+    label: (sid) => sessionLabel(sessions, sid),
+    publish: (topic, data, instance) => topics.publish(topic, data, instance),
+  });
   topics.attach("inbox", delivery);
+  topics.attach("notify", notify);
   const send = async (from: TestConn, to: Sid, text = "hi") => {
-    const result = await messagingHandlers(delivery).message_send({
+    const result = await messagingHandlers(delivery, notify).message_send({
       op: "message_send",
       conn: from,
       args: { op: "message_send", request_id: "1", to, text },

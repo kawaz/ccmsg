@@ -209,10 +209,20 @@ export class Delivery implements UpstreamResource {
    * shown as the sender literal: there is one person per instance to a
    * session's eye, so there is nothing further to tell apart. */
   #label(from: Sender): string {
-    if (from === USER_SENDER) return USER_SENDER;
-    const peer = this.deps.sessions.peers().peers.find((row) => row.sid === from);
-    if (peer === undefined) return from;
-    const where = [peer.repo, peer.ws].filter((part) => part !== "").join("/");
-    return where === "" ? from : where;
+    return from === USER_SENDER ? USER_SENDER : sessionLabel(this.deps.sessions, from);
   }
+}
+
+/** How a session is shown: the repository and workspace it greeted from, which
+ * is what tells two sessions of one person apart, and its sid when it greeted
+ * from neither so the label always names something.
+ *
+ * Written once for every label the instance resolves — a message's sender and a
+ * notification's subject are the same session seen from two ops, and a session
+ * shown one way there and another way here would read as two. */
+export function sessionLabel(sessions: SessionLookup, sid: Sid): string {
+  const peer = sessions.peers().peers.find((row) => row.sid === sid);
+  if (peer === undefined) return sid;
+  const where = [peer.repo, peer.ws].filter((part) => part !== "").join("/");
+  return where === "" ? sid : where;
 }

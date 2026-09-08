@@ -14,6 +14,7 @@ import {
   Inbox,
   inboxPath,
   messagingHandlers,
+  Notify,
   PEER_PROTOCOL,
 } from "../src/messaging/index.ts";
 import { connAs, OTHER_SID, SELF, SID } from "./frames.ts";
@@ -287,7 +288,10 @@ describe("delivery over route (a)", () => {
     const target = delivery(configHome, dir);
 
     const conn = connAs("session", SID);
-    const result = await messagingHandlers(target).message_send({
+    const result = await messagingHandlers(
+      target,
+      new Notify({ self: SELF, label: (sid) => sid, publish: () => {} }),
+    ).message_send({
       op: "message_send",
       conn,
       args: { op: "message_send", request_id: "1", to: OTHER_SID, text: "straight there" },

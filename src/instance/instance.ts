@@ -20,6 +20,8 @@ import {
   DisabledDirectRoute,
   inboxPath,
   messagingHandlers,
+  Notify,
+  sessionLabel,
 } from "../messaging/index.ts";
 import { Inbox } from "../messaging/inbox.ts";
 import { Sessions, SessionStatus } from "../sessions/index.ts";
@@ -121,6 +123,7 @@ export class Instance {
   readonly #transcripts: Transcripts;
   readonly #gateway: Gateway;
   readonly #delivery: Delivery;
+  readonly #notify: Notify;
   readonly #handlers: Handlers;
   readonly #capabilities: ReadonlySet<Capability>;
   /** Set the moment shutdown starts, which is the re-entry guard of §8.5 step
@@ -236,9 +239,18 @@ export class Instance {
       listeners: (topic, to) => this.#topics.subscriberCount(topic, to),
     });
 
+    this.#notify = new Notify({
+      self: this.self,
+      label: (sid) => sessionLabel(this.#sessions, sid),
+      publish: (topic, data, instance) => {
+        this.#topics.publish(topic, data, instance);
+      },
+    });
+
     this.#topics.attach("peers", this.#sessions);
     this.#topics.attach("agents", this.#sessions);
     this.#topics.attach("inbox", this.#delivery);
+    this.#topics.attach("notify", this.#notify);
     this.#topics.attach("transcript", this.#transcripts);
     this.#topics.attach("session_status", this.#status);
     this.#topics.attach("session_errors", this.#status);
@@ -248,7 +260,7 @@ export class Instance {
     this.#handlers = completeHandlers({
       hello: this.#sessions.hello,
       ...topicHandlers(this.#topics),
-      ...messagingHandlers(this.#delivery),
+      ...messagingHandlers(this.#delivery, this.#notify),
       instance_ping: (): InstancePingResult => this.ping(),
       instance_shutdown: () => {
         // The reply goes out when this handler's value reaches the driver, so
