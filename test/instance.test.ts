@@ -11,6 +11,8 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { OP_NAMES, PROTOCOL_VERSION } from "@ccmsg/protocol";
+import { DUMPS } from "../src/sessions/index.ts";
+import { KV_DIR } from "../src/kv/index.ts";
 import { OpError } from "../src/dispatch/index.ts";
 import {
   completeHandlers,
@@ -26,6 +28,7 @@ import {
   start,
 } from "../src/instance/index.ts";
 import { connectUds, type LineClient } from "./client.ts";
+import { SID } from "./frames.ts";
 
 const CLI = join(import.meta.dir, "..", "src", "cli.ts");
 
@@ -299,25 +302,72 @@ describe("the stop order (§8.5)", () => {
 });
 
 describe("what a run leaves behind (M4)", () => {
-  test("start, stop, start again adds only the three persisted kinds and the handles", async () => {
-    const { env } = disposable();
+  /** The ops that write something, run once each.
+   *
+   * A run that answers nothing writes nothing, so listing the state directory
+   * after it would say only that an idle daemon is tidy. These are the three
+   * that put bytes somewhere on purpose — a value a person saved, a dump a
+   * session asked for, and a file into a session's own working directory — and
+   * M4 is the question of which of them lands in the state directory. */
+  async function writeThroughEveryOp(instance: Instance, run: string): Promise<void> {
+    const client = await greet(instance);
+    client.send({ op: "kv_write", request_id: `kv-${run}`, ns: "test", key: "theme", value: run });
+    expect((await client.next())["ok"]).toBe(true);
+    client.send({ op: "session_dump_write", request_id: `dump-${run}`, sid: SID });
+    expect((await client.next())["ok"]).toBe(true);
+    // Its destination is the session's working directory, which is nowhere
+    // near the state directory — that it stays out of the listing below is the
+    // point of running it here.
+    client.send({
+      op: "file_write",
+      request_id: `file-${run}`,
+      sid: SID,
+      path: `docs/inbox/${run}.md`,
+      content: "a note\n",
+    });
+    expect((await client.next())["ok"]).toBe(true);
+  }
+
+  test("start, stop, start again adds only the persisted kinds and the handles", async () => {
+    const { env, root, home } = disposable();
     const paths = resolvePaths(env);
+    // A session for those ops to be about: the harness row is what says it
+    // exists and where it works, and the transcript is what a dump is of.
+    const cwd = join(root, "work");
+    mkdirSync(join(home, "projects", "a"), { recursive: true });
+    mkdirSync(cwd, { recursive: true });
+    writeFileSync(join(home, "projects", "a", `${SID}.jsonl`), "");
+    writeFileSync(
+      join(home, "sessions", `${process.pid}.json`),
+      JSON.stringify({
+        pid: process.pid,
+        sessionId: SID,
+        cwd,
+        kind: "interactive",
+        startedAt: 1_757_000_000_000,
+      }),
+    );
+
     const first = await startAt(env);
+    await writeThroughEveryOp(first, "one");
     await first.stop();
     const afterFirst = new Set(readdirSync(paths.stateDir));
     const second = await startAt(env);
+    await writeThroughEveryOp(second, "two");
     await second.stop();
     const afterSecond = readdirSync(paths.stateDir);
     for (const name of afterSecond) {
       if (afterFirst.has(name)) continue;
       throw new Error(`the second run added ${name}`);
     }
-    // The three of §3.6 plus the handles, and nothing that is a derived value
-    // written down.
+    // The four of §3.6, the dumps a caller asked for, and the handles —
+    // nothing that is a derived value written down.
     const allowed = new Set([
       "last-live.json",
       "daemon.log",
       "inbox.jsonl",
+      KV_DIR,
+      DUMPS,
       "daemon.pid",
       "daemon.sock",
       "daemon.lock",
@@ -325,6 +375,11 @@ describe("what a run leaves behind (M4)", () => {
     for (const name of afterSecond) {
       expect(allowed.has(name) || REAL_SOCKET.test(name)).toBe(true);
     }
+    // Each op wrote where it said it would, so the listing above is a statement
+    // about ops that ran rather than about ops that quietly refused.
+    expect(existsSync(join(paths.stateDir, KV_DIR))).toBe(true);
+    expect(readdirSync(join(paths.stateDir, DUMPS)).length).toBe(2);
+    expect(existsSync(join(cwd, "docs", "inbox", "one.md"))).toBe(true);
   });
 });
 

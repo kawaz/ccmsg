@@ -17,6 +17,7 @@ import { Topics } from "../src/topics/index.ts";
 import {
   classify,
   type GatewaySource,
+  HarnessSessions,
   LastLiveStore,
   type SessionInputs,
   Sessions,
@@ -47,7 +48,50 @@ let transcriptPath = "";
 
 const homes: string[] = [];
 const running: Sessions[] = [];
+const watchers: HarnessSessions[] = [];
 const children: number[] = [];
+
+/** A harness directory of a config home nothing else in the case uses, for the
+ * two cases that drive `HarnessSessions` itself rather than a whole `Sessions`.
+ * Left uncreated where the case is about a watch with nothing to attach to. */
+function harnessDir(prefix: string, options: { create?: boolean } = {}): string {
+  const root = mkdtempSync(join(tmpdir(), prefix));
+  homes.push(root);
+  const dir = join(root, "sessions");
+  if (options.create !== false) mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+/** A real `HarnessSessions` over `dir` that counts what it reports and lets a
+ * case wait for the next report rather than poll for one. */
+function watchOf(dir: string, pollMs: number) {
+  const waiters: (() => void)[] = [];
+  let changes = 0;
+  const harness = new HarnessSessions(
+    dir,
+    SELF,
+    () => {
+      changes++;
+      for (const waiter of waiters.splice(0)) waiter();
+    },
+    pollMs,
+  );
+  watchers.push(harness);
+  return {
+    harness,
+    /** Whether a report arrived within `budgetMs`. Running out is an answer
+     * rather than a failure: a watch may drop a change outright (§5.1), so a
+     * case that reads this decides for itself what a miss means. */
+    reported: async (budgetMs: number): Promise<boolean> => {
+      const before = changes;
+      await Promise.race([
+        new Promise<void>((resolve) => waiters.push(resolve)),
+        Bun.sleep(budgetMs),
+      ]);
+      return changes > before;
+    },
+  };
+}
 
 /** A process of this test's own to read a terminal out of, with whatever
  * environment the case is about. Nothing is ever signalled through it: what is
@@ -75,6 +119,7 @@ afterEach(() => {
     domain.stop("peers");
     domain.stop("agents");
   }
+  for (const harness of watchers.splice(0)) harness.stop();
   for (const pid of children.splice(0)) {
     try {
       process.kill(pid, "SIGKILL");
@@ -458,17 +503,45 @@ describe("the harness's sessions directory", () => {
     expect(context.domain.agents().agents.map((agent) => agent.sid)).toEqual([OTHER_SID]);
   });
 
-  test("the file watch alone carries a change, with the poll too slow to help", async () => {
-    // Far beyond this test's own timeout, so a publish arriving here came from
+  /** The two routes of §5.1, each pinned by what it alone is answerable for.
+   *
+   * A watch on a directory may simply not report a change: on macOS the event
+   * is dropped outright rather than delivered late, so no amount of waiting
+   * turns a miss into an arrival. That is the premise the poll exists under,
+   * and it is why neither case below asks the watch to carry a particular
+   * change — the poll is answerable for every change, and the watch only for
+   * being a route at all. */
+  test("a change the watch never sees is still carried, by the poll behind it", async () => {
+    // A config home whose harness has not run: `fs.watch` has no directory to
+    // attach to, so it is not watching and cannot report anything that follows.
+    // This is the miss the poll covers, made total rather than occasional.
+    const dir = harnessDir("ccmsg-poll-", { create: false });
+    const watch = watchOf(dir, 20);
+    watch.harness.start();
+
+    mkdirSync(dir, { recursive: true });
+    writeState(dir, process.pid, SID);
+    while (watch.harness.scan().size !== 1) await watch.reported(5_000);
+  });
+
+  test("the watch is a live route, so not every change waits for the poll", async () => {
+    // Far beyond this test's own budget, so anything reported here came from
     // `fs.watch` and from nothing else.
-    const context = sessions({ pollMs: 600_000 });
-    context.domain.start("peers");
-    await context.until(() => context.published.length > 0);
-    const before = context.published.length;
-    writeState(context.sessionsDir, process.pid, SID);
-    await context.until(
-      (frames) => frames.length > before && context.domain.agents().agents.length === 1,
-    );
+    const dir = harnessDir("ccmsg-watch-");
+    const watch = watchOf(dir, 600_000);
+    watch.harness.start();
+
+    // Measured on macOS/Bun: a change the watch does report arrives within
+    // ~50ms, and about one in twenty is dropped entirely while the suite loads
+    // the FSEvents queue. Asserting that one particular change arrives is
+    // asserting on that coin; that ten in a row are all dropped is what this
+    // rules out, and what would be true of a route that was not wired at all.
+    let carried = false;
+    for (let attempt = 0; attempt < 10 && !carried; attempt++) {
+      writeState(dir, process.pid, `${SID}-${attempt}`);
+      carried = await watch.reported(1_000);
+    }
+    expect(carried).toBe(true);
   });
 
   test("the watch runs while a subscriber holds either topic, and not otherwise", () => {

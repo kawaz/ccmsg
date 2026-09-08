@@ -50,6 +50,26 @@ M3 responds to the fact that of 8 kinds of timers, only 2 had their rationale wr
 - State changes are pushed by the layer that holds them. No route is built to periodically go
   look at everything (M3)
 
+### 1.3 What M3 covers, and the time values that are not periods
+
+What M3 names is the **periodic timer**: an interval value decides how often something is
+gone and looked at, and the value cannot be explained by measurement, upstream behaviour, or
+spec. The daemon also holds time values that are not periods — windows, expiries, cut-offs —
+and those are outside M3. Their rationale is still written on the constant's doc comment, the
+same discipline §11.3 applies to the timers.
+
+| Value | Kind | What it decides | Rationale |
+|---|---|---|---|
+| The gateway liveness window, 5 minutes (`GATEWAY_LIVE_WINDOW_MS`) | window | How recently the gateway must have seen a session for that **alone** to count as alive (§5.2). Compared against `now` at the moment of reading; there is no timer | The window's role is written in the implementation, but no primary source explains the value of 5 minutes itself (**provisional**) |
+| The sandbox grant expiry, 30 minutes (`GRANT_MS`) | expiry | How long a minted URL works. Minting the same scope again returns the same grant with its expiry moved out, so a preview in use keeps working and a forgotten one stops on its own. Expiry is judged at the moment of reading; there is no timer | The rationale is the shape (use extends it, neglect ends it). 30 minutes is the bound on how long a forgotten URL stays valid, not a measured value |
+| The launcher drain, 500 ms (`DRAIN_MS`) | cut-off | How long the pipes are read after the command has exited. A launch that starts a session in a terminal leaves a grandchild holding the write end, so end-of-file may never arrive, and without a bound the reply would wait for that session to finish. On an ordinary exit every descriptor closes at once and the bound is never reached | Only a detached launch reaches it; everywhere else it costs nothing |
+| The launcher force kill, 500 ms (`FORCE_KILL_MS`) | cut-off | How long a command that outlived its allowance (the config's `timeout_secs`) and was sent SIGTERM is given to leave before SIGKILL | A single grace per launch |
+
+None of these decides how often anything is looked at. A window and an expiry only judge age at
+the moment of reading, and a cut-off fires once per launch. Getting a value wrong changes when
+something ages out or how long an answer waits, never whether the daemon goes back to look at
+something again — and the latter is what M3 exists to prevent.
+
 ## 2. Assumptions
 
 | # | Condition | If not satisfied |
@@ -92,6 +112,17 @@ on a handshake. An upgrade that does not carry it is refused with 401. **This is
 boundary is the uid and the file permission rather than anything inside the daemon, and the 0600 on
 that token file is that boundary. UDS needs no token, since reaching it already means passing the
 directory's permissions.
+
+**A connection greets once, and the reply is what binds its identity.** The role is set once and
+fixed for the connection's life (contract, `Role`); a second `hello` on a connection whose
+identity is settled is `bad_request` whether it repeats the role or names another — it is not a
+re-identification but a request to be somebody else on a connection that already is somebody.
+The binding happens at the moment transport writes the `hello` reply (`hello` is the one op name
+transport knows; every other op is opaque to it). A `session` or `user` greeting is answered
+synchronously; **the `instance` greeting is the only one that answers with a promise**: it
+cannot be answered until the mesh-peer-auth verification has run, and since nothing but a reply
+settles an identity, the connection stays anonymous until the verification is done (§7.2). An
+instance with no mesh refuses an `instance` greeting with `capability_unavailable`.
 
 We will not repeat the asymmetry in the old daemon where only the UDS listener was buried
 inside the startup function. UDS and WS are **two implementations that return the same
@@ -177,6 +208,23 @@ resource handles, not state. **The mesh's signing keys are not written either**:
 ephemeral keys, one per connection, minted at the dial and destroyed on the acknowledgement
 (mesh-peer-auth §7), and they exist only in memory. Putting one in the state directory would
 create a place to keep it and a way to recover it — two things to manage, against §1.1.
+
+The state directory holds one more thing: `dumps/`. `session_dump_write` writes the records it
+cut out of a transcript to `<state dir>/dumps/<sid>-<generated_at>.json` and answers with that
+path. This is none of the 4 kinds above, and it is not persistence in this section's sense: the
+instance never reads the file back, and nothing breaks if it is gone. What the op adds over
+reading the transcript is a durable artifact whose path can be handed to a successor session
+(instead of a body that travels out through a client and back in again), and since the caller
+never supplies a path, there is nothing for containment to judge. It lives under the state
+directory because §8.1 derives every per-instance path from the config home.
+
+It does not contradict M4 either. What M4 forbids is putting a derived value on disk and keeping
+it consistent with its source; the harm is the consistency procedure that creates. A dump is
+derived from the transcript, but it is a single cut fixed by its generation time and its bounds,
+never made to follow the source, so no such procedure arises. Its standing is "an artifact a
+person had an op make": like a child process the launcher started or a URL the sandbox minted,
+it is an effect the instance leaves in the world on request, not state of the instance. Nothing
+discards them.
 
 ## 4. Delivery
 
@@ -273,6 +321,22 @@ crash mid-write only corrupts the trailing line.
 Whether to use a per-sid file or a single file is left to implementation discretion (either
 way the meaning of clearing and retention period is unchanged).
 
+**Delivery over route (b) is at-most-once.** A message counts as delivered the moment its frame
+is written to the connection. The subscription's snapshot is "everything still undelivered for
+that sid," and **subscribing is receiving**, so the inbox is cleared of them as the snapshot is
+returned (the frame is queued on the connection right behind the subscription's reply). The same
+holds when `message_send` pushes straight to a subscribed connection: nothing goes into the
+inbox. If the receiving side loses the frame along with its connection, the body is nowhere.
+A connection with no sid — a person watching — gets an empty snapshot: the topic carries what was
+said to a session, and a person is not one.
+
+This follows from the inbox being the place for "what has not yet arrived" and nothing else (the
+table above). Keeping what was handed over until it is acknowledged would make the inbox hold
+"what may have arrived," and the next subscription or the next re-offer over route (a) would
+deliver the same body twice. **One message goes out on one route**: leaving a message claimed by
+an in-flight route (a) offer out of the snapshot is the same rule, so a subscription arriving
+mid-offer does not make it two messages.
+
 ### 4.4 When route (a) drops a message
 
 The receiving side has rate limiting (token bucket / duplicate detection / queue limit) and
@@ -349,6 +413,12 @@ is emitted as a row attribute, not a classification**. Busyness is derived from 
 look at busyness, the section structure holds up even for an instance with no gateway
 configured (only one row attribute is missing).
 
+"Recent" in "has recent gateway activity" means within 5 minutes of the gateway last seeing
+inference (the liveness window of §1.3). An observation outside the window is no basis for
+liveness, and the next time a payload is built it is gone from the row's `gateway_active_at` as
+well. The window is judged at the moment of reading; no timer announces that it has closed
+(§1.3).
+
 ### 5.3 The two kinds of "last activity time"
 
 The old daemon kept "the time updated on every ccmsg request" (the agent's busyness) and "the
@@ -388,6 +458,12 @@ suppression" can never happen.
 **Suppression applies to the two full-replacement granularities only** (`whole` /
 `per_instance_whole`). Sending the same full value again leaves the subscriber holding what it
 already holds, so there is nothing in it to send.
+
+Suppression compares against the last wire sent, so **a payload never states when it was
+read**. The `agents` contract has a `polled_at`, and this instance leaves it out: a value that
+changes on every confirmation poll (§5.1) would make each poll a value the list did not have
+before, even for a directory that had not changed, and the one suppression every topic shares
+(M5) would let it through as a five-second heartbeat.
 
 **The delta granularities (`element` / `append`) and `event` pass straight through.** Two
 frames with the same content are two things happening, not a duplicate — offering an inbox
@@ -512,7 +588,7 @@ home.** A CLI within a session looks up its own instance from `CLAUDE_CONFIG_DIR
 
 **config is read only once, at startup. There is no hot reload** (DV-Q8). Because
 per-instance config is small and restart is cheap (most state is volatile; the only things
-persisted are the 3 kinds in §3.6), there is no reason to hold mtime watching / reload /
+persisted are the 4 kinds in §3.6), there is no reason to hold mtime watching / reload /
 rewiring so that "an edit takes effect on the next request." Restarting the instance is the
 sole way to make a config change take effect.
 
@@ -520,19 +596,30 @@ sole way to make a config change take effect.
 
 1. Path resolution and creation of the state dir
 2. Acquire the single-instance lock. If someone else already holds it, exit without doing
-   anything
+   anything. If the process named by the lock file's pid is already gone (asked with signal
+   0), the file is taken over and the lock contended for again
 3. Load config. **A broken config fails startup** (DV-Q9). Continuing to start with the
    feature disabled would carry the state of "a feature you thought you configured is silently
    not working" through to runtime. As with the self-identification failure in §7.1, a
-   misconfiguration is failed at startup
-4. Load `last_live`
-5. Determine `self` (§7.1). If it cannot be determined, startup fails (for configurations that
-   have mesh)
-6. listen (UDS → HTTP/WS). Recording the pid happens before listen. What UDS actually binds
-   is `daemon.<pid>.sock`; the stable path clients use, `daemon.sock`, is swapped in
-   atomically once the listener is accepting, by creating the symlink under a temporary name
-   and renaming it (§8.5). Before listen, real paths whose pid is already gone are swept (the
-   same test the lock takeover uses)
+   misconfiguration is failed at startup. What the config names is resolved here too, and fails
+   for the same reason: a gateway webhook secret that cannot be read, and a translation helper
+   that cannot be run, are each exactly the state of a configured feature silently not working
+4. Determine `self` (§7.1). On a configuration with mesh, the entry token is prepared and **the
+   WebSocket is bound first**, then `self` is settled: self-identification works by the probe
+   this instance sends itself arriving at its own listener, so settling `self` cannot come
+   before listen. In that window the listener answers only the two pre-authentication routes —
+   the self-identification probe and the key of mesh-peer-auth §6 — and refuses everything
+   else until the instance exists (a window of one round of probes). If `self` cannot be
+   settled, startup fails. A configuration without mesh has no list to be found in, so it is
+   named after the address it listens on (the config home's key when there is none)
+5. Load `last_live` and the inbox. These come after `self` because every entry of both carries
+   `self` as its `instance` — nothing derived from `self` exists before `self` does
+6. listen. Record the pid → prepare the socket dir and sweep the real paths whose pid is
+   already gone (the same test the lock takeover uses) → bind UDS at `daemon.<pid>.sock` →
+   swap the stable path clients use, `daemon.sock`, in atomically once the listener is
+   accepting, by creating the symlink under a temporary name and renaming it (§8.5) → the
+   WebSocket (on a configuration with mesh, the one bound in step 4 is taken in; on one without
+   mesh that serves HTTP, the entry token is written and the listener bound here)
 7. Dial to peers (§7.2)
 
 **Watching upstream (transcript tail / `sessions/` / gateway) does not begin at startup.**
@@ -644,7 +731,7 @@ boundary. We do not skip this on the grounds that "it's covered by e2e."
 | M1 | Every op in the attribute table passes through dispatch (confirm via walking the table that the implementation side has no role comparison) |
 | M2 | No op exists that returns the contract's topic value |
 | M3 | A list of periodic timers, each with a comment stating its rationale |
-| M4 | Start → stop → start does not increase the number of files beyond §3.6's 3 kinds |
+| M4 | Start → stop → start does not increase the number of files beyond §3.6's 4 kinds and the dumps a caller asked for |
 | M5 | There is a single implementation of push suppression (no push bypasses the topic mechanism) |
 | M6 | Nothing outside our own config home is read (confirm, by placing a separate config home, that it is not scanned) |
 

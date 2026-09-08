@@ -27,7 +27,7 @@ import {
   Notify,
   sessionLabel,
 } from "../src/messaging/index.ts";
-import { Sessions } from "../src/sessions/index.ts";
+import { classify, Sessions, type SessionInputs } from "../src/sessions/index.ts";
 import { Topics } from "../src/topics/index.ts";
 import { connAs, OTHER_SID, SELF, SID, TestConn } from "./frames.ts";
 
@@ -45,25 +45,59 @@ function stateDir(): string {
 const THIRD_SID = "11112222-3333-4444-8555-666677778888";
 const REPO_ROOT = "/repos/a-repo";
 
-/** The sessions domain as delivery sees it: a classification per sid and the
- * two lists. Written out rather than driven through `Sessions`, so a test that
- * fixes what a reason is derived from cannot be satisfied by arranging the
- * inputs some other way. */
+/** What §5.1 has to say for a session to be in each state, one entry per state
+ * the contract defines.
+ *
+ * This is the join between the two things §11.4 keeps apart: a case says which
+ * state its destination is in, and this says which inputs put it there. Nothing
+ * here names a state to the classifier — the classifier is what turns these
+ * into one. */
+const INPUTS_FOR: Record<SessionState, SessionInputs> = {
+  // A connection of its own is open, which is both what makes it live and what
+  // makes it reachable.
+  live: { connected: true },
+  // The harness has a row for it, so it exists; no connection and no terminal
+  // to drive is what leaves it unmanaged.
+  live_unmanaged: { connected: false, harness: { waiting: false } },
+  waiting: { connected: false, harness: { waiting: true } },
+  // Not live, and its entry says it was stopped on purpose.
+  paused: { connected: false, last_live: { stopped_at: 1_757_000_000_000 } },
+  // Not live, and its entry carries no such mark.
+  disappeared: { connected: false, last_live: {} },
+};
+
+/** The sessions domain as delivery sees it: §5.1's inputs per sid and the two
+ * lists.
+ *
+ * What stands in for `Sessions` here is where those inputs come from — a
+ * directory, a connection, a gateway — and not what they mean. The meaning is
+ * the real `classify`, so a reason delivery returns is one the production rule
+ * derived, and a change to that rule reaches these cases. */
 class FakeSessions {
-  readonly states = new Map<Sid, SessionState>();
+  readonly inputs = new Map<Sid, SessionInputs>();
   readonly connected: PeerInfo[] = [];
   readonly lastLive: LastLiveSession[] = [];
 
+  /** The real derivation, over inputs this test arranges. What a reason is
+   * derived from is the thing under test, so the state is never set: it is what
+   * §5.1's inputs make it, decided by the production rule (§5.2). */
   classify(sid: Sid): SessionState | undefined {
-    return this.states.get(sid);
+    const inputs = this.inputs.get(sid);
+    return inputs === undefined ? undefined : classify(inputs);
   }
 
   peers() {
     return { peers: this.connected, last_live: this.lastLive };
   }
 
+  /** Inputs that put a session in `state`, so a case naming a state says which
+   * of §5.1's inputs is what puts it there. */
+  in(sid: Sid, state: SessionState): void {
+    this.inputs.set(sid, INPUTS_FOR[state]);
+  }
+
   live(sid: Sid, over: Partial<PeerInfo> = {}): void {
-    this.states.set(sid, "live");
+    this.inputs.set(sid, INPUTS_FOR["live"]);
     this.connected.push({
       sid,
       instance: SELF,
@@ -77,7 +111,7 @@ class FakeSessions {
   }
 
   gone(sid: Sid, state: "paused" | "disappeared", repoRoot = REPO_ROOT): void {
-    this.states.set(sid, state);
+    this.inputs.set(sid, INPUTS_FOR[state]);
     this.lastLive.push({
       sid,
       instance: SELF,
@@ -310,7 +344,7 @@ describe("why a message is waiting (§4.2)", () => {
     test(`${state} is ${reason}`, async () => {
       const { sessions, send } = rig();
       sessions.live(SID);
-      sessions.states.set(OTHER_SID, state);
+      sessions.in(OTHER_SID, state);
 
       const result = await send(connAs("session", SID), OTHER_SID);
 
@@ -355,7 +389,7 @@ describe("why a message is waiting (§4.2)", () => {
       ["paused"],
       ["disappeared"],
     ] as [SessionState][]) {
-      sessions.states.set(OTHER_SID, state);
+      sessions.in(OTHER_SID, state);
       const result = await send(connAs("session", SID), OTHER_SID);
       expect(result.reason).not.toBe("throttled");
     }
@@ -637,7 +671,7 @@ describe("what is held is offered again when the session can take it", () => {
     await delivery.retry();
     expect(route.carried).toHaveLength(1);
 
-    sessions.states.set(OTHER_SID, "live");
+    sessions.in(OTHER_SID, "live");
     await delivery.retry();
 
     expect(route.texts()).toEqual(["while away", "while away"]);

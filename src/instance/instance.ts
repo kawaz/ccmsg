@@ -155,17 +155,17 @@ export async function start(options: StartOptions = {}): Promise<StartOutcome> {
     // program that was named and cannot be run is a setting that cannot be
     // honoured (DV-Q9).
     const helper = translateSetup(config.upstream, paths.configFile);
-    // 5. `self`, for an instance that has a mesh.
+    // 4. `self`, for an instance that has a mesh.
     //
-    // §8.3 puts this before the listen, and it cannot be: settling `self` means
-    // asking every endpoint in the list who it is, this instance included, and
-    // the probe it sends itself has to arrive at a listener. So the WebSocket
-    // is bound first and handed to the instance, which keeps the two things the
-    // order was for — nothing derived from `self` exists before `self` does,
-    // and a list this instance cannot find itself in ends the start.
+    // Settling `self` means asking every endpoint in the list who it is, this
+    // instance included, and the probe it sends itself has to arrive at a
+    // listener — so the WebSocket is bound here and handed to the instance.
+    // What the order is for holds either way: nothing derived from `self`
+    // exists before `self` does, and a list this instance cannot find itself
+    // in ends the start.
     const mesh = meshFor(config, log, options.meshTiming);
     const wiring = mesh === undefined ? undefined : await bindForMesh(config, paths, mesh);
-    // 4-7 are the instance's own construction and listen.
+    // 5-7 are the instance's own construction and listen.
     const instance = new Instance(
       paths,
       config,
@@ -307,7 +307,7 @@ export class Instance {
     this.#mesh = wiring?.mesh;
     this.#boundWs = wiring?.ws;
     this.#entryToken = wiring?.token;
-    // 5. `self`. A mesh instance was told which of its endpoints it is, by
+    // 4. `self`. A mesh instance was told which of its endpoints it is, by
     // asking all of them (§7.1). One without a mesh has no list to be found in,
     // so it is named after where it listens — unique per config home, which is
     // all anything below mesh uses it for.
@@ -375,7 +375,7 @@ export class Instance {
       ...(pollMs === undefined ? {} : { pollMs }),
     });
 
-    // 4. `last_live`, read by the sessions domain as it is constructed.
+    // 5. `last_live` and the inbox, read as the domains are constructed.
     this.#sessions = new Sessions({
       self: this.self,
       configHome: paths.configHome,
