@@ -12,7 +12,10 @@ export type DispatchResult =
 
 /** The reply envelope, built here and nowhere else so the wire shape stays in
  * one place (daemon-v2 §11.1). */
-export function reply(requestId: string, body: unknown): DispatchResult {
+export function reply(
+  requestId: string,
+  body: unknown,
+): Extract<DispatchResult, { kind: "reply" }> {
   const fields = typeof body === "object" && body !== null ? (body as Record<string, unknown>) : {};
   return { kind: "reply", response: { ok: true, request_id: requestId, ...fields } };
 }
@@ -21,7 +24,7 @@ export function failure(
   requestId: string | undefined,
   code: ErrorCode,
   msg: string,
-): DispatchResult {
+): Extract<DispatchResult, { kind: "error" }> {
   const response: ErrorResponse =
     requestId === undefined
       ? { ok: false, error: { code, msg } }
