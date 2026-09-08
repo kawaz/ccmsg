@@ -1,6 +1,6 @@
 ---
 title: 設計文書への追記 (dumps/, 起動順, 時間閾値の根拠, hello 直列性, polled_at 省略理由, inbox at-most-once)
-status: open
+status: resolved
 category: task
 created: 2026-09-09T00:19:04+09:00
 last_read:
@@ -9,10 +9,10 @@ wip_entered:
 blocked_entered:
 pending_entered:
 discarded_entered:
-resolved_entered:
+resolved_entered: 2026-09-09T03:30:30+09:00
 discard_reason:
 pending_reason:
-close_reason:
+close_reason: ["done:v0.0.20 で DESIGN-ja/DESIGN に §1.3 時間閾値、§3.6 dumps/ と4種、§3.1 hello直列性、§4.3 at-most-once、§6.2 polled_at、§8.3 起動順を反映 (commit dc8345eb)"]
 blocked_by:
 origin: 2026-09-08 の設計監査 (fable5-high)
 ---
