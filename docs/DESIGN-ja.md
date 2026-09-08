@@ -414,7 +414,10 @@ config を変えたら instance を再起動する、が唯一の反映手順に
    自己識別の失敗と同じく、設定ミスは起動時に落とす
 4. `last_live` の読み込み
 5. `self` の確定 (§7.1)。確定できなければ起動失敗 (mesh を持つ構成の場合)
-6. listen (UDS → HTTP/WS)。pid の記録は listen より前
+6. listen (UDS → HTTP/WS)。pid の記録は listen より前。UDS が実際に bind するのは
+   `daemon.<pid>.sock` で、クライアントが使う安定 path `daemon.sock` は accept 開始後に
+   symlink を一時名で作って rename し、atomic に差し替える (§8.5)。listen の前に、
+   実 path のうち pid が既に死んでいるものを掃除する (ロックの引き継ぎと同じ判定)
 7. peers への dial (§7.2)
 
 **upstream の監視 (transcript tail / `sessions/` / gateway) は起動時に始めない。** 購読が
@@ -441,7 +444,12 @@ config を変えたら instance を再起動する、が唯一の反映手順に
 4. 永続化するもの (§3.6) を確定させる
 5. 資源を手放す。**UDS を最後に閉じる** — クライアントは「UDS に繋がらない」を退去完了として
    観測するので、後継と競合しうる資源 (HTTP listener / pid / ロック) を全部手放してから閉じる。
-   socket の path 自体は消さない (消すと後継が作った新しい socket を消す)
+   閉じることで消えるのは自分が bind した `daemon.<pid>.sock` だけで、安定 path の symlink は
+   触らない (後継が既に自分へ付け替えているかもしれない。自分を指したままの dangling symlink は
+   「UDS に繋がらない」= 退去完了の観測として本項の意味論どおり)
+
+listen した path が stop で unlink されるのは Bun の挙動 (1.3.13 実測)。実 path と安定 path を
+分けるのは、退去する instance が後継の受け取った address を消さないためである。
 
 この順序は旧 daemon で規約として確立しているので引き継ぐ。
 

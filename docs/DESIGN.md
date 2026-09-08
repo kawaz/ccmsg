@@ -470,7 +470,11 @@ sole way to make a config change take effect.
 4. Load `last_live`
 5. Determine `self` (§7.1). If it cannot be determined, startup fails (for configurations that
    have mesh)
-6. listen (UDS → HTTP/WS). Recording the pid happens before listen
+6. listen (UDS → HTTP/WS). Recording the pid happens before listen. What UDS actually binds
+   is `daemon.<pid>.sock`; the stable path clients use, `daemon.sock`, is swapped in
+   atomically once the listener is accepting, by creating the symlink under a temporary name
+   and renaming it (§8.5). Before listen, real paths whose pid is already gone are swept (the
+   same test the lock takeover uses)
 7. Dial to peers (§7.2)
 
 **Watching upstream (transcript tail / `sessions/` / gateway) does not begin at startup.**
@@ -501,8 +505,14 @@ either," so it sits waiting for connections only.
 4. Finalize what must be persisted (§3.6)
 5. Release resources. **Close UDS last** — clients observe "cannot connect to UDS" as
    completion of withdrawal, so release every resource that could contend with a successor
-   (HTTP listener / pid / lock) before closing it. Do not remove the socket path itself
-   (removing it would delete the new socket the successor created)
+   (HTTP listener / pid / lock) before closing it. Closing removes only the
+   `daemon.<pid>.sock` this process bound; the stable path's symlink is left alone (a
+   successor may have already pointed it at itself, and a dangling symlink still pointing here
+   is exactly the "cannot connect to UDS" that this clause means by completed withdrawal)
+
+That the path a listener bound is unlinked when it stops is Bun's behaviour (measured on
+1.3.13). Separating the real path from the stable one is what keeps a departing instance from
+deleting the address its successor has taken over.
 
 This order is already established as convention in the old daemon, so it carries over.
 
