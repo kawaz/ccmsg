@@ -131,6 +131,7 @@ route, and it is limited to ops whose attribute table declares `scope`.**
 | topics | the current value and subscribers per topic (§6) | the owner of each value (the two below, or upstream) |
 | transcript | one tail per sid, and the fold built from it | file (written by Claude Code) |
 | upstream | values copied from `sessions/<pid>.json` / llm-gateway | external (§3.5) |
+| mesh | the last whole value each peer stated on a cluster-wide topic, and the mark saying whether it can be reached (§7.4 / §7.5) | the originating instance |
 
 **The transcript's fold is a single one.** The old daemon had status / errors / user-input
 independently fold the same line through 3 lineages. v2 shapes it as tail 1 → fold 1 →

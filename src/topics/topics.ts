@@ -47,6 +47,18 @@ export interface UpstreamResource {
   snapshot(topic: string, conn: Requester): readonly TopicValue[];
 }
 
+/** The rest of the cluster, as the topic mechanism sees it (§7.4).
+ *
+ * Two things, both about topics that carry a whole value per instance: what
+ * the other instances have already stated, and whether anyone here is
+ * listening — because what a subscriber asks of this instance is what this
+ * instance asks of its peers. The mesh implements it; an instance without one
+ * has no other instance to hear from. */
+export interface RemoteTopics {
+  snapshot(topic: string): readonly TopicValue[];
+  demand(topic: string, wanted: boolean): void;
+}
+
 /** One instance's topics: subscribers, the way a value reaches them, and the
  * suppression every topic shares.
  *
@@ -69,6 +81,7 @@ export class Topics {
   constructor(
     private readonly self: InstanceId,
     private readonly capabilities: ReadonlySet<Capability>,
+    private readonly remote?: RemoteTopics,
   ) {}
 
   /** Bind the resource that feeds a kind of topic. */
@@ -132,6 +145,9 @@ export class Topics {
       // starting is held rather than pushed as a change to a subscriber that
       // has not had its snapshot yet.
       this.#upstream.get(kind)?.start(topic);
+      // The subscription travels with the same trigger the local resource has:
+      // one listener starts it, none stops it (§6.3, §7.4).
+      this.remote?.demand(topic, true);
     }
     if (!subscribers.has(conn)) {
       subscribers.add(conn);
@@ -141,6 +157,13 @@ export class Topics {
     // answers nothing, as does one with no value to state (§6.2, event), and
     // in both cases the subscriber starts at the next thing that happens.
     for (const value of this.#upstream.get(kind)?.snapshot(topic, conn) ?? []) {
+      conn.deferSend(this.#frame(topic, value.instance, value.data, true));
+    }
+    // What the other instances last stated, under their own names. A whole
+    // value per instance means the subscriber folds these beside ours instead
+    // of choosing between them (§6.2), and an instance that has gone is still
+    // among them until its value is given up (§7.5).
+    for (const value of this.remote?.snapshot(topic) ?? []) {
       conn.deferSend(this.#frame(topic, value.instance, value.data, true));
     }
     return "ok";
@@ -160,6 +183,7 @@ export class Topics {
     // stopped would suppress the first frame after it starts again.
     this.#lastSent.delete(topic);
     this.#upstream.get(kind)?.stop(topic);
+    this.remote?.demand(topic, false);
     return "ok";
   }
 

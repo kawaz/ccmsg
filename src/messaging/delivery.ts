@@ -14,7 +14,12 @@ import type {
   UndeliveredReason,
 } from "@ccmsg/protocol";
 import { USER_SENDER } from "@ccmsg/protocol";
-import { type HandlerInput, OpError, type Requester } from "../dispatch/index.ts";
+import {
+  type DispatchResult,
+  type HandlerInput,
+  OpError,
+  type Requester,
+} from "../dispatch/index.ts";
 import type { TopicValue, UpstreamResource } from "../topics/index.ts";
 import type { DirectRoute } from "./direct.ts";
 import type { Inbox } from "./inbox.ts";
@@ -32,9 +37,28 @@ export interface SessionLookup {
   peers(): { peers: PeerInfo[]; last_live: LastLiveSession[] };
 }
 
+/** The rest of the cluster, for a message addressed outside this instance.
+ *
+ * `message_send` is a `cluster` op — any instance may be asked — but a message
+ * reaches a session through the session's own connections, which are held by
+ * the instance it greeted. So the op is answered here by carrying it there
+ * (§3.2 step 6 is about `instance-local` ops; this is the same forwarding for
+ * the one op whose subject is elsewhere while its op is not). */
+export interface Cluster {
+  /** Which instance holds this session, or nothing when the cluster has not
+   * named it. */
+  ownerOf(sid: Sid): InstanceId | undefined;
+  /** Whether an instance that might hold it cannot be asked right now. */
+  anyUnreachable(): boolean;
+  forward(to: InstanceId, frame: Record<string, unknown>): Promise<DispatchResult>;
+}
+
 export interface DeliveryDeps {
   readonly self: InstanceId;
   readonly sessions: SessionLookup;
+  /** Absent on an instance with no mesh, where every session it can name is
+   * its own. */
+  readonly cluster?: Cluster;
   readonly inbox: Inbox;
   /** Route (a). Off until it is confirmed against a running harness, which is
    * condition 0 of §4.1 and is why this is handed in rather than built here. */
@@ -66,6 +90,8 @@ export class Delivery implements UpstreamResource {
     const to = args.to;
     const state = this.deps.sessions.classify(to);
     if (state === undefined) {
+      const elsewhere = await this.#elsewhere(to, input);
+      if (elsewhere !== undefined) return elsewhere;
       throw new OpError("session_not_found", `no session ${to}`);
     }
     const message = this.#message(args, this.#sender(input));
@@ -87,6 +113,40 @@ export class Delivery implements UpstreamResource {
     const { evicted } = this.deps.inbox.hold(to, message);
     return this.#undelivered(to, evicted ? "inbox_full" : this.#reason(state));
   };
+
+  /** A session this instance does not hold: carried to the instance that does,
+   * or named as one the cluster cannot answer for right now.
+   *
+   * Nothing when the cluster has no such session anywhere and every instance
+   * could be asked — which is the only case `session_not_found` covers (§4.2).
+   * While an instance is out of reach the sid may well be its, so the sender is
+   * told the reason rather than that the session does not exist. The message is
+   * not held here either: the inbox that would offer it again is the one on the
+   * instance that owns the session (§4.3). */
+  async #elsewhere(to: Sid, input: HandlerInput): Promise<MessageSendResult | undefined> {
+    const cluster = this.deps.cluster;
+    if (cluster === undefined) return undefined;
+    const owner = cluster.ownerOf(to);
+    if (owner === undefined || owner === this.deps.self) {
+      return cluster.anyUnreachable()
+        ? { delivered: false, reason: "instance_unreachable" }
+        : undefined;
+    }
+    const answer = await cluster.forward(owner, input.args);
+    if (answer.kind === "reply") {
+      const { ok: _ok, request_id: _id, ...body } = answer.response;
+      return body as unknown as MessageSendResult;
+    }
+    if (answer.kind === "error" && answer.response.error.code === "instance_unreachable") {
+      return { delivered: false, reason: "instance_unreachable" };
+    }
+    // Anything else is the owning instance refusing the op itself, and the
+    // refusal is its to state.
+    throw new OpError(
+      answer.kind === "error" ? answer.response.error.code : "internal_error",
+      answer.kind === "error" ? answer.response.error.msg : `${owner} did not answer`,
+    );
+  }
 
   // --- UpstreamResource (§6.3)
 

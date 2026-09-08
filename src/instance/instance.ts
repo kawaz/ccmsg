@@ -100,6 +100,10 @@ export interface MeshTiming {
   readonly heartbeatMs?: number;
   readonly heartbeatTimeoutMs?: number;
   readonly reconnectMinMs?: number;
+  readonly forwardTimeoutMs?: number;
+  /** The clock the retention window of §7.5 is read against, so a test can
+   * pass it without waiting a week. */
+  readonly now?: () => Timestamp;
 }
 
 /** Startup found another instance already serving this config home. Nothing
@@ -319,7 +323,16 @@ export class Instance {
           : { terminal_gateway: config.upstream.terminal_gateway }),
       }),
     ]);
-    this.#topics = new Topics(this.self, this.#capabilities);
+    // The mesh is the rest of the cluster as the topic mechanism sees it: what
+    // the peers have stated, and where a local subscription has to travel to
+    // (§7.4). An instance without one has no other instance to hear from.
+    this.#topics = new Topics(this.self, this.#capabilities, this.#mesh);
+    this.#mesh?.bind({
+      handle: (frame, conn) => this.handle(frame, conn),
+      publish: (topic, data, instance) => {
+        this.#topics.publish(topic, data, instance);
+      },
+    });
 
     // What the gateway saw. It feeds two topics and one input of the sessions
     // domain (§5.1), so it is built before both.
@@ -400,6 +413,7 @@ export class Instance {
     this.#delivery = new Delivery({
       self: this.self,
       sessions: this.#sessions,
+      ...(this.#mesh === undefined ? {} : { cluster: this.#mesh }),
       inbox,
       direct: this.#direct,
       publish: (topic, data, instance, to) => {
@@ -622,18 +636,16 @@ export class Instance {
 
   /** One frame, from either transport. The re-entry guard of §8.5 step 1 sits
    * here because this is the single door every request comes through. */
-  handle(frame: unknown, conn: Requester): Promise<DispatchResult> {
+  async handle(frame: unknown, conn: Requester): Promise<DispatchResult> {
     if (this.#stopping) {
-      return Promise.resolve(
-        failure(requestIdOf(frame), "bad_request", `${this.self} is shutting down`),
-      );
+      return failure(requestIdOf(frame), "bad_request", `${this.self} is shutting down`);
     }
     // A frame that is not an op: the mesh handshake's own traffic, which the
     // op vocabulary has no name for (contract, `Plane`). It is taken here
     // because this is the one door, and it decides nothing — the judgement is
     // in the `hello` handler, which is the only thing that settles a peer.
     if (this.#mesh?.frame(conn, frame) === true) {
-      return Promise.resolve({ kind: "none" });
+      return { kind: "none" };
     }
     if (this.#mesh !== undefined) {
       // Mid-handshake, an ordinary request is a protocol violation rather than
@@ -641,24 +653,20 @@ export class Instance {
       // and one that does is dropped rather than buffered (mesh-peer-auth §5.8).
       if (this.#mesh.handshaking(conn)) {
         conn.close();
-        return Promise.resolve(
-          failure(
-            requestIdOf(frame),
-            "bad_request",
-            "a peer waits for its acknowledgement before it speaks",
-          ),
+        return failure(
+          requestIdOf(frame),
+          "bad_request",
+          "a peer waits for its acknowledgement before it speaks",
         );
       }
       // Let in as a peer rather than on the entry token, and still unproven:
       // the greeting is the one thing it was admitted to make.
       if (this.#mesh.unproven(conn) && opOf(frame) !== "hello") {
         conn.close();
-        return Promise.resolve(
-          failure(
-            requestIdOf(frame),
-            "hello_required",
-            "a peer connection greets before anything else",
-          ),
+        return failure(
+          requestIdOf(frame),
+          "hello_required",
+          "a peer connection greets before anything else",
         );
       }
     }
@@ -670,15 +678,34 @@ export class Instance {
     if (identity.state === "settled" && identity.sid !== undefined) {
       this.#sessions.touch(identity.sid);
     }
-    return dispatch(frame, conn, {
+    // A request a proven peer carried here acts as that peer rather than as
+    // the connection's own role (§7.3): the link is what the destination can
+    // check, and the envelope says nothing about who called.
+    const caller = this.#mesh?.actor(conn) ?? conn;
+    const decided = await dispatch(frame, caller, {
       self: this.self,
       capabilities: this.#capabilities,
-      // Nothing routes to another instance yet: every subject this instance
-      // can name belongs to it, and the `peers` topic that would say otherwise
-      // (§7.3) carries only its own sessions.
-      resolveInstance: () => undefined,
+      resolveInstance: (_op, fields) => this.#owner(fields),
       handlers: this.#handlers,
     });
+    if (decided.kind !== "forward") return decided;
+    // The op belongs to another instance. Mesh carries it and brings the
+    // answer back under the id the caller used (§7.3); without a mesh there is
+    // nothing that can reach it, which the driver names.
+    return this.#mesh === undefined ? decided : await this.#mesh.forward(decided.to, decided.frame);
+  }
+
+  /** Which instance owns the subject of an instance-local op.
+   *
+   * The subject is the session an op names, and an op that names none is about
+   * this instance and stays here. A session this instance holds is its own
+   * whatever the cluster last said; one it does not hold is looked for in the
+   * routing table the `peers` topic is (§7.3). */
+  #owner(fields: Record<string, unknown>): InstanceId | undefined {
+    const sid = fields["sid"];
+    if (typeof sid !== "string" || this.#mesh === undefined) return undefined;
+    if (this.#sessions.classify(sid as Sid) !== undefined) return undefined;
+    return this.#mesh.ownerOf(sid as Sid);
   }
 
   /** Stop, in the order of §8.5. Repeating it waits for the first one. */

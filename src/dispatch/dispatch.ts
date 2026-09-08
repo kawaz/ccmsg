@@ -88,7 +88,17 @@ export async function dispatch(
     );
   }
 
-  // 6. an instance-local op whose subject belongs elsewhere goes to mesh
+  // 6. an instance-local op whose subject belongs elsewhere goes to mesh.
+  //
+  // A request that has already been here is dropped before that: a cycle in
+  // the routing would otherwise send it round the same instances until every
+  // deadline expired (§7.3). It is answered rather than left unanswered,
+  // because the caller learns the same thing sooner and the code is the one
+  // the contract gives a destination that could not be reached.
+  const hops = fields["hops"];
+  if (Array.isArray(hops) && hops.includes(deps.self)) {
+    return failure(requestId, "instance_unreachable", `${op} came back to ${deps.self}`);
+  }
   if (attrs.locality === "instance-local") {
     const asked = fields["to_instance"];
     const target = typeof asked === "string" ? asked : deps.resolveInstance(op, fields);

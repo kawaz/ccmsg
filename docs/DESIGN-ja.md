@@ -120,6 +120,7 @@ role を実装に露出させる唯一の経路である。
 | topics | topic ごとの現在値と購読者 (§6) | 各値の持ち主 (下 2 つ or upstream) |
 | transcript | sid ごとの tail 1 本と、そこから作る fold | ファイル (Claude Code が書く) |
 | upstream | `sessions/<pid>.json` / llm-gateway から写した値 | 外部 (§3.5) |
+| mesh | 各 peer が最後に述べた cluster 全体の topic の全量と、その到達可否の印 (§7.4 / §7.5) | 発生元の instance |
 
 **transcript の fold は 1 本にする。** 旧 daemon は同じ 1 行を status / errors / user-input の
 3 系統が独立に fold していた。v2 は tail 1 本 → fold 1 本 → そこから各 topic の値を導く形にする
