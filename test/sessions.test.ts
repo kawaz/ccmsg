@@ -16,7 +16,7 @@ import { Topics } from "../src/topics/index.ts";
 import { classify, LastLiveStore, type SessionInputs, Sessions } from "../src/sessions/index.ts";
 import { connAs, SELF, SID, OTHER_SID, TestConn } from "./frames.ts";
 
-/** A throwaway config home under /private/tmp, which is where the harness's
+/** A throwaway config home under the OS temp dir, which is where the harness's
  * `sessions/` and this instance's state directory both hang. */
 function home() {
   const root = mkdtempSync(join(tmpdir(), "ccmsg-sessions-"));

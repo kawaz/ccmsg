@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   type HelloResult,
@@ -80,7 +81,7 @@ afterEach(async () => {
 function bindUds(): Bound {
   const conns = new ConnRegistry();
   const seen: Conn[] = [];
-  const path = join(mkdtempSync("/private/tmp/ccmsg-transport-"), "ccmsg.sock");
+  const path = join(mkdtempSync(join(tmpdir(), "ccmsg-transport-")), "ccmsg.sock");
   const transport = new Transport();
   transport.add(listenUds({ path, conns, handle, onConn: (conn) => seen.push(conn) }));
   running.push(transport);
