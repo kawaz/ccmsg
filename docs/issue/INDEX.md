@@ -7,6 +7,7 @@ active な issue の一覧。close 済みは archive/ にあり、ここには�
 | 2026-09-09 | design | open | [mesh-tls-trust-root](./2026-09-09-mesh-tls-trust-root.md) | mesh-peer-auth の信頼の根は TLS サーバ証明書 (2 層) だが、daemon の listener... |
 | 2026-09-09 | design | open | [sandbox-grant-delivery-path](./2026-09-09-sandbox-grant-delivery-path.md) | sandbox_grant は capability URL を発行するが、`SandboxGrants.find` の呼び... |
 | 2026-09-09 | design | open | [daemon-invented-limits-contract-promotion](./2026-09-09-daemon-invented-limits-contract-promotion.md) | daemon 実装が独自に決めている上限値 (`TITLE_MAX` / `READ_LIMIT` / `transcri... |
+| 2026-09-09 | bug | open | [remaining-load-flakes](./2026-09-09-remaining-load-flakes.md) | 負荷下でのみ稀に落ちるテストが 2 件ある (2026-09-09 観測、未対応)。timeout ... |
 
 <!--
 INDEX の列構成・canonical 順序・行形式の唯一の正本:
