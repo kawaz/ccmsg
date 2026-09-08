@@ -184,7 +184,7 @@ delivery means, and determining the reason for non-delivery.
 
 | Route | Content | Prerequisites |
 |---|---|---|
-| (a) Directly to Claude Code's messaging socket | Connect to the `messagingSocketPath` in `sessions/<pid>.json`, authenticate with the config home's 0600 `peerToken` key, then write a user frame | Unofficial protocol. `peerProtocol` generation must match. **Not verified on real hardware** |
+| (a) Directly to Claude Code's messaging socket | Connect to the `messagingSocketPath` in `sessions/<pid>.json`, authenticate with the config home's 0600 `peerToken` key, then write a user frame | Unofficial protocol. `peerProtocol` generation must match |
 | (b) Push as a delta of the `inbox` topic | Delivered via the receiving session's subscription (a long-running process holding a subscribe) | The session must be subscribed |
 
 **Prefer (a); fall back to (b) on failure** (DV-Q1). Two reasons.
@@ -200,14 +200,31 @@ delivery means, and determining the reason for non-delivery.
 Route (a) applies **only when every condition is satisfied**. If even one is missing, it falls
 back to (b) without further judgment.
 
-0. **The feature flag is enabled** — since (a) has not been verified on real hardware, it is
-   disabled by default until verification is complete. While the flag is disabled, delivery is
-   accomplished by (b) alone (the fallback simply becomes the everyday route; the semantics of
-   delivery do not change)
+0. **The feature flag is enabled** — verified on real hardware, so it is enabled by default
+   and can be turned off in config (while it is off, delivery is accomplished by (b) alone —
+   the fallback simply becomes the everyday route; the semantics of delivery do not change)
 1. `sessions/<pid>.json` has `messagingSocketPath` and a known `peerProtocol`
 2. The corresponding key file can be read by ourselves (= same uid, same config home,
    matching A2 / A4)
-3. The send's ack returns within the deadline
+3. The receiving side does not say, within the deadline, that it did not take the message
+
+Condition 3 is settled on **a separate delivery-status socket, not on the connection the
+message was written to**. That connection is one-way: the receiving side writes not a single
+byte back. When it does have something to say, it writes a `peer_message_status` to the address
+the user frame's `from` named. So ccmsg holds a UDS of its own (0600) and passes it as
+`uds:<path>` in `from`.
+
+**The receiving side sends no positive acknowledgement.** A message it accepts gets nothing
+back; `refused` / `denied` / `dropped` / `expired` / `held` are raised only where it does not
+take the message (2.1.263's inbound gate). So silence within the deadline reads as "it
+arrived," and one of those arriving reads as the drop of §4.4. The deadline's value has no
+primary source (**provisional**). What can be said for it is that the receiving side raises the
+receipt from the same gate decision, so it is one UDS round trip away on this same host.
+
+The status socket **lives beside the target's socket, not in the state directory**. The
+receiving side vets the reply address and discards anything outside its own socket namespace as
+`reply address unshaped or outside our socket namespace` (2.1.263), so sitting next to it is
+the only way to hear anything at all.
 
 `from` is fixed to a ccmsg-defined value (user input never passes through it).
 
@@ -281,10 +298,19 @@ drifts per instance.
 | Input | What it tells us | How it's obtained |
 |---|---|---|
 | Connection | Whether it's talking to ccmsg, and when it last did | transport (events) |
-| Each `sessions/<pid>.json` in `sessions/` | **The session's existence** and `waiting` (dialog), the messaging socket | Own config home only (M6). File watching |
+| Each `sessions/<pid>.json` in `sessions/` | **The session's existence** and `waiting` (dialog), the messaging socket | Own config home only (M6). **Read where a judgement needs it** |
 | llm-gateway's request / response | **Whether inference is actually running** (= busyness) | webhook (push) |
 | `last_live` + `stopped_at` | Previously running / intentionally stopped | a file we wrote ourselves |
 | transcript's fold | Whether it's stopped on an API error, the last human input | tail |
+
+**The classification's inputs do not depend on subscription.** Reading `sessions/` and
+watching it are two different things, and what §6.3 makes subordinate to subscription is only
+the latter. Which sessions exist is a fact about the instance itself, so the directory is read
+where a judgement needs it: `message_send` deciding on an addressee, the recompute that writes
+`last_live`, and classification. The watch and its poll are the resource that pushes a change
+to subscribers, not the route by which an answer is obtained. Confusing the two makes a live
+session `session_not_found` while nobody is subscribed, and writes a session that is still
+running into `last_live` as gone.
 
 **No subprocess for `claude agents`** (DV-Q6). Watching our own config home's `sessions/`
 yields the same set, so the child-process launch every 5 seconds disappears entirely (M3).
@@ -335,7 +361,7 @@ The contract defines only one shape: "immediately after `topic_subscribe`, a fra
 | Current value | Stated by its owner (§3.3). All topics hold is the wire form of the last frame sent |
 | Subscribers | A set of connections |
 | Update entry point | A single function that domain uses to hand in "a new value" |
-| Suppression | Do not send if identical to the last value sent (**a single implementation shared by all topics**, M5) |
+| Suppression | **For the granularities that replace the value**, do not send if identical to the last value sent (**a single implementation shared by all topics**, M5) |
 
 The old daemon had suppression on only 3 topic-equivalents, and each was a separate
 implementation. v2 builds suppression into the topic mechanism itself, so "this topic has no
@@ -351,10 +377,16 @@ suppression" can never happen.
 | Append (byte offset) | `transcript:<sid>` |
 | Event (no value held) | `notify` |
 
-**Event** alone holds no current value. What matters is that it happened, so subscribing
-produces no snapshot and a repeat is not suppressed ("do not send it if it equals the last one"
-means something only where a value is held). Suppression stays one implementation, which reads
-the granularity and lets these through.
+**Suppression applies to the two full-replacement granularities only** (`whole` /
+`per_instance_whole`). Sending the same full value again leaves the subscriber holding what it
+already holds, so there is nothing in it to send.
+
+**The delta granularities (`element` / `append`) and `event` pass straight through.** Two
+frames with the same content are two things happening, not a duplicate — offering an inbox
+message again is the one chance to reach a peer that was not listening the first time, and
+restating a `kv` entry is itself the operation. **Event** additionally holds no current value,
+so subscribing to it produces no snapshot. Suppression stays one implementation, which reads
+the contract's granularity to decide where it applies.
 
 **Full replacement per instance** is the key to mesh. A frame always carries its originating
 `instance`, and subscribers replace "only that instance's portion." Other instances' portions
@@ -368,6 +400,9 @@ same topic name.
 - **Upstream resources run only while there are subscribers.** When `transcript:<sid>`'s
   subscriber count reaches 0, stop the tail; when `agents`'s subscriber count reaches 0, stop
   watching `sessions/`. Subscriptions are the sole driver of a resource's lifecycle
+- What is subordinate to subscription here is **only the watch that pushes changes**, never
+  **reading what the state is right now**. Asking an owner for its current value (§3.3) and the
+  classification inputs of §5.1 give the same answer with zero subscribers
 - An instance whose cluster-wide topic has been subscribed to also subscribes to the same
   topic on each mesh peer, and streams the received frames straight through to its own
   subscribers (keeping the originating `instance` intact) (§7.4)

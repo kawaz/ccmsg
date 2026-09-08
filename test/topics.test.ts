@@ -104,14 +104,26 @@ describe("the subscription is the whole of what a topic holds (§6.1)", () => {
   });
 });
 
+/** A topic whose frames replace the value they carry, and one payload the
+ * contract accepts for it. Suppression is about those: a repeated whole value
+ * leaves the subscriber holding what it already holds. */
+const PEERS = "peers";
+const PEER_LIST = { peers: [], last_live: [] };
+
+/** Which topics the rule covers, read off the contract rather than listed
+ * here: the granularity is what decides, so a topic added to the contract
+ * joins whichever of these two cases its granularity puts it in. */
+const REPLACING = (kind: TopicKind) =>
+  topicGranularity(kind) === "whole" || topicGranularity(kind) === "per_instance_whole";
+
 describe("suppression is one implementation, and it is every topic's (M5)", () => {
   test("the same value twice is pushed once", () => {
     const hub = topics();
     const conn = connAs("user");
-    hub.subscribe(conn, KV);
+    hub.subscribe(conn, PEERS);
 
-    hub.publish(KV, ENTRIES);
-    hub.publish(KV, { ...ENTRIES });
+    hub.publish(PEERS, PEER_LIST);
+    hub.publish(PEERS, { ...PEER_LIST });
 
     expect(conn.topics()).toHaveLength(1);
   });
@@ -119,18 +131,17 @@ describe("suppression is one implementation, and it is every topic's (M5)", () =
   test("a value that differs is pushed, and repeating it is suppressed again", () => {
     const hub = topics();
     const conn = connAs("user");
-    hub.subscribe(conn, KV);
+    hub.subscribe(conn, PEERS);
 
-    hub.publish(KV, { count: 1 });
-    hub.publish(KV, { count: 2 });
-    hub.publish(KV, { count: 2 });
+    hub.publish(PEERS, { count: 1 });
+    hub.publish(PEERS, { count: 2 });
+    hub.publish(PEERS, { count: 2 });
 
     expect(conn.topics().map((frame) => frame["data"])).toEqual([{ count: 1 }, { count: 2 }]);
   });
 
-  test("every topic that holds a value is suppressed, not a chosen few", () => {
-    const holdsAValue = (kind: TopicKind) => topicGranularity(kind) !== "event";
-    for (const kind of (Object.keys(TOPIC_ATTRIBUTES) as TopicKind[]).filter(holdsAValue)) {
+  test("every topic whose frames replace the value is suppressed, not a chosen few", () => {
+    for (const kind of (Object.keys(TOPIC_ATTRIBUTES) as TopicKind[]).filter(REPLACING)) {
       const hub = topics();
       const conn = connAs(allowedRole(kind));
       const name = topicName(kind);
@@ -138,6 +149,23 @@ describe("suppression is one implementation, and it is every topic's (M5)", () =
       hub.publish(name, { same: true });
       hub.publish(name, { same: true });
       expect([kind, conn.topics().length]).toEqual([kind, 1]);
+    }
+  });
+
+  test("a topic whose frames are deltas repeats them, because a repeat is a second one", () => {
+    // The same message offered to a session twice is two offers, and the
+    // second is the one that reaches a session that was not listening for the
+    // first. Suppressing it would drop the delivery, not a duplicate.
+    for (const kind of (Object.keys(TOPIC_ATTRIBUTES) as TopicKind[]).filter(
+      (candidate) => !REPLACING(candidate) && topicGranularity(candidate) !== "event",
+    )) {
+      const hub = topics();
+      const conn = connAs(allowedRole(kind));
+      const name = topicName(kind);
+      expect([kind, hub.subscribe(conn, name)]).toEqual([kind, "ok"]);
+      hub.publish(name, { same: true });
+      hub.publish(name, { same: true });
+      expect([kind, conn.topics().length]).toEqual([kind, 2]);
     }
   });
 

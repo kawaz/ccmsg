@@ -1,11 +1,8 @@
+import { randomBytes } from "node:crypto";
+import { chmodSync, unlinkSync } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
-import { join } from "node:path";
-import {
-  DIRECT_DELIVERY_FROM,
-  type InboxMessage,
-  renderDirectDelivery,
-  type Sid,
-} from "@ccmsg/protocol";
+import { dirname, join } from "node:path";
+import { type InboxMessage, renderDirectDelivery, type Sid } from "@ccmsg/protocol";
 
 /** What route (a) answered (§4.1).
  *
@@ -23,6 +20,9 @@ export type DirectOutcome = "delivered" | "unavailable" | "refused";
 /** Route (a): the harness's own messaging socket. */
 export interface DirectRoute {
   send(sid: Sid, message: InboxMessage): Promise<DirectOutcome>;
+  /** Let go of what the route holds open. The status inbox below is a bound
+   * socket with a name on disk, and it leaves when the instance does (§8.5). */
+  close(): void;
 }
 
 /** Route (a) turned off by config (§4.1 condition 0). Delivery is unchanged by
@@ -32,6 +32,8 @@ export class DisabledDirectRoute implements DirectRoute {
   send(): Promise<DirectOutcome> {
     return Promise.resolve("unavailable");
   }
+
+  close(): void {}
 }
 
 /** The `peerProtocol` generation this speaks. One value, because one is what
@@ -48,38 +50,152 @@ export const PEER_PROTOCOL = 1;
  * message falls to route (b) well inside the turn that sent it. */
 export const DIRECT_ACK_MS = 2_000;
 
-/** How long the connection is held open after the last byte, in case the
- * harness answers that it turned the message away (§4.4).
+/** How long the status inbox is watched for word about this message before the
+ * send is taken to have landed (§4.1 condition 3).
  *
- * Provisional, and short: nothing observed answers on this connection at all, a
- * send that is not refused waits this out before its caller hears anything, and
- * a drop the harness never states is one route (a) cannot report either way. */
-export const DIRECT_SETTLE_MS = 50;
+ * Provisional. What is known from the harness (2.1.263) is where the receipt
+ * is raised, not how long it takes to arrive: the receiving session decides a
+ * peer message at its inbound gate and reports the outcome from that same
+ * decision, so a receipt for a message we have finished writing is one connect
+ * and one line away on a socket of this same host. A quarter second is far
+ * more than that costs and far less than a person waits for `message_send` to
+ * answer. Nothing measured stands behind the number itself. */
+export const DIRECT_STATUS_MS = 250;
 
-/** Why the harness declines a message it did receive, as read out of its flow
- * control (token bucket, duplicate window, hop and queue limits).
+/** What the receiving session says about a message it did not simply take
+ * (harness 2.1.263, `peer_message_status`).
  *
- * These are matched against anything the harness writes back on our own
- * connection. Nothing observed writes there — a real send measured
- * SESSION→CLIENT as zero bytes, and status travels to the `from` inbox socket
- * instead, which is a socket this daemon does not offer (see `FROM`). So this
- * is the defensive half of §4.4: silence is delivery, and a drop is named only
- * if the harness ever names one to us. */
-const DROP_REASONS = new Set([
-  "rate-limited",
-  "duplicate",
-  "hop-loop",
-  "hop-runaway",
-  "queue-full",
-]);
+ * There is no word for the ordinary case. The receipt is raised where a peer
+ * message is turned away, parked or lost, and a message the session accepts
+ * passes its gate without anything being written back — so these are the whole
+ * of what route (a) can hear, and hearing none of them within the window is
+ * what "it arrived" looks like on this route.
+ *
+ * `held` is among them because a parked message is not delivered yet: it waits
+ * on somebody's approval there, which is the same "there, and not taking it
+ * now" that §4.4 keeps in our inbox and offers again. */
+const REFUSING = new Set(["refused", "denied", "dropped", "expired", "held"]);
 
-/** Who the message says it is from (§4.1: fixed by ccmsg, never caller input).
+/** The socket this daemon offers so the receiving session can say what became
+ * of a message (§4.1 condition 3).
  *
- * The contract's, so the frame and the envelope inside it name the same sender.
- * Deliberately not a `uds:<path>` address: that form is the one the harness
- * answers to, and answering a socket that is not there ends the recipient's
- * turn in `state: "failed"` — measured with a sender that had already exited. */
-const FROM = DIRECT_DELIVERY_FROM;
+ * It lives in the directory the target's own socket is in, and not in this
+ * instance's state directory, because the receiving harness vets the address it
+ * would answer before it answers: a reply target outside its socket namespace
+ * is dropped with `reply address unshaped or outside our socket namespace`
+ * (2.1.263). A socket beside the one we are writing to is inside it, so this is
+ * the one place a status can be heard from at all. The name is this process's
+ * pid and eight random hex digits, which is a shape that namespace admits and
+ * that no harness will ever bind for a session of its own.
+ *
+ * Bound once per directory and held for the life of the instance: binding per
+ * send would race a receipt against its own socket going away. */
+class StatusInbox {
+  readonly #waiting = new Map<string, (status: string) => void>();
+  readonly #buffers = new Map<object, string>();
+  #server: ReturnType<typeof Bun.listen> | undefined;
+  readonly #path: string;
+
+  constructor(directory: string) {
+    this.#path = join(directory, `${process.pid}-${randomBytes(4).toString("hex")}.sock`);
+  }
+
+  /** The address to put in `from`, or nothing if the socket could not be
+   * bound. Binding fails on a directory we cannot write, which costs the
+   * route its status channel and nothing else: the message still goes, and
+   * what the session says about it is simply not heard. */
+  address(): string | undefined {
+    if (this.#server !== undefined) return `uds:${this.#path}`;
+    try {
+      this.#server = Bun.listen({
+        unix: this.#path,
+        socket: {
+          data: (socket, chunk) => this.#read(socket, chunk),
+          open: () => {},
+          close: (socket) => {
+            this.#buffers.delete(socket);
+          },
+          error: () => {},
+        },
+      });
+    } catch {
+      return undefined;
+    }
+    // Same-uid by construction (A2 / A4), and stated rather than left to the
+    // umask: what can be written here is what a session is told about.
+    try {
+      chmodSync(this.#path, 0o600);
+    } catch {
+      // The socket is bound and usable; a mode we could not set is not a
+      // reason to give up the channel.
+    }
+    return `uds:${this.#path}`;
+  }
+
+  /** Watch for word about one message, for as long as the caller allows. The
+   * answer is the status the session named, or nothing if it named none. */
+  async status(mid: string, withinMs: number): Promise<string | undefined> {
+    const settled = Promise.withResolvers<string | undefined>();
+    this.#waiting.set(mid, settled.resolve);
+    const deadline = setTimeout(() => settled.resolve(undefined), withinMs);
+    try {
+      return await settled.promise;
+    } finally {
+      clearTimeout(deadline);
+      this.#waiting.delete(mid);
+    }
+  }
+
+  close(): void {
+    this.#server?.stop(true);
+    this.#server = undefined;
+    try {
+      unlinkSync(this.#path);
+    } catch {
+      // Already gone, which is the state this is asking for.
+    }
+  }
+
+  #read(socket: object, chunk: Uint8Array): void {
+    const parts = ((this.#buffers.get(socket) ?? "") + Buffer.from(chunk).toString("utf8")).split(
+      "\n",
+    );
+    this.#buffers.set(socket, parts.pop() ?? "");
+    for (const line of parts) this.#line(line);
+  }
+
+  /** One frame from a session. Only the receipts are read: the address also
+   * reaches the model as somewhere it could answer, so a reply may arrive here
+   * as an ordinary message — and a reply belongs in the conversation the
+   * contract routes it through, not in a socket that only settles sends. */
+  #line(line: string): void {
+    if (line.trim() === "") return;
+    let frame: Record<string, unknown>;
+    try {
+      const parsed: unknown = JSON.parse(line);
+      if (typeof parsed !== "object" || parsed === null) return;
+      frame = parsed as Record<string, unknown>;
+    } catch {
+      return;
+    }
+    if (frame["action"] !== "peer_message_status") return;
+    const status = frame["status"];
+    if (typeof status !== "string") return;
+    for (const mid of named(frame)) this.#waiting.get(mid)?.(status);
+  }
+}
+
+/** Which of our messages a receipt is about: the one it answers, and any it
+ * names as lost alongside (harness 2.1.263 reports a queue-full drop against
+ * every message it shed). */
+function named(frame: Record<string, unknown>): string[] {
+  const original = frame["orig_msg_id"];
+  const dropped = frame["dropped_msg_ids"];
+  return [
+    ...(typeof original === "string" ? [original] : []),
+    ...(Array.isArray(dropped) ? dropped.filter((id): id is string => typeof id === "string") : []),
+  ];
+}
 
 /** The state file of one session, as far as route (a) reads it. */
 interface HarnessTarget {
@@ -92,6 +208,8 @@ export interface SocketRouteOptions {
    * both the state files and the keys. */
   readonly configHome: string;
   readonly ackMs?: number;
+  /** How long a receipt has to arrive before the message counts as taken. */
+  readonly statusMs?: number;
 }
 
 /** Route (a) against the harness's messaging socket (§4.1).
@@ -108,18 +226,57 @@ export interface SocketRouteOptions {
 export class ClaudeCodeSocketRoute implements DirectRoute {
   readonly #sessionsDir: string;
   readonly #ackMs: number;
+  readonly #statusMs: number;
+  /** One status inbox per directory sessions' sockets live in. A host has one
+   * such directory in practice; the map is what keeps that from being an
+   * assumption. */
+  readonly #inboxes = new Map<string, StatusInbox>();
 
   constructor(options: SocketRouteOptions) {
     this.#sessionsDir = join(options.configHome, "sessions");
     this.#ackMs = options.ackMs ?? DIRECT_ACK_MS;
+    this.#statusMs = options.statusMs ?? DIRECT_STATUS_MS;
   }
 
+  /** One send, and what the session made of it.
+   *
+   * The message is written, and then the receipt channel is watched for word
+   * about it. What can arrive is a session saying it did not take the message
+   * (§4.4); what cannot is a session saying it did, because none is sent for
+   * the ordinary case. So the outcome is refusal if it says so in time, and
+   * delivery if it says nothing — which is the same shape as the acknowledged
+   * send it stands in for, decided on a channel that carries the refusals
+   * rather than on one that carries nothing at all. */
   async send(sid: Sid, message: InboxMessage): Promise<DirectOutcome> {
     const target = await this.#target(sid);
     if (target === undefined) return "unavailable";
     const token = await this.#token(target.pid);
     if (token === undefined) return "unavailable";
-    return await write(target.socketPath, frames(sid, token, message), this.#ackMs);
+    const inbox = this.#inbox(target.socketPath);
+    const from = inbox?.address();
+    const watching = inbox === undefined ? undefined : inbox.status(message.mid, this.#statusMs);
+    const written = await write(target.socketPath, frames(sid, token, message, from), this.#ackMs);
+    if (written !== "delivered") return written;
+    const status = await watching;
+    return status !== undefined && REFUSING.has(status) ? "refused" : "delivered";
+  }
+
+  close(): void {
+    for (const inbox of this.#inboxes.values()) inbox.close();
+    this.#inboxes.clear();
+  }
+
+  /** The receipt channel for a target, bound beside its own socket. Absent
+   * when nothing could be bound there, which leaves the route working and its
+   * refusals unheard. */
+  #inbox(socketPath: string): StatusInbox | undefined {
+    const directory = dirname(socketPath);
+    const held = this.#inboxes.get(directory);
+    if (held !== undefined) return held;
+    const inbox = new StatusInbox(directory);
+    if (inbox.address() === undefined) return undefined;
+    this.#inboxes.set(directory, inbox);
+    return inbox;
   }
 
   /** The state file naming this session, if it names a socket of a generation
@@ -184,12 +341,18 @@ export class ClaudeCodeSocketRoute implements DirectRoute {
  *
  * `session_id` rides along because the harness checks it against its own and
  * drops a mismatch: a state file read a moment before the pid was reused turns
- * into a message nobody receives rather than one the wrong session does. */
-function frames(sid: Sid, token: string, message: InboxMessage): string {
+ * into a message nobody receives rather than one the wrong session does.
+ *
+ * `from` is the address of our own status inbox, and is fixed by ccmsg rather
+ * than taken from the caller (§4.1). It is what the receiving session answers
+ * to about this message, and the message's `mid` is what it answers about — so
+ * the two travel together, and a route with no inbox to offer sends neither
+ * rather than naming an address nothing is listening on. */
+function frames(sid: Sid, token: string, message: InboxMessage, from?: string): string {
   const auth = { type: "auth", token };
   const user = {
     type: "user",
-    from: FROM,
+    ...(from === undefined ? {} : { from }),
     session_id: sid,
     msg_id: message.mid,
     message: { content: renderDirectDelivery(message) },
@@ -197,31 +360,24 @@ function frames(sid: Sid, token: string, message: InboxMessage): string {
   return `${JSON.stringify(auth)}\n${JSON.stringify(user)}\n`;
 }
 
-/** Connect, write, and decide what happened (§4.1 condition 3).
+/** Connect and write, and answer whether the harness holds our bytes (§4.1
+ * condition 3).
  *
- * The acknowledgement this route can have is the harness holding our bytes:
- * the connection opened and both frames flushed, with no error, inside the
- * budget. There is no reply to wait for — a real send measured zero bytes back
- * on this connection — so waiting for one would time out every delivery. What
- * the budget therefore covers is connect and flush, and anything the harness
- * does say before the connection ends is read only to catch a drop (§4.4). */
+ * That is the whole of what this can decide. The connection carries nothing
+ * back — a real send measured zero bytes on it — so waiting here for an answer
+ * would time out every delivery; what the session makes of the message travels
+ * to our status inbox instead, and the caller waits for it there. What the
+ * budget covers is connect and flush. */
 async function write(path: string, payload: string, ackMs: number): Promise<DirectOutcome> {
   const started = Date.now();
   const settled = Promise.withResolvers<DirectOutcome>();
   const bytes = Buffer.from(payload, "utf8");
   let written = 0;
   let flushed = false;
-  let settle: ReturnType<typeof setTimeout> | undefined;
 
-  /** The last byte is out. Whether that counts is the budget's question, and
-   * what the harness might still say about it is the settle window's. */
   const done = (): void => {
     flushed = true;
-    if (Date.now() - started >= ackMs) {
-      settled.resolve("unavailable");
-      return;
-    }
-    settle = setTimeout(() => settled.resolve("delivered"), DIRECT_SETTLE_MS);
+    settled.resolve(Date.now() - started >= ackMs ? "unavailable" : "delivered");
   };
 
   const push = (socket: { write(data: Uint8Array): number }): void => {
@@ -238,9 +394,7 @@ async function write(path: string, payload: string, ackMs: number): Promise<Dire
         drain: (conn) => {
           if (!flushed) push(conn);
         },
-        data: (_conn, chunk) => {
-          if (dropped(chunk)) settled.resolve("refused");
-        },
+        data: () => {},
         // The connection ending before the last byte left is the message not
         // having reached anyone; after that it is the harness closing a
         // connection it has no more use for.
@@ -262,32 +416,8 @@ async function write(path: string, payload: string, ackMs: number): Promise<Dire
     return await settled.promise;
   } finally {
     clearTimeout(deadline);
-    if (settle !== undefined) clearTimeout(settle);
     socket.end();
   }
-}
-
-/** Whether anything the harness wrote back names one of its drop reasons.
- *
- * Read loosely on purpose: the frame that would carry this has been named but
- * never seen, so what is matched is the reason itself wherever it appears in
- * the line, and a line that names none leaves the send as it was. */
-function dropped(chunk: Uint8Array): boolean {
-  const text = Buffer.from(chunk).toString("utf8");
-  for (const line of text.split("\n")) {
-    if (line.trim() === "") continue;
-    let frame: unknown;
-    try {
-      frame = JSON.parse(line);
-    } catch {
-      continue;
-    }
-    if (typeof frame !== "object" || frame === null) continue;
-    for (const value of Object.values(frame as Record<string, unknown>)) {
-      if (typeof value === "string" && DROP_REASONS.has(value)) return true;
-    }
-  }
-  return false;
 }
 
 async function readJson(path: string): Promise<Record<string, unknown> | undefined> {

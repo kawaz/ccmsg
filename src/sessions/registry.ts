@@ -11,6 +11,7 @@ import {
   type PeerInfo,
   PROTOCOL_VERSION,
   type SessionState,
+  type SessionStoppingResult,
   type Sid,
   type Timestamp,
 } from "@ccmsg/protocol";
@@ -125,6 +126,15 @@ export class Sessions implements UpstreamResource {
   /** The topic names currently subscribed. Both topics rest on the same
    * directory watch, so it runs while either has a listener (§6.3). */
   readonly #wanted = new Set<string>();
+  /** Sessions that have said they are about to go, and when they said it.
+   *
+   * Held here rather than written to `last_live`, because the declaration
+   * arrives while the session is still connected and `last_live` holds what is
+   * gone: the entry is written when the connection closes, and this is what
+   * stamps it then (contract, `session_stopping`). A session that declares and
+   * then carries on stays connected and keeps its declaration, which is spent
+   * whenever it does leave. */
+  readonly #stopping = new Map<Sid, Timestamp>();
 
   constructor(private readonly deps: SessionsDeps) {
     this.#harness = new HarnessSessions(
@@ -135,7 +145,7 @@ export class Sessions implements UpstreamResource {
     );
     this.#lastLive = new LastLiveStore(join(deps.stateDir, "last-live.json"));
     this.#lastLive.load();
-    this.#live = this.#liveNow();
+    this.#live = this.#liveNow(Date.now(), this.#harness.scan());
   }
 
   /** `hello`, which is where a session becomes something this instance can
@@ -174,14 +184,33 @@ export class Sessions implements UpstreamResource {
 
   /** Where a session stands (§5.2). Undefined for a sid this instance has
    * never seen live and does not hold in `last_live`. */
-  classify(sid: Sid, now: Timestamp = Date.now()): SessionState | undefined {
-    return classify(this.inputs(sid), now);
+  classify(
+    sid: Sid,
+    now: Timestamp = Date.now(),
+    rows: ReadonlyMap<Sid, AgentInfo> = this.#rows(),
+  ): SessionState | undefined {
+    return classify(this.inputs(sid, rows), now);
+  }
+
+  /** The harness's sessions as they are at this instant. One read serves one
+   * question, and a caller answering several about the same instant passes the
+   * result on rather than reading again. */
+  #rows(): ReadonlyMap<Sid, AgentInfo> {
+    return this.#harness.scan();
   }
 
   /** Everything the classification of one session reads, exposed so the rule
-   * and its inputs can be tested apart from each other. */
-  inputs(sid: Sid): SessionInputs {
-    const row = this.#harness.rows.get(sid);
+   * and its inputs can be tested apart from each other.
+   *
+   * The harness's rows are read here rather than taken from the watch. Which
+   * sessions the harness has is a fact about this config home, true whether or
+   * not anybody subscribed to hear about it (§5.1) — the watch of §6.3 exists
+   * to push a change to subscribers, and reading its cache instead would make
+   * "a session exists" mean "somebody is listening", which is how a live
+   * session becomes `session_not_found` to a sender and how a session that is
+   * still running is written into `last_live` as gone. */
+  inputs(sid: Sid, rows: ReadonlyMap<Sid, AgentInfo> = this.#rows()): SessionInputs {
+    const row = rows.get(sid);
     const stored = this.#lastLive.get(sid);
     const facts = this.deps.transcript?.facts(sid);
     const gatewayActiveAt = this.deps.gateway?.activeAt(sid);
@@ -232,7 +261,7 @@ export class Sessions implements UpstreamResource {
    * so a session that named neither is one no path is admitted for. */
   where(sid: Sid): { root?: string; cwd?: string } {
     const meta = this.#connected.get(sid)?.meta;
-    const cwd = meta?.cwd ?? this.#harness.rows.get(sid)?.cwd;
+    const cwd = meta?.cwd ?? this.#rows().get(sid)?.cwd;
     // The container when the session named one, the working directory
     // otherwise — the same order `repo_root` is meant in (§4.2).
     const root = meta?.repo_root ?? cwd;
@@ -246,8 +275,8 @@ export class Sessions implements UpstreamResource {
    * from the watch's cache. What acts on a session's process resolves its pid
    * through this: the watch runs only while somebody is subscribed (§6.3), and
    * a pid from a poll that has not run is a number belonging to nobody. */
-  rowsNow(): Promise<ReadonlyMap<Sid, AgentInfo>> {
-    return this.#harness.scan();
+  rowsNow(): ReadonlyMap<Sid, AgentInfo> {
+    return this.#rows();
   }
 
   /** Drop one entry from `last_live`, which is what
@@ -265,13 +294,24 @@ export class Sessions implements UpstreamResource {
     this.changed();
   }
 
-  /** Note that a session said it was stopping, which is what makes it Paused
-   * rather than Disappeared once it is gone (§5.2). */
-  markStopped(sid: Sid, at: Timestamp = Date.now()): boolean {
-    const marked = this.#lastLive.markStopped(sid, at);
-    if (marked) this.changed();
-    return marked;
-  }
+  /** `session_stopping`: a session saying it is about to go, which is what
+   * makes it Paused rather than Disappeared once it is gone (§5.2).
+   *
+   * Nothing is recorded now and nothing is published: the session is still
+   * here, and the list this changes is the one it is not on yet. What the
+   * declaration does is wait for the disconnection that follows it. */
+  stopping = (input: HandlerInput): SessionStoppingResult => {
+    const sid = input.identity?.sid;
+    if (sid === undefined) {
+      throw new OpError(
+        "bad_request",
+        "a session says it is stopping, and this greeting named none",
+      );
+    }
+    const at = Date.now();
+    this.#stopping.set(sid, at);
+    return { stopped_at: at };
+  };
 
   // --- UpstreamResource (§6.3): the directory is read while, and only while,
   // somebody is subscribed to a topic that rests on it.
@@ -287,7 +327,8 @@ export class Sessions implements UpstreamResource {
   }
 
   snapshot(topic: string): readonly TopicValue[] {
-    const data = topic === "agents" ? this.agents() : this.peers();
+    const rows = this.#rows();
+    const data = topic === "agents" ? this.agents(rows) : this.peers(Date.now(), rows);
     return [{ instance: this.deps.self, data }];
   }
 
@@ -305,12 +346,15 @@ export class Sessions implements UpstreamResource {
    * instance leave them out, and a client then shows a session it cannot group
    * — this instance is one that classifies, so it says so on every row rather
    * than on the rows it happens to have an answer for. */
-  peers(now: Timestamp = Date.now()): { peers: PeerInfo[]; last_live: LastLiveSession[] } {
+  peers(
+    now: Timestamp = Date.now(),
+    rows: ReadonlyMap<Sid, AgentInfo> = this.#rows(),
+  ): { peers: PeerInfo[]; last_live: LastLiveSession[] } {
     return {
-      peers: [...this.#connected.values()].map((session) => this.#peer(session, now)),
+      peers: [...this.#connected.values()].map((session) => this.#peer(session, now, rows)),
       last_live: this.#lastLive.entries(now).map((entry) => ({
         ...entry,
-        state: this.classify(entry.sid, now) ?? "disappeared",
+        state: this.classify(entry.sid, now, rows) ?? "disappeared",
         pinned: this.#pinned(entry.sid),
       })),
     };
@@ -322,8 +366,8 @@ export class Sessions implements UpstreamResource {
    * make every confirmation poll a value the list did not have before, so the
    * one suppression every topic shares (M5) would let a five-second heartbeat
    * through for a directory that had not changed. */
-  agents(): { agents: AgentInfo[] } {
-    return { agents: [...this.#harness.rows.values()] };
+  agents(rows: ReadonlyMap<Sid, AgentInfo> = this.#rows()): { agents: AgentInfo[] } {
+    return { agents: [...rows.values()] };
   }
 
   /** Bind a session to this instance, and take what it says about itself. Its
@@ -367,36 +411,45 @@ export class Sessions implements UpstreamResource {
    * mechanism and is written once for every topic (M5) — a payload equal to
    * the last one goes no further than that. */
   private changed(now: Timestamp = Date.now()): void {
-    const live = this.#liveNow(now);
+    const rows = this.#rows();
+    const live = this.#liveNow(now, rows);
     for (const [sid, entry] of this.#live) {
       if (live.has(sid)) continue;
-      this.#lastLive.record({ ...entry, last_seen_at: now });
+      // The declaration came first and the departure has now arrived, which is
+      // the order the two are one event in (contract, `session_stopping`).
+      const stoppedAt = this.#stopping.get(sid);
+      this.#stopping.delete(sid);
+      this.#lastLive.record({
+        ...entry,
+        last_seen_at: now,
+        ...(stoppedAt === undefined ? {} : { stopped_at: stoppedAt }),
+      });
     }
     this.#live = live;
-    this.deps.publish("peers", this.peers(now));
-    this.deps.publish("agents", this.agents());
+    this.deps.publish("peers", this.peers(now, rows));
+    this.deps.publish("agents", this.agents(rows));
     this.deps.onChanged?.();
   }
 
   /** Every session live right now, in the form its `last_live` entry takes if
    * it stops being live. */
-  #liveNow(now: Timestamp = Date.now()): Map<Sid, StoredEntry> {
+  #liveNow(now: Timestamp, rows: ReadonlyMap<Sid, AgentInfo>): Map<Sid, StoredEntry> {
     const live = new Map<Sid, StoredEntry>();
-    for (const sid of this.#connected.keys()) live.set(sid, this.#entry(sid, now));
-    for (const sid of this.#harness.rows.keys()) live.set(sid, this.#entry(sid, now));
+    for (const sid of this.#connected.keys()) live.set(sid, this.#entry(sid, now, rows));
+    for (const sid of rows.keys()) live.set(sid, this.#entry(sid, now, rows));
     return live;
   }
 
-  #entry(sid: Sid, now: Timestamp): StoredEntry {
+  #entry(sid: Sid, now: Timestamp, rows: ReadonlyMap<Sid, AgentInfo>): StoredEntry {
     const held = this.#connected.get(sid);
-    const row = this.#harness.rows.get(sid);
+    const row = rows.get(sid);
     return {
       sid,
       instance: this.deps.self,
       // The harness knows a title for a session that stated none itself, so
       // it goes first and what the session named overrides it.
       ...(row?.name === undefined ? {} : { title: row.name }),
-      ...this.#where(sid),
+      ...this.#where(sid, rows),
       ...(held?.meta.model === undefined ? {} : { model: held.meta.model }),
       ...(held?.meta.effort === undefined ? {} : { effort: held.meta.effort }),
       ...(held === undefined ? {} : { connected_at: held.connected_at }),
@@ -404,7 +457,7 @@ export class Sessions implements UpstreamResource {
     };
   }
 
-  #peer(session: Connected, now: Timestamp): PeerInfo {
+  #peer(session: Connected, now: Timestamp, rows: ReadonlyMap<Sid, AgentInfo>): PeerInfo {
     // The two "last activity" values are different questions (§5.3): the one
     // above moves on every request the session makes, this one only when a
     // person speaks, and the fold is the only place that knows the second.
@@ -416,8 +469,8 @@ export class Sessions implements UpstreamResource {
     return {
       sid: session.sid,
       instance: this.deps.self,
-      ...this.#where(session.sid),
-      state: this.classify(session.sid, now) ?? "live",
+      ...this.#where(session.sid, rows),
+      state: this.classify(session.sid, now, rows) ?? "live",
       pinned: this.#pinned(session.sid),
       connected_at: session.connected_at,
       last_activity_at: session.last_activity_at,
@@ -450,9 +503,10 @@ export class Sessions implements UpstreamResource {
    * until one does. */
   #where(
     sid: Sid,
+    rows: ReadonlyMap<Sid, AgentInfo>,
   ): Pick<PeerInfo, "repo" | "ws" | "cwd" | "transcript_path" | "repo_root" | "branch" | "title"> {
     const meta = this.#connected.get(sid)?.meta ?? {};
-    const cwd = meta.cwd ?? this.#harness.rows.get(sid)?.cwd ?? "";
+    const cwd = meta.cwd ?? rows.get(sid)?.cwd ?? "";
     return {
       repo: meta.repo ?? "",
       ws: meta.ws ?? "",

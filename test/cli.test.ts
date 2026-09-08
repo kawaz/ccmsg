@@ -2,7 +2,12 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type InboxMessage, type Notification, PROTOCOL_VERSION } from "@ccmsg/protocol";
+import {
+  type InboxMessage,
+  type LastLiveSession,
+  type Notification,
+  PROTOCOL_VERSION,
+} from "@ccmsg/protocol";
 import { main, say, type Spawn } from "../src/cli.ts";
 import { type Instance, isRunning, start } from "../src/instance/index.ts";
 import { connectUds, type LineClient } from "./client.ts";
@@ -75,6 +80,21 @@ async function subscribe(client: LineClient, topic: string): Promise<void> {
   expect((await client.next())["ok"]).toBe(true);
 }
 
+/** The `last_live` rows of the next `peers` frame that satisfies `want`.
+ * Frames arrive for every recompute, so a test waits for the one carrying the
+ * row it is about rather than assuming which one that is. */
+async function until(
+  client: LineClient,
+  want: (rows: LastLiveSession[]) => boolean,
+): Promise<LastLiveSession[]> {
+  for (;;) {
+    const frame = await client.next();
+    const data = frame["data"] as { last_live?: LastLiveSession[] } | undefined;
+    const rows = data?.last_live ?? [];
+    if (want(rows)) return rows;
+  }
+}
+
 describe("ccmsg reply", () => {
   test("without --to the answer is for a person, so it goes out as a notification", async () => {
     const at = await instance();
@@ -134,6 +154,28 @@ describe("ccmsg notify", () => {
     expect(await main(["notify", "隣の話", "--about", OTHER_SID, "--sid", SID])).toBe(0);
 
     expect((await watcher.next())["data"]).toMatchObject({ sid: OTHER_SID, text: "隣の話" });
+  });
+});
+
+describe("ccmsg stopping", () => {
+  test("a session that says it is going leaves as paused, and one that just goes disappears", async () => {
+    const at = await instance();
+    const watcher = await greet(at, { role: "user" });
+    await subscribe(watcher, "peers");
+
+    // The command greets as the session, declares, and leaves: the declaration
+    // and the disconnection are one event in that order, and the entry written
+    // when the connection closes is what carries the instant.
+    expect(await main(["stopping", "--sid", SID])).toBe(0);
+    const paused = await until(watcher, (rows) => rows.some((row) => row.sid === SID));
+    expect(paused.find((row) => row.sid === SID)).toMatchObject({ state: "paused" });
+    expect(paused.find((row) => row.sid === SID)?.stopped_at).toBeGreaterThan(0);
+
+    // The same departure without the declaration is the other outcome.
+    await (await greet(at, { role: "session", sid: OTHER_SID })).close();
+    const gone = await until(watcher, (rows) => rows.some((row) => row.sid === OTHER_SID));
+    expect(gone.find((row) => row.sid === OTHER_SID)).toMatchObject({ state: "disappeared" });
+    expect(gone.find((row) => row.sid === OTHER_SID)?.stopped_at).toBeUndefined();
   });
 });
 

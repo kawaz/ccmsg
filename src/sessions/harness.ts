@@ -1,5 +1,4 @@
-import { type FSWatcher, watch } from "node:fs";
-import { readdir, readFile } from "node:fs/promises";
+import { type FSWatcher, readdirSync, readFileSync, watch } from "node:fs";
 import { join } from "node:path";
 import type { AgentInfo, InstanceId, Sid } from "@ccmsg/protocol";
 
@@ -29,12 +28,15 @@ const STATE_FILE = /^\d+\.json$/;
  * The directory is the whole input: it says which sessions exist and which is
  * waiting on a dialog (§5.1). Only the config home this instance was given is
  * ever opened (M6) — the path is handed in, and nothing here searches for
- * another one. */
+ * another one.
+ *
+ * Two things live here, and §6.3 separates them. Reading the directory answers
+ * a question, and is done whenever one is asked. Watching it says the answer
+ * may have changed, which is only worth knowing while somebody is subscribed —
+ * so the watch is what the subscription drives, and no answer waits on it. */
 export class HarnessSessions {
-  #rows: ReadonlyMap<Sid, AgentInfo> = new Map();
   #watcher: FSWatcher | undefined;
   #timer: ReturnType<typeof setInterval> | undefined;
-  #reading: Promise<void> = Promise.resolve();
 
   constructor(
     private readonly dir: string,
@@ -42,10 +44,6 @@ export class HarnessSessions {
     private readonly onChange: () => void,
     private readonly pollMs: number = CONFIRM_POLL_MS,
   ) {}
-
-  get rows(): ReadonlyMap<Sid, AgentInfo> {
-    return this.#rows;
-  }
 
   get running(): boolean {
     return this.#watcher !== undefined || this.#timer !== undefined;
@@ -56,15 +54,15 @@ export class HarnessSessions {
   start(): void {
     if (this.running) return;
     try {
-      this.#watcher = watch(this.dir, () => void this.refresh());
+      this.#watcher = watch(this.dir, this.onChange);
     } catch {
       // The directory does not exist yet — a config home whose harness has not
       // run. The poll below both covers the wait and picks it up when it
       // appears, so this is not a failure to start.
       this.#watcher = undefined;
     }
-    this.#timer = setInterval(() => void this.refresh(), this.pollMs);
-    void this.refresh();
+    this.#timer = setInterval(this.onChange, this.pollMs);
+    this.onChange();
   }
 
   stop(): void {
@@ -74,61 +72,39 @@ export class HarnessSessions {
     this.#timer = undefined;
   }
 
-  /** Re-read the directory and tell the owner. Whether the result differs from
-   * the last one is not asked here: deciding that would be a second copy of
-   * the suppression the topic mechanism already holds for every topic (M5), so
-   * a read that found nothing new turns into a payload equal to the last one
-   * and stops there.
+  /** The directory as it is at this instant.
    *
-   * Reads are chained rather than overlapped, so two events arriving together
-   * cannot interleave their directory listings. */
-  refresh(): Promise<void> {
-    this.#reading = this.#reading.then(() => this.#read());
-    return this.#reading;
-  }
-
-  /** Read the directory now, without disturbing what the watch holds.
+   * Every answer comes from here rather than from anything the watch left
+   * behind. Which sessions exist is an input to the classification (§5.1), and
+   * classifying happens inside `message_send`'s decision and inside the
+   * recompute that writes `last_live` — neither of which can hand back a
+   * promise without changing what it means, and neither of which may depend on
+   * somebody being subscribed. The ops that signal a session's process read it
+   * here too: a pid from a poll that has not run is a number belonging to
+   * nobody.
    *
-   * The ops that act on a session's process resolve its pid through this
-   * rather than through `rows`: the watch runs only while somebody is
-   * subscribed (§6.3), so the cache is empty for an instance nobody is
-   * watching and stale for one whose last poll is seconds old — and a stale
-   * pid is a signal sent to whatever now holds that number. */
-  async scan(): Promise<ReadonlyMap<Sid, AgentInfo>> {
-    return await this.#scan();
-  }
-
-  async #read(): Promise<void> {
-    this.#rows = await this.#scan();
-    this.onChange();
-  }
-
-  async #scan(): Promise<ReadonlyMap<Sid, AgentInfo>> {
+   * Read in place because the directory is a handful of small files of this
+   * uid's own config home (M6) — a syscall or two per session, not a wait. */
+  scan(): ReadonlyMap<Sid, AgentInfo> {
     const rows = new Map<Sid, AgentInfo>();
     let names: string[];
     try {
-      names = await readdir(this.dir);
+      names = readdirSync(this.dir);
     } catch {
-      names = [];
+      return rows;
     }
     for (const name of names) {
       if (!STATE_FILE.test(name)) continue;
-      const row = await this.#row(join(this.dir, name));
+      let document: unknown;
+      try {
+        document = JSON.parse(readFileSync(join(this.dir, name), "utf8"));
+      } catch {
+        continue;
+      }
+      const row = toRow(document, this.dir, this.instance);
       if (row !== undefined) rows.set(row.sid, row);
     }
     return rows;
-  }
-
-  async #row(path: string): Promise<AgentInfo | undefined> {
-    let document: unknown;
-    try {
-      document = JSON.parse(await readFile(path, "utf8"));
-    } catch {
-      // Missing (the session ended between listing and reading) or half
-      // written, which the next event resolves.
-      return undefined;
-    }
-    return toRow(document, this.dir, this.instance);
   }
 }
 

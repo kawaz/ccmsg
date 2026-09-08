@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   directDeliveryReplyLine,
   type InboxMessage,
@@ -21,7 +21,15 @@ import { connAs, OTHER_SID, SELF, SID } from "./frames.ts";
 
 /** A stand-in for the harness's messaging socket: it speaks the same framing
  * (one JSON object per line) and records what arrived, and it is never a real
- * session — writing to one of those would put a message into somebody's turn. */
+ * session — writing to one of those would put a message into somebody's turn.
+ *
+ * What it does about a message it will not take is what the harness does
+ * (2.1.263): nothing comes back on the connection the message arrived on —
+ * that direction measured zero bytes on a real send — and the receipt is
+ * written to the address the frame's `from` names, as a `peer_message_status`
+ * answering the `msg_id` it was sent with. A message it accepts gets no
+ * receipt at all, because the harness raises one only where it turns a message
+ * away, parks it or loses it. */
 class FakeHarness {
   readonly lines: string[] = [];
   #buffer = "";
@@ -29,20 +37,20 @@ class FakeHarness {
 
   constructor(
     readonly path: string,
-    /** Written back on receipt, for the drop the harness answers with (§4.4). */
-    private readonly reply?: string,
+    /** The status to report for every message, or nothing to take them all. */
+    private readonly status?: string,
   ) {}
 
   listen(): void {
     this.#server = Bun.listen({
       unix: this.path,
       socket: {
-        data: (socket, chunk) => {
+        data: (_socket, chunk) => {
           this.#buffer += Buffer.from(chunk).toString("utf8");
           const parts = this.#buffer.split("\n");
           this.#buffer = parts.pop() ?? "";
           this.lines.push(...parts);
-          if (this.reply !== undefined) socket.write(`${this.reply}\n`);
+          for (const line of parts) void this.#report(line);
         },
         open: () => {},
         close: () => {},
@@ -59,11 +67,45 @@ class FakeHarness {
     this.#server?.stop(true);
     this.#server = undefined;
   }
+
+  /** The receipt, on the socket the sender offered. */
+  async #report(line: string): Promise<void> {
+    if (this.status === undefined) return;
+    let frame: Record<string, unknown>;
+    try {
+      frame = JSON.parse(line) as Record<string, unknown>;
+    } catch {
+      return;
+    }
+    const from = frame["from"];
+    const original = frame["msg_id"];
+    if (typeof from !== "string" || !from.startsWith("uds:") || typeof original !== "string")
+      return;
+    const receipt = `${JSON.stringify({
+      type: "control",
+      action: "peer_message_status",
+      status: this.status,
+      orig_msg_id: original,
+      from: `uds:${this.path}`,
+    })}\n`;
+    try {
+      const socket = await Bun.connect({
+        unix: from.slice(4),
+        socket: { open: (conn) => void conn.write(Buffer.from(receipt, "utf8")), data: () => {} },
+      });
+      setTimeout(() => socket.end(), 50);
+    } catch {
+      // The sender offered an address nothing is listening on, which is what a
+      // sender that has already exited leaves behind.
+    }
+  }
 }
 
 const dirs: string[] = [];
 const harnesses: FakeHarness[] = [];
+const routes: ClaudeCodeSocketRoute[] = [];
 afterEach(() => {
+  for (const route of routes.splice(0)) route.close();
   for (const harness of harnesses.splice(0)) harness.stop();
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
@@ -86,7 +128,7 @@ function rig(
     socketPath?: string;
     token?: string | null;
     listen?: boolean;
-    reply?: string;
+    status?: string;
     sid?: Sid;
   } = {},
 ): Rig {
@@ -118,10 +160,16 @@ function rig(
       { mode: 0o600 },
     );
   }
-  const harness = new FakeHarness(socketPath, over.reply);
+  const harness = new FakeHarness(socketPath, over.status);
   harnesses.push(harness);
   if (over.listen !== false) harness.listen();
   return { configHome, sessionsDir, socketPath, harness };
+}
+
+/** A route whose status socket is taken down with the rest of the rig. */
+function track(route: ClaudeCodeSocketRoute): ClaudeCodeSocketRoute {
+  routes.push(route);
+  return route;
 }
 
 function message(text = "hi"): InboxMessage {
@@ -145,21 +193,29 @@ async function received(harness: FakeHarness, lines = 2): Promise<Record<string,
 
 describe("route (a) over the messaging socket (§4.1)", () => {
   test("the message reaches the socket the state file names", async () => {
-    const { configHome, harness } = rig();
+    const { configHome, harness, socketPath } = rig();
     const route = new ClaudeCodeSocketRoute({ configHome });
+    routes.push(route);
 
     expect(await route.send(SID, message("over the socket"))).toBe("delivered");
 
     const [auth, user] = await received(harness);
     expect(auth).toEqual({ type: "auth", token: TOKEN });
-    const { message: body, ...frame } = user as { message: { content: string } };
-    expect(frame).toEqual({
-      type: "user",
-      from: "ccmsg",
-      session_id: SID,
-      msg_id: `${SELF}/1`,
-    });
+    const {
+      message: body,
+      from,
+      ...frame
+    } = user as {
+      message: { content: string };
+      from: string;
+    };
+    expect(frame).toEqual({ type: "user", session_id: SID, msg_id: `${SELF}/1` });
     expect(parseDirectDelivery(body.content)?.text).toBe("over the socket");
+    // The address the session answers to about this message, and the one place
+    // it can be offered from: the receiving harness drops a reply target
+    // outside its own socket namespace, so ours is bound beside its.
+    expect(from.startsWith("uds:")).toBe(true);
+    expect(dirname(from.slice(4))).toBe(dirname(socketPath));
   });
 
   test("the body is the contract's wording, and reads back as the message", async () => {
@@ -241,20 +297,47 @@ describe("route (a) over the messaging socket (§4.1)", () => {
     expect(await route.send(SID, message())).toBe("unavailable");
   });
 
-  test("a session that names one of its drop reasons refused the message", async () => {
-    const { configHome } = rig({
-      reply: JSON.stringify({ type: "peer_message_status", status: "rate-limited" }),
+  /** Every status the harness raises for a message it did not simply take. All
+   * of them mean the same thing to §4.4: the session is there and this message
+   * is not in its turn, so it stays in our inbox and is offered again. */
+  for (const status of ["dropped", "refused", "denied", "expired", "held"]) {
+    test(`a session reporting ${status} refused the message`, async () => {
+      const { configHome } = rig({ status });
+      const route = new ClaudeCodeSocketRoute({ configHome });
+      routes.push(route);
+      expect(await route.send(SID, message())).toBe("refused");
     });
+  }
+
+  test("a receipt about a different message leaves this one delivered", async () => {
+    const { configHome } = rig({ status: "unrelated-frame" });
     const route = new ClaudeCodeSocketRoute({ configHome });
-    expect(await route.send(SID, message())).toBe("refused");
+    routes.push(route);
+    // The status is not one of the refusals, which is every frame that is not
+    // this route's business: what it does not recognise, it does not act on.
+    expect(await route.send(SID, message())).toBe("delivered");
   });
 
-  test("a session that says something else has still received it", async () => {
-    const { configHome } = rig({
-      reply: JSON.stringify({ type: "peer_message_status", status: "delivered" }),
-    });
-    const route = new ClaudeCodeSocketRoute({ configHome });
+  test("a session that says nothing has taken the message", async () => {
+    // The harness raises a receipt only where it turns a message away, so
+    // silence is the ordinary case rather than an answer that went missing.
+    const { configHome } = rig();
+    const route = new ClaudeCodeSocketRoute({ configHome, statusMs: 60 });
+    routes.push(route);
+    const started = Date.now();
     expect(await route.send(SID, message())).toBe("delivered");
+    expect(Date.now() - started).toBeLessThan(2_000);
+  });
+
+  test("the status socket goes when the route does", async () => {
+    const { configHome, harness } = rig();
+    const route = new ClaudeCodeSocketRoute({ configHome, statusMs: 30 });
+    await route.send(SID, message());
+    const user = (await received(harness))[1] as { from: string };
+    const path = user.from.slice(4);
+    expect(existsSync(path)).toBe(true);
+    route.close();
+    expect(existsSync(path)).toBe(false);
   });
 });
 
@@ -273,7 +356,7 @@ describe("delivery over route (a)", () => {
       self: SELF,
       sessions,
       inbox,
-      direct: new ClaudeCodeSocketRoute({ configHome }),
+      direct: track(new ClaudeCodeSocketRoute({ configHome })),
       publish: () => {
         throw new Error("route (b) was taken");
       },

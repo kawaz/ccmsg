@@ -18,16 +18,18 @@ const USAGE = `ccmsg — one instance per config home
   post <sid> <text>    別のセッションへメッセージを送る
   reply <mid> <text>   受け取ったメッセージに返信する (--to で宛先セッション)
   notify <text>        見ている人へ一行知らせる (保持されない、返事も来ない)
+  stopping             これから終わると instance に伝える (以後は Paused 扱い)
   say [say-options] [text...]
                        ${SYSTEM_SAY} で発声し、どのセッションが喋ったかを知らせる
   daemon run           この config home の instance を foreground で起動する
   daemon stop          起動中の instance に停止を要求する (unix socket 経由)
 
-post / reply / notify のオプション:
-  --sid <sid>    自分のセッション ID (既定は CLAUDE_CODE_SESSION_ID)
-  --to <sid>     reply の宛先セッション (受け取った封筒の ccmsg-from の値)
-                 省略すると人 (user) への返信として通知で届く
-  --about <sid>  notify が知らせるセッション (既定は自分)
+post / reply / notify / stopping のオプション:
+  --sid <sid>     自分のセッション ID (既定は CLAUDE_CODE_SESSION_ID)
+  --to <sid>      reply の宛先セッション (受け取った封筒の ccmsg-from の値)
+                  省略すると人 (user) への返信として通知で届く
+  --about <sid>   notify が知らせるセッション (既定は自分)
+  --reason <text> stopping で終わる理由 (表示用、任意)
 
 say の引数は ${SYSTEM_SAY} へそのまま渡す (ccmsg 独自のオプションは無い)。
 唯一の例外は単独の --help / -h で、この ccmsg のヘルプを表示する。
@@ -71,6 +73,8 @@ export async function main(argv: readonly string[]): Promise<number> {
       return reply(argv.slice(1));
     case "notify":
       return notify(argv.slice(1));
+    case "stopping":
+      return stopping(argv.slice(1));
     // `say` takes over its arguments before any parsing of ours: they belong to
     // the speech binary, and an option of ours in the middle of them would
     // change what a shim's users get.
@@ -171,6 +175,27 @@ function notify(args: readonly string[]): Promise<number> {
     text,
     ...(about === undefined ? {} : { sid: about }),
   });
+}
+
+/** `ccmsg stopping`: this session is about to go.
+ *
+ * What it buys is the difference between Paused and Disappeared (§5.2): the
+ * instance holds the declaration until the connection closes, and the entry it
+ * then writes carries the instant it was told. The connection closing is the
+ * second half of that, so the command says its piece and leaves — which is
+ * what a session-end hook does anyway.
+ *
+ * A session that says this and then carries on is not held to it: it stays
+ * connected and stays live, and the declaration is spent whenever it does go. */
+function stopping(args: readonly string[]): Promise<number> {
+  const parsed = options(args, ["sid", "reason"]);
+  if (typeof parsed === "string") return fail(parsed);
+  const reason = parsed.named.get("reason");
+  return call(
+    parsed.named.get("sid"),
+    { op: "session_stopping", ...(reason === undefined ? {} : { reason }) },
+    () => "ccmsg: 停止を伝えました",
+  );
 }
 
 /** One `message_send`. */

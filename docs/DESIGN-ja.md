@@ -167,7 +167,7 @@ daemon 側の実装はその 2 つ (配送手段と、届かない理由の判�
 
 | 経路 | 内容 | 前提 |
 |---|---|---|
-| (a) Claude Code の messaging socket へ直接 | `sessions/<pid>.json` の `messagingSocketPath` に connect し、config home の 0600 key の `peerToken` で認証してから user frame を書く | 非公式プロトコル。`peerProtocol` の世代一致。**実機未確認** |
+| (a) Claude Code の messaging socket へ直接 | `sessions/<pid>.json` の `messagingSocketPath` に connect し、config home の 0600 key の `peerToken` で認証してから user frame を書く | 非公式プロトコル。`peerProtocol` の世代一致 |
 | (b) topic `inbox` の delta として push | セッション側の購読 (subscribe を張っている常駐) 経由で届ける | セッションが購読していること |
 
 **(a) を優先し、失敗したら (b) にフォールバックする** (DV-Q1)。理由は 2 つ。
@@ -180,14 +180,29 @@ daemon 側の実装はその 2 つ (配送手段と、届かない理由の判�
 
 (a) の適用条件は**すべて満たしたときだけ**とする。1 つでも欠ければ判定なしに (b) へ落ちる。
 
-0. **feature flag が有効** — (a) は実機未確認なので、確認が済むまで既定で無効にする。
-   flag が無効な間、配送は (b) だけで成立する (フォールバック先が常用経路になるだけで、
+0. **feature flag が有効** — 実機確認済みなので既定で有効。config で無効化できる
+   (無効な間、配送は (b) だけで成立する。フォールバック先が常用経路になるだけで、
    配送の意味論は変わらない)
 1. `sessions/<pid>.json` が `messagingSocketPath` と既知の `peerProtocol` を持つ
 2. 対応する key file を自分が読める (= 同一 uid・同一 config home = A2 / A4 と一致)
-3. 送信の ack が期限内に返る
+3. 期限内に受信側が「受け取らなかった」と言ってこない
 
-`from` は ccmsg 固定の値にする (利用者入力を通さない)。
+条件 3 の判定元は**送信した接続ではなく、送達ステータス用の別 socket**。送信した接続は
+片方向で、受信側は 1 バイトも返さない。受信側が何か言う時は user frame の `from` が名乗った
+アドレスへ `peer_message_status` を書く。よって ccmsg は自前の UDS (0600) を持ち、`from` に
+`uds:<path>` として渡す。
+
+**受信側は肯定応答を出さない**。受理した message には何も返さず、`refused` / `denied` /
+`dropped` / `expired` / `held` を返すのは受け取らなかった時だけ (2.1.263 の inbound gate)。
+したがって「期限内に沈黙 = 届いた」「期限内に上記が来た = §4.4 の drop」と読む。期限の値は
+一次資料に無い (**仮値**)。根拠として言えるのは「受信側は gate の判定と同じ場所で receipt を
+出すので、同一ホストの UDS 1 往復で届く」ところまで。
+
+status socket の**置き場は state dir ではなく、宛先 socket と同じディレクトリ**。受信側は
+返信先アドレスを検証し、自分の socket namespace の外を `reply address unshaped or outside
+our socket namespace` として捨てる (2.1.263) ので、隣に置く以外に受け取る方法が無い。
+
+`from` は ccmsg が決める値であって、利用者入力を通さない。
 
 ### 4.2 未配送の理由と、その判定元
 
@@ -251,10 +266,17 @@ webui が生の値を組み合わせて分類すると、instance ごとに解�
 | 入力 | 何が分かるか | 取り方 |
 |---|---|---|
 | 接続 | ccmsg と話しているか、いつ話したか | transport (イベント) |
-| `sessions/` の各 `<pid>.json` | **セッションの存在**と `waiting` (dialog)、messaging socket | 自 config home のみ (M6)。ファイル監視 |
+| `sessions/` の各 `<pid>.json` | **セッションの存在**と `waiting` (dialog)、messaging socket | 自 config home のみ (M6)。**判定が要る時にその場で読む** |
 | llm-gateway の request / response | **実際に推論が走っているか** (= 忙しさ) | webhook (push) |
 | `last_live` + `stopped_at` | 前回稼働中・意図して止めた | 自分が書いたファイル |
 | transcript の fold | API error で止まっているか、最後の人間入力 | tail |
+
+**分類の入力は購読に依存しない**。`sessions/` を「読むこと」と「監視すること」は別物で、
+§6.3 が購読に従属させるのは後者だけ。どのセッションが存在するかは instance 自身の事実
+なので、判定が要る瞬間 (message_send の宛先判定 / last_live の記録 / classify) には
+その場でディレクトリを読む。監視と poll は「変化を購読者へ push する」ための資源であって、
+答えの取得経路ではない。混同すると、誰も購読していない間は生きているセッションが
+`session_not_found` になり、生きたままのセッションが last_live へ「消えた」と書かれる。
 
 **`claude agents` の subprocess は持たない** (DV-Q6)。自 config home の `sessions/` を
 監視すれば同じ集合が得られるので、5 秒ごとの子プロセス起動が丸ごと消える (M3)。
@@ -301,7 +323,7 @@ Disappeared  = last_live にあり stopped_at が無い
 | 現在値 | 持ち主が答える (§3.3)。topics が持つのは直前に送った wire だけ |
 | 購読者 | 接続の集合 |
 | 更新の入口 | domain 側から「新しい値」を渡す 1 関数 |
-| 抑制 | 直前に送った値と同じなら送らない (**全 topic 共通の 1 実装**、M5) |
+| 抑制 | **値を置き換える粒度に限り**、直前に送った値と同じなら送らない (**全 topic 共通の 1 実装**、M5) |
 
 旧 daemon は 3 つの topic 相当にだけ抑制があり、しかも別実装だった。v2 は抑制を
 topic の仕組みに内蔵するので「この topic には抑制がない」が起きない。
@@ -316,9 +338,14 @@ topic の仕組みに内蔵するので「この topic には抑制がない」�
 | 追記 (byte offset) | `transcript:<sid>` |
 | event (値を保持しない) | `notify` |
 
-**event** だけは現在値を持たない。起きたこと自体が意味なので、購読しても snapshot は出ず、
-同じ値が続いても抑制しない (「直前と同じなら送らない」は保持値がある粒度にだけ意味を持つ)。
-抑制の実装は 1 つのままで、粒度を見て素通しする。
+**抑制がかかるのは全量置換の 2 粒度だけ** (`whole` / `per_instance_whole`)。同じ全量を
+もう一度送っても購読側は既に持っている値を持ち続けるので、送る意味が無い。
+
+**delta の粒度 (`element` / `append`) と `event` は素通しする**。同じ内容の frame が 2 回
+出るのは「同じことが 2 回起きた」であって重複ではない — inbox の再提示は 1 回目を聞いて
+いなかった相手に届く唯一の機会だし、kv の同値再送も追加操作そのものである。**event** は
+加えて現在値を持たないので、購読しても snapshot が出ない。抑制の実装は 1 つのままで、
+契約の粒度を見て適用範囲を決める。
 
 **instance ごとの全量置換**が mesh の要。frame は発生元 `instance` を必ず伴い、購読側は
 「その instance 分だけ」を置き換える。他 instance の分は残る。この規則があるので、
@@ -329,6 +356,9 @@ topic の仕組みに内蔵するので「この topic には抑制がない」�
 - 購読は接続に従属する。接続が閉じれば購読も消える (別の後始末を持たない)
 - **上流の資源は購読者がいる間だけ動かす**。`transcript:<sid>` の購読が 0 になれば tail を止め、
   `agents` の購読が 0 になれば `sessions/` の監視を止める。購読が資源のライフサイクルの唯一の駆動源
+- ここで購読に従属するのは **「変化を push するための監視」だけ**であって、**「今どうなって
+  いるかを読むこと」ではない**。値の持ち主に現在値を聞く経路 (§3.3) と、§5.1 の分類の入力は、
+  購読者が 0 でも同じ答えを返す
 - cluster 全体の topic を購読された instance は、mesh の各 peer にも同じ topic を購読させ、
   受けた frame をそのまま (発生元 `instance` を保ったまま) 購読者へ流す (§7.4)
 

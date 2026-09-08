@@ -66,21 +66,13 @@ export class LastLiveStore {
   }
 
   /** Note a session as no longer live. A `stopped_at` already recorded for it
-   * survives, since the session being gone is what that stop led to. */
+   * survives, since the session being gone is what that stop led to; the entry
+   * carries one when the session declared it was going, which is what makes it
+   * Paused rather than Disappeared (§5.2). */
   record(entry: StoredEntry): void {
-    const stopped = this.#entries.get(entry.sid)?.stopped_at;
+    const stopped = this.#entries.get(entry.sid)?.stopped_at ?? entry.stopped_at;
     this.#entries.set(entry.sid, stopped === undefined ? entry : { ...entry, stopped_at: stopped });
     this.#save();
-  }
-
-  /** Mark a session as stopped on purpose, which is what makes it Paused
-   * rather than Disappeared. */
-  markStopped(sid: Sid, at: Timestamp = Date.now()): boolean {
-    const entry = this.#entries.get(sid);
-    if (entry === undefined) return false;
-    this.#entries.set(sid, { ...entry, stopped_at: at });
-    this.#save();
-    return true;
   }
 
   /** Drop one entry: `session_last_live_remove`, and a session registering

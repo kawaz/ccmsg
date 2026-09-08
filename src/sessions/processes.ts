@@ -32,7 +32,7 @@ export const LIVENESS_POLL_MS = 200;
 export interface ProcessDeps {
   /** The harness's sessions, read now rather than from a watch's cache. Only
    * this instance's config home is ever read (M6). */
-  readonly rows: () => Promise<ReadonlyMap<Sid, AgentInfo>>;
+  readonly rows: () => ReadonlyMap<Sid, AgentInfo>;
   /** What the process is running, as `ps` states argv. */
   readonly command: (pid: number) => Promise<string>;
   /** The process's own environment, as the platform exposes it. */
@@ -75,7 +75,7 @@ export class SessionProcesses {
    * answers for one config home (M6), and a pid read from anywhere else is a
    * number it has no business signalling. */
   async pid(sid: Sid): Promise<number> {
-    const rows = await this.deps.rows();
+    const rows = this.deps.rows();
     const row = rows.get(sid);
     // A pid at or below 1 is refused before it reaches a signal: 0 addresses
     // this process's own group and a negative number a whole group, so a
@@ -276,7 +276,7 @@ export async function run(argv: string[], timeoutMs = CHILD_TIMEOUT_MS): Promise
 
 /** The effects as this host provides them. */
 export function hostProcessDeps(
-  rows: () => Promise<ReadonlyMap<Sid, AgentInfo>>,
+  rows: () => ReadonlyMap<Sid, AgentInfo>,
   terminalCommand?: string,
 ): ProcessDeps {
   return {

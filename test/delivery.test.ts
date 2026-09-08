@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -27,6 +27,7 @@ import {
   Notify,
   sessionLabel,
 } from "../src/messaging/index.ts";
+import { Sessions } from "../src/sessions/index.ts";
 import { Topics } from "../src/topics/index.ts";
 import { connAs, OTHER_SID, SELF, SID, TestConn } from "./frames.ts";
 
@@ -96,6 +97,7 @@ class StubDirectRoute implements DirectRoute {
   send(): Promise<DirectOutcome> {
     return Promise.resolve(this.outcome);
   }
+  close(): void {}
 }
 
 interface Rig {
@@ -350,6 +352,63 @@ describe("why a message is waiting (§4.2)", () => {
 
     expect(await send(connAs("session", SID), OTHER_SID)).toEqual({ delivered: true });
     expect(inbox.undelivered(OTHER_SID)).toEqual([]);
+  });
+});
+
+describe("the sessions a message can be addressed to", () => {
+  test("a live session nobody is subscribed to is one, not a session not found", async () => {
+    // The audit's case: the addressee is running and has never subscribed to
+    // anything, which is precisely the session route (a) exists for. Whether
+    // this instance can be sent a message about it must not depend on somebody
+    // else watching a topic (§5.1 / §6.3).
+    const home = mkdtempSync(join(tmpdir(), "ccmsg-live-home-"));
+    dirs.push(home);
+    const sessionsDir = join(home, "sessions");
+    mkdirSync(sessionsDir);
+    writeFileSync(
+      join(sessionsDir, `${process.pid}.json`),
+      JSON.stringify({
+        pid: process.pid,
+        sessionId: OTHER_SID,
+        cwd: "/repos/a-repo/main",
+        kind: "interactive",
+        startedAt: 1_757_000_000_000,
+        status: "idle",
+      }),
+    );
+    const domain = new Sessions({
+      self: SELF,
+      configHome: home,
+      stateDir: stateDir(),
+      capabilities: [],
+      version: "0.0.1",
+      startedAt: 1_757_000_000_000,
+      publish: () => {},
+    });
+    const inbox = new Inbox(inboxPath(stateDir()));
+    inbox.load();
+    const delivery = new Delivery({
+      self: SELF,
+      sessions: domain,
+      inbox,
+      direct: new StubDirectRoute("delivered"),
+      publish: () => {},
+      listeners: () => 0,
+    });
+    const conn = connAs("session", SID);
+
+    const result = await messagingHandlers(
+      delivery,
+      new Notify({ self: SELF, label: (sid) => sid, publish: () => {} }),
+    ).message_send({
+      op: "message_send",
+      conn,
+      args: { op: "message_send", request_id: "1", to: OTHER_SID, text: "are you there" },
+      identity: conn.identity.state === "settled" ? conn.identity : undefined,
+    });
+
+    expect(domain.watching).toBe(false);
+    expect(result).toEqual({ delivered: true });
   });
 });
 

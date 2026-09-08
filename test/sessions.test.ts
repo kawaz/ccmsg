@@ -128,6 +128,18 @@ function restart(context: { root: string; stateDir: string }): Sessions {
   return domain;
 }
 
+/** `session_stopping`, spoken on a connection that has already greeted — which
+ * is the only way it is reachable: the op takes its subject from the identity
+ * the connection settled, never from an argument. */
+function declareStopping(domain: Sessions, conn: TestConn, sid: Sid = SID) {
+  return domain.stopping({
+    op: "session_stopping",
+    conn,
+    args: { op: "session_stopping", request_id: "1" },
+    identity: { state: "settled", role: "session", sid },
+  });
+}
+
 function helloFrom(domain: Sessions, conn: TestConn, sid: Sid = SID): HelloResult {
   return domain.hello({
     op: "hello",
@@ -329,6 +341,35 @@ describe("hello", () => {
 });
 
 describe("the harness's sessions directory", () => {
+  /** Which sessions exist is a fact about this config home, not a thing the
+   * watch produces (§5.1). The watch runs only while somebody is subscribed
+   * (§6.3), and these are what goes wrong when the two are confused: a live
+   * session that nobody happens to be watching becomes a session nobody can
+   * be sent a message, and a session that is plainly still running gets
+   * written down as gone. */
+  test("a session the harness has is classified with nobody subscribed", () => {
+    const context = sessions();
+    writeState(context.sessionsDir, process.pid, SID);
+
+    expect(context.domain.watching).toBe(false);
+    expect(context.domain.classify(SID)).toBe("live_unmanaged");
+    expect(context.domain.agents().agents.map((row) => row.sid)).toEqual([SID]);
+  });
+
+  test("a session still in the directory is not written down as gone when its connection closes", () => {
+    const context = sessions();
+    writeState(context.sessionsDir, process.pid, SID);
+    // A greeting that closes at once is what a command-line client is: it
+    // greets, says its piece and goes, while the session it spoke for carries
+    // on. What is gone is a connection, not a session.
+    const conn = greeting();
+    helloFrom(context.domain, conn);
+    conn.close();
+
+    expect(context.domain.classify(SID)).toBe("live_unmanaged");
+    expect(context.domain.peers().last_live).toEqual([]);
+  });
+
   test("a state file appearing, changing and going away each states peers", async () => {
     const context = sessions();
     context.domain.start("peers");
@@ -346,8 +387,12 @@ describe("the harness's sessions directory", () => {
     await context.until(() => context.domain.classify(SID) === "waiting");
 
     rmSync(join(context.sessionsDir, `${process.pid}.json`));
-    await context.until(() => context.domain.agents().agents.length === 0);
-    expect(context.domain.classify(SID)).toBe("disappeared");
+    // The row is gone from the directory the moment the file is, and reading
+    // it says so at once. What takes a turn of the watch is the recording that
+    // follows: a session stops being live, and the entry that outlives it is
+    // written where that is noticed.
+    await context.until(() => context.domain.classify(SID) === "disappeared");
+    expect(context.domain.agents().agents).toEqual([]);
   });
 
   test("the payloads pass the contract's own validators", async () => {
@@ -452,11 +497,32 @@ describe("the classification on the wire", () => {
     const context = sessions();
     const conn = greeting();
     helloFrom(context.domain, conn);
+    // The declaration comes first and the departure second, which is the order
+    // the two are one event in (contract, `session_stopping`).
+    const declared = declareStopping(context.domain, conn);
     conn.close();
-    context.domain.markStopped(SID, NOW);
     const entry = context.domain.peers().last_live[0];
     expect(entry?.state).toBe("paused");
-    expect(entry?.stopped_at).toBe(NOW);
+    expect(entry?.stopped_at).toBe(declared.stopped_at);
+  });
+
+  test("a session that just went away is Disappeared, not Paused", () => {
+    const context = sessions();
+    const conn = greeting();
+    helloFrom(context.domain, conn);
+    conn.close();
+    const entry = context.domain.peers().last_live[0];
+    expect(entry?.state).toBe("disappeared");
+    expect(entry?.stopped_at).toBeUndefined();
+  });
+
+  test("a session that said it was stopping and carried on is still live", () => {
+    const context = sessions();
+    const conn = greeting();
+    helloFrom(context.domain, conn);
+    declareStopping(context.domain, conn);
+    expect(context.domain.classify(SID)).toBe("live");
+    expect(context.domain.peers().last_live).toEqual([]);
   });
 
   test("what the session ran as follows it into last_live", () => {
@@ -484,8 +550,6 @@ describe("last_live", () => {
 
     const restarted = restart(context);
     expect(restarted.classify(SID)).toBe("disappeared");
-    expect(restarted.markStopped(SID)).toBe(true);
-    expect(restarted.classify(SID)).toBe("paused");
     // And it leaves the list the moment the session registers again.
     helloFrom(restarted, greeting());
     expect(restarted.peers().last_live).toEqual([]);

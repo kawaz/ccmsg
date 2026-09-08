@@ -91,11 +91,12 @@ export class Topics {
   publish(topic: string, data: unknown, instance: InstanceId = this.self, to?: Sid): void {
     const kind = topicKind(topic);
     if (kind === undefined) return;
-    if (topicGranularity(topic) !== "event") {
+    if (replaces(topic)) {
       // The suppression, written once for every topic it applies to (M5). The
-      // contract's granularity is the whole of the rule: an event topic's
-      // frames are occurrences, and "the same as the last one" is not a reason
-      // to drop something whose point is that it happened again.
+      // contract's granularity is the whole of the rule, and only a frame that
+      // replaces the value it repeats can be dropped for repeating it: a delta
+      // is an occurrence — an inbox message offered again, a `kv` entry
+      // restated — and dropping it would lose the offer, not a duplicate.
       const wire = serialize(data);
       const sent = this.#sent(topic);
       if (sent.get(instance) === wire) return;
@@ -225,6 +226,19 @@ function holds(conn: Requester, to: Sid | undefined): boolean {
   if (to === undefined) return true;
   const identity = conn.identity;
   return identity.state === "settled" && identity.sid === to;
+}
+
+/** Whether a frame on this topic replaces the value it carries, which is the
+ * question suppression asks (§6.1).
+ *
+ * The two whole-value granularities do: a payload equal to the last one leaves
+ * the subscriber holding what it already holds. The others do not — an
+ * `element` frame adds or restates one entry, an `append` frame carries a
+ * chunk, an `event` frame is an occurrence — so two equal frames are two
+ * things happening, and the second is news. */
+function replaces(topic: string): boolean {
+  const granularity = topicGranularity(topic);
+  return granularity === "whole" || granularity === "per_instance_whole";
 }
 
 /** The comparison behind suppression, in one place for every topic (M5).

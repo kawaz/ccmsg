@@ -27,6 +27,7 @@ import {
   ClaudeCodeSocketRoute,
   Delivery,
   DisabledDirectRoute,
+  type DirectRoute,
   inboxPath,
   messagingHandlers,
   Notify,
@@ -157,6 +158,7 @@ export class Instance {
   readonly #transcripts: Transcripts;
   readonly #gateway: Gateway;
   readonly #delivery: Delivery;
+  readonly #direct: DirectRoute;
   readonly #notify: Notify;
   readonly #translate: Translate | undefined;
   readonly #handlers: Handlers;
@@ -276,13 +278,14 @@ export class Instance {
 
     const inbox = new Inbox(inboxPath(paths.stateDir));
     inbox.load();
+    this.#direct = config.direct_delivery
+      ? new ClaudeCodeSocketRoute({ configHome: paths.configHome })
+      : new DisabledDirectRoute();
     this.#delivery = new Delivery({
       self: this.self,
       sessions: this.#sessions,
       inbox,
-      direct: config.direct_delivery
-        ? new ClaudeCodeSocketRoute({ configHome: paths.configHome })
-        : new DisabledDirectRoute(),
+      direct: this.#direct,
       publish: (topic, data, instance, to) => {
         this.#topics.publish(topic, data, instance, to);
       },
@@ -351,6 +354,7 @@ export class Instance {
 
     this.#handlers = completeHandlers({
       hello: this.#sessions.hello,
+      session_stopping: this.#sessions.stopping,
       ...topicHandlers(this.#topics),
       ...messagingHandlers(this.#delivery, this.#notify),
       ...fileHandlers(files),
@@ -462,13 +466,6 @@ export class Instance {
     return this.#gateway.activeAt(sid);
   }
 
-  /** A session said it was stopping, which is what makes it Paused rather than
-   * Disappeared once it is gone (§5.2). Nothing on the wire says this yet;
-   * the sessions domain is where it is recorded. */
-  markStopped(sid: Sid): boolean {
-    return this.#sessions.markStopped(sid);
-  }
-
   ping(): InstancePingResult {
     return {
       instance: this.self,
@@ -541,6 +538,10 @@ export class Instance {
     // The translation helper is a process this instance started, so it leaves
     // with it rather than outliving the daemon that has its pipe.
     this.#translate?.stop();
+    // Route (a) holds a socket of its own, bound where the sessions' sockets
+    // are so their receipts can reach it (§4.1). It has a name on disk, so it
+    // is taken down here rather than left for the next run to find.
+    this.#direct.close();
     // 3. tell the connections, while they can still be told
     const restarting: RestartingEvent = { ev: "restarting", instance: this.self };
     for (const conn of this.#conns) conn.send(restarting);

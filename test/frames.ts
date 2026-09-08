@@ -17,6 +17,7 @@ export const REQUEST_ARGS: Record<OpName, Record<string, unknown>> = {
   hello: { role: "user", protocol_version: 2 },
   instance_ping: {},
   instance_shutdown: {},
+  session_stopping: {},
   topic_subscribe: { topic: "peers" },
   topic_unsubscribe: { topic: "peers" },
 
