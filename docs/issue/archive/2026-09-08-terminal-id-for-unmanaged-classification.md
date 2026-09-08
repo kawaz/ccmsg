@@ -1,6 +1,6 @@
 ---
 title: terminal_id を管理外 classify 判定のために埋める経路を決める
-status: open
+status: resolved
 category: design
 created: 2026-09-08T23:43:28+09:00
 last_read:
@@ -9,10 +9,10 @@ wip_entered:
 blocked_entered:
 pending_entered:
 discarded_entered:
-resolved_entered:
+resolved_entered: 2026-09-09T02:54:37+09:00
 discard_reason:
 pending_reason:
-close_reason:
+close_reason: ["done: v0.0.19 で pid ごとに 1 回だけ env を読む TerminalCache を結線 (commit 2f7cf7d3)"]
 blocked_by:
 origin: 自リポ TODO
 ---
