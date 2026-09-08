@@ -1,6 +1,6 @@
 ---
 title: fs-watch-alone-test-timeout
-status: open
+status: resolved
 category: bug
 created: 2026-09-08T13:39:55+09:00
 last_read:
@@ -9,10 +9,10 @@ wip_entered:
 blocked_entered:
 pending_entered:
 discarded_entered:
-resolved_entered:
+resolved_entered: 2026-09-09T03:30:28+09:00
 discard_reason:
 pending_reason:
-close_reason:
+close_reason: ["done: 実測で fs.watch の取りこぼし (5%、届く時は53ms以内) と確定。テストを取りこぼしはpollで拾う設計どおりに組み替え、55回連続green (v0.0.20, commit dc8345eb)"]
 blocked_by:
 origin: inbox 実装中の `just ci`
 ---
