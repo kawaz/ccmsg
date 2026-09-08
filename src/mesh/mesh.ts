@@ -889,12 +889,28 @@ export class Mesh {
     this.#stopping = true;
     for (const timer of this.#retries.values()) clearTimeout(timer);
     this.#retries.clear();
-    // The timers go; the sockets do not. A connection belongs to transport,
-    // which releases every one of them after the connections have been told
-    // (§8.5 steps 3 and 5) — closing them here would take them away before the
-    // notice, and measured against Bun 1.3.13 a socket closed from the server
-    // side also keeps the listener from ever being given up.
-    for (const link of this.#links.values()) clearInterval(link.heartbeat);
+    // The timers go, and so do the sockets this instance opened — but not the
+    // ones it accepted.
+    //
+    // An accepted socket belongs to transport, which releases every one of
+    // them after the connections have been told (§8.5 steps 3 and 5): closing
+    // one here would take it away before the notice, and measured against Bun
+    // 1.3.13 a socket closed from the server side also keeps the listener from
+    // ever being given up.
+    //
+    // A dialled one has no listener behind it, so nothing else will ever
+    // release it, and the far end has no other way to learn this instance is
+    // going: it would keep the link, keep answering `reachable`, and keep
+    // routing `instance-local` ops here until its own heartbeat gave up
+    // minutes later — where the disconnection of §7.5 is supposed to be
+    // immediate. Which of the two a link is comes from the glare rule and so
+    // from a comparison of endpoint strings (§8.1), which means every peer is
+    // on the dialled side of some link: leaving these open makes a clean stop
+    // look like a silent one to half the cluster.
+    for (const link of this.#links.values()) {
+      clearInterval(link.heartbeat);
+      if (link.dialledByUs) link.conn.close();
+    }
     for (const peer of this.#links.keys()) this.#abandon(peer);
     this.#links.clear();
     this.#actors.clear();

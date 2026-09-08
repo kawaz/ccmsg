@@ -291,6 +291,34 @@ describe("a message to a session on another instance (§4)", () => {
 });
 
 describe("what a disconnected instance leaves behind (§7.5, DV-Q12)", () => {
+  test("an instance that stops is out of reach at once, whichever end dialled the link", async () => {
+    // Which end holds the dialled half of a link is decided by comparing the
+    // two endpoint strings (§8.1), so a cluster has instances on both sides of
+    // that comparison and both have to be covered. Ports are handed out by the
+    // kernel, so the two cases are chosen here rather than waited for: stopping
+    // the smaller `iss` leaves the survivor holding a link it accepted, and
+    // stopping the larger leaves it holding one it dialled.
+    for (const stopSmaller of [true, false]) {
+      const [first, second] = [freePort(), freePort()];
+      const peers = [endpoint(first), endpoint(second)];
+      const [one, two] = await Promise.all([
+        startAt(homeFor(first, peers), { reconnectMinMs: 20 }),
+        startAt(homeFor(second, peers), { reconnectMinMs: 20 }),
+      ]);
+      await eventually(() => one.mesh?.reachable(two.self) === true);
+      await eventually(() => two.mesh?.reachable(one.self) === true);
+      const ordered = [one, two].sort((left, right) => (left.self < right.self ? -1 : 1));
+      const [going, staying] = stopSmaller ? ordered : [...ordered].reverse();
+
+      await going.stop();
+      // Within a moment, not within a heartbeat: a stop is something the far
+      // end is told by the link ending, and the heartbeat is there for the
+      // silence nobody announces (§7.5, §8.3).
+      await eventually(() => staying.mesh?.reachable(going.self) === false, 1_000);
+      await release();
+    }
+  });
+
   test("its value is kept, marked, and replaced when it comes back", async () => {
     const { a, b, homeB } = await pair();
     const user = await client(a);
