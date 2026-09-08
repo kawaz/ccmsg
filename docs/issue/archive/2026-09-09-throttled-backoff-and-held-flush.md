@@ -1,6 +1,6 @@
 ---
 title: throttled backoff 再送と成功時の held 流し込みが未実装
-status: open
+status: resolved
 category: design
 created: 2026-09-09T00:19:04+09:00
 last_read:
@@ -9,10 +9,10 @@ wip_entered:
 blocked_entered:
 pending_entered:
 discarded_entered:
-resolved_entered:
+resolved_entered: 2026-09-09T02:38:22+09:00
 discard_reason:
 pending_reason:
-close_reason:
+close_reason: ["implemented:v0.0.18 で held を経路 (a) 成功時/生存復帰時/inbox 購読時に流す event 駆動に実装 (commit b0784b0e)。時間 backoff は置かず §4.4 を書き換え"]
 blocked_by:
 origin: 2026-09-08 の設計監査 (fable5-high)
 ---
