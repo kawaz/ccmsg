@@ -53,12 +53,15 @@ describe("nothing pushes a topic frame outside the topic mechanism (M5)", () => 
     for (const path of files) {
       if ((await offendersIn(path, /JSON\.stringify\(/)).length > 0) serializers.push(path);
     }
-    // Framing turns a frame into a line, the mechanism turns a value into the
-    // form it compares, and persistence turns one of the three things of §3.6
-    // into its file. Another comparison of a value against the last one would
-    // be a second answer to "is this new"; a writer is not one, which is why
-    // this list is by file and the case above is by shape.
+    // Framing turns a frame into a line — on the instance's side of a
+    // connection and on the CLI's — the mechanism turns a value into the form
+    // it compares, and persistence turns one of the three things of §3.6 into
+    // its file, the log included. Another comparison of a value against the
+    // last one would be a second answer to "is this new"; a writer is not one,
+    // which is why this list is by file and the case above is by shape.
     expect(serializers.sort()).toEqual([
+      "cli.ts",
+      "instance/log.ts",
       "messaging/inbox.ts",
       "sessions/last-live.ts",
       "topics/topics.ts",

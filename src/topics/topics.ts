@@ -162,6 +162,21 @@ export class Topics {
     return "ok";
   }
 
+  /** Drop every subscription one connection holds.
+   *
+   * What shutdown calls (§8.5 step 2) before it tells the connections
+   * anything: a resource runs while it has a listener (§6.3), so taking the
+   * listeners away is what stops the upstream watches — through the same
+   * `unsubscribe` a closing connection goes through, rather than a second way
+   * to release the same thing. */
+  dropAll(conn: Requester): void {
+    const held: string[] = [];
+    for (const [topic, subscribers] of this.#subscribers) {
+      if (subscribers.has(conn)) held.push(topic);
+    }
+    for (const topic of held) this.unsubscribe(conn, topic);
+  }
+
   /** How many connections hold a subscription to a topic, counting only those
    * of one session when `to` names one.
    *

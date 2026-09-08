@@ -11,8 +11,13 @@ interface UdsState {
 }
 
 export interface UdsOptions {
-  /** The socket path. It is not removed on close (§8.5): a successor's socket
-   * may already stand at this path by then. */
+  /** The socket path.
+   *
+   * §8.5 asks that closing leave the path alone, because a successor's socket
+   * may already stand there. Bun's listener unlinks it in `stop()` regardless
+   * (measured against Bun 1.3.13: the path is gone the moment `stop` returns),
+   * so this layer cannot honour that on its own — what it can do is not add a
+   * second removal of its own. */
   readonly path: string;
   readonly conns: ConnRegistry;
   readonly handle: FrameHandler;
