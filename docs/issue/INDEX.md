@@ -12,11 +12,9 @@ active な issue の一覧。close 済みは archive/ にあり、ここには�
 | 2026-09-09 | design | open | [sandbox-grant-delivery-path](./2026-09-09-sandbox-grant-delivery-path.md) | sandbox_grant は capability URL を発行するが、`SandboxGrants.find` の呼び... |
 | 2026-09-09 | design | open | [gateway-webhook-session-scope](./2026-09-09-gateway-webhook-session-scope.md) | gateway webhook が受け取る `session_id` が config home 単位でスコープされて... |
 | 2026-09-09 | design | open | [daemon-invented-limits-contract-promotion](./2026-09-09-daemon-invented-limits-contract-promotion.md) | daemon 実装が独自に決めている上限値 (`TITLE_MAX` / `READ_LIMIT` / `transcri... |
-| 2026-09-09 | task | open | [kv-lww-and-tombstone](./2026-09-09-kv-lww-and-tombstone.md) | kv ストアの LWW (last-write-wins、`updated_at` 後勝ち) と delete 時の tomb... |
 | 2026-09-09 | task | open | [design-doc-additions](./2026-09-09-design-doc-additions.md) | 2026-09-08 の設計監査で「実装済みだが設計文書に反映されていない」と指摘された項目をまとめて設... |
 | 2026-09-09 | task | open | [test-strengthening-findings](./2026-09-09-test-strengthening-findings.md) | 2026-09-08 の設計監査で指摘されたテスト設計上の弱点: |
 | 2026-09-08 | bug | open | [fs-watch-alone-test-timeout](./2026-09-08-fs-watch-alone-test-timeout.md) | `test/sessions.test.ts` の「the file watch alone carries a change, with the poll too... |
-| 2026-09-08 | design | open | [terminal-id-for-unmanaged-classification](./2026-09-08-terminal-id-for-unmanaged-classification.md) | `AgentInfo.terminal_id` を harness の poll では埋めていない (契約は「走っているプロセスの env... |
 
 <!--
 INDEX の列構成・canonical 順序・行形式の唯一の正本:
