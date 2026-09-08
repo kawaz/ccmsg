@@ -65,6 +65,13 @@ describe("nothing pushes a topic frame outside the topic mechanism (M5)", () => 
       // The values a person saved, written whole as their namespace's file:
       // persistence again, of the one thing here nothing else holds a copy of.
       "kv/store.ts",
+      // The mesh's three: the body of a probe and of a key request, which are
+      // HTTP requests to another instance, and the two halves of a proof, whose
+      // serialization *is* what gets signed. None is a value pushed to a
+      // subscriber, and none is compared against a previous one.
+      "mesh/identify.ts",
+      "mesh/keys.ts",
+      "mesh/mesh.ts",
       // Framing again, on the far side of route (a): the harness's socket takes
       // one JSON object per line, the same as the instance's own connections.
       "messaging/direct.ts",

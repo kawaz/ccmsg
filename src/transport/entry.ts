@@ -24,7 +24,14 @@ export interface EntryPolicy {
  * handshake must echo when the client offered any: a browser fails a connection
  * whose reply names none of what it asked for. */
 export type UpgradeDecision =
-  | { readonly ok: true; readonly protocol?: string }
+  | {
+      readonly ok: true;
+      readonly protocol?: string;
+      /** Let in as a peer rather than on the entry token. Such a connection has
+       * shown nothing yet: what it is gets decided by the mesh handshake, so
+       * until that finishes it may do only the one thing that can decide it. */
+      readonly mesh?: boolean;
+    }
   | { readonly ok: false; readonly reason: string };
 
 /** Accepts everything. A listener given no policy is open to whatever can reach

@@ -34,6 +34,7 @@ export function createDriver(conn: Conn, handle: FrameHandler) {
       }
       void handle(frame, conn).then(
         (result) => {
+          if (result.kind === "none") return;
           settleIfHello(conn, frame, result);
           conn.send(responseOf(result));
           // Whatever the implementation queued for after its reply — the
@@ -84,7 +85,7 @@ function settleIfHello(conn: Conn, frame: unknown, result: DispatchResult): void
   });
 }
 
-function responseOf(result: DispatchResult): object {
+function responseOf(result: Exclude<DispatchResult, { kind: "none" }>): object {
   if (result.kind === "forward") {
     // Mesh is what carries a forwarded op to its instance, and there is none
     // yet: the destination exists but nothing can reach it, which is the code

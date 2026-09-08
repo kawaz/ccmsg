@@ -4,6 +4,11 @@ import { LineReader, MAX_LINE_BYTES, WriteQueue } from "./framing.ts";
 import { type EntryPolicy, OPEN } from "./entry.ts";
 import type { Listener } from "./listener.ts";
 
+/** What the upgrade hands the socket: whether it was let in as a peer. */
+interface UpgradeData {
+  readonly mesh: boolean;
+}
+
 interface WsState {
   conn: BaseConn;
   reader: LineReader;
@@ -18,7 +23,10 @@ export interface WsOptions {
   readonly conns: ConnRegistry;
   readonly handle: FrameHandler;
   readonly entry?: EntryPolicy;
-  readonly onConn?: (conn: Conn) => void;
+  /** `mesh` is set when the handshake was let in as a peer rather than on the
+   * entry token, so whoever holds the connection can keep it to the one
+   * exchange that can prove what it is. */
+  readonly onConn?: (conn: Conn, info: { readonly mesh: boolean }) => void;
   /** An HTTP request that is not the upgrade, answered by whoever wants it.
    *
    * It shares this listener rather than opening a second one: a producer that
@@ -43,7 +51,7 @@ export function serveWs(options: WsOptions): Listener {
   // exists, so the upgrade carries nothing and the socket keeps no data of its
   // own.
   const states = new WeakMap<object, WsState>();
-  const server = Bun.serve({
+  const server = Bun.serve<UpgradeData, never>({
     hostname: options.hostname ?? "127.0.0.1",
     port: options.port,
     async fetch(request, srv) {
@@ -57,14 +65,14 @@ export function serveWs(options: WsOptions): Listener {
       // its own secret is not also asked for the entry token.
       const decision = entry.allowUpgrade?.(request) ?? { ok: true as const };
       if (!decision.ok) return new Response(decision.reason, { status: 401 });
-      const selected = decision.ok ? decision.protocol : undefined;
+      const selected = decision.protocol;
       if (
-        srv.upgrade(
-          request,
-          selected === undefined
+        srv.upgrade(request, {
+          data: { mesh: decision.mesh === true },
+          ...(selected === undefined
             ? {}
-            : { headers: { "sec-websocket-protocol": selected } satisfies Record<string, string> },
-        )
+            : { headers: { "sec-websocket-protocol": selected } satisfies Record<string, string> }),
+        })
       ) {
         return undefined;
       }
@@ -88,14 +96,16 @@ export function serveWs(options: WsOptions): Listener {
           send: (line) => {
             queue.push(line);
           },
-          close: () => {
-            ws.close();
+          close: (code, reason) => {
+            if (code === undefined) ws.close();
+            else ws.close(code, reason);
           },
         });
         const driver = createDriver(conn, options.handle);
         states.set(ws, { conn, queue, reader: new LineReader(driver) });
         options.conns.add(conn);
-        options.onConn?.(conn);
+        const data = ws.data as UpgradeData | undefined;
+        options.onConn?.(conn, { mesh: data?.mesh === true });
       },
       message(ws, message) {
         const state = states.get(ws);
@@ -122,9 +132,20 @@ export function serveWs(options: WsOptions): Listener {
     kind: "ws",
     address: `${server.hostname}:${server.port}`,
     async close() {
-      await server.stop(true);
+      // Bounded rather than simply awaited. Measured against Bun 1.3.13: once
+      // this server has closed a WebSocket itself — which the mesh does, to
+      // drop the loser of a glare, a link gone silent, or a peer speaking out
+      // of turn — `stop` never settles, while the address is in fact given up
+      // within a millisecond and can be bound again. Waiting on the promise
+      // would hang the stop order at its last step for a listener that is
+      // already down, so the wait is capped and the address is what is trusted.
+      await Promise.race([server.stop(true), Bun.sleep(STOP_DEADLINE_MS)]);
     },
   };
 }
+
+/** How long the stop above waits before trusting the address over the promise.
+ * Two orders of magnitude above the millisecond the release was measured at. */
+const STOP_DEADLINE_MS = 250;
 
 const NEWLINE = new Uint8Array([0x0a]);

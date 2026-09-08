@@ -6,6 +6,11 @@ import type { ErrorCode, ErrorResponse, InstanceId } from "@ccmsg/protocol";
  * another instance and mesh has to carry it there (daemon-v2 §3.2 step 6).
  * There is no mesh yet, so dispatch names the destination and stops. */
 export type DispatchResult =
+  /** The frame was not a request and has no answer. The mesh handshake's own
+   * traffic is the only thing that arrives this way: it travels on the
+   * connection being authenticated because that is the connection it is about
+   * (mesh-peer-auth §5), and the contract's op vocabulary has no name for it. */
+  | { readonly kind: "none" }
   | { readonly kind: "reply"; readonly response: Record<string, unknown> }
   | { readonly kind: "error"; readonly response: ErrorResponse }
   | { readonly kind: "forward"; readonly to: InstanceId; readonly frame: Record<string, unknown> };

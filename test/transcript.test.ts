@@ -414,7 +414,7 @@ describe("what the fold settles reaches the sessions domain (§5.1)", () => {
     writeFileSync(join(root, "projects", "t.jsonl"), "");
     const transcript = realpathSync(join(root, "projects", "t.jsonl"));
     const conn = greeting();
-    sessions.hello({
+    void sessions.hello({
       conn,
       args: {
         protocol_version: PROTOCOL_VERSION,

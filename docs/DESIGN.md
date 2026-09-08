@@ -172,7 +172,10 @@ disagreements by `updated_at`, which assumes a value outlives the process holdin
 There is no room jsonl (per contract §2.1, the source of truth for conversation logs is
 transcript). Sandbox grants, subscription state, in-progress fold results, and the list of
 config dirs are all reconstructable, so none of them are written (M4). pid / socket / lock are
-resource handles, not state.
+resource handles, not state. **The mesh's signing keys are not written either**: they are
+ephemeral keys, one per connection, minted at the dial and destroyed on the acknowledgement
+(mesh-peer-auth §7), and they exist only in memory. Putting one in the state directory would
+create a place to keep it and a way to recover it — two things to manage, against §1.1.
 
 ## 4. Delivery
 

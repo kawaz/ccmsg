@@ -156,7 +156,10 @@ transcript にも upstream にも「まだ届いていない本文」はどこ�
 
 room jsonl は無い (契約 §2.1 で会話ログの正本は transcript)。sandbox grant・購読状態・
 fold の途中結果・config dir の一覧はいずれも再構成できるので書かない (M4)。
-pid / socket / lock は資源ハンドルであって状態ではない。
+pid / socket / lock は資源ハンドルであって状態ではない。**mesh の署名鍵も書かない**:
+接続 1 本ごとに生成して ack で捨てるエフェメラル鍵であり (mesh-peer-auth §7)、
+メモリ上にしか存在しない。state dir に置くと保存場所と復旧手順という管理対象が生まれ、
+§1.1 に反する。
 
 ## 4. 配送
 

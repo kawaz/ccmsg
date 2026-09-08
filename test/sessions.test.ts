@@ -141,6 +141,8 @@ function declareStopping(domain: Sessions, conn: TestConn, sid: Sid = SID) {
 }
 
 function helloFrom(domain: Sessions, conn: TestConn, sid: Sid = SID): HelloResult {
+  // A session's greeting is answered without waiting for anything; only a
+  // peer's is a promise (mesh-peer-auth §5).
   return domain.hello({
     op: "hello",
     conn,
@@ -152,7 +154,7 @@ function helloFrom(domain: Sessions, conn: TestConn, sid: Sid = SID): HelloResul
       sid,
       ...meta(),
     },
-  });
+  }) as HelloResult;
 }
 
 /** What a session states about itself when it greets — the contract's shared
@@ -186,7 +188,7 @@ describe("hello", () => {
 
   test("a person's greeting registers nothing", () => {
     const { domain } = sessions();
-    domain.hello({
+    void domain.hello({
       op: "hello",
       conn: greeting(),
       args: { op: "hello", request_id: "1", role: "user", protocol_version: PROTOCOL_VERSION },
@@ -200,7 +202,7 @@ describe("hello", () => {
     // is why every one of these fields is optional in it.
     const { domain } = sessions();
     const greet = (args: Record<string, unknown>) => () =>
-      domain.hello({
+      void domain.hello({
         op: "hello",
         conn: greeting(),
         args: { op: "hello", request_id: "1", protocol_version: PROTOCOL_VERSION, ...args },
@@ -245,7 +247,7 @@ describe("hello", () => {
     homes.push(elsewhere);
     mkdirSync(join(elsewhere, "projects", "a"), { recursive: true });
     writeFileSync(join(elsewhere, "projects", "a", "b.jsonl"), "");
-    context.domain.hello({
+    void context.domain.hello({
       op: "hello",
       conn: greeting(),
       args: {
@@ -277,12 +279,13 @@ describe("hello", () => {
 
   test("a greeting announcing another generation is refused", () => {
     const { domain } = sessions();
-    expect(() =>
-      domain.hello({
-        op: "hello",
-        conn: greeting(),
-        args: { op: "hello", request_id: "1", role: "session", protocol_version: 99, sid: SID },
-      }),
+    expect(
+      () =>
+        void domain.hello({
+          op: "hello",
+          conn: greeting(),
+          args: { op: "hello", request_id: "1", role: "session", protocol_version: 99, sid: SID },
+        }),
     ).toThrow();
   });
 
@@ -313,7 +316,7 @@ describe("hello", () => {
 
   test("a session that named none of it is shown without it, never with a guess", () => {
     const { domain } = sessions();
-    domain.hello({
+    void domain.hello({
       op: "hello",
       conn: greeting(),
       args: {

@@ -16,6 +16,10 @@ export interface Requester {
    * a subscribe's snapshot follows its acknowledgement rather than preceding it. */
   deferSend(frame: object): void;
   onClose(listener: () => void): void;
+  /** End the connection. One op needs it: the mesh handshake decides whether a
+   * connection is a peer at all, and a connection that fails it is closed
+   * rather than left open and anonymous (mesh-peer-auth §5.8). */
+  close(code?: number, reason?: string): void;
 }
 
 /** What an op implementation receives.

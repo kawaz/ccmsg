@@ -27,8 +27,12 @@ export interface Conn extends Requester {
   deferSend(frame: object): void;
   /** Send everything `deferSend` queued, in the order it was queued. */
   flushDeferred(): void;
-  /** Close the underlying socket. Idempotent. */
-  close(): void;
+  /** Close the underlying socket. Idempotent.
+   *
+   * A code says why, for the one closure a peer must not read as a fault: the
+   * loser of a glare is closed deliberately and is normal at the other end
+   * (mesh-peer-auth §8.1). Transports that carry no such code ignore it. */
+  close(code?: number, reason?: string): void;
   /** Run when the connection is gone. Anything held per connection — the
    * subscriptions of §6.3 once they exist — is released here, because a closed
    * connection is the only end a subscription has. */
@@ -39,7 +43,7 @@ export interface Conn extends Requester {
  * operations that differ between UDS and WS. */
 export interface ConnSocket {
   send(line: string): void;
-  close(): void;
+  close(code?: number, reason?: string): void;
 }
 
 /** The `Conn` half that is the same for every transport. */
@@ -75,8 +79,8 @@ export class BaseConn implements Conn {
     for (const frame of this.#deferred.splice(0)) this.send(frame);
   }
 
-  close(): void {
-    this.socket.close();
+  close(code?: number, reason?: string): void {
+    this.socket.close(code, reason);
   }
 
   onClose(listener: () => void): void {

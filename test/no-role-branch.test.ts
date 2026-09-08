@@ -18,9 +18,15 @@ import { OP_NAMES, opAttributes } from "@ccmsg/protocol";
  * grants nobody anything. The gateway's reader is left out because `"instance"`
  * there names a field of the contract's own request type — the one the
  * publisher stamps and the parser therefore omits — on a path that reads a
- * posted document and authorizes nobody. */
+ * posted document and authorizes nobody. The mesh is left out for the same
+ * reason as the CLI: the `"instance"` there is in the greeting this instance
+ * sends when it dials a peer, where the word announces what this connection is
+ * rather than judging what somebody else's may do. Which peer connections are
+ * accepted is decided by the handshake, and a peer that passes it is settled
+ * through the same `hello` reply every other role is. */
 const FOREIGN = new Set([
   "cli.ts",
+  "mesh/mesh.ts",
   "messaging/direct.ts",
   "transcript/fold.ts",
   "upstream/events.ts",

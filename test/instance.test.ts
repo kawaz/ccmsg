@@ -282,6 +282,7 @@ describe("the stop order (§8.5)", () => {
         send() {},
         deferSend() {},
         onClose() {},
+        close() {},
       },
     );
     expect(refusal.kind).toBe("error");

@@ -48,6 +48,7 @@ import { TranscriptFiles, Transcripts } from "../transcript/index.ts";
 import {
   ConnRegistry,
   type EntryPolicy,
+  type Listener,
   listenUds,
   serveWs,
   TOKEN_PARAM,
@@ -55,6 +56,7 @@ import {
   Transport,
   type UpgradeDecision,
 } from "../transport/index.ts";
+import { Mesh, MESH_PROTOCOL } from "../mesh/index.ts";
 import {
   Gateway,
   gatewayCapabilities,
@@ -70,7 +72,7 @@ import {
   translateHandlers,
   translateSetup,
 } from "../translate/index.ts";
-import { type InstanceConfig, loadConfig } from "./config.ts";
+import { type EntryConfig, type InstanceConfig, loadConfig } from "./config.ts";
 import { completeHandlers } from "./handlers.ts";
 import { acquireLock, type Held, isHeldByUs, type Lock } from "./lock.ts";
 import { Log } from "./log.ts";
@@ -87,6 +89,17 @@ export interface StartOptions {
   readonly echoLog?: boolean;
   /** Overrides the confirmation poll of the sessions watch, for tests. */
   readonly pollMs?: number;
+  /** Overrides the mesh's own intervals, for a test that cannot wait out a
+   * heartbeat or a reconnection backoff. */
+  readonly meshTiming?: MeshTiming;
+}
+
+/** The mesh intervals a caller may shorten. The values themselves, and why they
+ * are what they are, belong to the mesh (§8.2, §8.3). */
+export interface MeshTiming {
+  readonly heartbeatMs?: number;
+  readonly heartbeatTimeoutMs?: number;
+  readonly reconnectMinMs?: number;
 }
 
 /** Startup found another instance already serving this config home. Nothing
@@ -134,8 +147,28 @@ export async function start(options: StartOptions = {}): Promise<StartOutcome> {
     // program that was named and cannot be run is a setting that cannot be
     // honoured (DV-Q9).
     const helper = translateSetup(config.upstream, paths.configFile);
+    // 5. `self`, for an instance that has a mesh.
+    //
+    // §8.3 puts this before the listen, and it cannot be: settling `self` means
+    // asking every endpoint in the list who it is, this instance included, and
+    // the probe it sends itself has to arrive at a listener. So the WebSocket
+    // is bound first and handed to the instance, which keeps the two things the
+    // order was for — nothing derived from `self` exists before `self` does,
+    // and a list this instance cannot find itself in ends the start.
+    const mesh = meshFor(config, log, options.meshTiming);
+    const wiring = mesh === undefined ? undefined : await bindForMesh(config, paths, mesh);
     // 4-7 are the instance's own construction and listen.
-    const instance = new Instance(paths, config, lock, log, options.pollMs, gateway, helper);
+    const instance = new Instance(
+      paths,
+      config,
+      lock,
+      log,
+      options.pollMs,
+      gateway,
+      helper,
+      wiring,
+    );
+    wiring?.attach(instance);
     await instance.listen();
     return instance;
   } catch (cause) {
@@ -145,12 +178,90 @@ export async function start(options: StartOptions = {}): Promise<StartOutcome> {
   }
 }
 
+/** The mesh, on an instance configured for one.
+ *
+ * Two things have to be true: peers to dial, and an address they can dial back.
+ * An instance serving only the unix socket is reachable by nothing on another
+ * host, so a peer list on one is a setting with no effect rather than a mesh. */
+function meshFor(config: InstanceConfig, log: Log, timing?: MeshTiming): Mesh | undefined {
+  if (config.peers.length === 0 || config.entry === undefined) return undefined;
+  return new Mesh({
+    peers: config.peers,
+    conns: new ConnRegistry(),
+    log: (msg, fields) => {
+      log.write(msg, fields);
+    },
+    ...timing,
+  });
+}
+
+/** What an instance is handed when its listener had to exist before it did.
+ *
+ * The connection registry is shared rather than copied: a connection accepted
+ * during self-identification is one of the instance's, and two registries would
+ * mean the stop order (§8.5 step 3) reaching only one of them. */
+export interface MeshWiring {
+  readonly conns: ConnRegistry;
+  readonly ws: Listener;
+  readonly mesh: Mesh;
+  readonly self: InstanceId;
+  readonly token: string;
+  /** Point the listener at the instance, once there is one. */
+  attach(instance: Instance): void;
+}
+
+/** Bind the WebSocket, settle `self` against the peer list, and hand both on.
+ *
+ * The listener answers the two pre-authentication routes from the moment it is
+ * up — the probe of self-identification and the key of mesh-peer-auth §6 — and
+ * refuses everything else until the instance exists, which is a window of one
+ * round of probes. */
+async function bindForMesh(
+  config: InstanceConfig,
+  paths: InstancePaths,
+  mesh: Mesh,
+): Promise<MeshWiring> {
+  const entry = config.entry as EntryConfig;
+  const token = entryToken(paths.entryTokenFile);
+  let instance: Instance | undefined;
+  const ws = serveWs({
+    hostname: entry.host,
+    port: entry.port,
+    conns: mesh.conns,
+    handle: (frame, conn) =>
+      instance === undefined
+        ? Promise.resolve(failure(undefined, "internal_error", "this instance is still starting"))
+        : instance.handle(frame, conn),
+    entry: entryPolicy(config, token, true),
+    route: async (request) => (await mesh.route(request)) ?? (await instance?.route(request)),
+    onConn: (conn, info) => {
+      mesh.accept(conn, info);
+    },
+  });
+  const self = await mesh.identify();
+  return {
+    conns: mesh.conns,
+    ws,
+    mesh,
+    self,
+    token,
+    attach(built: Instance): void {
+      instance = built;
+    },
+  };
+}
+
 /** One running instance: the layers wired together, and the two lifecycle
  * orders of §8.3 and §8.5. */
 export class Instance {
   readonly self: InstanceId;
   readonly startedAt: Timestamp = Date.now();
-  readonly #conns = new ConnRegistry();
+  readonly #conns: ConnRegistry;
+  /** The mesh, on an instance configured for one (§7). */
+  readonly #mesh: Mesh | undefined;
+  /** The WebSocket listener, when it had to be bound before this instance
+   * existed so that self-identification could reach it. */
+  readonly #boundWs: Listener | undefined;
   readonly #transport = new Transport();
   readonly #topics: Topics;
   readonly #sessions: Sessions;
@@ -182,13 +293,17 @@ export class Instance {
     pollMs?: number,
     setup: GatewaySetup = {},
     helper?: string,
+    wiring?: MeshWiring,
   ) {
-    // 5. `self`. §7.1 settles this by asking the peers who they cannot see,
-    // and there is no mesh yet, so it is derived from where this instance
-    // listens — unique per config home either way, which is what the rest of
-    // the instance uses it for. The derivation is replaced, not extended, when
-    // §7.1 lands.
-    this.self = selfId(paths.key, config);
+    this.#conns = wiring?.conns ?? new ConnRegistry();
+    this.#mesh = wiring?.mesh;
+    this.#boundWs = wiring?.ws;
+    this.#entryToken = wiring?.token;
+    // 5. `self`. A mesh instance was told which of its endpoints it is, by
+    // asking all of them (§7.1). One without a mesh has no list to be found in,
+    // so it is named after where it listens — unique per config home, which is
+    // all anything below mesh uses it for.
+    this.self = wiring?.self ?? selfId(paths.key, config);
     // Every capability rests on an upstream, so what is configured is what
     // this instance can name. A client is told before it subscribes, rather
     // than being refused when it does.
@@ -251,6 +366,7 @@ export class Instance {
       },
       transcript: this.#transcripts,
       gateway: this.#gateway,
+      ...(this.#mesh === undefined ? {} : { mesh: this.#mesh }),
       onChanged: () => {
         this.#status.refresh();
       },
@@ -406,7 +522,10 @@ export class Instance {
     );
     // The address clients use, moved onto this process once it is accepting.
     publishSocket(this.paths);
-    if (this.config.entry !== undefined) {
+    if (this.#boundWs !== undefined) {
+      // Already listening: it had to be, for self-identification to reach it.
+      this.#transport.add(this.#boundWs);
+    } else if (this.config.entry !== undefined) {
       // Written before anything can connect, for the same reason the pid is:
       // the check cannot be made against a file that is not there yet.
       this.#entryToken = entryToken(this.paths.entryTokenFile);
@@ -416,15 +535,16 @@ export class Instance {
           port: this.config.entry.port,
           conns: this.#conns,
           handle: (frame, conn) => this.handle(frame, conn),
-          entry: entryPolicy(this.config, this.#entryToken),
+          entry: entryPolicy(this.config, this.#entryToken, false),
           // The gateway posts to the address this instance already serves,
           // behind the same entry check (§3.1).
-          route: (request) => this.#gateway.route(request),
+          route: (request) => this.route(request),
         }),
       );
     }
-    // 7. Dialling the peers is the mesh's, and there is none: the endpoints
-    // are read and held, and nothing connects to them.
+    // 7. the peers. Every instance dials every one of them, and one that is not
+    // there is retried rather than waited for (§7.2).
+    this.#mesh?.connect(this.self);
     await Promise.resolve();
     this.log.write("started", {
       instance: this.self,
@@ -433,6 +553,14 @@ export class Instance {
       http: this.http,
       peers: this.config.peers.length,
     });
+  }
+
+  /** An HTTP request on the WebSocket's listener that is not the upgrade. The
+   * gateway's webhook is the one such route this instance answers itself; the
+   * mesh's two are answered before this is asked, because they are served
+   * before anything is proven and this instance's own routes are not. */
+  route(request: Request): Promise<Response | undefined> {
+    return this.#gateway.route(request);
   }
 
   /** What a WebSocket client has to present to be let in (§3.1). Undefined for
@@ -448,6 +576,16 @@ export class Instance {
 
   get socketPath(): string {
     return this.paths.socket;
+  }
+
+  /** The mesh, on an instance that has one.
+   *
+   * Which peers are reachable is a fact about this instance that no op carries
+   * on its own — `hello` states it to a client, and this is where it is
+   * observable from inside the process, as `watching` is for the sessions
+   * watch. */
+  get mesh(): Mesh | undefined {
+    return this.#mesh;
   }
 
   /** Whether the sessions watch is running. It is driven by subscription
@@ -489,6 +627,40 @@ export class Instance {
       return Promise.resolve(
         failure(requestIdOf(frame), "bad_request", `${this.self} is shutting down`),
       );
+    }
+    // A frame that is not an op: the mesh handshake's own traffic, which the
+    // op vocabulary has no name for (contract, `Plane`). It is taken here
+    // because this is the one door, and it decides nothing — the judgement is
+    // in the `hello` handler, which is the only thing that settles a peer.
+    if (this.#mesh?.frame(conn, frame) === true) {
+      return Promise.resolve({ kind: "none" });
+    }
+    if (this.#mesh !== undefined) {
+      // Mid-handshake, an ordinary request is a protocol violation rather than
+      // an early call: the peer must send nothing before the acknowledgement,
+      // and one that does is dropped rather than buffered (mesh-peer-auth §5.8).
+      if (this.#mesh.handshaking(conn)) {
+        conn.close();
+        return Promise.resolve(
+          failure(
+            requestIdOf(frame),
+            "bad_request",
+            "a peer waits for its acknowledgement before it speaks",
+          ),
+        );
+      }
+      // Let in as a peer rather than on the entry token, and still unproven:
+      // the greeting is the one thing it was admitted to make.
+      if (this.#mesh.unproven(conn) && opOf(frame) !== "hello") {
+        conn.close();
+        return Promise.resolve(
+          failure(
+            requestIdOf(frame),
+            "hello_required",
+            "a peer connection greets before anything else",
+          ),
+        );
+      }
     }
     // What `last_activity_at` means on the `peers` row: the most recent request
     // on any of the session's connections. Here, because this is the one door
@@ -542,6 +714,9 @@ export class Instance {
     // are so their receipts can reach it (§4.1). It has a name on disk, so it
     // is taken down here rather than left for the next run to find.
     this.#direct.close();
+    // The mesh's links and its timers, let go here for the same reason: they
+    // are this instance's and do not outlive it (§7).
+    this.#mesh?.stop();
     // 3. tell the connections, while they can still be told
     const restarting: RestartingEvent = { ev: "restarting", instance: this.self };
     for (const conn of this.#conns) conn.send(restarting);
@@ -582,7 +757,7 @@ function selfId(key: string, config: InstanceConfig): InstanceId {
  * permission, and the one deployment that would want "any page may connect" is
  * the one that must say so. An empty `source_ips` leaves the addresses to the
  * bind, which for the default loopback host is this machine. */
-function entryPolicy(config: InstanceConfig, token: string): EntryPolicy {
+function entryPolicy(config: InstanceConfig, token: string, mesh: boolean): EntryPolicy {
   const entry = config.entry;
   if (entry === undefined) return {};
   return {
@@ -599,6 +774,15 @@ function entryPolicy(config: InstanceConfig, token: string): EntryPolicy {
     },
     allowUpgrade(request: Request): UpgradeDecision {
       const offered = protocolsOf(request);
+      // A peer takes a route of its own past this check. The token is one
+      // instance's handle, kept readable by its own uid alone (A4), so handing
+      // it to every peer would turn it into the mesh's shared password — and a
+      // peer that held one would be admitted on a secret rather than on a
+      // proof. It is let through unproven instead, and what it is is decided by
+      // the handshake, which is the only place a claim can actually be checked.
+      if (mesh && offered.includes(MESH_PROTOCOL)) {
+        return { ok: true, protocol: MESH_PROTOCOL, mesh: true };
+      }
       const presented =
         offered.find((name) => name.startsWith(TOKEN_PROTOCOL))?.slice(TOKEN_PROTOCOL.length) ??
         new URL(request.url).searchParams.get(TOKEN_PARAM) ??
@@ -622,6 +806,12 @@ function protocolsOf(request: Request): string[] {
     .split(",")
     .map((name) => name.trim())
     .filter((name) => name !== "");
+}
+
+function opOf(frame: unknown): string | undefined {
+  if (typeof frame !== "object" || frame === null) return undefined;
+  const op = (frame as Record<string, unknown>)["op"];
+  return typeof op === "string" ? op : undefined;
 }
 
 function requestIdOf(frame: unknown): string | undefined {

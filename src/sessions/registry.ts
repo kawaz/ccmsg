@@ -7,6 +7,7 @@ import {
   type HelloArgs,
   type HelloResult,
   type InstanceId,
+  type InstanceInfo,
   type LastLiveSession,
   type PeerInfo,
   PROTOCOL_VERSION,
@@ -15,7 +16,7 @@ import {
   type Sid,
   type Timestamp,
 } from "@ccmsg/protocol";
-import { type HandlerInput, OpError } from "../dispatch/index.ts";
+import { type HandlerInput, OpError, type Requester } from "../dispatch/index.ts";
 import { within } from "../files/index.ts";
 import type { TranscriptFacts } from "../transcript/index.ts";
 import type { TopicValue, UpstreamResource } from "../topics/index.ts";
@@ -55,7 +56,21 @@ export interface SessionsDeps {
   readonly onChanged?: () => void;
   /** How often the confirmation poll runs, for a test that cannot wait. */
   readonly pollMs?: number;
+  /** The mesh, on an instance that has one. It answers the one greeting this
+   * domain cannot judge: a peer's, whose claim is settled by an exchange of its
+   * own rather than by anything a session says (§7.2). */
+  readonly mesh?: MeshSource;
 }
+
+/** What `hello` needs of the mesh: verify the greeting of a peer, and say which
+ * instances there are and which of them can be reached (§7.5). */
+export interface MeshSource {
+  greet(conn: Requester, claim: MeshClaim): Promise<void>;
+  instances(self: InstanceId): InstanceInfo[];
+}
+
+/** The mesh claim a peer greets with, as the contract states it. */
+type MeshClaim = NonNullable<HelloArgs["mesh"]>;
 
 /** The fold, as the sessions domain reads it: two values about one session,
  * asked for when a payload is built rather than copied here when they change
@@ -156,7 +171,7 @@ export class Sessions implements UpstreamResource {
    * claims: the sid is the session it speaks for, and reading the role here
    * would put the contract's "a session names its sid" rule in a second place
    * (M1). */
-  hello = (input: HandlerInput): HelloResult => {
+  hello = (input: HandlerInput): HelloResult | Promise<HelloResult> => {
     const args = input.args as unknown as HelloArgs;
     // A role is set once and fixed for the connection's life (contract, `Role`),
     // so a second greeting is not a re-identification: it is a request to be
@@ -167,6 +182,30 @@ export class Sessions implements UpstreamResource {
     if (args.protocol_version !== PROTOCOL_VERSION) {
       throw new OpError("bad_request", `this instance speaks protocol ${PROTOCOL_VERSION}`);
     }
+    if (args.role === "instance") {
+      // A peer's greeting is answered only once the connection has been proven
+      // to be the endpoint it names. The verification rejects when it is not,
+      // and the connection stays anonymous because nothing settles an identity
+      // but a reply (mesh-peer-auth §5, daemon-v2 §3.2 step 7). This is the one
+      // greeting that has to wait for something, which is why it is the one
+      // that answers with a promise.
+      if (args.mesh === undefined) {
+        throw new OpError("invalid_args", "an instance greets with its mesh claim");
+      }
+      const mesh = this.deps.mesh;
+      if (mesh === undefined) {
+        throw new OpError(
+          "capability_unavailable",
+          "this instance has no mesh, so no peer connection can be proven",
+        );
+      }
+      return mesh.greet(input.conn, args.mesh).then(() => this.#greeted(args, input));
+    }
+    return this.#greeted(args, input);
+  };
+
+  /** What every greeting answers, once whatever had to be settled has been. */
+  #greeted(args: HelloArgs, input: HandlerInput): HelloResult {
     const sid = requiredSid(args);
     if (sid !== undefined) {
       this.register(sid, args, this.deps.configHome);
@@ -175,12 +214,14 @@ export class Sessions implements UpstreamResource {
     return {
       protocol_version: PROTOCOL_VERSION,
       instance: this.deps.self,
-      instances: [{ id: this.deps.self, host: hostname(), reachable: true }],
+      instances: this.deps.mesh?.instances(this.deps.self) ?? [
+        { id: this.deps.self, host: hostname(), reachable: true },
+      ],
       capabilities: [...this.deps.capabilities],
       version: this.deps.version,
       started_at: this.deps.startedAt,
     };
-  };
+  }
 
   /** Where a session stands (§5.2). Undefined for a sid this instance has
    * never seen live and does not hold in `last_live`. */
@@ -581,16 +622,11 @@ function requiredSid(args: HelloArgs): Sid | undefined {
       }
       return undefined;
     case "instance":
-      if (args.mesh === undefined) {
-        throw new OpError("invalid_args", "an instance greets with its mesh claim");
+      // A peer speaks for no session: what it is has already been settled by
+      // the handshake, and a sid here would be it registering as one.
+      if (args.sid !== undefined) {
+        throw new OpError("invalid_args", "a sid is the greeting of a session, not of an instance");
       }
-      // The claim proves nothing on its own: what binds this connection to the
-      // `iss` it names is a separate exchange (mesh-peer-auth §5), and there is
-      // none. Settling the identity on the strength of the claim alone would
-      // admit any peer that can spell one, so the greeting is refused instead.
-      throw new OpError(
-        "capability_unavailable",
-        "this instance has no mesh, so no peer connection can be proven",
-      );
+      return undefined;
   }
 }
