@@ -4,7 +4,6 @@ active な issue の一覧。close 済みは archive/ にあり、ここには�
 
 | date | category | status | slug | 概要 |
 |---|---|---|---|---|
-| 2026-09-09 | bug | open | [session-kill-pid-reuse-guard](./2026-09-09-session-kill-pid-reuse-guard.md) | `session_kill` の pid 再利用ガードが argv0 の一致だけで判定しており、`<pid>.jso... |
 | 2026-09-09 | bug | open | [misc-hardening-findings](./2026-09-09-misc-hardening-findings.md) | 2026-09-08 の設計監査で指摘された、個別 issue を立てるほどではないが放置すべきでな... |
 | 2026-09-09 | bug | open | [last-live-session-model-effort-contract](./2026-09-09-last-live-session-model-effort-contract.md) | `LastLiveSession.model` / `.effort` は「transcript の最後の turn から読... |
 | 2026-09-09 | bug | open | [instance-ping-network-status](./2026-09-09-instance-ping-network-status.md) | `InstancePingResult.network` が常に `unknown` を返し、`NetOnlineEvent`... |

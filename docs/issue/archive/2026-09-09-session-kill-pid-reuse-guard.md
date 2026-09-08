@@ -1,6 +1,6 @@
 ---
 title: session_kill の pid 再利用ガードが argv0 のみで startedAt 照合が無い
-status: open
+status: resolved
 category: bug
 created: 2026-09-09T00:19:04+09:00
 last_read:
@@ -9,10 +9,10 @@ wip_entered:
 blocked_entered:
 pending_entered:
 discarded_entered:
-resolved_entered:
+resolved_entered: 2026-09-09T02:55:19+09:00
 discard_reason:
 pending_reason:
-close_reason:
+close_reason: ["done: v0.0.19 で started_at と ps etime の照合 (前 120s / 後 5s) を追加 (commit 2f7cf7d3)"]
 blocked_by:
 origin: 2026-09-08 の設計監査 (fable5-high)
 ---
