@@ -457,6 +457,25 @@ describe("file_delete", () => {
       ),
     ).toBe("path_forbidden");
   });
+
+  test("a link to a file inside the root does not delete what it points at", () => {
+    // The link resolves to a path every check admits, so nothing but reading
+    // the name itself tells the two apart. Deleting through it would unlink a
+    // file the caller never named.
+    const target = join(base, "repo/ws/sub/pointed-at.txt");
+    writeFileSync(target, "keep\n");
+    symlinkSync(target, join(base, "repo/ws/sub/pointer.txt"));
+    expect(
+      refusalOf(() =>
+        run("file_delete", files().file_delete, {
+          sid: SID,
+          kind: "contained",
+          path: "ws/sub/pointer.txt",
+        }),
+      ),
+    ).toBe("path_forbidden");
+    expect(statSync(target).isFile()).toBe(true);
+  });
 });
 
 describe("file_find", () => {

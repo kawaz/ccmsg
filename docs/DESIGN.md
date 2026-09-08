@@ -82,8 +82,16 @@ persistence writes only what must not be lost across a crash and restart
 |---|---|
 | Accepting connections | UDS (same-host sessions / CLI), WS (webui / mesh) |
 | Framing | newline-delimited JSON. Holds the per-line size limit and backpressure handling in one place |
-| Entry-point permission | source IP allowlist, allowed Origin set, mesh peer TLS |
+| Entry-point permission | source IP allowlist, allowed Origin set, the WS entry token, mesh peer TLS |
 | Determining identity | binds a role and (for sessions) a sid to the connection as the result of `hello` |
+
+The entry token is `entry.token` in the state directory (0600, generated on first start). A WS
+client presents it on the upgrade, either as `Sec-WebSocket-Protocol: ccmsg.token.<token>` or as
+the query parameter `?token=` — the subprotocol route exists because a browser cannot put a header
+on a handshake. An upgrade that does not carry it is refused with 401. **This is A4 restated**: the
+boundary is the uid and the file permission rather than anything inside the daemon, and the 0600 on
+that token file is that boundary. UDS needs no token, since reaching it already means passing the
+directory's permissions.
 
 We will not repeat the asymmetry in the old daemon where only the UDS listener was buried
 inside the startup function. UDS and WS are **two implementations that return the same

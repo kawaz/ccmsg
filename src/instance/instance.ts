@@ -49,7 +49,10 @@ import {
   type EntryPolicy,
   listenUds,
   serveWs,
+  TOKEN_PARAM,
+  TOKEN_PROTOCOL,
   Transport,
+  type UpgradeDecision,
 } from "../transport/index.ts";
 import {
   Gateway,
@@ -71,6 +74,7 @@ import { completeHandlers } from "./handlers.ts";
 import { acquireLock, type Held, isHeldByUs, type Lock } from "./lock.ts";
 import { Log } from "./log.ts";
 import { prepareSocketDir, publishSocket, sweepOrphanSockets } from "./socket.ts";
+import { entryToken, tokenMatches } from "./token.ts";
 import { type Env, type InstancePaths, resolvePaths } from "./paths.ts";
 
 /** The daemon build, as `hello` and `instance_ping` report it. */
@@ -161,6 +165,9 @@ export class Instance {
    * 1: a request arriving after it is refused rather than half-served. */
   #stopping = false;
   #stopped: Promise<void> | undefined;
+  /** The secret a WebSocket client presents, once there is a WebSocket to
+   * present it to. An instance serving only the unix socket has none. */
+  #entryToken: string | undefined;
   /** Resolved once the stop order has run to the end, so a foreground run has
    * something to wait on that does not depend on what asked it to stop. */
   readonly #done = Promise.withResolvers<void>();
@@ -396,13 +403,16 @@ export class Instance {
     // The address clients use, moved onto this process once it is accepting.
     publishSocket(this.paths);
     if (this.config.entry !== undefined) {
+      // Written before anything can connect, for the same reason the pid is:
+      // the check cannot be made against a file that is not there yet.
+      this.#entryToken = entryToken(this.paths.entryTokenFile);
       this.#transport.add(
         serveWs({
           hostname: this.config.entry.host,
           port: this.config.entry.port,
           conns: this.#conns,
           handle: (frame, conn) => this.handle(frame, conn),
-          entry: entryPolicy(this.config),
+          entry: entryPolicy(this.config, this.#entryToken),
           // The gateway posts to the address this instance already serves,
           // behind the same entry check (§3.1).
           route: (request) => this.#gateway.route(request),
@@ -419,6 +429,12 @@ export class Instance {
       http: this.http,
       peers: this.config.peers.length,
     });
+  }
+
+  /** What a WebSocket client has to present to be let in (§3.1). Undefined for
+   * an instance that serves only the unix socket. */
+  get entryToken(): string | undefined {
+    return this.#entryToken;
   }
 
   /** Every bound WebSocket address, as `host:port`. */
@@ -476,6 +492,14 @@ export class Instance {
       return Promise.resolve(
         failure(requestIdOf(frame), "bad_request", `${this.self} is shutting down`),
       );
+    }
+    // What `last_activity_at` means on the `peers` row: the most recent request
+    // on any of the session's connections. Here, because this is the one door
+    // every request comes through, and a session with several connections has
+    // one row for all of them.
+    const identity = conn.identity;
+    if (identity.state === "settled" && identity.sid !== undefined) {
+      this.#sessions.touch(identity.sid);
     }
     return dispatch(frame, conn, {
       self: this.self,
@@ -549,30 +573,54 @@ function selfId(key: string, config: InstanceConfig): InstanceId {
   return `ws://${entry.host}:${entry.port}`;
 }
 
-/** Who may reach the WebSocket at all (§3.1). Both lists come from config and
- * an empty one means "no restriction beyond the bind itself". */
-function entryPolicy(config: InstanceConfig): EntryPolicy {
+/** Who may reach the WebSocket at all (§3.1): an Origin the operator named, an
+ * address the operator named, and the instance's own entry token.
+ *
+ * The two config lists are read as allowlists in both directions. An empty
+ * `origins` admits no browser: a permission that was never granted is not a
+ * permission, and the one deployment that would want "any page may connect" is
+ * the one that must say so. An empty `source_ips` leaves the addresses to the
+ * bind, which for the default loopback host is this machine. */
+function entryPolicy(config: InstanceConfig, token: string): EntryPolicy {
   const entry = config.entry;
   if (entry === undefined) return {};
   return {
-    allowRequest(request: Request): boolean {
+    allowRequest(request: Request, source: string | undefined): boolean {
       const origin = request.headers.get("origin");
-      if (entry.origins.length > 0 && (origin === null || !entry.origins.includes(origin))) {
-        return false;
-      }
+      // A request carrying no `Origin` is not a browser's, and there is nothing
+      // to compare: it stands or falls on the address and the token below.
+      if (origin !== null && !entry.origins.includes(origin)) return false;
       if (entry.source_ips.length === 0) return true;
-      // Bun states the peer address on the request when it has one; a
-      // connection whose address cannot be read is refused rather than let
-      // through an allowlist it was never compared against.
-      const source = sourceIp(request);
+      // The address the server observed, not one a header claims: a forwarding
+      // header is written by whoever is in front of us, and anyone who can
+      // reach the port can write it.
       return source !== undefined && entry.source_ips.includes(source);
+    },
+    allowUpgrade(request: Request): UpgradeDecision {
+      const offered = protocolsOf(request);
+      const presented =
+        offered.find((name) => name.startsWith(TOKEN_PROTOCOL))?.slice(TOKEN_PROTOCOL.length) ??
+        new URL(request.url).searchParams.get(TOKEN_PARAM) ??
+        undefined;
+      if (!tokenMatches(token, presented)) {
+        return { ok: false, reason: "this instance takes a connection carrying its entry token" };
+      }
+      // The handshake echoes a subprotocol only when one was offered, and it
+      // prefers one that is not the token: replying with the token would write
+      // it into a response header for no gain, since the client already has it.
+      const selected = offered.find((name) => !name.startsWith(TOKEN_PROTOCOL)) ?? offered[0];
+      return selected === undefined ? { ok: true } : { ok: true, protocol: selected };
     },
   };
 }
 
-function sourceIp(request: Request): string | undefined {
-  const forwarded = request.headers.get("x-forwarded-for");
-  return forwarded?.split(",")[0]?.trim();
+function protocolsOf(request: Request): string[] {
+  const header = request.headers.get("sec-websocket-protocol");
+  if (header === null) return [];
+  return header
+    .split(",")
+    .map((name) => name.trim())
+    .filter((name) => name !== "");
 }
 
 function requestIdOf(frame: unknown): string | undefined {

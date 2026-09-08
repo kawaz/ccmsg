@@ -111,6 +111,13 @@ export class TestConn implements Requester {
   }
 }
 
+/** A connection that has not greeted yet, which is the only kind `hello` is
+ * ever answered on: the driver settles the identity from the reply, so the
+ * greeting itself always arrives anonymous. */
+export function greeting(): TestConn {
+  return new TestConn();
+}
+
 export function connAs(role: Role, sid: Sid = SID): TestConn {
   return new TestConn({ state: "settled", role, sid });
 }

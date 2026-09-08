@@ -30,6 +30,11 @@ export interface InstancePaths {
   readonly pidFile: string;
   readonly lockFile: string;
   readonly logFile: string;
+  /** The secret a WebSocket client presents to be let in (§3.1). It lives with
+   * the state because it is this instance's handle like the socket is: readable
+   * by the uid that runs it and by nobody else, which is the boundary A4
+   * names. */
+  readonly entryTokenFile: string;
 }
 
 /** `sun_path` on macOS, the shorter of the two platforms this runs on
@@ -87,6 +92,7 @@ export function resolvePaths(env: Env = process.env): InstancePaths {
     pidFile: join(stateDir, "daemon.pid"),
     lockFile: join(stateDir, "daemon.lock"),
     logFile: join(stateDir, "daemon.log"),
+    entryTokenFile: join(stateDir, "entry.token"),
   };
 }
 

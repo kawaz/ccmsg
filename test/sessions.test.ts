@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -12,6 +12,7 @@ import {
   TOPIC_SCHEMAS,
   validationErrors,
 } from "@ccmsg/protocol";
+import { OpError } from "../src/dispatch/index.ts";
 import { Topics } from "../src/topics/index.ts";
 import {
   classify,
@@ -20,7 +21,7 @@ import {
   type SessionInputs,
   Sessions,
 } from "../src/sessions/index.ts";
-import { connAs, SELF, SID, OTHER_SID, TestConn } from "./frames.ts";
+import { connAs, greeting, SELF, SID, OTHER_SID, TestConn } from "./frames.ts";
 
 /** A throwaway config home under the OS temp dir, which is where the harness's
  * `sessions/` and this instance's state directory both hang. */
@@ -28,9 +29,19 @@ function home() {
   const root = mkdtempSync(join(tmpdir(), "ccmsg-sessions-"));
   const sessionsDir = join(root, "sessions");
   mkdirSync(sessionsDir, { recursive: true });
+  // The transcript a greeting names is taken only where it is a file under this
+  // config home's `projects/` (M6), so a fixture that wants it taken writes one.
+  mkdirSync(join(root, "projects", "a"), { recursive: true });
+  writeFileSync(join(root, "projects", "a", "b.jsonl"), "");
+  // Resolved, because what the instance keeps is the file it will read rather
+  // than the spelling it was handed.
+  transcriptPath = realpathSync(join(root, "projects", "a", "b.jsonl"));
   homes.push(root);
   return { root, sessionsDir, stateDir: join(root, "state") };
 }
+
+/** The transcript of the config home the fixture most recently made. */
+let transcriptPath = "";
 
 const homes: string[] = [];
 const running: Sessions[] = [];
@@ -127,23 +138,25 @@ function helloFrom(domain: Sessions, conn: TestConn, sid: Sid = SID): HelloResul
       role: "session",
       protocol_version: PROTOCOL_VERSION,
       sid,
-      ...META,
+      ...meta(),
     },
   });
 }
 
 /** What a session states about itself when it greets — the contract's shared
  * session fields, which `peers` repeats under the same names. */
-const META = {
-  repo: "someone/a-repo",
-  ws: "main",
-  cwd: "/Users/someone/.local/share/repos/github.com/someone/a-repo/main",
-  transcript_path: "/Users/someone/.claude/projects/a/b.jsonl",
-  branch: "main",
-  title: "a title",
-  model: "a-model",
-  effort: "high",
-};
+function meta() {
+  return {
+    repo: "someone/a-repo",
+    ws: "main",
+    cwd: "/Users/someone/.local/share/repos/github.com/someone/a-repo/main",
+    transcript_path: transcriptPath,
+    branch: "main",
+    title: "a title",
+    model: "a-model",
+    effort: "high",
+  };
+}
 
 const peersOf = (frames: Published[]) => frames.filter((frame) => frame.topic === "peers");
 const agentsOf = (frames: Published[]) => frames.filter((frame) => frame.topic === "agents");
@@ -151,7 +164,7 @@ const agentsOf = (frames: Published[]) => frames.filter((frame) => frame.topic =
 describe("hello", () => {
   test("answers the contract's own result, naming only this instance", () => {
     const { domain } = sessions();
-    const result = helloFrom(domain, connAs("session"));
+    const result = helloFrom(domain, greeting());
     expect(
       validationErrors(OP_SCHEMAS.hello.response, { ok: true, request_id: "1", ...result }),
     ).toEqual([]);
@@ -159,17 +172,95 @@ describe("hello", () => {
     expect(result.instance).toBe(SELF);
   });
 
-  test("a greeting that names no sid registers nothing", () => {
-    // What registers a session is the sid it names, not the role it claims: a
-    // person's greeting carries no sid and must not become a peer, and reading
-    // the role to tell them apart would be the second place that rule lives (M1).
+  test("a person's greeting registers nothing", () => {
     const { domain } = sessions();
     domain.hello({
       op: "hello",
-      conn: connAs("user"),
+      conn: greeting(),
       args: { op: "hello", request_id: "1", role: "user", protocol_version: PROTOCOL_VERSION },
     });
     expect(domain.peers().peers).toEqual([]);
+  });
+
+  test("each role says what its own greeting has to carry", () => {
+    // The greeting is the one frame whose shape depends on the role, and the
+    // contract's schema cannot say so: one schema covers all three roles, which
+    // is why every one of these fields is optional in it.
+    const { domain } = sessions();
+    const greet = (args: Record<string, unknown>) => () =>
+      domain.hello({
+        op: "hello",
+        conn: greeting(),
+        args: { op: "hello", request_id: "1", protocol_version: PROTOCOL_VERSION, ...args },
+      });
+    // A session without a sid is a session this instance cannot speak about.
+    expect(greet({ role: "session" })).toThrow(OpError);
+    // A sid on a person's greeting would be a person registering as the session.
+    expect(greet({ role: "user", sid: SID })).toThrow(OpError);
+    // A peer greets with its claim, and a claim alone proves nothing: the
+    // exchange that would bind this connection to it does not exist yet, so
+    // either shape of an instance greeting is refused.
+    expect(greet({ role: "instance" })).toThrow(OpError);
+    expect(
+      greet({
+        role: "instance",
+        mesh: { ver: 1, iss: SELF, aud: SELF, kid: "0123456789abcdef" },
+      }),
+    ).toThrow(OpError);
+    expect(domain.peers().peers).toEqual([]);
+  });
+
+  test("a connection greets once, and a second greeting is refused", () => {
+    // The role is set by `hello` and fixed for the connection's life (contract,
+    // `Role`), so a second greeting is a request to become somebody else on a
+    // connection that already is somebody.
+    const { domain } = sessions();
+    const conn = greeting();
+    helloFrom(domain, conn);
+    // What the driver does when the reply goes out.
+    conn.identity = { state: "settled", role: "session", sid: SID };
+    expect(() => helloFrom(domain, conn)).toThrow(OpError);
+  });
+
+  test("a transcript under another config home is named, not read (M6)", () => {
+    // How a session describes itself is its own business; what this instance
+    // acts on is not. A path outside this config home's `projects/` is left
+    // unstated rather than refused — the greeting is not wrong, it just names
+    // a file this instance will not open.
+    const context = sessions();
+    // Another instance's config home, with a real transcript in it.
+    const elsewhere = mkdtempSync(join(tmpdir(), "ccmsg-other-home-"));
+    homes.push(elsewhere);
+    mkdirSync(join(elsewhere, "projects", "a"), { recursive: true });
+    writeFileSync(join(elsewhere, "projects", "a", "b.jsonl"), "");
+    context.domain.hello({
+      op: "hello",
+      conn: greeting(),
+      args: {
+        op: "hello",
+        request_id: "1",
+        role: "session",
+        protocol_version: PROTOCOL_VERSION,
+        sid: SID,
+        transcript_path: join(elsewhere, "projects", "a", "b.jsonl"),
+      },
+    });
+    expect(context.domain.transcriptPath(SID)).toBeUndefined();
+    expect(context.domain.peers().peers[0]?.transcript_path).toBeUndefined();
+  });
+
+  test("every request restamps the session's last activity", () => {
+    // `last_activity_at` is the most recent request on any of the session's
+    // connections, which is a different question from when a person last spoke
+    // to it (§5.3).
+    const { domain } = sessions();
+    helloFrom(domain, greeting());
+    const greeted = domain.peers().peers[0]?.last_activity_at ?? 0;
+    domain.touch(SID, greeted + 5_000);
+    expect(domain.peers().peers[0]?.last_activity_at).toBe(greeted + 5_000);
+    // A session nothing knows about is not invented by being touched.
+    domain.touch(OTHER_SID, greeted + 5_000);
+    expect(domain.peers().peers).toHaveLength(1);
   });
 
   test("a greeting announcing another generation is refused", () => {
@@ -177,7 +268,7 @@ describe("hello", () => {
     expect(() =>
       domain.hello({
         op: "hello",
-        conn: connAs("session"),
+        conn: greeting(),
         args: { op: "hello", request_id: "1", role: "session", protocol_version: 99, sid: SID },
       }),
     ).toThrow();
@@ -185,11 +276,11 @@ describe("hello", () => {
 
   test("what the greeting said about the session is what peers repeats", () => {
     const { domain } = sessions();
-    helloFrom(domain, connAs("session"));
+    helloFrom(domain, greeting());
     const peer = domain.peers().peers[0];
     // Where it lives and what it calls itself. What it runs as (model, effort)
     // belongs to `last_live` alone, where a resume reads it.
-    const { model: _model, effort: _effort, ...shown } = META;
+    const { model: _model, effort: _effort, ...shown } = meta();
     expect(peer).toMatchObject(shown);
   });
 
@@ -198,13 +289,13 @@ describe("hello", () => {
     const { domain } = sessions({
       gateway: { activeAt: (sid) => (sid === SID ? seen : undefined) },
     });
-    helloFrom(domain, connAs("session"));
+    helloFrom(domain, greeting());
     expect(domain.peers().peers[0]?.gateway_active_at).toBe(seen);
   });
 
   test("an instance with no gateway shows the peer without the mark, not as quiet", () => {
     const { domain } = sessions();
-    helloFrom(domain, connAs("session"));
+    helloFrom(domain, greeting());
     expect(domain.peers().peers[0]?.gateway_active_at).toBeUndefined();
   });
 
@@ -212,7 +303,7 @@ describe("hello", () => {
     const { domain } = sessions();
     domain.hello({
       op: "hello",
-      conn: connAs("session"),
+      conn: greeting(),
       args: {
         op: "hello",
         request_id: "1",
@@ -229,7 +320,7 @@ describe("hello", () => {
 
   test("a session that greeted is a peer, and stops being one when it closes", () => {
     const { domain } = sessions();
-    const conn = connAs("session");
+    const conn = greeting();
     helloFrom(domain, conn);
     expect(domain.peers().peers.map((peer) => peer.sid)).toEqual([SID]);
     conn.close();
@@ -261,7 +352,7 @@ describe("the harness's sessions directory", () => {
 
   test("the payloads pass the contract's own validators", async () => {
     const context = sessions();
-    helloFrom(context.domain, connAs("session"));
+    helloFrom(context.domain, greeting());
     context.domain.start("agents");
     writeState(context.sessionsDir, process.pid, OTHER_SID, { name: "a title" });
     await context.until(() => context.domain.agents().agents.length === 1);
@@ -322,7 +413,7 @@ describe("the harness's sessions directory", () => {
     const context = sessions();
     const hub = new Topics(SELF, new Set());
     hub.attach("peers", context.domain);
-    helloFrom(context.domain, connAs("session"));
+    helloFrom(context.domain, greeting());
 
     const user = connAs("user");
     hub.subscribe(user, "peers");
@@ -336,9 +427,9 @@ describe("the harness's sessions directory", () => {
 describe("the classification on the wire", () => {
   test("every row of both lists states its state and whether it is pinned", async () => {
     const context = sessions();
-    const connected = connAs("session");
+    const connected = greeting();
     helloFrom(context.domain, connected);
-    const gone = connAs("session", OTHER_SID);
+    const gone = greeting();
     helloFrom(context.domain, gone, OTHER_SID);
     gone.close();
     context.domain.start("peers");
@@ -359,7 +450,7 @@ describe("the classification on the wire", () => {
 
   test("a session that said it was stopping travels as paused, with when it said so", () => {
     const context = sessions();
-    const conn = connAs("session");
+    const conn = greeting();
     helloFrom(context.domain, conn);
     conn.close();
     context.domain.markStopped(SID, NOW);
@@ -370,14 +461,15 @@ describe("the classification on the wire", () => {
 
   test("what the session ran as follows it into last_live", () => {
     const context = sessions();
-    const conn = connAs("session");
+    const conn = greeting();
     helloFrom(context.domain, conn);
     conn.close();
+    const greeted = meta();
     expect(context.domain.peers().last_live[0]).toMatchObject({
-      title: META.title,
-      model: META.model,
-      effort: META.effort,
-      repo: META.repo,
+      title: greeted.title,
+      model: greeted.model,
+      effort: greeted.effort,
+      repo: greeted.repo,
     });
   });
 });
@@ -385,7 +477,7 @@ describe("the classification on the wire", () => {
 describe("last_live", () => {
   test("a session that greeted and went away survives a restart as Disappeared", () => {
     const context = sessions();
-    const conn = connAs("session");
+    const conn = greeting();
     helloFrom(context.domain, conn);
     conn.close();
     expect(context.domain.classify(SID)).toBe("disappeared");
@@ -395,7 +487,7 @@ describe("last_live", () => {
     expect(restarted.markStopped(SID)).toBe(true);
     expect(restarted.classify(SID)).toBe("paused");
     // And it leaves the list the moment the session registers again.
-    helloFrom(restarted, connAs("session"));
+    helloFrom(restarted, greeting());
     expect(restarted.peers().last_live).toEqual([]);
   });
 
@@ -415,7 +507,7 @@ describe("last_live", () => {
 
   test("nothing but the three kinds of §3.6 is written, across a restart", () => {
     const context = sessions();
-    const conn = connAs("session");
+    const conn = greeting();
     helloFrom(context.domain, conn);
     conn.close();
     context.domain.start("peers");

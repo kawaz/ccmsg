@@ -89,9 +89,15 @@ function concat(a: Uint8Array, b: Uint8Array): Uint8Array {
   return both;
 }
 
-export async function connectWs(address: string): Promise<LineClient> {
+/** A WebSocket client, carrying the instance's entry token when there is one.
+ *
+ * The query parameter is the route a non-browser client takes; the subprotocol
+ * route a browser needs is exercised where the policy itself is tested. */
+export async function connectWs(address: string, token?: string): Promise<LineClient> {
   const lines = new Lines();
-  const ws = new WebSocket(`ws://${address}/ws`);
+  const url = new URL(`ws://${address}/ws`);
+  if (token !== undefined) url.searchParams.set("token", token);
+  const ws = new WebSocket(url.href);
   ws.addEventListener("message", (event: MessageEvent) => {
     lines.push(String(event.data));
   });

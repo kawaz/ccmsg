@@ -75,8 +75,15 @@ persistence 落ちて上がっても失われては困るものだけを書く
 |---|---|
 | 接続の受理 | UDS (同一ホストのセッション・CLI)、WS (webui・mesh) |
 | framing | 改行区切り JSON。1 行の上限と backpressure の扱いを 1 箇所に持つ |
-| 入口の許可 | source IP の allowlist、Origin の許可集合、mesh 相手の TLS |
+| 入口の許可 | source IP の allowlist、Origin の許可集合、WS の entry token、mesh 相手の TLS |
 | identity の確定 | `hello` の結果として接続に role と (session なら) sid を束縛する |
+
+entry token は state ディレクトリの `entry.token` (0600、初回起動時に生成) であり、
+WS の upgrade 時に `Sec-WebSocket-Protocol: ccmsg.token.<token>` か query `?token=` で提示する
+(ブラウザは handshake に header を付けられないため subprotocol 経路が要る)。合致しなければ
+upgrade を 401 で拒否する。**これは A4 の言い換えである**: 境界は uid とファイル権限であって
+daemon の中ではなく、この token file の 0600 がその境界そのものになる。UDS は到達すること自体が
+ディレクトリの権限を通ることなので token を要さない。
 
 旧 daemon で UDS listener だけが起動関数の内部に埋まっていた非対称を作らない。UDS と WS は
 **同じ `Conn` を返す 2 実装**であり、上の層はどちらか区別しない。backpressure の扱い

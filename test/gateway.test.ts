@@ -123,6 +123,8 @@ function fakeGateway(report: unknown = REPORT): { url: string; reads: () => numb
 interface Started {
   instance: Instance;
   address: string;
+  /** What a WebSocket client presents to be let in (§3.1). */
+  token: string;
   post(body: unknown, init?: { token?: string; path?: string }): Promise<Response>;
 }
 
@@ -154,6 +156,7 @@ async function startWith(
   return {
     instance: outcome,
     address,
+    token: outcome.entryToken ?? "",
     post: (body, init = {}) =>
       fetch(`http://${address}${init.path ?? `/webhook/${SOURCE}`}`, {
         method: "POST",
@@ -176,8 +179,8 @@ function wiredTo(gatewayUrl: string) {
 }
 
 /** Greet as a person and subscribe, returning the reply to the subscribe. */
-async function subscribe(address: string, topic: string): Promise<LineClient> {
-  const client = await connectWs(address);
+async function subscribe(started: Started, topic: string): Promise<LineClient> {
+  const client = await connectWs(started.address, started.token);
   clients.push(client);
   client.send({ op: "hello", request_id: "h", role: "user", protocol_version: PROTOCOL_VERSION });
   await client.next();
@@ -197,7 +200,7 @@ describe("what the gateway posts (§3.5, §5.1)", () => {
   test("a request event reaches `llm_requests` under this contract's names", async () => {
     const gateway = fakeGateway();
     const started = await startWith(wiredTo(gateway.url));
-    const client = await subscribe(started.address, "llm_requests");
+    const client = await subscribe(started, "llm_requests");
     // The snapshot: nothing has been posted yet.
     expect((await nextTopic(client, "llm_requests"))["data"]).toEqual([]);
 
@@ -238,7 +241,7 @@ describe("what the gateway posts (§3.5, §5.1)", () => {
     const now = Date.now();
     await started.post([requestEvent({ ts: now, cache_expires_at: now + 600_000 })]);
 
-    const client = await subscribe(started.address, "llm_requests");
+    const client = await subscribe(started, "llm_requests");
     const frame = await nextTopic(client, "llm_requests");
     expect(frame["snapshot"]).toBe(true);
     expect((frame["data"] as LlmRequestInfo[]).map((info) => info.received_at)).toEqual([now]);
@@ -260,7 +263,7 @@ describe("what the gateway posts (§3.5, §5.1)", () => {
   test("a subagent's series does not become the session's own", async () => {
     const gateway = fakeGateway();
     const started = await startWith(wiredTo(gateway.url));
-    const client = await subscribe(started.address, "llm_requests");
+    const client = await subscribe(started, "llm_requests");
     await nextTopic(client, "llm_requests");
 
     // Both travel under the session's own id, with system prompts of their own.
@@ -278,7 +281,7 @@ describe("what the gateway posts (§3.5, §5.1)", () => {
   test("a delivery mixes kinds, and the ones nothing reads cost the others nothing", async () => {
     const gateway = fakeGateway();
     const started = await startWith(wiredTo(gateway.url));
-    const client = await subscribe(started.address, "llm_requests");
+    const client = await subscribe(started, "llm_requests");
     await nextTopic(client, "llm_requests");
 
     const answer = await started.post([
@@ -297,7 +300,7 @@ describe("the report the gateway is asked for (§6.2, whole value)", () => {
     const gateway = fakeGateway();
     const started = await startWith(wiredTo(gateway.url));
 
-    const client = await subscribe(started.address, "llm_status");
+    const client = await subscribe(started, "llm_status");
     const frame = await nextTopic(client, "llm_status");
     const report = frame["data"] as LlmStatusReport;
     expect(report.overall.severity).toBe("critical");
@@ -396,7 +399,7 @@ describe("who may post, and what an instance without a gateway has (§3.1, §5.2
 
   test("with no gateway configured there is no route and no capability", async () => {
     const started = await startWith();
-    const client = await connectWs(started.address);
+    const client = await connectWs(started.address, started.token);
     clients.push(client);
     client.send({ op: "hello", request_id: "h", role: "user", protocol_version: PROTOCOL_VERSION });
     const hello = await client.next();
@@ -425,7 +428,7 @@ describe("who may post, and what an instance without a gateway has (§3.1, §5.2
       // the three capabilities together.
       [asked, ["llm_status", "llm_usage", "llm_stats"]],
     ] as const) {
-      const client = await connectWs(started.address);
+      const client = await connectWs(started.address, started.token);
       clients.push(client);
       client.send({
         op: "hello",

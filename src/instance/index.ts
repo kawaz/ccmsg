@@ -5,3 +5,4 @@ export * from "./lock.ts";
 export * from "./log.ts";
 export * from "./paths.ts";
 export * from "./socket.ts";
+export * from "./token.ts";

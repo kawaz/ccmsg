@@ -1,4 +1,4 @@
-import { type FSWatcher, watch } from "node:fs";
+import { type FSWatcher, statSync, watch } from "node:fs";
 import { open, stat } from "node:fs/promises";
 import { CONFIRM_POLL_MS } from "../sessions/harness.ts";
 
@@ -62,7 +62,17 @@ export class TranscriptTail {
   constructor(
     private readonly path: string,
     private readonly deps: TailDeps,
-  ) {}
+  ) {
+    // Where the file ends, read before anything can ask. A subscription's
+    // snapshot states this and is answered in the same turn the tail is
+    // created, so a size that only the awaited seed had filled in would be
+    // reported as zero and every byte already written would look appended.
+    // Reading it here also fixes what the seed reads: the seed takes this size
+    // rather than stating a newer one, so nothing lands between the size the
+    // subscriber was given and the first frame it is sent.
+    this.#size = sizeNow(path);
+    this.#offset = this.#size;
+  }
 
   /** The transcript's size as last observed, which is what a subscription's
    * snapshot states and where the frames after it begin. */
@@ -106,9 +116,7 @@ export class TranscriptTail {
   }
 
   async #seed(): Promise<void> {
-    const size = await this.#stat();
-    this.#size = size;
-    this.#offset = size;
+    const size = this.#size;
     if (size === 0) return;
     const from = Math.max(0, size - FOLD_TAIL_BYTES);
     const text = await this.#slice(from, size);
@@ -178,4 +186,10 @@ function split(complete: string): string[] {
 
 function byteLength(text: string): number {
   return Buffer.byteLength(text, "utf8");
+}
+
+/** How large the file is right now, or zero for one that is not there yet.
+ * Synchronous because the value is wanted before the first await. */
+function sizeNow(path: string): number {
+  return statSync(path, { throwIfNoEntry: false })?.size ?? 0;
 }

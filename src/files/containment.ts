@@ -38,6 +38,11 @@ export interface Located {
   readonly kind: FileKind;
   readonly real: string;
   readonly path: string;
+  /** The same path with its own last segment unresolved: what was named, not
+   * what it points at. An op that acts on the name rather than on the file —
+   * `file_delete`, which unlinks a name — asks what kind of thing was named,
+   * and only this distinguishes a file from a symlink to one. */
+  readonly named: string;
 }
 
 /** The whole file-access decision, for every op that names a path.
@@ -66,8 +71,9 @@ export class Containment {
   /** A path named by kind, as an op's arguments give it. */
   locate(args: PathArgs, viewer: Viewer = {}): Located {
     const roots = this.rootsFor(args.sid, viewer);
-    const real = canonical(this.absolute(args, roots));
-    return this.admit(args.kind, real, roots);
+    const named = this.absolute(args, roots);
+    const real = canonical(named);
+    return { ...this.admit(args.kind, real, roots), named };
   }
 
   /** An absolute path with no kind: which surface admits it, if any.
@@ -83,10 +89,11 @@ export class Containment {
       return undefined;
     }
     if (!isAbsolute(path)) return undefined;
-    const real = canonical(path);
+    const named = resolve(path);
+    const real = canonical(named);
     for (const kind of KINDS) {
       try {
-        return this.admit(kind, real, roots);
+        return { ...this.admit(kind, real, roots), named };
       } catch {
         // The next surface may admit it; running out of surfaces is the miss.
       }
@@ -106,12 +113,13 @@ export class Containment {
       throw new OpError("path_forbidden", `${sid} states no working directory to write into`);
     }
     const base = canonical(cwd);
-    const real = canonical(resolve(base, path));
+    const named = resolve(base, path);
+    const real = canonical(named);
     const inbox = join(base, INBOX);
     if (!within(real, inbox)) {
       throw new OpError("path_not_writable", `only ${INBOX}/ takes a written file`);
     }
-    return { kind: "contained", real, path: relativeTo(base, real) };
+    return { kind: "contained", real, named, path: relativeTo(base, real) };
   }
 
   /** The directory a listing or a walk starts from. */
@@ -151,7 +159,7 @@ export class Containment {
   /** Whether a resolved path is inside the surface it claims. The check runs on
    * what the filesystem resolved, so a symlink pointing out of a root is
    * refused however it was spelled (DR-0008 §3). */
-  private admit(kind: FileKind, real: string, roots: SessionRoots): Located {
+  private admit(kind: FileKind, real: string, roots: SessionRoots): Omit<Located, "named"> {
     if (kind === "contained") {
       const root = roots.root === undefined ? undefined : canonical(roots.root);
       if (root === undefined || !within(real, root)) {

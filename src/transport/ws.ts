@@ -47,12 +47,27 @@ export function serveWs(options: WsOptions): Listener {
     hostname: options.hostname ?? "127.0.0.1",
     port: options.port,
     async fetch(request, srv) {
-      if (entry.allowRequest?.(request) === false)
+      if (entry.allowRequest?.(request, srv.requestIP(request)?.address) === false) {
         return new Response("Forbidden", { status: 403 });
+      }
       const routed = await options.route?.(request);
       if (routed !== undefined) return routed;
       if (new URL(request.url).pathname !== path) return new Response("Not Found", { status: 404 });
-      if (srv.upgrade(request)) return undefined;
+      // The handshake's own check, asked after the routes so a route carrying
+      // its own secret is not also asked for the entry token.
+      const decision = entry.allowUpgrade?.(request) ?? { ok: true as const };
+      if (!decision.ok) return new Response(decision.reason, { status: 401 });
+      const selected = decision.ok ? decision.protocol : undefined;
+      if (
+        srv.upgrade(
+          request,
+          selected === undefined
+            ? {}
+            : { headers: { "sec-websocket-protocol": selected } satisfies Record<string, string> },
+        )
+      ) {
+        return undefined;
+      }
       return new Response("Expected a WebSocket upgrade", { status: 426 });
     },
     websocket: {

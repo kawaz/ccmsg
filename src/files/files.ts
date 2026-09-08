@@ -134,13 +134,15 @@ export function fileHandlers(paths: Containment) {
       const at = paths.locate(args, viewer(input));
       // What is unlinked is what is named, so this reads the name itself rather
       // than what it resolves to: a symlink is refused as the wrong kind of
-      // thing instead of taking its target's answer.
-      const stat = lstatOf(at.real);
+      // thing instead of taking its target's answer. The resolved path is the
+      // one containment admitted and would answer for the target, which is the
+      // file a link inside the root could otherwise be pointed at.
+      const stat = lstatOf(at.named);
       if (stat === undefined) throw new OpError("not_found", `${args.path} is not there`);
       if (!stat.isFile()) {
         throw new OpError("path_forbidden", `${args.path} is not a plain file`);
       }
-      unlinkSync(at.real);
+      unlinkSync(at.named);
       return { sid: args.sid, path: at.path };
     },
 

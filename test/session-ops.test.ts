@@ -244,12 +244,14 @@ describe("transcript_read (scope: role)", () => {
     expect((own["lines"] as string[]).length).toBe(3);
 
     // The one difference the role makes: the call is allowed either way, and
-    // what it may reach is not.
+    // what it may reach is not. Outside the range there is nothing to read,
+    // which is the code the op declares — a refusal naming the session would
+    // answer a question the caller was not entitled to ask.
     expect(
       await refusalOf(() =>
         run("transcript_read", handlers.transcript_read, { sid: OTHER_SID }, as("session", SID)),
       ),
-    ).toBe("forbidden");
+    ).toBe("not_found");
   });
 
   test("the range is the file ops' range, not a second copy of it", async () => {
@@ -262,7 +264,7 @@ describe("transcript_read (scope: role)", () => {
       await refusalOf(() =>
         run("transcript_read", handlers.transcript_read, { sid: SID }, as("instance", SID)),
       ),
-    ).toBe("forbidden");
+    ).toBe("not_found");
   });
 
   test("paging backwards from the end reaches the beginning without overlap", async () => {

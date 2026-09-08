@@ -126,7 +126,11 @@ export function sessionHandlers(deps: SessionOpsDeps) {
     transcript_read: (input: HandlerInput): TranscriptReadResult => {
       const args = input.args as unknown as TranscriptReadArgs;
       if (!sees(args.sid, viewer(input))) {
-        throw new OpError("forbidden", `the transcript of ${args.sid} is outside this range`);
+        // The role sets the visible range, not the permission (§3.2): outside
+        // it there is no transcript to speak of, which is the one code this op
+        // declares. A refusal that named the session would answer a question
+        // the caller was not entitled to ask.
+        throw new OpError("not_found", `no transcript is known for ${args.sid}`);
       }
       const file = deps.files.locate(args.sid, args);
       return readSlice(args.sid, file, args.before, args.max_bytes);

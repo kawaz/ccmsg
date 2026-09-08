@@ -1,5 +1,12 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Glob } from "bun";
@@ -7,7 +14,7 @@ import { PROTOCOL_VERSION, TOPIC_SCHEMAS, validationErrors } from "@ccmsg/protoc
 import { classify, Sessions } from "../src/sessions/index.ts";
 import { Topics } from "../src/topics/index.ts";
 import { type TranscriptFacts, TranscriptFold, Transcripts } from "../src/transcript/index.ts";
-import { connAs, SELF, SID, TestConn } from "./frames.ts";
+import { connAs, greeting, SELF, SID, TestConn } from "./frames.ts";
 
 const TOPIC = `transcript:${SID}`;
 /** Fast enough that a test can wait for the backstop rather than the watch,
@@ -343,20 +350,21 @@ describe("the tail runs while somebody is listening (§6.3)", () => {
     expect(transcripts.following(SID)).toBe(false);
   });
 
-  test("the subscriber is told where the transcript ends", async () => {
+  test("the subscriber is told where the transcript ends, in the same turn", () => {
+    // The snapshot goes out with the subscribe, before anything the tail does
+    // asynchronously: a size read later would be zero here, and every byte
+    // already in the file would then look appended to whoever stitched the
+    // frames onto it.
     const file = transcript([prompt("first")]);
     const { transcripts } = domain(file.path);
     const hub = new Topics(SELF, new Set());
     hub.attach("transcript", transcripts);
     const watcher = new TestConn({ state: "settled", role: "user", sid: SID });
     hub.subscribe(watcher, TOPIC);
-    await settled(() => transcripts.following(SID));
-    // Subscribing raced the first read, so the snapshot is taken again now
-    // that the tail has opened the file: what matters is that it states a size
-    // and not the file's contents.
-    const data = transcripts.snapshot(TOPIC)[0]?.data as Record<string, unknown>;
-    expect(data["size"]).toBe(Buffer.byteLength(jsonl([prompt("first")])));
-    expect(data["lines"]).toBeUndefined();
+    watcher.flush();
+    const frame = watcher.topics()[0] as { data: Record<string, unknown> };
+    expect(frame.data["size"]).toBe(Buffer.byteLength(jsonl([prompt("first")])));
+    expect(frame.data["lines"]).toBeUndefined();
   });
 });
 
@@ -400,20 +408,25 @@ describe("what the fold settles reaches the sessions domain (§5.1)", () => {
       publish: () => {},
       transcript: { facts: () => facts },
     });
-    const conn = connAs("session");
+    // Under the config home's `projects/`, which is the only place a greeting's
+    // transcript path is taken from (M6).
+    mkdirSync(join(root, "projects"), { recursive: true });
+    writeFileSync(join(root, "projects", "t.jsonl"), "");
+    const transcript = realpathSync(join(root, "projects", "t.jsonl"));
+    const conn = greeting();
     sessions.hello({
       conn,
       args: {
         protocol_version: PROTOCOL_VERSION,
         role: "session",
         sid: SID,
-        transcript_path: join(root, "t.jsonl"),
+        transcript_path: transcript,
       },
     } as unknown as Parameters<typeof sessions.hello>[0]);
 
     expect(sessions.inputs(SID).api_error_stopped).toBe(true);
     expect(sessions.classify(SID)).toBe("waiting");
     expect(sessions.peers().peers[0]?.last_user_input_at).toBe(NOW - 1000);
-    expect(sessions.transcriptPath(SID)).toBe(join(root, "t.jsonl"));
+    expect(sessions.transcriptPath(SID)).toBe(transcript);
   });
 });

@@ -1,5 +1,6 @@
+import { realpathSync, statSync } from "node:fs";
 import { hostname } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import {
   type AgentInfo,
   type Capability,
@@ -14,6 +15,7 @@ import {
   type Timestamp,
 } from "@ccmsg/protocol";
 import { type HandlerInput, OpError } from "../dispatch/index.ts";
+import { within } from "../files/index.ts";
 import type { TranscriptFacts } from "../transcript/index.ts";
 import type { TopicValue, UpstreamResource } from "../topics/index.ts";
 import { classify, type SessionInputs } from "./classify.ts";
@@ -146,12 +148,18 @@ export class Sessions implements UpstreamResource {
    * (M1). */
   hello = (input: HandlerInput): HelloResult => {
     const args = input.args as unknown as HelloArgs;
+    // A role is set once and fixed for the connection's life (contract, `Role`),
+    // so a second greeting is not a re-identification: it is a request to be
+    // somebody else on a connection that already is somebody.
+    if (input.conn.identity.state === "settled") {
+      throw new OpError("bad_request", "a connection greets once, and this one already has");
+    }
     if (args.protocol_version !== PROTOCOL_VERSION) {
       throw new OpError("bad_request", `this instance speaks protocol ${PROTOCOL_VERSION}`);
     }
-    const sid = args.sid;
+    const sid = requiredSid(args);
     if (sid !== undefined) {
-      this.register(sid, args);
+      this.register(sid, args, this.deps.configHome);
       input.conn.onClose(() => this.release(sid));
     }
     return {
@@ -197,6 +205,19 @@ export class Sessions implements UpstreamResource {
    * transcripts needs the set, and a greeting is what puts a session in it. */
   connectedSids(): Sid[] {
     return [...this.#connected.keys()];
+  }
+
+  /** Note that a session asked for something. `last_activity_at` is the most
+   * recent request on any of its connections, so every request restamps the one
+   * row all of them share.
+   *
+   * Nothing is published here. The value travels on the next `peers` payload
+   * whatever caused it, and publishing per request would put a frame on the
+   * wire for every call a session makes — a row that changed only in its clock
+   * is not news a subscriber asked for. */
+  touch(sid: Sid, at: Timestamp = Date.now()): void {
+    const held = this.#connected.get(sid);
+    if (held !== undefined) held.last_activity_at = at;
   }
 
   /** Where a session's transcript is, as it announced it (§5.1). Whoever
@@ -308,10 +329,10 @@ export class Sessions implements UpstreamResource {
   /** Bind a session to this instance, and take what it says about itself. Its
    * entry in `last_live` goes the moment it registers, which is the whole of
    * "an entry leaves the list when its session comes back". */
-  private register(sid: Sid, args: HelloArgs): void {
+  private register(sid: Sid, args: HelloArgs, configHome: string): void {
     const now = Date.now();
     const held = this.#connected.get(sid);
-    const meta = metaOf(args);
+    const meta = metaOf(args, configHome);
     this.#connected.set(sid, {
       sid,
       connected_at: held?.connected_at ?? now,
@@ -446,12 +467,76 @@ export class Sessions implements UpstreamResource {
 
 /** What a greeting said about the session, and nothing more: the fields the
  * contract shares between `hello` and `peers`, copied across under their own
- * names. */
-function metaOf(args: HelloArgs): SessionMeta {
+ * names.
+ *
+ * `transcript_path` is the exception, because it is the one field that is not
+ * only displayed: it names a file this instance then reads and follows. What is
+ * taken is a path under this config home's `projects/`, resolved, and nothing
+ * else — a session naming a file elsewhere is a session that named nothing,
+ * which is what a session that stayed silent already is (M6). It is not an
+ * error: how a session describes itself is its own business, and the instance
+ * simply does not act on a description it cannot stand behind. */
+function metaOf(args: HelloArgs, configHome: string): SessionMeta {
   const meta: Record<string, string> = {};
   for (const field of META_FIELDS) {
     const value = args[field];
-    if (value !== undefined) meta[field] = value;
+    if (value === undefined) continue;
+    if (field === "transcript_path") {
+      const path = ownTranscript(value, configHome);
+      if (path !== undefined) meta[field] = path;
+      continue;
+    }
+    meta[field] = value;
   }
   return meta as SessionMeta;
+}
+
+/** A transcript path this instance will read, or nothing.
+ *
+ * Both sides are resolved before they are compared, so a path spelled through a
+ * symlink and one spelled directly are the same path, and a link out of the
+ * tree resolves out of it and is refused. */
+function ownTranscript(named: string, configHome: string): string | undefined {
+  if (!isAbsolute(named)) return undefined;
+  let real: string;
+  let projects: string;
+  try {
+    real = realpathSync(named);
+    projects = realpathSync(join(configHome, "projects"));
+  } catch {
+    return undefined;
+  }
+  if (!within(real, projects)) return undefined;
+  return statSync(real, { throwIfNoEntry: false })?.isFile() === true ? real : undefined;
+}
+
+/** What each role must and must not say when it greets.
+ *
+ * The sid is what registers a session, so which role is entitled to name one is
+ * decided here rather than left to whoever reads the field: a `user` naming a
+ * sid would be a person registering as the session, and a `session` without one
+ * is a session this instance cannot speak about. */
+function requiredSid(args: HelloArgs): Sid | undefined {
+  switch (args.role) {
+    case "session":
+      if (args.sid === undefined) throw new OpError("invalid_args", "a session names its sid");
+      return args.sid;
+    case "user":
+      if (args.sid !== undefined) {
+        throw new OpError("invalid_args", "a sid is the greeting of a session, not of a person");
+      }
+      return undefined;
+    case "instance":
+      if (args.mesh === undefined) {
+        throw new OpError("invalid_args", "an instance greets with its mesh claim");
+      }
+      // The claim proves nothing on its own: what binds this connection to the
+      // `iss` it names is a separate exchange (mesh-peer-auth §5), and there is
+      // none. Settling the identity on the strength of the claim alone would
+      // admit any peer that can spell one, so the greeting is refused instead.
+      throw new OpError(
+        "capability_unavailable",
+        "this instance has no mesh, so no peer connection can be proven",
+      );
+  }
 }
