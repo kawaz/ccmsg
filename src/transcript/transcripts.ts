@@ -1,5 +1,5 @@
 import type { InstanceId, Sid } from "@ccmsg/protocol";
-import type { TopicValue, UpstreamResource } from "../topics/index.ts";
+import { topicParam, type TopicValue, type UpstreamResource } from "../topics/index.ts";
 import { type TranscriptFacts, TranscriptFold } from "./fold.ts";
 import { type Appended, TranscriptTail } from "./tail.ts";
 
@@ -38,12 +38,12 @@ export class Transcripts implements UpstreamResource {
   // --- UpstreamResource (§6.3)
 
   start(topic: string): void {
-    const sid = sidOf(topic);
+    const sid = topicParam(topic);
     if (sid !== undefined) this.hold(sid);
   }
 
   stop(topic: string): void {
-    const sid = sidOf(topic);
+    const sid = topicParam(topic);
     if (sid !== undefined) this.release(sid);
   }
 
@@ -53,7 +53,7 @@ export class Transcripts implements UpstreamResource {
    * instance cannot find has nothing to state, and the subscriber begins at
    * the first thing appended after one appears. */
   snapshot(topic: string): readonly TopicValue[] {
-    const sid = sidOf(topic);
+    const sid = topicParam(topic);
     const followed = sid === undefined ? undefined : this.#followed.get(sid);
     if (sid === undefined || followed === undefined) return [];
     return [{ instance: this.deps.self, data: { sid, size: followed.tail.size } }];
@@ -159,11 +159,4 @@ function foldAll(fold: TranscriptFold, lines: readonly string[]): boolean {
     if (fold.line(line)) changed = true;
   }
   return changed;
-}
-
-/** The session a `transcript:<sid>` names. Anything else is not this
- * resource's, which the topic mechanism has already decided by kind. */
-function sidOf(topic: string): Sid | undefined {
-  const sid = topic.slice(topic.indexOf(":") + 1);
-  return topic.includes(":") && sid.length > 0 ? sid : undefined;
 }

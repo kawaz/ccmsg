@@ -207,6 +207,17 @@ export class Topics {
   }
 }
 
+/** What a scoped topic names: the sid of `session_status:<sid>`, the session
+ * of `transcript:<sid>`, the namespace of `kv:<ns>`. Which kind of topic it is
+ * has already been decided by whoever holds the name; this reads the parameter
+ * out of it, in one place for every owner that is per name (§6.3). */
+export function topicParam(topic: string): string | undefined {
+  const separator = topic.indexOf(":");
+  if (separator < 0) return undefined;
+  const param = topic.slice(separator + 1);
+  return param.length > 0 ? param : undefined;
+}
+
 /** Whether a connection is one of the session's, for a frame addressed to a
  * session. A connection with no sid settled holds none, so a person watching
  * the topic does not receive what was said to someone else. */

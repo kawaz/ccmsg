@@ -22,7 +22,7 @@ import {
   messagingHandlers,
 } from "../messaging/index.ts";
 import { Inbox } from "../messaging/inbox.ts";
-import { Sessions } from "../sessions/index.ts";
+import { Sessions, SessionStatus } from "../sessions/index.ts";
 import { topicHandlers, Topics } from "../topics/index.ts";
 import { Transcripts } from "../transcript/index.ts";
 import {
@@ -106,6 +106,7 @@ export class Instance {
   readonly #transport = new Transport();
   readonly #topics: Topics;
   readonly #sessions: Sessions;
+  readonly #status: SessionStatus;
   readonly #transcripts: Transcripts;
   readonly #delivery: Delivery;
   readonly #handlers: Handlers;
@@ -164,7 +165,29 @@ export class Instance {
         this.#topics.publish(topic, data);
       },
       transcript: this.#transcripts,
+      onChanged: () => {
+        this.#status.refresh();
+      },
       ...(pollMs === undefined ? {} : { pollMs }),
+    });
+
+    // The topics whose value is the fold's error state, over the sessions the
+    // instance holds. They are the other thing that keeps a tail running: a
+    // subscriber watching the list of stopped sessions is watching every
+    // session's fold, and the tails behind it run only while it does (§6.3).
+    this.#status = new SessionStatus({
+      self: this.self,
+      sessions: () => this.#sessions.connectedSids(),
+      facts: (sid) => this.#transcripts.facts(sid),
+      hold: (sid) => {
+        this.#transcripts.hold(sid);
+      },
+      release: (sid) => {
+        this.#transcripts.release(sid);
+      },
+      publish: (topic, data) => {
+        this.#topics.publish(topic, data);
+      },
     });
 
     const inbox = new Inbox(inboxPath(paths.stateDir));
@@ -186,6 +209,8 @@ export class Instance {
     this.#topics.attach("agents", this.#sessions);
     this.#topics.attach("inbox", this.#delivery);
     this.#topics.attach("transcript", this.#transcripts);
+    this.#topics.attach("session_status", this.#status);
+    this.#topics.attach("session_errors", this.#status);
 
     this.#handlers = completeHandlers({
       hello: this.#sessions.hello,

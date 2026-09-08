@@ -19,6 +19,7 @@ import type { TopicValue, UpstreamResource } from "../topics/index.ts";
 import { classify, type SessionInputs } from "./classify.ts";
 import { HarnessSessions, isWaiting } from "./harness.ts";
 import { LastLiveStore, type StoredEntry } from "./last-live.ts";
+import { stoppedOn } from "./status.ts";
 
 /** What the sessions domain needs from the instance around it. */
 export interface SessionsDeps {
@@ -40,6 +41,11 @@ export interface SessionsDeps {
    * simply unknown and every rule that reads them behaves as it does for a
    * session whose transcript has said nothing. */
   readonly transcript?: TranscriptSource;
+  /** The sessions this instance speaks about, or what the fold says about one,
+   * has changed. What rests on either — the topics whose value is derived from
+   * the same fold, and the tails they keep running (§6.3) — is told to catch
+   * up. Absent when nothing does. */
+  readonly onChanged?: () => void;
   /** How often the confirmation poll runs, for a test that cannot wait. */
   readonly pollMs?: number;
 }
@@ -162,7 +168,7 @@ export class Sessions implements UpstreamResource {
     const facts = this.deps.transcript?.facts(sid);
     return {
       connected: this.#connected.has(sid),
-      ...(facts?.api_error === undefined ? {} : { api_error_stopped: true }),
+      ...(facts === undefined || stoppedOn(facts) === undefined ? {} : { api_error_stopped: true }),
       ...(row === undefined
         ? {}
         : {
@@ -173,6 +179,12 @@ export class Sessions implements UpstreamResource {
           }),
       ...(stored === undefined ? {} : { last_live: { stopped_at: stored.stopped_at } }),
     };
+  }
+
+  /** The sessions holding a connection to us. Whoever follows their
+   * transcripts needs the set, and a greeting is what puts a session in it. */
+  connectedSids(): Sid[] {
+    return [...this.#connected.keys()];
   }
 
   /** Where a session's transcript is, as it announced it (§5.1). Whoever
@@ -298,6 +310,7 @@ export class Sessions implements UpstreamResource {
     this.#live = live;
     this.deps.publish("peers", this.peers(now));
     this.deps.publish("agents", this.agents());
+    this.deps.onChanged?.();
   }
 
   /** Every session live right now, in the form its `last_live` entry takes if
