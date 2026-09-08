@@ -9,14 +9,18 @@ import { Glob } from "bun";
  * to agree with the table passes every sweep and still is the second place the
  * rule lives. The scan is over the instance's own code: the CLI is left out
  * because it speaks as a client, where a role literal is what a connection
- * announces about itself rather than a judgement about somebody else's. */
+ * announces about itself rather than a judgement about somebody else's, and
+ * route (a) is left out because the only such word in it is the harness's own
+ * frame type — a foreign protocol's spelling, on a path that authorizes
+ * nothing. */
+const FOREIGN = new Set(["cli.ts", "messaging/direct.ts"]);
 const ROLE_LITERAL = /"(?:session|user|instance)"/;
 const ROLE_COMPARISON = /\brole\s*[=!]==/;
 
 const SRC = new URL("../src/", import.meta.url).pathname;
 
 describe("no role comparison outside the attribute table (M1)", () => {
-  const files = [...new Glob("**/*.ts").scanSync(SRC)].filter((path) => path !== "cli.ts");
+  const files = [...new Glob("**/*.ts").scanSync(SRC)].filter((path) => !FOREIGN.has(path));
 
   test("the scan covers the dispatch module", () => {
     expect(files.some((path) => path.startsWith("dispatch/"))).toBe(true);

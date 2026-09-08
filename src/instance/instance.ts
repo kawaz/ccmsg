@@ -14,7 +14,13 @@ import {
   type Handlers,
   type Requester,
 } from "../dispatch/index.ts";
-import { Delivery, DisabledDirectRoute, inboxPath, messagingHandlers } from "../messaging/index.ts";
+import {
+  ClaudeCodeSocketRoute,
+  Delivery,
+  DisabledDirectRoute,
+  inboxPath,
+  messagingHandlers,
+} from "../messaging/index.ts";
 import { Inbox } from "../messaging/inbox.ts";
 import { Sessions } from "../sessions/index.ts";
 import { topicHandlers, Topics } from "../topics/index.ts";
@@ -148,9 +154,9 @@ export class Instance {
       self: this.self,
       sessions: this.#sessions,
       inbox,
-      // Route (a) stays off until its protocol is confirmed against a running
-      // harness (§4.1 condition 0).
-      direct: new DisabledDirectRoute(),
+      direct: config.direct_delivery
+        ? new ClaudeCodeSocketRoute({ configHome: paths.configHome })
+        : new DisabledDirectRoute(),
       publish: (topic, data, instance, to) => {
         this.#topics.publish(topic, data, instance, to);
       },

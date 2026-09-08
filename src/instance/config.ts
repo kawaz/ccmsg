@@ -37,6 +37,11 @@ export interface InstanceConfig {
   /** Absent when this instance serves the unix socket only. */
   readonly entry?: EntryConfig;
   readonly upstream: UpstreamConfig;
+  /** Whether delivery tries the harness's messaging socket before the `inbox`
+   * topic (§4.1 condition 0). On, because the protocol has been read off a
+   * running harness; off is for a harness generation that turns out to speak
+   * something else, and costs only the reach route (b) never had. */
+  readonly direct_delivery: boolean;
 }
 
 /** A config file that could not be understood.
@@ -59,7 +64,7 @@ export class ConfigError extends Error {
  * Absent is not broken. A config that is not there states nothing wrong, while
  * one that is there and unreadable states something wrong — only the second is
  * the fail-fast case. */
-export const DEFAULT_CONFIG: InstanceConfig = { peers: [], upstream: {} };
+export const DEFAULT_CONFIG: InstanceConfig = { peers: [], upstream: {}, direct_delivery: true };
 
 /** Read the config, once, at startup (DV-Q8).
  *
@@ -87,7 +92,19 @@ export function loadConfig(file: string): InstanceConfig {
     peers: peersOf(file, fields["peers"]),
     ...(fields["entry"] === undefined ? {} : { entry: entryOf(file, fields["entry"]) }),
     upstream: upstreamOf(file, fields["upstream"]),
+    direct_delivery: flagOf(
+      file,
+      "direct_delivery",
+      fields["direct_delivery"],
+      DEFAULT_CONFIG.direct_delivery,
+    ),
   };
+}
+
+function flagOf(file: string, at: string, raw: unknown, fallback: boolean): boolean {
+  if (raw === undefined) return fallback;
+  if (typeof raw !== "boolean") throw new ConfigError(file, `${at} must be true or false`);
+  return raw;
 }
 
 const INSTANCE_ID = /^wss?:\/\/[^\s?#]+$/;

@@ -62,6 +62,9 @@ describe("nothing pushes a topic frame outside the topic mechanism (M5)", () => 
     expect(serializers.sort()).toEqual([
       "cli.ts",
       "instance/log.ts",
+      // Framing again, on the far side of route (a): the harness's socket takes
+      // one JSON object per line, the same as the instance's own connections.
+      "messaging/direct.ts",
       "messaging/inbox.ts",
       "sessions/last-live.ts",
       "topics/topics.ts",

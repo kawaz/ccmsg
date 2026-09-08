@@ -13,6 +13,7 @@ import { join } from "node:path";
 import { PROTOCOL_VERSION } from "@ccmsg/protocol";
 import {
   ConfigError,
+  DEFAULT_CONFIG,
   type Env,
   Instance,
   isRunning,
@@ -110,7 +111,19 @@ describe("paths", () => {
 describe("config", () => {
   test("no config file is not a broken one", () => {
     const { root } = disposable();
-    expect(loadConfig(join(root, "config", "config.json"))).toEqual({ peers: [], upstream: {} });
+    expect(loadConfig(join(root, "config", "config.json"))).toEqual(DEFAULT_CONFIG);
+  });
+
+  test("route (a) is on unless the config turns it off, and only by a boolean", () => {
+    const { root } = disposable();
+    const file = join(root, "config", "config.json");
+    mkdirSync(join(root, "config"), { recursive: true });
+    writeFileSync(file, JSON.stringify({}));
+    expect(loadConfig(file).direct_delivery).toBe(true);
+    writeFileSync(file, JSON.stringify({ direct_delivery: false }));
+    expect(loadConfig(file).direct_delivery).toBe(false);
+    writeFileSync(file, JSON.stringify({ direct_delivery: "no" }));
+    expect(() => loadConfig(file)).toThrow(ConfigError);
   });
 
   test("a broken config throws rather than dropping the setting it carried", () => {
