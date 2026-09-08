@@ -1,6 +1,7 @@
 import {
   type Capability,
   type InstanceId,
+  type Sid,
   TOPIC_ATTRIBUTES,
   type TopicAttributes,
   type TopicKind,
@@ -34,11 +35,16 @@ export interface TopicValue {
  * the last change is one message or one chunk, while the current value is
  * every message or the tail as it now stands — only the owner can say it.
  * It answers one entry per originating instance, and none at all for a topic
- * with no value to state. */
+ * with no value to state.
+ *
+ * The subscribing connection is handed to `snapshot` because one topic's
+ * current value differs by who is asking: `inbox` names one topic for the
+ * instance, and what is on it for a session is what was said to that session
+ * (§4.3). Owners whose value is the same for everyone ignore the argument. */
 export interface UpstreamResource {
   start(topic: string): void;
   stop(topic: string): void;
-  snapshot(topic: string): readonly TopicValue[];
+  snapshot(topic: string, conn: Requester): readonly TopicValue[];
 }
 
 /** One instance's topics: subscribers, the way a value reaches them, and the
@@ -74,8 +80,15 @@ export class Topics {
    *
    * `instance` is where the value was produced: this instance for a value of
    * our own, and the originating peer for one mesh relayed to us, which the
-   * frame carries onward unchanged (§7.4). */
-  publish(topic: string, data: unknown, instance: InstanceId = this.self): void {
+   * frame carries onward unchanged (§7.4).
+   *
+   * `to` narrows the frame to the connections of one session. It exists for
+   * `inbox`, whose topic name is one for the instance while its value belongs
+   * to a session: without it, delivering to one session would push the message
+   * to every subscriber. It changes who receives the frame and nothing else —
+   * the frame, and the suppression before it, are the same ones every topic
+   * goes through (M5). */
+  publish(topic: string, data: unknown, instance: InstanceId = this.self, to?: Sid): void {
     const kind = topicKind(topic);
     if (kind === undefined) return;
     if (isSuppressed(kind)) {
@@ -89,7 +102,9 @@ export class Topics {
       sent.set(instance, wire);
     }
     const frame = this.#frame(topic, instance, data, false);
-    for (const conn of this.#subscribers.get(topic) ?? []) conn.send(frame);
+    for (const conn of this.#subscribers.get(topic) ?? []) {
+      if (holds(conn, to)) conn.send(frame);
+    }
   }
 
   subscribe(conn: Requester, topic: string): SubscribeOutcome {
@@ -124,7 +139,7 @@ export class Topics {
     // The owner states the current value. A topic with no owner attached yet
     // answers nothing, as does one with no value to state (§6.2, event), and
     // in both cases the subscriber starts at the next thing that happens.
-    for (const value of this.#upstream.get(kind)?.snapshot(topic) ?? []) {
+    for (const value of this.#upstream.get(kind)?.snapshot(topic, conn) ?? []) {
       conn.deferSend(this.#frame(topic, value.instance, value.data, true));
     }
     return "ok";
@@ -147,9 +162,19 @@ export class Topics {
     return "ok";
   }
 
-  /** How many connections hold a subscription to a topic. */
-  subscriberCount(topic: string): number {
-    return this.#subscribers.get(topic)?.size ?? 0;
+  /** How many connections hold a subscription to a topic, counting only those
+   * of one session when `to` names one.
+   *
+   * What delivery asks before it publishes: a message reaches its session
+   * through this topic or it does not reach it at all, so whether anyone is
+   * listening for that session decides between handing it over and holding it
+   * (§4.2). */
+  subscriberCount(topic: string, to?: Sid): number {
+    let count = 0;
+    for (const conn of this.#subscribers.get(topic) ?? []) {
+      if (holds(conn, to)) count += 1;
+    }
+    return count;
   }
 
   #sent(topic: string): Map<InstanceId, string> {
@@ -165,6 +190,15 @@ export class Topics {
       ? { ev: "topic", topic, snapshot: true, instance, data }
       : { ev: "topic", topic, instance, data };
   }
+}
+
+/** Whether a connection is one of the session's, for a frame addressed to a
+ * session. A connection with no sid settled holds none, so a person watching
+ * the topic does not receive what was said to someone else. */
+function holds(conn: Requester, to: Sid | undefined): boolean {
+  if (to === undefined) return true;
+  const identity = conn.identity;
+  return identity.state === "settled" && identity.sid === to;
 }
 
 /** The comparison behind suppression, in one place for every topic (M5).

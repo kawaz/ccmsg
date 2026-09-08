@@ -59,6 +59,7 @@ describe("nothing pushes a topic frame outside the topic mechanism (M5)", () => 
     // be a second answer to "is this new"; a writer is not one, which is why
     // this list is by file and the case above is by shape.
     expect(serializers.sort()).toEqual([
+      "messaging/inbox.ts",
       "sessions/last-live.ts",
       "topics/topics.ts",
       "transport/conn.ts",
