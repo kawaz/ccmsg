@@ -1,4 +1,5 @@
 import { mkdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   type Capability,
   type InstanceId,
@@ -53,9 +54,18 @@ import {
 import {
   Gateway,
   gatewayCapabilities,
+  gatewayHandlers,
   type GatewaySetup,
   gatewaySetup,
 } from "../upstream/index.ts";
+import { KV_DIR, kvHandlers, KvStore } from "../kv/index.ts";
+import { Launcher, launcherCapabilities, launcherHandlers } from "../launcher/index.ts";
+import {
+  Translate,
+  translateCapabilities,
+  translateHandlers,
+  translateSetup,
+} from "../translate/index.ts";
 import { type InstanceConfig, loadConfig } from "./config.ts";
 import { completeHandlers } from "./handlers.ts";
 import { acquireLock, type Held, isHeldByUs, type Lock } from "./lock.ts";
@@ -115,8 +125,12 @@ export async function start(options: StartOptions = {}): Promise<StartOutcome> {
     // from it: a webhook source whose secret cannot be read ends the start
     // here, for the same reason a broken config does (DV-Q9).
     const gateway = gatewaySetup(config.upstream, paths.configFile, env);
+    // The translation helper, checked the same way and for the same reason: a
+    // program that was named and cannot be run is a setting that cannot be
+    // honoured (DV-Q9).
+    const helper = translateSetup(config.upstream, paths.configFile);
     // 4-7 are the instance's own construction and listen.
-    const instance = new Instance(paths, config, lock, log, options.pollMs, gateway);
+    const instance = new Instance(paths, config, lock, log, options.pollMs, gateway, helper);
     await instance.listen();
     return instance;
   } catch (cause) {
@@ -140,6 +154,7 @@ export class Instance {
   readonly #gateway: Gateway;
   readonly #delivery: Delivery;
   readonly #notify: Notify;
+  readonly #translate: Translate | undefined;
   readonly #handlers: Handlers;
   readonly #capabilities: ReadonlySet<Capability>;
   /** Set the moment shutdown starts, which is the re-entry guard of §8.5 step
@@ -157,6 +172,7 @@ export class Instance {
     private readonly log: Log,
     pollMs?: number,
     setup: GatewaySetup = {},
+    helper?: string,
   ) {
     // 5. `self`. §7.1 settles this by asking the peers who they cannot see,
     // and there is no mesh yet, so it is derived from where this instance
@@ -170,6 +186,8 @@ export class Instance {
     this.#capabilities = new Set([
       ...gatewayCapabilities(setup),
       ...sandboxCapabilities(config.upstream.sandbox_origin),
+      ...launcherCapabilities(config.upstream.launcher),
+      ...translateCapabilities(helper),
       ...sessionCapabilities({
         fork_origin: config.fork_origin,
         ...(config.upstream.terminal_gateway === undefined
@@ -282,6 +300,21 @@ export class Instance {
     this.#topics.attach("llm_requests", this.#gateway.requests);
     this.#topics.attach("llm_status", this.#gateway.statusResource);
 
+    // The one thing here that is written down and is nobody's derived value
+    // (§3.6): what a person saved through a client, which no other party holds
+    // a copy of. It owns `kv:<ns>` and is the only publisher of it.
+    const kv = new KvStore(join(paths.stateDir, KV_DIR), this.self, (topic, data) => {
+      this.#topics.publish(topic, data);
+    });
+    this.#topics.attach("kv", kv);
+
+    // The upstreams that answer a question rather than hold a value. Each is
+    // built only where its config named one, and dispatch has already refused
+    // the ops for the capability this instance then does not have.
+    const launcher =
+      config.upstream.launcher === undefined ? undefined : new Launcher(config.upstream.launcher);
+    this.#translate = helper === undefined ? undefined : new Translate(helper);
+
     // The one decision every file op starts from. The three allowlists it reads
     // are the session's own facts, gathered from where each is stated: the
     // greeting says where the session works, and the fold says which folders
@@ -328,6 +361,10 @@ export class Instance {
       // there is nothing to serve a minted URL, and dispatch already refuses
       // them for the capability this instance then does not have.
       ...(origin === undefined ? {} : sandboxHandlers(new SandboxGrants(files, origin))),
+      ...(launcher === undefined ? {} : launcherHandlers(launcher)),
+      ...(this.#translate === undefined ? {} : translateHandlers(this.#translate)),
+      ...gatewayHandlers(setup),
+      ...kvHandlers(kv),
       instance_ping: (): InstancePingResult => this.ping(),
       instance_shutdown: () => {
         // The reply goes out when this handler's value reaches the driver, so
@@ -477,6 +514,9 @@ export class Instance {
     // The read the gateway's own events can ask for is one more thing that
     // outlives its subscribers if nothing drops it here.
     this.#gateway.close();
+    // The translation helper is a process this instance started, so it leaves
+    // with it rather than outliving the daemon that has its pipe.
+    this.#translate?.stop();
     // 3. tell the connections, while they can still be told
     const restarting: RestartingEvent = { ev: "restarting", instance: this.self };
     for (const conn of this.#conns) conn.send(restarting);

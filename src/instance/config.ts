@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { isAbsolute } from "node:path";
 import type { InstanceId } from "@ccmsg/protocol";
 
 /** Where the instance accepts WebSocket connections, and from whom.
@@ -17,13 +18,55 @@ export interface EntryConfig {
   readonly origins: readonly string[];
 }
 
+/** One value a launch recipe's command reads, as the operator declares it. */
+export interface LauncherParamConfig {
+  /** A shell identifier: the launcher defines a variable of this name, so a
+   * name the shell could not carry is a config the launcher cannot honour. */
+  readonly name: string;
+  readonly default: string;
+}
+
+/** One launch recipe. The shell is the instance's business and is not reported
+ * to a client, which is why the contract's template carries no such field. */
+export interface LauncherTemplateConfig {
+  readonly name: string;
+  readonly command: string;
+  readonly params: readonly LauncherParamConfig[];
+  readonly shell: "bash" | "zsh";
+}
+
+/** What the launcher may start, and where.
+ *
+ * Structured rather than a string because it is a form: the roots bound where a
+ * session may run, and the recipes are what `launcher_config_read` answers
+ * with. Present is what gives this instance the `launcher` capability. */
+export interface LauncherConfig {
+  /** Absolute directories a session may be started in. A launch or a walk
+   * elsewhere reaches nothing. */
+  readonly root_dirs: readonly string[];
+  /** In configured order; the first is the default recipe. */
+  readonly templates: readonly LauncherTemplateConfig[];
+  /** How deep `dir_tree` walks when a request names no depth. */
+  readonly depth: number;
+  /** How long a launch may run before it is stopped. */
+  readonly timeout_secs: number;
+  /** Environment names the launched shell does not inherit, as patterns where
+   * `*` stands for any run of characters. What a session must not inherit is a
+   * deployment fact: an instance's own config home reaching the session it
+   * starts would point that session back at this instance's settings. */
+  readonly clean_env: readonly string[];
+  /** Names kept despite matching `clean_env`, which is what lets one broad
+   * pattern be written beside the few exceptions to it. */
+  readonly keep_env: readonly string[];
+}
+
 /** The upstreams an instance reaches, and the ones it only writes down.
  *
- * The two gateway fields are read: the address is where its service report is
- * asked for, and the source is the path segment it posts what it saw to. The
- * rest are stated as a type so a config carrying them is accepted rather than
- * rejected as unknown, and so what is missing is missing in one visible
- * place. */
+ * The two gateway fields are read: the address is where its service report,
+ * quota and spend are asked for, and the source is the path segment it posts
+ * what it saw to. The rest are stated as a type so a config carrying them is
+ * accepted rather than rejected as unknown, and so what is missing is missing
+ * in one visible place. */
 export interface UpstreamConfig {
   readonly gateway_url?: string;
   readonly gateway_webhook_source?: string;
@@ -31,7 +74,11 @@ export interface UpstreamConfig {
    * gateway itself defaults to, which is the one it wrote. */
   readonly gateway_webhook_token_file?: string;
   readonly terminal_gateway?: string;
-  readonly launcher_template?: string;
+  readonly launcher?: LauncherConfig;
+  /** The program that translates a batch on this host, as an absolute path. It
+   * is an upstream like any other: this instance speaks to it and does not
+   * build it. */
+  readonly translate_helper?: string;
   readonly sandbox_origin?: string;
 }
 
@@ -160,12 +207,110 @@ function upstreamOf(file: string, raw: unknown): UpstreamConfig {
   const fields = objectOf(file, "upstream", raw);
   const config: Record<string, string> = {};
   for (const [name, value] of Object.entries(fields)) {
+    // The launcher is the one upstream that is a form rather than an address,
+    // so it is the one read at its own shape; everything else is a string.
+    if (name === "launcher") continue;
     if (typeof value !== "string") {
       throw new ConfigError(file, `upstream.${name} must be a string`);
     }
     config[name] = value;
   }
-  return config as UpstreamConfig;
+  const launcher = fields["launcher"];
+  return {
+    ...(config as UpstreamConfig),
+    ...(launcher === undefined ? {} : { launcher: launcherOf(file, launcher) }),
+  };
+}
+
+/** How deep `dir_tree` walks, and how long a launch may take, when the config
+ * says neither. */
+const DEFAULT_DEPTH = 2;
+const DEFAULT_TIMEOUT_SECS = 10;
+
+/** A shell identifier, which is what a launch parameter's name has to be: the
+ * launcher defines a variable of that name for the command to read. */
+const SHELL_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+function launcherOf(file: string, raw: unknown): LauncherConfig {
+  const fields = objectOf(file, "upstream.launcher", raw);
+  const roots = stringsOf(file, "upstream.launcher.root_dirs", fields["root_dirs"]);
+  if (roots.length === 0 || roots.some((root) => !isAbsolute(root))) {
+    throw new ConfigError(
+      file,
+      "upstream.launcher.root_dirs must name at least one absolute directory",
+    );
+  }
+  const templates = templatesOf(file, fields["templates"]);
+  if (templates.length === 0) {
+    throw new ConfigError(file, "upstream.launcher.templates must hold at least one recipe");
+  }
+  return {
+    root_dirs: roots,
+    templates,
+    depth: countOf(file, "upstream.launcher.depth", fields["depth"], DEFAULT_DEPTH),
+    timeout_secs: countOf(
+      file,
+      "upstream.launcher.timeout_secs",
+      fields["timeout_secs"],
+      DEFAULT_TIMEOUT_SECS,
+    ),
+    clean_env: stringsOf(file, "upstream.launcher.clean_env", fields["clean_env"]),
+    keep_env: stringsOf(file, "upstream.launcher.keep_env", fields["keep_env"]),
+  };
+}
+
+function templatesOf(file: string, raw: unknown): LauncherTemplateConfig[] {
+  if (!Array.isArray(raw)) {
+    throw new ConfigError(file, "upstream.launcher.templates must be an array of recipes");
+  }
+  const names = new Set<string>();
+  return raw.map((entry, index) => {
+    const at = `upstream.launcher.templates[${index}]`;
+    const fields = objectOf(file, at, entry);
+    const name = fields["name"];
+    const command = fields["command"];
+    if (typeof name !== "string" || name === "") {
+      throw new ConfigError(file, `${at}.name must be a name for the recipe`);
+    }
+    if (names.has(name)) throw new ConfigError(file, `${at}.name repeats ${name}`);
+    names.add(name);
+    if (typeof command !== "string" || command === "") {
+      throw new ConfigError(file, `${at}.command must be a shell program`);
+    }
+    const shell = fields["shell"] ?? "bash";
+    if (shell !== "bash" && shell !== "zsh") {
+      throw new ConfigError(file, `${at}.shell must be bash or zsh`);
+    }
+    return { name, command, shell, params: paramsOf(file, at, fields["params"]) };
+  });
+}
+
+function paramsOf(file: string, at: string, raw: unknown): LauncherParamConfig[] {
+  if (raw === undefined) return [];
+  if (!Array.isArray(raw)) {
+    throw new ConfigError(file, `${at}.params must be an array of parameters`);
+  }
+  return raw.map((entry, index) => {
+    const where = `${at}.params[${index}]`;
+    const fields = objectOf(file, where, entry);
+    const name = fields["name"];
+    const fallback = fields["default"] ?? "";
+    if (typeof name !== "string" || !SHELL_NAME.test(name)) {
+      throw new ConfigError(file, `${where}.name must be a shell identifier`);
+    }
+    if (typeof fallback !== "string") {
+      throw new ConfigError(file, `${where}.default must be a string`);
+    }
+    return { name, default: fallback };
+  });
+}
+
+function countOf(file: string, at: string, raw: unknown, fallback: number): number {
+  if (raw === undefined) return fallback;
+  if (typeof raw !== "number" || !Number.isInteger(raw) || raw < 1) {
+    throw new ConfigError(file, `${at} must be a positive whole number`);
+  }
+  return raw;
 }
 
 function objectOf(file: string, at: string, raw: unknown): Record<string, unknown> {

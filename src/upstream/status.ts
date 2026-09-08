@@ -9,9 +9,16 @@ import type {
   LlmStatusReport,
   LlmStatusService,
   LlmStatusSeverity,
-  Timestamp,
 } from "@ccmsg/protocol";
 import type { TopicValue, UpstreamResource } from "../topics/index.ts";
+import {
+  fetchJson,
+  objectOf,
+  oneOf,
+  optionalInstant,
+  optionalInteger,
+  optionalText,
+} from "./json.ts";
 
 /** How long the read is given. The gateway answers from a snapshot it keeps,
  * so a read that takes longer than this is one that is not coming. */
@@ -114,16 +121,13 @@ export class LlmStatus implements UpstreamResource {
   }
 
   async #read(): Promise<void> {
-    const call = this.deps.fetch ?? fetch;
     let document: unknown;
     try {
-      const answer = await call(this.deps.url, {
-        signal: AbortSignal.timeout(TIMEOUT_MS),
-        headers: { accept: "application/json" },
+      document = await fetchJson(this.deps.url, {
+        timeoutMs: TIMEOUT_MS,
+        maxBytes: MAX_BYTES,
+        ...(this.deps.fetch === undefined ? {} : { fetch: this.deps.fetch }),
       });
-      if (!answer.ok) throw new Error(`the gateway answered ${answer.status}`);
-      const text = await bounded(answer);
-      document = JSON.parse(text);
     } catch (cause) {
       // The last good report is kept: a read that failed says nothing about
       // the services, and replacing what is known with nothing would blank the
@@ -139,27 +143,6 @@ export class LlmStatus implements UpstreamResource {
     this.#report = report;
     this.deps.publish("llm_status", report);
   }
-}
-
-async function bounded(answer: Response): Promise<string> {
-  const body = answer.body;
-  if (body === null) return "";
-  const reader = body.getReader();
-  const decoder = new TextDecoder();
-  let size = 0;
-  let text = "";
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done === true) break;
-      size += value.byteLength;
-      if (size > MAX_BYTES) throw new Error(`the report is over ${MAX_BYTES} bytes`);
-      text += decoder.decode(value, { stream: true });
-    }
-  } finally {
-    reader.releaseLock();
-  }
-  return text + decoder.decode();
 }
 
 const SEVERITIES: readonly LlmStatusSeverity[] = ["ok", "warning", "critical", "unknown"];
@@ -295,29 +278,4 @@ function countsOf(value: unknown): Record<string, number> {
     if (typeof count === "number" && Number.isInteger(count) && count >= 0) counts[name] = count;
   }
   return counts;
-}
-
-function objectOf(value: unknown): Record<string, unknown> | undefined {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
-  return value as Record<string, unknown>;
-}
-
-function oneOf<T extends string>(allowed: readonly T[], value: unknown, fallback: T): T {
-  return typeof value === "string" && (allowed as readonly string[]).includes(value)
-    ? (value as T)
-    : fallback;
-}
-
-function optionalText(name: string, value: unknown): Record<string, string> {
-  return typeof value === "string" ? { [name]: value } : {};
-}
-
-function optionalInteger(name: string, value: unknown): Record<string, number> {
-  return typeof value === "number" && Number.isInteger(value) ? { [name]: value } : {};
-}
-
-/** An instant, taken only as a number. Rejecting a string is what stops an ISO
- * time from travelling on a field this contract says is Unix ms. */
-function optionalInstant(name: string, value: unknown): Record<string, Timestamp> {
-  return typeof value === "number" && Number.isFinite(value) ? { [name]: value } : {};
 }

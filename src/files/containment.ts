@@ -241,7 +241,10 @@ export function canonical(path: string): string {
   }
 }
 
-function within(path: string, root: string): boolean {
+/** Whether a resolved path is the root or below it. Shared with the launcher,
+ * whose roots come from config rather than from a session: what "inside" means
+ * is the same question, and two spellings of it could come apart. */
+export function within(path: string, root: string): boolean {
   return path === root || path.startsWith(root.endsWith(sep) ? root : root + sep);
 }
 

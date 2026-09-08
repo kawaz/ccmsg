@@ -1,17 +1,31 @@
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
-import type { Capability, InstanceId, Sid, Timestamp } from "@ccmsg/protocol";
+import type {
+  Capability,
+  InstanceId,
+  LlmStatsReadArgs,
+  LlmStatsReadResult,
+  LlmUsageReadArgs,
+  LlmUsageReadResult,
+  Sid,
+  Timestamp,
+} from "@ccmsg/protocol";
+import type { HandlerInput } from "../dispatch/index.ts";
 import { ConfigError, type UpstreamConfig } from "../instance/config.ts";
 import type { Env } from "../instance/paths.ts";
 import type { TopicValue, UpstreamResource } from "../topics/index.ts";
 import { parseGatewayItem } from "./events.ts";
 import { LlmRequests } from "./requests.ts";
+import { readStats } from "./stats.ts";
 import { LlmStatus } from "./status.ts";
+import { readUsage } from "./usage.ts";
 import { handleWebhook, SOURCE_NAME, type WebhookSource } from "./webhook.ts";
 
 /** Where the gateway's own endpoints live under its address (DR-0006). */
 const STATUS_PATH = "/llm-gateway/status";
+const USAGE_PATH = "/llm-gateway/usage";
+const STATS_PATH = "/llm-gateway/stats";
 
 /** What the config says this instance can reach of the gateway, resolved.
  *
@@ -23,8 +37,12 @@ export interface GatewaySetup {
   /** Present when a webhook source is configured, with the secret it must
    * present already read. */
   readonly source?: { readonly name: string; readonly token: string };
-  /** Present when the gateway's address is configured. */
+  /** Present when the gateway's address is configured. The three are one
+   * decision — the address — and are resolved together so a client is told
+   * about all three at once rather than discovering each by asking. */
   readonly statusUrl?: string;
+  readonly usageUrl?: string;
+  readonly statsUrl?: string;
 }
 
 /** Read the upstream section (§8.2).
@@ -42,18 +60,51 @@ export function gatewaySetup(config: UpstreamConfig, file: string, env: Env): Ga
     ...(name === undefined
       ? {}
       : { source: { name: sourceName(file, name), token: token(file, config, env, name) } }),
-    ...(url === undefined ? {} : { statusUrl: statusUrl(file, url) }),
+    ...(url === undefined
+      ? {}
+      : {
+          statusUrl: endpoint(file, url, STATUS_PATH),
+          usageUrl: endpoint(file, url, USAGE_PATH),
+          statsUrl: endpoint(file, url, STATS_PATH),
+        }),
   };
 }
 
 /** The capabilities the setup grants. `llm_events` says request activity
- * arrives to be pushed; `llm_status` says the gateway can be asked for its
- * report. */
+ * arrives to be pushed; the other three say the gateway can be asked for its
+ * report, its quota and its spend. */
 export function gatewayCapabilities(setup: GatewaySetup): Capability[] {
   return [
     ...(setup.source === undefined ? [] : (["llm_events"] as const)),
     ...(setup.statusUrl === undefined ? [] : (["llm_status"] as const)),
+    ...(setup.usageUrl === undefined ? [] : (["llm_usage"] as const)),
+    ...(setup.statsUrl === undefined ? [] : (["llm_stats"] as const)),
   ];
+}
+
+/** The two ops that ask the gateway a question and answer with what it said.
+ *
+ * They are handlers rather than resources: neither has a current value to hold
+ * or a topic to push on, so each read is one question asked because a person
+ * asked it. */
+export function gatewayHandlers(setup: GatewaySetup, fetcher?: typeof fetch) {
+  const call = fetcher === undefined ? {} : { fetch: fetcher };
+  const usageUrl = setup.usageUrl;
+  const statsUrl = setup.statsUrl;
+  return {
+    ...(usageUrl === undefined
+      ? {}
+      : {
+          llm_usage_read: (input: HandlerInput): Promise<LlmUsageReadResult> =>
+            readUsage({ url: usageUrl, ...call }, input.args as unknown as LlmUsageReadArgs),
+        }),
+    ...(statsUrl === undefined
+      ? {}
+      : {
+          llm_stats_read: (input: HandlerInput): Promise<LlmStatsReadResult> =>
+            readStats({ url: statsUrl, ...call }, input.args as unknown as LlmStatsReadArgs),
+        }),
+  };
 }
 
 export interface GatewayDeps {
@@ -177,7 +228,8 @@ function sourceName(file: string, name: string): string {
   return name;
 }
 
-function statusUrl(file: string, url: string): string {
+/** One of the gateway's endpoints under the configured address. */
+function endpoint(file: string, url: string, path: string): string {
   let base: URL;
   try {
     base = new URL(url);
@@ -187,7 +239,7 @@ function statusUrl(file: string, url: string): string {
   if (base.protocol !== "http:" && base.protocol !== "https:") {
     throw new ConfigError(file, "upstream.gateway_url must be an http:// or https:// address");
   }
-  return `${base.origin}${base.pathname.replace(/\/+$/, "")}${STATUS_PATH}`;
+  return `${base.origin}${base.pathname.replace(/\/+$/, "")}${path}`;
 }
 
 /** The secret the gateway presents.

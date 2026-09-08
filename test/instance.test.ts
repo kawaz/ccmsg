@@ -10,8 +10,10 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PROTOCOL_VERSION } from "@ccmsg/protocol";
+import { OP_NAMES, PROTOCOL_VERSION } from "@ccmsg/protocol";
+import { OpError } from "../src/dispatch/index.ts";
 import {
+  completeHandlers,
   ConfigError,
   DEFAULT_CONFIG,
   type Env,
@@ -347,15 +349,22 @@ describe("only this config home is read (M6)", () => {
 });
 
 describe("the ops the instance answers", () => {
-  test("an op the contract defines and this instance does not implement says so", async () => {
-    const { env } = disposable();
-    const instance = await startAt(env);
-    const client = await greet(instance);
-    client.send({ op: "kv_read", request_id: "kv", ns: "x", key: "y" });
-    const answer = await client.next();
-    expect(answer["ok"]).toBe(false);
-    expect((answer["error"] as { code: string }).code).toBe("not_found");
-    expect((answer["error"] as { msg: string }).msg).toContain("not implemented");
+  test("an op the contract defines and this instance does not implement says so", () => {
+    // Every op in the table now has an implementation, so the filler is asked
+    // for directly: it is what an op added to the contract reaches before
+    // anything is written for it, and dispatch finding no handler at all is
+    // what it exists to prevent (M1).
+    const handlers = completeHandlers({});
+    expect(Object.keys(handlers).sort()).toEqual([...OP_NAMES].sort());
+    let refused: unknown;
+    try {
+      handlers["kv_read"]({} as never);
+    } catch (cause) {
+      refused = cause;
+    }
+    expect(refused).toBeInstanceOf(OpError);
+    expect((refused as OpError).code).toBe("not_found");
+    expect((refused as OpError).message).toContain("not implemented");
   });
 
   test("instance_shutdown is answered before the instance goes", async () => {

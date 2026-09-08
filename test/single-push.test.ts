@@ -62,6 +62,9 @@ describe("nothing pushes a topic frame outside the topic mechanism (M5)", () => 
     expect(serializers.sort()).toEqual([
       "cli.ts",
       "instance/log.ts",
+      // The values a person saved, written whole as their namespace's file:
+      // persistence again, of the one thing here nothing else holds a copy of.
+      "kv/store.ts",
       // Framing again, on the far side of route (a): the harness's socket takes
       // one JSON object per line, the same as the instance's own connections.
       "messaging/direct.ts",
@@ -73,6 +76,9 @@ describe("nothing pushes a topic frame outside the topic mechanism (M5)", () => 
       "sessions/dump.ts",
       "sessions/last-live.ts",
       "topics/topics.ts",
+      // Framing once more, towards an upstream rather than a client: the
+      // translation helper takes one JSON object per line.
+      "translate/translate.ts",
       "transport/conn.ts",
     ]);
   });

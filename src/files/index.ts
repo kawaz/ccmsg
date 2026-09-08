@@ -8,6 +8,7 @@ export {
   sees,
   type SessionRoots,
   type Viewer,
+  within,
 } from "./containment.ts";
 export { fileHandlers } from "./files.ts";
 export { isSandboxOrigin, sandboxCapabilities, SandboxGrants, sandboxHandlers } from "./sandbox.ts";

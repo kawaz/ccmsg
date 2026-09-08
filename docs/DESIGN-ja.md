@@ -131,18 +131,21 @@ domain に入る境界で ccmsg の型に変換する** (単位を Unix ms に�
 
 ### 3.6 persistence
 
-書くのは 3 種類だけにする。
+書くのは 4 種類だけにする。
 
 | 対象 | 理由 |
 |---|---|
 | `last_live` (前回稼働中のセッション) | 再起動で失うと、一覧から Paused / Disappeared の行が消える |
 | ログ | 落ちた原因を後から読むため。exit 直前の行を落とさない writer を 1 つ持つ |
-| inbox (未配送メッセージ) | **他のどこからも再構成できない唯一の状態** (§4.3) |
+| inbox (未配送メッセージ) | 他のどこからも再構成できない状態 (§4.3) |
+| kv (`kv_write` で保存された値) | 人が保存した値そのもの。派生値ではなく、client 側の複製は写しでしかない |
 
-inbox は M4 の例外ではなく、M4 の対象外である。M4 が禁じるのは**派生値**の永続化であり、
+inbox と kv は M4 の例外ではなく、M4 の対象外である。M4 が禁じるのは**派生値**の永続化であり、
 未配送メッセージは派生値ではない。送信側の `message_send` は既に応答を返して終わっており、
 transcript にも upstream にも「まだ届いていない本文」はどこにも無い。daemon が失えば
-本文ごと消える。
+本文ごと消える。kv も同じ理屈で、テーマ等の保存値は daemon が失えばユーザの設定ごと消える
+(契約 kv.ts が instance 間ミラーと `updated_at` による決着を前提にしているのも、値が
+プロセスより長く生きることを前提にしているため)。
 
 room jsonl は無い (契約 §2.1 で会話ログの正本は transcript)。sandbox grant・購読状態・
 fold の途中結果・config dir の一覧はいずれも再構成できるので書かない (M4)。
@@ -398,7 +401,7 @@ socket path / HTTP の bind / state dir / data dir / ログ。**すべて config
 | 自 config home | この instance が見る唯一の config home (M6) |
 | peers | mesh の endpoint URL 一覧。**全 instance に同じものを配れる** (自分の URL を書かない、§7.1) |
 | 入口の許可 | bind、source IP、Origin |
-| upstream | gateway の URL と webhook source、terminal gateway、launcher テンプレ、sandbox origin |
+| upstream | gateway の URL と webhook source、terminal gateway、launcher (root と テンプレ)、translate helper、sandbox origin |
 
 **config は起動時に 1 回だけ読む。無再起動での反映は持たない** (DV-Q8)。instance ごとの
 config は小さく、再起動が安い (状態のほとんどが揮発で、永続化するのは §3.6 の 3 種だけ) ので、

@@ -421,7 +421,9 @@ describe("who may post, and what an instance without a gateway has (§3.1, §5.2
 
     for (const [started, expected] of [
       [posted, ["llm_events"]],
-      [asked, ["llm_status"]],
+      // The address is one setting and answers three questions, so it grants
+      // the three capabilities together.
+      [asked, ["llm_status", "llm_usage", "llm_stats"]],
     ] as const) {
       const client = await connectWs(started.address);
       clients.push(client);

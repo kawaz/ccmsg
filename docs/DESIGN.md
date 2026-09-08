@@ -144,19 +144,22 @@ payload.
 
 ### 3.6 persistence
 
-Write only 3 kinds of things.
+Write only 4 kinds of things.
 
 | Target | Reason |
 |---|---|
 | `last_live` (previously running sessions) | Losing it on restart makes Paused / Disappeared rows vanish from the list |
 | Logs | To read the cause after a crash. Keep a single writer that does not drop the line right before exit |
-| inbox (undelivered messages) | **The only state that cannot be reconstructed from anywhere else** (§4.3) |
+| inbox (undelivered messages) | State that cannot be reconstructed from anywhere else (§4.3) |
+| kv (values saved through `kv_write`) | The value a person saved, itself. Not a derived value: a client's copy is a copy |
 
-inbox is not an exception to M4 — it is outside M4's scope. What M4 forbids is persisting
+inbox and kv are not exceptions to M4 — they are outside M4's scope. What M4 forbids is persisting
 **derived values**, and an undelivered message is not a derived value. The sender's
 `message_send` has already returned its response and is done; the body that "has not yet
 arrived" exists nowhere in transcript or upstream. If the daemon loses it, the body is gone
-with it.
+with it. kv follows the same reasoning: a saved theme is the person's setting, and losing it
+loses what they set (the contract's kv.ts assumes instances mirror these values and settle
+disagreements by `updated_at`, which assumes a value outlives the process holding it).
 
 There is no room jsonl (per contract §2.1, the source of truth for conversation logs is
 transcript). Sandbox grants, subscription state, in-progress fold results, and the list of
@@ -450,7 +453,7 @@ home.** A CLI within a session looks up its own instance from `CLAUDE_CONFIG_DIR
 | Own config home | The single config home this instance sees (M6) |
 | peers | A list of mesh endpoint URLs. **The same list can be distributed to every instance** (do not write one's own URL, §7.1) |
 | Entry-point permission | bind, source IP, Origin |
-| upstream | gateway's URL and webhook source, terminal gateway, launcher templates, sandbox origin |
+| upstream | gateway's URL and webhook source, terminal gateway, launcher (roots and recipes), translation helper, sandbox origin |
 
 **config is read only once, at startup. There is no hot reload** (DV-Q8). Because
 per-instance config is small and restart is cheap (most state is volatile; the only things
