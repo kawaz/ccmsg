@@ -120,7 +120,7 @@ export class Containment {
   }
 
   private rootsFor(sid: Sid, viewer: Viewer): SessionRoots {
-    if (!this.sees(sid, viewer)) {
+    if (!sees(sid, viewer)) {
       throw new OpError(
         "path_forbidden",
         `the files of ${sid} are outside this connection's range`,
@@ -131,28 +131,6 @@ export class Containment {
       throw new OpError("path_forbidden", `nothing is known about the files of ${sid}`);
     }
     return roots;
-  }
-
-  /** Which sessions this caller may name.
-   *
-   * A `scope: "role"` op states the role and the rule reads it: a session sees
-   * the session it speaks for, a person sees every session. A role the rule
-   * does not name sees nothing — the attribute table decides who may call an
-   * op, and a role it later admits is one this rule has to be told about
-   * rather than one it guesses a range for. An op with no `scope` states no
-   * role, and has none to narrow by: dispatch already settled who may call it.
-   */
-  private sees(sid: Sid, viewer: Viewer): boolean {
-    switch (viewer.role) {
-      case undefined:
-        return true;
-      case "user":
-        return true;
-      case "session":
-        return viewer.sid === sid;
-      default:
-        return false;
-    }
   }
 
   /** Turn an op's `path` into an absolute one, in the shape its kind states. */
@@ -198,6 +176,30 @@ export class Containment {
       throw new OpError("path_forbidden", "the path is not one this session's transcript named");
     }
     return { kind, real, path: real };
+  }
+}
+
+/** Which sessions a caller may name, for every `scope: "role"` op.
+ *
+ * A session sees the session it speaks for, a person sees every session. A
+ * role the rule does not name sees nothing — the attribute table decides who
+ * may call an op, and a role it later admits is one this rule has to be told
+ * about rather than one it guesses a range for. An op with no `scope` states
+ * no role, and has none to narrow by: dispatch already settled who may call it.
+ *
+ * The visible range is one function rather than one per op: `transcript_read`
+ * and the file ops narrow by the same rule, and two spellings of it could come
+ * apart while both still passing their own tests. */
+export function sees(sid: Sid, viewer: Viewer): boolean {
+  switch (viewer.role) {
+    case undefined:
+      return true;
+    case "user":
+      return true;
+    case "session":
+      return viewer.sid === sid;
+    default:
+      return false;
   }
 }
 

@@ -87,7 +87,23 @@ export class HarnessSessions {
     return this.#reading;
   }
 
+  /** Read the directory now, without disturbing what the watch holds.
+   *
+   * The ops that act on a session's process resolve its pid through this
+   * rather than through `rows`: the watch runs only while somebody is
+   * subscribed (§6.3), so the cache is empty for an instance nobody is
+   * watching and stale for one whose last poll is seconds old — and a stale
+   * pid is a signal sent to whatever now holds that number. */
+  async scan(): Promise<ReadonlyMap<Sid, AgentInfo>> {
+    return await this.#scan();
+  }
+
   async #read(): Promise<void> {
+    this.#rows = await this.#scan();
+    this.onChange();
+  }
+
+  async #scan(): Promise<ReadonlyMap<Sid, AgentInfo>> {
     const rows = new Map<Sid, AgentInfo>();
     let names: string[];
     try {
@@ -100,8 +116,7 @@ export class HarnessSessions {
       const row = await this.#row(join(this.dir, name));
       if (row !== undefined) rows.set(row.sid, row);
     }
-    this.#rows = rows;
-    this.onChange();
+    return rows;
   }
 
   async #row(path: string): Promise<AgentInfo | undefined> {

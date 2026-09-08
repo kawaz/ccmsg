@@ -47,6 +47,12 @@ export interface InstanceConfig {
    * running harness; off is for a harness generation that turns out to speak
    * something else, and costs only the reach route (b) never had. */
   readonly direct_delivery: boolean;
+  /** Whether this instance answers where a forked session's copy of its
+   * ancestor ends. Off, because the answer is found by reading whole sibling
+   * transcripts and it decorates a divider: a host that wants it says so, and
+   * one that does not never pays for it. The `fork` capability follows this,
+   * so a client learns which it is from `hello`. */
+  readonly fork_origin: boolean;
 }
 
 /** A config file that could not be understood.
@@ -69,7 +75,12 @@ export class ConfigError extends Error {
  * Absent is not broken. A config that is not there states nothing wrong, while
  * one that is there and unreadable states something wrong — only the second is
  * the fail-fast case. */
-export const DEFAULT_CONFIG: InstanceConfig = { peers: [], upstream: {}, direct_delivery: true };
+export const DEFAULT_CONFIG: InstanceConfig = {
+  peers: [],
+  upstream: {},
+  direct_delivery: true,
+  fork_origin: false,
+};
 
 /** Read the config, once, at startup (DV-Q8).
  *
@@ -103,6 +114,7 @@ export function loadConfig(file: string): InstanceConfig {
       fields["direct_delivery"],
       DEFAULT_CONFIG.direct_delivery,
     ),
+    fork_origin: flagOf(file, "fork_origin", fields["fork_origin"], DEFAULT_CONFIG.fork_origin),
   };
 }
 

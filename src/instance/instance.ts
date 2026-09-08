@@ -32,9 +32,17 @@ import {
   sessionLabel,
 } from "../messaging/index.ts";
 import { Inbox } from "../messaging/inbox.ts";
-import { Sessions, sessionStatusOf, SessionStatus } from "../sessions/index.ts";
+import {
+  hostProcessDeps,
+  sessionCapabilities,
+  sessionHandlers,
+  SessionProcesses,
+  Sessions,
+  sessionStatusOf,
+  SessionStatus,
+} from "../sessions/index.ts";
 import { topicHandlers, Topics } from "../topics/index.ts";
-import { Transcripts } from "../transcript/index.ts";
+import { TranscriptFiles, Transcripts } from "../transcript/index.ts";
 import {
   ConnRegistry,
   type EntryPolicy,
@@ -162,6 +170,12 @@ export class Instance {
     this.#capabilities = new Set([
       ...gatewayCapabilities(setup),
       ...sandboxCapabilities(config.upstream.sandbox_origin),
+      ...sessionCapabilities({
+        fork_origin: config.fork_origin,
+        ...(config.upstream.terminal_gateway === undefined
+          ? {}
+          : { terminal_gateway: config.upstream.terminal_gateway }),
+      }),
     ]);
     this.#topics = new Topics(this.self, this.#capabilities);
 
@@ -286,11 +300,30 @@ export class Instance {
     });
     const origin = config.upstream.sandbox_origin;
 
+    // Which transcript an op means, for the ops that read one rather than
+    // follow one. Only this instance's config home is ever looked in (M6): a
+    // session that greeted said where its transcript is, and one that never
+    // greeted is looked for under that home and nowhere else.
+    const transcriptFiles = new TranscriptFiles({
+      configHome: paths.configHome,
+      announced: (sid) => this.#sessions.transcriptPath(sid),
+    });
+
     this.#handlers = completeHandlers({
       hello: this.#sessions.hello,
       ...topicHandlers(this.#topics),
       ...messagingHandlers(this.#delivery, this.#notify),
       ...fileHandlers(files),
+      ...sessionHandlers({
+        self: this.self,
+        configHome: paths.configHome,
+        stateDir: paths.stateDir,
+        files: transcriptFiles,
+        processes: new SessionProcesses(
+          hostProcessDeps(() => this.#sessions.rowsNow(), config.upstream.terminal_gateway),
+        ),
+        forget: (sid) => this.#sessions.forget(sid),
+      }),
       // The sandbox ops answer only where an origin is configured. Without one
       // there is nothing to serve a minted URL, and dispatch already refuses
       // them for the capability this instance then does not have.

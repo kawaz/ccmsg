@@ -221,6 +221,23 @@ export class Sessions implements UpstreamResource {
     };
   }
 
+  /** The harness's sessions as they are right now, read rather than taken
+   * from the watch's cache. What acts on a session's process resolves its pid
+   * through this: the watch runs only while somebody is subscribed (§6.3), and
+   * a pid from a poll that has not run is a number belonging to nobody. */
+  rowsNow(): Promise<ReadonlyMap<Sid, AgentInfo>> {
+    return this.#harness.scan();
+  }
+
+  /** Drop one entry from `last_live`, which is what
+   * `session_last_live_remove` asks for. The removal touches that list alone:
+   * the session stays resumable by every other route. */
+  forget(sid: Sid): boolean {
+    const removed = this.#lastLive.remove(sid);
+    if (removed) this.changed();
+    return removed;
+  }
+
   /** Recompute and state both topics. What the fold settles is an input to the
    * classification and to `peers`, so a fold that changed says so here. */
   refresh(): void {

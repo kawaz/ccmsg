@@ -5,6 +5,7 @@ export {
   type Located,
   type PathArgs,
   type RootsSource,
+  sees,
   type SessionRoots,
   type Viewer,
 } from "./containment.ts";

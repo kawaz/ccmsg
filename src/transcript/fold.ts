@@ -131,6 +131,73 @@ export class TranscriptFold {
   }
 }
 
+/** One transcript record, as the ops that read a whole transcript need it.
+ *
+ * The fold above follows a file as it grows; a search, a dump and a fork sweep
+ * read one that has stopped growing. Both are the same act of interpretation,
+ * so both live here: nothing outside this module turns a transcript line into
+ * meaning, and the harness's own spellings — its record types, its block
+ * kinds, its ISO instants — stop at this boundary (§3.5). */
+export interface TranscriptRecord {
+  /** The record id a dump's bounds cut at. */
+  readonly uuid?: string;
+  readonly said_at?: Timestamp;
+  /** Who said it, in the contract's two words. Absent for a record that is
+   * neither side speaking — a title change, a summary, a harness note. */
+  readonly said_by?: "user" | "agent";
+  /** The words, with the thinking blocks kept apart so a dump can leave them
+   * out without a second reading of the row. */
+  readonly text?: string;
+  readonly thinking?: string;
+  /** A subagent's turn, interleaved into the session's own file. */
+  readonly sidechain: boolean;
+  /** Where the session ran, which the first records carry. */
+  readonly cwd?: string;
+  /** What `/rename` wrote, which is the only writer of a session's title. */
+  readonly title?: string;
+  /** What the turn ran as, in the transcript's own spelling. */
+  readonly model?: string;
+  readonly effort?: string;
+}
+
+/** Read one line. A line that is not a record — half-written, or not JSON at
+ * all — yields nothing, the same way the fold skips it. */
+export function readRecord(line: string): TranscriptRecord | undefined {
+  let row: unknown;
+  try {
+    row = JSON.parse(line);
+  } catch {
+    return undefined;
+  }
+  if (!isRecord(row)) return undefined;
+  const type = str(row["type"]);
+  const message = isRecord(row["message"]) ? row["message"] : undefined;
+  const model = message === undefined ? undefined : str(message["model"]);
+  return {
+    sidechain: row["isSidechain"] === true,
+    ...optional("uuid", str(row["uuid"])),
+    ...optional("said_at", instant(row["timestamp"])),
+    ...optional("said_by", saidBy(type)),
+    ...optional("text", message === undefined ? undefined : blockText(message["content"])),
+    ...optional("thinking", message === undefined ? undefined : thinkingText(message["content"])),
+    ...optional("cwd", str(row["cwd"])),
+    ...optional("title", type === "custom-title" ? str(row["customTitle"]) : undefined),
+    ...optional("model", model === "<synthetic>" ? undefined : model),
+    ...optional("effort", str(row["effort"])),
+  };
+}
+
+/** The harness's record types, in the contract's two words. Its `assistant` is
+ * the contract's `agent`; every other type is a record neither side spoke. */
+function saidBy(type: string | undefined): "user" | "agent" | undefined {
+  if (type === "user") return "user";
+  return type === "assistant" ? "agent" : undefined;
+}
+
+function optional<K extends string, V>(key: K, value: V | undefined): Record<K, V> | object {
+  return value === undefined ? {} : { [key]: value };
+}
+
 /** The text a message states, whoever wrote it. A plain prompt is a string; a
  * prompt with an attachment, and every row the harness writes, is a block
  * array whose text blocks carry the words. An array holding only tool results
@@ -143,6 +210,20 @@ function blockText(content: unknown): string | undefined {
   for (const block of content) {
     if (!isRecord(block) || block["type"] !== "text") continue;
     const text = str(block["text"]);
+    if (text !== undefined) parts.push(text);
+  }
+  return parts.join("\n").trim() || undefined;
+}
+
+/** The model's own reasoning, which a dump may be asked to leave out. Kept
+ * apart from `text` rather than filtered out of it, so leaving it out is a
+ * field the dump does not write rather than a second pass over the blocks. */
+function thinkingText(content: unknown): string | undefined {
+  if (!Array.isArray(content)) return undefined;
+  const parts: string[] = [];
+  for (const block of content) {
+    if (!isRecord(block) || block["type"] !== "thinking") continue;
+    const text = str(block["thinking"]);
     if (text !== undefined) parts.push(text);
   }
   return parts.join("\n").trim() || undefined;

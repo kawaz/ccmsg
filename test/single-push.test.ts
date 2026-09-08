@@ -66,6 +66,11 @@ describe("nothing pushes a topic frame outside the topic mechanism (M5)", () => 
       // one JSON object per line, the same as the instance's own connections.
       "messaging/direct.ts",
       "messaging/inbox.ts",
+      // The one writer whose file is not instance state: a dump is the
+      // artifact `session_dump_write` was asked for, written once and never
+      // read back, so it neither survives a restart for the instance's sake
+      // nor is a value compared against a previous one.
+      "sessions/dump.ts",
       "sessions/last-live.ts",
       "topics/topics.ts",
       "transport/conn.ts",
