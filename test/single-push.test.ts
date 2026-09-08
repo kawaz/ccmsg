@@ -61,6 +61,19 @@ describe("nothing pushes a topic frame outside the topic mechanism (M5)", () => 
     // which is why this list is by file and the case above is by shape.
     expect(serializers.sort()).toEqual([
       "cli.ts",
+      // What a daemon command answers with and what a supervisor logs: both are
+      // the CLI's own JSON output, said where the command lives rather than at
+      // the point it is printed.
+      "daemon/control.ts",
+      // A log line shown under a label: the record is reassembled with the
+      // instance it came from beside its own fields, which is the CLI's output
+      // again rather than anything compared against a previous value.
+      "daemon/log.ts",
+      "daemon/registry.ts",
+      "daemon/supervise.ts",
+      // Persistence of the one file a person edits: the shared config, written
+      // back by `daemon add` and `daemon remove` at the shape it is read in.
+      "instance/config.ts",
       "instance/log.ts",
       // The values a person saved, written whole as their namespace's file:
       // persistence again, of the one thing here nothing else holds a copy of.

@@ -1,5 +1,5 @@
-import { readFileSync } from "node:fs";
-import { isAbsolute } from "node:path";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, isAbsolute } from "node:path";
 import type { InstanceId } from "@ccmsg/protocol";
 
 /** Where the instance accepts WebSocket connections, and from whom.
@@ -134,12 +134,42 @@ export const DEFAULT_CONFIG: InstanceConfig = {
  * There is no watch and no reload: the file is small, an instance is cheap to
  * restart because almost nothing it holds is persistent (§3.6), and restarting
  * is therefore the whole of "apply a config change" (§8.2). */
-export function loadConfig(file: string): InstanceConfig {
+export function loadConfig(file: string, dir: string): InstanceConfig {
+  return parseConfig(file, settingsFor(loadShared(file), dir));
+}
+
+/** One config home the shared file knows about.
+ *
+ * `dir` is the config home itself, which is what an instance is (A2); the rest
+ * is whatever that instance sets differently from `defaults`, held raw because
+ * it is merged before it is read. */
+export interface InstanceEntry {
+  readonly dir: string;
+  readonly settings: Record<string, unknown>;
+}
+
+/** The one file a person edits: what every instance gets, and which config
+ * homes run one.
+ *
+ * One file rather than one per config home because both of the things it
+ * carries are facts about the set — the peer list is the same for every
+ * instance (§7.1), and "which config homes run an instance" is a question no
+ * single instance can answer about itself. */
+export interface SharedConfig {
+  readonly defaults: Record<string, unknown>;
+  readonly instances: readonly InstanceEntry[];
+}
+
+export const EMPTY_SHARED: SharedConfig = { defaults: {}, instances: [] };
+
+/** Read the shared file. Absent is not broken, for `DEFAULT_CONFIG`'s reason,
+ * so it reads as the empty one; present and wrong ends the read (DV-Q9). */
+export function loadShared(file: string): SharedConfig {
   let text: string;
   try {
     text = readFileSync(file, "utf8");
   } catch {
-    return DEFAULT_CONFIG;
+    return EMPTY_SHARED;
   }
   let parsed: unknown;
   try {
@@ -147,10 +177,51 @@ export function loadConfig(file: string): InstanceConfig {
   } catch (cause) {
     throw new ConfigError(file, `not valid JSON (${String(cause)})`);
   }
-  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-    throw new ConfigError(file, "the top level must be a JSON object");
+  const top = objectOf(file, "the top level", parsed);
+  for (const name of Object.keys(top)) {
+    if (name !== "defaults" && name !== "instances") {
+      throw new ConfigError(file, `unknown top-level key ${name}; expected defaults or instances`);
+    }
   }
-  const fields = parsed as Record<string, unknown>;
+  const raw = top["instances"];
+  if (raw !== undefined && !Array.isArray(raw)) {
+    throw new ConfigError(file, "instances must be an array of config homes");
+  }
+  const seen = new Set<string>();
+  const instances = ((raw ?? []) as unknown[]).map((entry, index) => {
+    const fields = objectOf(file, `instances[${index}]`, entry);
+    const { dir, ...settings } = fields;
+    if (typeof dir !== "string" || !isAbsolute(dir)) {
+      throw new ConfigError(file, `instances[${index}].dir must be an absolute config home`);
+    }
+    if (seen.has(dir)) throw new ConfigError(file, `instances[${index}].dir repeats ${dir}`);
+    seen.add(dir);
+    return { dir, settings };
+  });
+  return {
+    defaults: top["defaults"] === undefined ? {} : objectOf(file, "defaults", top["defaults"]),
+    instances,
+  };
+}
+
+/** Write the shared file back, at the shape a person reads it in. */
+export function saveShared(file: string, shared: SharedConfig): void {
+  const instances = shared.instances.map((entry) => ({ dir: entry.dir, ...entry.settings }));
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(file, `${JSON.stringify({ defaults: shared.defaults, instances }, null, 2)}\n`);
+}
+
+/** What one config home's instance is configured with: its own entry over the
+ * shared defaults, key by key. A config home the file does not list still
+ * resolves — `daemon run` on an unregistered directory is the defaults plus
+ * the built-ins. */
+export function settingsFor(shared: SharedConfig, dir: string): Record<string, unknown> {
+  const entry = shared.instances.find((one) => one.dir === dir);
+  return { ...shared.defaults, ...entry?.settings };
+}
+
+/** One instance's settings, read at the shape the instance uses them. */
+export function parseConfig(file: string, fields: Record<string, unknown>): InstanceConfig {
   return {
     peers: peersOf(file, fields["peers"]),
     ...(fields["entry"] === undefined ? {} : { entry: entryOf(file, fields["entry"]) }),

@@ -77,6 +77,13 @@ function release(file: string): void {
   }
 }
 
+/** The pid the lock file names, whether or not it is still there. Asking who
+ * holds a config home is the same question a starter asks, so it is the same
+ * file that answers it. */
+export function lockHolder(file: string): number | undefined {
+  return readHolder(file);
+}
+
 function readHolder(file: string): number | undefined {
   try {
     const pid = Number(readFileSync(file, "utf8").trim());

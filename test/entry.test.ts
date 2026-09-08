@@ -28,7 +28,7 @@ async function serving(entry: Record<string, unknown> = {}): Promise<Instance> {
   mkdirSync(join(root, "config"), { recursive: true });
   writeFileSync(
     join(root, "config", "config.json"),
-    JSON.stringify({ entry: { host: "127.0.0.1", port: 0, ...entry } }),
+    JSON.stringify({ defaults: { entry: { host: "127.0.0.1", port: 0, ...entry } } }),
   );
   const env: Env = {
     CLAUDE_CONFIG_DIR: join(root, "home"),

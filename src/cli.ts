@@ -1,13 +1,37 @@
 #!/usr/bin/env bun
+import { type MessageSendArgs, type NotifySendArgs, PROTOCOL_VERSION } from "@ccmsg/protocol";
 import {
-  type MessageSendArgs,
-  type MessageSendResult,
-  type NotifySendArgs,
-  PROTOCOL_VERSION,
-} from "@ccmsg/protocol";
+  add as addInstance,
+  CommandError,
+  configHome,
+  connect,
+  follow,
+  idOf,
+  labelled,
+  list as listInstances,
+  remove as removeInstance,
+  registered,
+  restart as restartInstance,
+  rowFor,
+  start as startInstance,
+  status as statusOf,
+  stop as stopInstance,
+  Supervisor,
+  tailOf,
+  type Target,
+  targetFor,
+} from "./daemon/index.ts";
+import { join } from "node:path";
 import { hookEvent, type StatedMeta, statedMeta } from "./greeting/index.ts";
-import { isRunning, resolvePaths, start } from "./instance/index.ts";
-import { AGENTS, install, type Outcome, status, uninstall } from "./plugin/index.ts";
+import { isRunning, resolveConfigHome, resolvePaths, start } from "./instance/index.ts";
+import {
+  AGENTS,
+  install,
+  type Outcome,
+  status as pluginStatus,
+  uninstall,
+} from "./plugin/index.ts";
+import { type Run, runCommand, serviceFor } from "./service/index.ts";
 import { VERSION } from "./version.ts";
 
 /** Where a hook event is read from. Named for the same reason a speech binary
@@ -20,119 +44,376 @@ export type Read = () => Promise<string>;
  * shim. */
 const SYSTEM_SAY = "/usr/bin/say";
 
-const USAGE = `ccmsg — one instance per config home
-
-サブコマンド:
-  post <sid> <text>    別のセッションへメッセージを送る
-  reply <mid> <text>   受け取ったメッセージに返信する (--to で宛先セッション)
-  notify <text>        見ている人へ一行知らせる (保持されない、返事も来ない)
-  stopping             これから終わると instance に伝える (以後は Paused 扱い)
-  say [say-options] [text...]
-                       ${SYSTEM_SAY} で発声し、どのセッションが喋ったかを知らせる
-  hello                自分がどこで動いているかを instance に名乗る
-  plugin install <agent>    そのエージェントに ccmsg のプラグインを入れる
-  plugin status [<agent>]   入れたものと今の状態を見比べる
-  plugin uninstall <agent>  入れたものだけを元に戻す
-  daemon run           この config home の instance を foreground で起動する
-  daemon stop          起動中の instance に停止を要求する (unix socket 経由)
-
-エージェント: ${AGENTS.join(", ")}
-
-post / reply / notify / stopping / hello のオプション:
-  --sid <sid>     自分のセッション ID (既定は CLAUDE_CODE_SESSION_ID)
-  --to <sid>      reply の宛先セッション (受け取った封筒の ccmsg-from の値)
-                  省略すると人 (user) への返信として通知で届く
-  --about <sid>   notify が知らせるセッション (既定は自分)
-  --reason <text> stopping で終わる理由 (表示用、任意)
-  --hook          harness の hook イベント JSON を標準入力から読み、
-                  セッション ID・作業ディレクトリ・理由をそこから取る
-
-hello が名乗る内容のオプション (既定は cwd と git から導出):
-  --cwd <path>    作業ディレクトリ
-  --repo <name>   リポジトリの表示名     --ws <name>    ワークスペース名
-  --repo-root <path>  リポジトリの入れ物   --branch <name>  チェックアウト中のブランチ
-  --transcript-path <path>  会話の記録     --title <text>  セッションの題
-
-say の引数は ${SYSTEM_SAY} へそのまま渡す (ccmsg 独自のオプションは無い)。
-唯一の例外は単独の --help / -h で、この ccmsg のヘルプを表示する。
-
-グローバルオプション:
-  -h, --help     このヘルプを表示する
-
-環境変数:
-  CLAUDE_CONFIG_DIR       この instance が答える唯一の config home
-  CLAUDE_CODE_SESSION_ID  自分のセッション ID (post / reply / notify / say の名乗り)
-  CCMSG_CONFIG_DIR        config の置き場を直接指定する (既定は XDG_CONFIG_HOME 由来)
-  CCMSG_STATE_DIR         state・socket・pid・ログの置き場を直接指定する
-  CCMSG_SAY_BIN           発声に使うバイナリ (既定は ${SYSTEM_SAY})
-`;
-
-/** The CLI: the instance's own lifecycle, and what a session speaks from
- * inside its turn.
+/** What every command may be given, and what every command reads from.
  *
- * `post` and `reply` are the same op — a message goes to a session either way,
- * and what `reply` adds is the frame it answers (`reply_to`). They are two
- * commands rather than one with a flag because that is how they are reached:
- * one is how a session starts a conversation, the other is the line the
- * contract writes into a delivered message.
+ * `-h` / `--help` is the one option no level defines for itself: asking a
+ * command what it does is the same question at every level, and answering it
+ * where the tree is walked rather than inside each command is what keeps the
+ * answer the same. */
+const GLOBAL_OPTIONS: readonly Doc[] = [["-h, --help", "そのレベルのヘルプを表示する"]];
+
+const GLOBAL_ENV: readonly Doc[] = [
+  ["CLAUDE_CONFIG_DIR", "この CLI が話す instance の config home (既定は ~/.claude)"],
+  ["CCMSG_CONFIG_DIR", "共通 config の置き場 (既定は XDG_CONFIG_HOME/ccmsg)"],
+  ["CCMSG_STATE_DIR", "state・socket・pid・ログの置き場 (既定は XDG_STATE_HOME/ccmsg)"],
+];
+
+/** A name and what it is, as the help prints it. */
+type Doc = readonly [string, string];
+
+/** One command in the tree.
  *
- * `notify` and `say` are the other direction, towards a person watching rather
- * than towards a session. They are two commands for the same reason: one is a
- * line to read, the other is a line to hear, and only the second has a speech
- * binary to hand its arguments to. */
+ * `run` answers with what the command found, and printing it is not its
+ * business: every command that is not `--help` answers in JSON, so there is one
+ * place that writes it and no command that can forget to. */
+interface Command {
+  readonly name: string;
+  readonly summary: string;
+  readonly usage?: string;
+  readonly options?: readonly Doc[];
+  readonly env?: readonly Doc[];
+  readonly children?: readonly Command[];
+  readonly run?: (args: readonly string[]) => Promise<unknown>;
+  /** Whether running it with nothing after it is a command rather than a
+   * question. A level that leads somewhere answers "no arguments" with the help
+   * — there is nothing else it could mean — and so does a command whose
+   * arguments are required. This marks the rest: `daemon list` and
+   * `service status` take nothing, and printing their help instead of their
+   * answer would make them unreachable. */
+  readonly bare?: boolean;
+  /** A command that takes its arguments over rather than parsing them, which
+   * is what `say` is: its arguments belong to another program. */
+  readonly raw?: (args: readonly string[]) => Promise<number>;
+}
+
+/** The whole CLI, as the tree the help prints and the dispatch walks. */
+const ROOT: Command = {
+  name: "ccmsg",
+  summary: "config home ごとの instance と、セッションからの一行",
+  usage: "ccmsg <command> [subcommand] [options] [--] [args...]",
+  children: [
+    {
+      name: "daemon",
+      summary: "instance の起動・停止・状態",
+      usage: "ccmsg daemon <subcommand> [options]",
+      options: [["--all", "登録されている instance すべてを対象にする"]],
+      children: [
+        {
+          name: "run",
+          summary: "この config home の instance を foreground で起動する",
+          usage: "ccmsg daemon run [dir]",
+          bare: true,
+          run: (args) => runInstance(args[0]),
+        },
+        {
+          name: "supervise",
+          summary: "共通 config の instance を子プロセスとして起動し、落ちたら上げる",
+          usage: "ccmsg daemon supervise",
+          bare: true,
+          run: () => supervise(),
+        },
+        {
+          name: "add",
+          summary: "共通 config の instances[] に config home を追加する",
+          usage: "ccmsg daemon add <dir>",
+          run: (args) => Promise.resolve(added(args[0])),
+        },
+        {
+          name: "remove",
+          summary: "instances[] から外す (起動中の instance は止めない)",
+          usage: "ccmsg daemon remove <dir>",
+          run: (args) => Promise.resolve(removed(args[0])),
+        },
+        {
+          name: "list",
+          summary: "登録されている config home と、動いているかを並べる",
+          usage: "ccmsg daemon list",
+          bare: true,
+          run: () => Promise.resolve(listInstances(process.env)),
+        },
+        {
+          name: "start",
+          summary: "登録した config home の instance を detached で起動する",
+          usage: "ccmsg daemon start <dir> | --all",
+          run: (args) => each(args, (target) => startInstance(process.env, target)),
+        },
+        {
+          name: "stop",
+          summary: "instance に停止を要求する (instance_shutdown)",
+          usage: "ccmsg daemon stop <dir> | --all",
+          run: (args) => each(args, (target) => stopInstance(target)),
+        },
+        {
+          name: "restart",
+          summary: "止めてから起動し直す",
+          usage: "ccmsg daemon restart <dir> | --all",
+          run: (args) => each(args, (target) => restartInstance(process.env, target)),
+        },
+        {
+          name: "status",
+          summary: "instance に問い合わせて version・network・peers まで見る",
+          usage: "ccmsg daemon status [dir] | --all",
+          bare: true,
+          run: (args) => each(args, (target) => statusOf(target), true),
+        },
+        {
+          name: "log",
+          summary: "instance の daemon.log を出す (--all は行に id を足して多重化)",
+          usage: "ccmsg daemon log [dir] | --all [--follow]",
+          options: [["--follow", "書き足される行を待ち続ける (Ctrl-C で終わり)"]],
+          bare: true,
+          run: (args) => daemonLog(args),
+        },
+      ],
+    },
+    {
+      name: "service",
+      summary: "監督者 (ccmsg daemon supervise) を launchd / systemd に登録する",
+      usage: "ccmsg service <subcommand>",
+      children: [
+        {
+          name: "register",
+          summary: "監督者をこのホストの init system に登録する",
+          usage: "ccmsg service register",
+          bare: true,
+          run: () => serviceOp("register"),
+        },
+        {
+          name: "unregister",
+          summary: "登録を外し、置いた定義ファイルを消す",
+          usage: "ccmsg service unregister",
+          bare: true,
+          run: () => serviceOp("unregister"),
+        },
+        {
+          name: "start",
+          summary: "監督者を起動する",
+          usage: "ccmsg service start",
+          bare: true,
+          run: () => serviceOp("start"),
+        },
+        {
+          name: "stop",
+          summary: "監督者を停止する",
+          usage: "ccmsg service stop",
+          bare: true,
+          run: () => serviceOp("stop"),
+        },
+        {
+          name: "status",
+          summary: "登録の有無・監督者の pid・init system 側の状態・見ている instance",
+          usage: "ccmsg service status",
+          bare: true,
+          run: () => serviceOp("status"),
+        },
+        {
+          name: "log",
+          summary: "監督者と init system 側のログを出す",
+          usage: "ccmsg service log [--follow]",
+          options: [["--follow", "書き足される行を待ち続ける (Ctrl-C で終わり)"]],
+          bare: true,
+          run: (args) => serviceLog(args),
+        },
+      ],
+    },
+    {
+      name: "plugin",
+      summary: "エージェントへ ccmsg のプラグインを入れる",
+      usage: "ccmsg plugin <subcommand> [<agent>]",
+      env: [["", `エージェント: ${AGENTS.join(", ")}`]],
+      children: [
+        {
+          name: "install",
+          summary: "そのエージェントに ccmsg のプラグインを入れる",
+          usage: "ccmsg plugin install <agent>",
+          run: (args) => plugin("install", args[0]),
+        },
+        {
+          name: "status",
+          summary: "入れたものと今の状態を見比べる",
+          usage: "ccmsg plugin status [<agent>]",
+          run: (args) => plugin("status", args[0]),
+        },
+        {
+          name: "uninstall",
+          summary: "入れたものだけを元に戻す",
+          usage: "ccmsg plugin uninstall <agent>",
+          run: (args) => plugin("uninstall", args[0]),
+        },
+      ],
+    },
+    {
+      name: "post",
+      summary: "別のセッションへメッセージを送る",
+      usage: "ccmsg post <sid> <text> [--sid <自分の sid>]",
+      options: [["--sid <sid>", "自分のセッション ID (既定は CLAUDE_CODE_SESSION_ID)"]],
+      env: sessionEnv(),
+      run: (args) => post(args),
+    },
+    {
+      name: "reply",
+      summary: "受け取ったメッセージに返信する",
+      usage: "ccmsg reply <mid> <text> [--to <相手の sid>]",
+      options: [
+        ["--sid <sid>", "自分のセッション ID (既定は CLAUDE_CODE_SESSION_ID)"],
+        ["--to <sid>", "宛先セッション (封筒の ccmsg-from)。省略すると人への返信"],
+      ],
+      env: sessionEnv(),
+      run: (args) => reply(args),
+    },
+    {
+      name: "notify",
+      summary: "見ている人へ一行知らせる (保持されない、返事も来ない)",
+      usage: "ccmsg notify <text> [--about <sid>]",
+      options: [
+        ["--sid <sid>", "自分のセッション ID (既定は CLAUDE_CODE_SESSION_ID)"],
+        ["--about <sid>", "知らせるセッション (既定は自分)"],
+      ],
+      env: sessionEnv(),
+      run: (args) => notify(args),
+    },
+    {
+      name: "stopping",
+      summary: "これから終わると instance に伝える (以後は Paused 扱い)",
+      usage: "ccmsg stopping [--reason <text>] [--hook]",
+      bare: true,
+      options: [
+        ["--sid <sid>", "自分のセッション ID (既定は CLAUDE_CODE_SESSION_ID)"],
+        ["--reason <text>", "終わる理由 (表示用、任意)"],
+        ["--hook", "harness の hook イベント JSON を標準入力から読む"],
+      ],
+      env: sessionEnv(),
+      run: (args) => stopping(args),
+    },
+    {
+      name: "hello",
+      summary: "自分がどこで動いているかを instance に名乗る",
+      usage: "ccmsg hello [--cwd <path>] [--repo <name>] ... [--hook]",
+      bare: true,
+      options: [
+        ["--sid <sid>", "自分のセッション ID (既定は CLAUDE_CODE_SESSION_ID)"],
+        ["--cwd <path>", "作業ディレクトリ"],
+        ["--repo <name>", "リポジトリの表示名"],
+        ["--ws <name>", "ワークスペース名"],
+        ["--repo-root <path>", "リポジトリの入れ物"],
+        ["--branch <name>", "チェックアウト中のブランチ"],
+        ["--transcript-path <path>", "会話の記録"],
+        ["--title <text>", "セッションの題"],
+        ["--hook", "harness の hook イベント JSON を標準入力から読む"],
+      ],
+      env: sessionEnv(),
+      run: (args) => hello(args),
+    },
+    {
+      name: "say",
+      summary: `${SYSTEM_SAY} で発声し、どのセッションが喋ったかを知らせる`,
+      usage: "ccmsg say [say-options] [text...]",
+      options: [["", `引数は ${SYSTEM_SAY} へそのまま渡す (単独の --help だけが例外)`]],
+      env: [
+        ["CLAUDE_CODE_SESSION_ID", "喋ったセッションの名乗り"],
+        ["CCMSG_SAY_BIN", `発声に使うバイナリ (既定は ${SYSTEM_SAY})`],
+      ],
+      raw: (args) => say(args),
+    },
+  ],
+};
+
+function sessionEnv(): readonly Doc[] {
+  return [["CLAUDE_CODE_SESSION_ID", "自分のセッション ID"]];
+}
+
+/** Walk the tree, and answer at the level the arguments reach.
+ *
+ * No arguments is the help at every level, which is why the walk checks it
+ * before it checks anything else: a command that was named without being told
+ * what to do has nothing to answer but what it can be told. */
 export async function main(argv: readonly string[]): Promise<number> {
-  const [command] = argv;
-  if (command === undefined || command === "-h" || command === "--help") {
-    process.stdout.write(USAGE);
-    return 0;
-  }
-  switch (command) {
-    case "daemon":
-      return daemon(argv[1]);
-    case "post":
-      return post(argv.slice(1));
-    case "reply":
-      return reply(argv.slice(1));
-    case "notify":
-      return notify(argv.slice(1));
-    case "stopping":
-      return stopping(argv.slice(1));
-    case "hello":
-      return hello(argv.slice(1));
-    case "plugin":
-      return plugin(argv.slice(1));
-    // `say` takes over its arguments before any parsing of ours: they belong to
-    // the speech binary, and an option of ours in the middle of them would
-    // change what a shim's users get.
-    case "say":
-      return say(argv.slice(1));
-    default:
-      process.stderr.write(`ccmsg: 知らないサブコマンドです: ${command}\n\n${USAGE}`);
-      return 2;
-  }
-}
-
-function daemon(sub: string | undefined): Promise<number> {
-  switch (sub) {
-    case "run":
-      return run();
-    case "stop":
-      return stop();
-    default:
-      process.stdout.write(USAGE);
-      return Promise.resolve(sub === undefined ? 0 : 2);
+  const path: Command[] = [ROOT];
+  let rest = argv;
+  for (;;) {
+    const at = path[path.length - 1] as Command;
+    if (at.raw !== undefined) {
+      return await at.raw(rest);
+    }
+    const asked = rest[0] === "-h" || rest[0] === "--help";
+    if (asked || (rest.length === 0 && at.bare !== true)) {
+      process.stdout.write(help(path));
+      return asked || at.run === undefined ? 0 : 2;
+    }
+    const child = at.children?.find((one) => one.name === rest[0]);
+    if (child !== undefined) {
+      path.push(child);
+      rest = rest.slice(1);
+      continue;
+    }
+    if (at.run === undefined) {
+      const word = rest[0] as string;
+      process.stderr.write(`${help(path)}\n`);
+      return report(new CommandError("bad_request", `知らないサブコマンドです: ${word}`));
+    }
+    try {
+      emit(await at.run(rest));
+      return 0;
+    } catch (cause) {
+      return report(cause);
+    }
   }
 }
 
-/** Run the instance in the foreground, until it is asked to stop or the
- * terminal takes it away. */
-async function run(): Promise<number> {
-  const outcome = await start();
+/** Everything a command answers, as one JSON document. */
+function emit(value: unknown): void {
+  if (value === undefined) return;
+  process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
+}
+
+/** Everything a command refuses, in the contract's error shape. */
+function report(cause: unknown): number {
+  const error =
+    cause instanceof CommandError
+      ? { code: cause.code, msg: cause.message }
+      : { code: "internal_error", msg: String(cause) };
+  process.stderr.write(`${JSON.stringify({ error }, null, 2)}\n`);
+  return 1;
+}
+
+/** The help for one level: its subcommands, its own options, the global ones,
+ * and the environment either it or the whole CLI reads. */
+function help(path: readonly Command[]): string {
+  const at = path[path.length - 1] as Command;
+  const name = path.map((one) => one.name).join(" ");
+  const lines = [`${name} — ${at.summary}`, ""];
+  lines.push("使い方:", `  ${at.usage ?? name}`, "");
+  if (at.children !== undefined) {
+    lines.push("サブコマンド:");
+    const width = Math.max(...at.children.map((one) => one.name.length));
+    for (const child of at.children) {
+      lines.push(`  ${child.name.padEnd(width)}  ${child.summary}`);
+    }
+    lines.push("");
+  }
+  section(lines, "このレベルのオプション:", at.options);
+  section(lines, "グローバルオプション:", GLOBAL_OPTIONS);
+  section(lines, "環境変数:", [...(at.env ?? []), ...GLOBAL_ENV]);
+  return `${lines.join("\n").trimEnd()}\n`;
+}
+
+function section(lines: string[], title: string, docs: readonly Doc[] | undefined): void {
+  if (docs === undefined || docs.length === 0) return;
+  lines.push(title);
+  const width = Math.max(...docs.map(([label]) => label.length));
+  for (const [label, text] of docs) lines.push(`  ${label.padEnd(width)}  ${text}`);
+  lines.push("");
+}
+
+/** `ccmsg daemon run [dir]`: this config home's instance, in the foreground. */
+async function runInstance(dir: string | undefined): Promise<unknown> {
+  const home = configHome(dir ?? resolveConfigHome());
+  const outcome = await start({ env: { ...process.env, CLAUDE_CONFIG_DIR: home } });
   if (!isRunning(outcome)) {
-    process.stderr.write(
-      `ccmsg: この config home の instance は既に動いています (pid ${outcome.pid})\n`,
+    throw new CommandError(
+      "file_exists",
+      `${home} の instance は既に動いています (pid ${String(outcome.pid)})`,
     );
-    return 1;
   }
   const instance = outcome;
   // A signal is a request to leave, and leaving is the ordered shutdown of
@@ -141,22 +422,188 @@ async function run(): Promise<number> {
   // signal listener keeps the event loop alive and the process would sit at an
   // empty loop instead of exiting.
   const signals = ["SIGINT", "SIGTERM"] as const;
-  const asked = () => {
+  const asked = (): void => {
     void instance.stop();
   };
   for (const signal of signals) process.on(signal, asked);
   await instance.whenStopped();
   for (const signal of signals) process.off(signal, asked);
-  return 0;
+  return { dir: home, instance: instance.self, ran: true };
+}
+
+/** `ccmsg daemon supervise`: the instances the shared config lists, kept up. */
+async function supervise(): Promise<unknown> {
+  const supervisor = new Supervisor();
+  const signals = ["SIGINT", "SIGTERM"] as const;
+  const asked = (): void => {
+    void supervisor.stop();
+  };
+  for (const signal of signals) process.on(signal, asked);
+  await supervisor.run();
+  for (const signal of signals) process.off(signal, asked);
+  return { supervised: supervisor.targets.map((target) => target.dir) };
+}
+
+function added(dir: string | undefined): unknown {
+  if (dir === undefined) throw new CommandError("invalid_args", "使い方: ccmsg daemon add <dir>");
+  return addInstance(process.env, dir);
+}
+
+function removed(dir: string | undefined): unknown {
+  if (dir === undefined) {
+    throw new CommandError("invalid_args", "使い方: ccmsg daemon remove <dir>");
+  }
+  return removeInstance(process.env, dir);
+}
+
+/** One config home, or every registered one.
+ *
+ * `--all` is an option rather than a word in the position a directory would go,
+ * because "every instance" is not a config home and a position that accepted
+ * both would be a position where a typo names neither.
+ *
+ * Over `--all`, one config home refusing is reported beside the others rather
+ * than in place of them: the answer is a row per instance, and a `stop --all`
+ * that failed at the second of five would otherwise leave the caller unable to
+ * tell which three it reached. */
+async function each<T>(
+  args: readonly string[],
+  op: (target: Target) => Promise<T>,
+  hereByDefault = false,
+): Promise<T | (T | { dir: string; error: { code: string; msg: string } })[]> {
+  const all = args.includes("--all");
+  const named = args.find((arg) => !arg.startsWith("--"));
+  if (all && named !== undefined) {
+    throw new CommandError("invalid_args", "--all と dir は同時に指定できません");
+  }
+  if (all) {
+    const answers: (T | { dir: string; error: { code: string; msg: string } })[] = [];
+    for (const target of registered(process.env)) {
+      try {
+        answers.push(await op(target));
+      } catch (cause) {
+        if (!(cause instanceof CommandError)) throw cause;
+        answers.push({ dir: target.dir, error: { code: cause.code, msg: cause.message } });
+      }
+    }
+    return answers;
+  }
+  const dir = named ?? (hereByDefault ? resolveConfigHome() : undefined);
+  if (dir === undefined) throw new CommandError("invalid_args", "dir か --all が要ります");
+  return await op(targetFor(process.env, dir));
+}
+
+/** `ccmsg service <what>`: the supervisor's registration with the host. */
+async function serviceOp(
+  what: "register" | "unregister" | "start" | "stop" | "status",
+  run: Run = runCommand,
+): Promise<unknown> {
+  const service = serviceFor();
+  if (what === "unregister") return { kind: service.kind, ...(await service.unregister(run)) };
+  const state =
+    what === "register"
+      ? await service.register(run)
+      : what === "start"
+        ? await service.start(run)
+        : what === "stop"
+          ? await service.stop(run)
+          : await service.state(run);
+  if (what !== "status") return { kind: service.kind, unit: service.unitFile, ...state };
+  return {
+    kind: service.kind,
+    unit: service.unitFile,
+    ...state,
+    instances: registered(process.env).map((target) => {
+      const row = rowFor(target);
+      return { id: row.id, dir: row.dir, running: row.running };
+    }),
+  };
+}
+
+/** `ccmsg daemon log`: what one instance wrote down, or what all of them did.
+ *
+ * JSON lines rather than one document, because a log is a stream and `--follow`
+ * has no end to close a document at. Over `--all` each line carries the
+ * instance it came from, which is the whole of what multiplexing needs: the
+ * lines are already JSON objects, so the label goes beside their fields. */
+async function daemonLog(args: readonly string[]): Promise<undefined> {
+  const parsed = options(args, [], ["follow", "all"]);
+  const following = parsed.flags.has("follow");
+  // The label follows `--all` rather than how many config homes happen to be
+  // registered: a reader that asked for every instance's log gets the same
+  // shape whether the host runs one or five.
+  const many = parsed.flags.has("all");
+  const targets = many
+    ? registered(process.env)
+    : [targetFor(process.env, parsed.rest[0] ?? resolveConfigHome())];
+  const write = (target: Target, lines: readonly string[]): void => {
+    for (const line of lines) {
+      process.stdout.write(
+        `${many ? labelled(line, { id: idOf(target), dir: target.dir }) : line}\n`,
+      );
+    }
+  };
+  const followers: { close(): void }[] = [];
+  for (const target of targets) {
+    const file = join(target.paths.stateDir, "daemon.log");
+    const read = await tailOf(file);
+    write(target, read.lines);
+    if (following)
+      followers.push(follow(file, read.end, (lines: readonly string[]) => write(target, lines)));
+  }
+  if (following) await never(() => followers.forEach((one) => one.close()));
+  return undefined;
+}
+
+/** `ccmsg service log`: what the supervisor said, and what the init system says
+ * about the last time it ran. */
+async function serviceLog(args: readonly string[], run: Run = runCommand): Promise<undefined> {
+  const parsed = options(args, [], ["follow"]);
+  const following = parsed.flags.has("follow");
+  const service = serviceFor();
+  // What the init system knows is one line at the top rather than a section:
+  // whether it is loaded, running and what it last exited with is the context
+  // the lines below are read in.
+  const state = await service.state(run);
+  process.stdout.write(`${JSON.stringify({ unit: service.unitFile, ...state })}\n`);
+  const source = service.logSource();
+  if (source.kind === "command") {
+    const command = following ? source.follow : source.show;
+    return await Bun.spawn(command, { stdout: "inherit", stderr: "inherit" }).exited.then(
+      () => undefined,
+    );
+  }
+  const read = await tailOf(source.file);
+  for (const line of read.lines) process.stdout.write(`${line}\n`);
+  if (!following) return undefined;
+  const follower = follow(source.file, read.end, (lines: readonly string[]) => {
+    for (const line of lines) process.stdout.write(`${line}\n`);
+  });
+  await never(() => {
+    follower.close();
+  });
+  return undefined;
+}
+
+/** Run until the terminal takes the command away, which is what `--follow`
+ * means: there is no last line to stop at, so what ends it is a signal. */
+function never(release: () => void): Promise<void> {
+  return new Promise((resolve) => {
+    const leave = (): void => {
+      release();
+      for (const signal of ["SIGINT", "SIGTERM"] as const) process.off(signal, leave);
+      resolve();
+    };
+    for (const signal of ["SIGINT", "SIGTERM"] as const) process.on(signal, leave);
+  });
 }
 
 /** `ccmsg post <sid> <text>`: start a conversation with another session. */
-function post(args: readonly string[]): Promise<number> {
+function post(args: readonly string[]): Promise<unknown> {
   const parsed = options(args, ["sid"]);
-  if (typeof parsed === "string") return fail(parsed);
   const [to, text] = parsed.rest;
   if (to === undefined || text === undefined) {
-    return fail("使い方: ccmsg post <sid> <text> [--sid <自分の sid>]");
+    throw new CommandError("invalid_args", "使い方: ccmsg post <sid> <text>");
   }
   return send(parsed.named.get("sid"), { to, text });
 }
@@ -175,12 +622,11 @@ function post(args: readonly string[]): Promise<number> {
  * an answer arrives to the instance and names the route — it reaches them as a
  * notification, which is `notify_send`. The caller runs the line either way and
  * does not have to know which of the two it became. */
-function reply(args: readonly string[]): Promise<number> {
+function reply(args: readonly string[]): Promise<unknown> {
   const parsed = options(args, ["sid", "to"]);
-  if (typeof parsed === "string") return fail(parsed);
   const [mid, text] = parsed.rest;
   if (mid === undefined || text === undefined) {
-    return fail("使い方: ccmsg reply <mid> <text> [--to <相手の sid>]");
+    throw new CommandError("invalid_args", "使い方: ccmsg reply <mid> <text> [--to <相手の sid>]");
   }
   const named = parsed.named.get("sid");
   const to = parsed.named.get("to");
@@ -191,11 +637,12 @@ function reply(args: readonly string[]): Promise<number> {
 /** `ccmsg notify <text>`: a line for whoever is watching. Nothing is held and
  * nothing is acknowledged, so there is no outcome to report beyond the op
  * having been accepted. */
-function notify(args: readonly string[]): Promise<number> {
+function notify(args: readonly string[]): Promise<unknown> {
   const parsed = options(args, ["sid", "about"]);
-  if (typeof parsed === "string") return fail(parsed);
   const [text] = parsed.rest;
-  if (text === undefined) return fail("使い方: ccmsg notify <text> [--about <sid>]");
+  if (text === undefined) {
+    throw new CommandError("invalid_args", "使い方: ccmsg notify <text> [--about <sid>]");
+  }
   const about = parsed.named.get("about");
   return announce(parsed.named.get("sid"), {
     text,
@@ -213,9 +660,8 @@ function notify(args: readonly string[]): Promise<number> {
  *
  * A session that says this and then carries on is not held to it: it stays
  * connected and stays live, and the declaration is spent whenever it does go. */
-export async function stopping(args: readonly string[], read?: Read): Promise<number> {
+export async function stopping(args: readonly string[], read?: Read): Promise<unknown> {
   const parsed = options(args, ["sid", "reason"], ["hook"]);
-  if (typeof parsed === "string") return fail(parsed);
   const event = parsed.flags.has("hook") ? await hookEvent(read) : {};
   const reason = parsed.named.get("reason") ?? event.reason;
   // A hook is told things this process cannot work out for itself — where the
@@ -224,7 +670,6 @@ export async function stopping(args: readonly string[], read?: Read): Promise<nu
   return await call(
     parsed.named.get("sid") ?? event.sid,
     { op: "session_stopping", ...(reason === undefined ? {} : { reason }) },
-    () => "ccmsg: 停止を伝えました",
     stated(parsed.named, event),
   );
 }
@@ -242,26 +687,19 @@ export async function stopping(args: readonly string[], read?: Read): Promise<nu
  * instance running, no session id and a greeting that is turned away all leave
  * the session working exactly as it was, so none of them is worth a line in
  * front of somebody's first prompt. */
-export async function hello(args: readonly string[], read?: Read): Promise<number> {
+export async function hello(args: readonly string[], read?: Read): Promise<unknown> {
   const parsed = options(
     args,
     ["sid", "cwd", "repo", "ws", "repo-root", "branch", "transcript-path", "title"],
     ["hook"],
   );
-  if (typeof parsed === "string") return fail(parsed);
   const event = parsed.flags.has("hook") ? await hookEvent(read) : {};
   const sid = parsed.named.get("sid") ?? event.sid ?? process.env["CLAUDE_CODE_SESSION_ID"];
-  if (sid === undefined || sid === "") {
-    process.stderr.write("ccmsg: 自分のセッション ID が分かりません (--sid か --hook)\n");
-    return 0;
-  }
+  if (sid === undefined || sid === "") return { greeted: false, reason: "no_session_id" };
   const meta = stated(parsed.named, event);
   const paths = resolvePaths();
   const conn = await connect(paths.socket);
-  if (conn === undefined) {
-    process.stderr.write(`ccmsg: ${paths.socket} に繋がりません (instance は動いていません)\n`);
-    return 0;
-  }
+  if (conn === undefined) return { greeted: false, reason: "no_instance" };
   try {
     await conn.ask({
       op: "hello",
@@ -270,13 +708,14 @@ export async function hello(args: readonly string[], read?: Read): Promise<numbe
       protocol_version: PROTOCOL_VERSION,
       ...meta,
     });
+    return { greeted: true, sid };
   } catch {
     // The instance went away mid-greeting. Nothing was asked of it beyond
     // being told, so there is nothing to retry and nothing to report.
+    return { greeted: false, reason: "no_instance" };
   } finally {
     conn.close();
   }
-  return 0;
 }
 
 /** What this process says about itself, as options over what it can work out.
@@ -313,44 +752,41 @@ function only(field: keyof StatedMeta, value: string | undefined): StatedMeta {
  * The agent is named rather than assumed: there will be more than one, and a
  * command that guessed which one a person meant would be the command that
  * writes into the wrong config home. */
-async function plugin(args: readonly string[]): Promise<number> {
-  const [what, agent] = args;
-  if (what === undefined) {
-    process.stdout.write(USAGE);
-    return 0;
-  }
-  if (what !== "install" && what !== "status" && what !== "uninstall") {
-    return fail(
-      `ccmsg: 知らないサブコマンドです: plugin ${what}\n\n使えるのは install / status / uninstall`,
+async function plugin(
+  what: "install" | "status" | "uninstall",
+  agent: string | undefined,
+): Promise<unknown> {
+  if (agent !== undefined && agent !== "claude") {
+    throw new CommandError(
+      "invalid_args",
+      `${agent} 用のプラグインはまだありません (今あるのは ${AGENTS.join(", ")})`,
     );
   }
-  if (agent !== undefined && agent !== "claude") {
-    return fail(`ccmsg: ${agent} 用のプラグインはまだありません (今あるのは ${AGENTS.join(", ")})`);
-  }
   if (what !== "status" && agent === undefined) {
-    return fail(`使い方: ccmsg plugin ${what} <agent> (今あるのは ${AGENTS.join(", ")})`);
+    throw new CommandError(
+      "invalid_args",
+      `使い方: ccmsg plugin ${what} <agent> (今あるのは ${AGENTS.join(", ")})`,
+    );
   }
   const paths = resolvePaths();
   const outcome: Outcome =
     what === "install"
       ? await install(paths, VERSION)
       : what === "status"
-        ? await status(paths)
+        ? await pluginStatus(paths)
         : await uninstall(paths);
-  process.stdout.write(`${outcome.report.join("\n")}\n`);
-  return outcome.ok ? 0 : 1;
+  if (!outcome.ok) throw new CommandError("internal_error", outcome.report.join("\n"));
+  return { ok: true, report: outcome.report };
 }
 
 /** One `message_send`. */
-function send(named: string | undefined, args: MessageSendArgs): Promise<number> {
-  return call(named, { op: "message_send", ...args }, (answer) =>
-    describe(answer as unknown as MessageSendResult),
-  );
+function send(named: string | undefined, args: MessageSendArgs): Promise<unknown> {
+  return call(named, { op: "message_send", ...args });
 }
 
 /** One `notify_send`. */
-function announce(named: string | undefined, args: NotifySendArgs): Promise<number> {
-  return call(named, { op: "notify_send", ...args }, () => "ccmsg: 知らせました");
+function announce(named: string | undefined, args: NotifySendArgs): Promise<unknown> {
+  return call(named, { op: "notify_send", ...args });
 }
 
 /** One op, spoken as the session this process runs inside.
@@ -368,17 +804,22 @@ function announce(named: string | undefined, args: NotifySendArgs): Promise<numb
 async function call(
   named: string | undefined,
   request: Record<string, unknown>,
-  report: (answer: Record<string, unknown>) => string,
   meta: StatedMeta = statedMeta(),
-): Promise<number> {
+): Promise<unknown> {
   const sid = named ?? process.env["CLAUDE_CODE_SESSION_ID"];
   if (sid === undefined || sid === "") {
-    return fail("ccmsg: 自分のセッション ID が分かりません (--sid か CLAUDE_CODE_SESSION_ID)");
+    throw new CommandError(
+      "invalid_args",
+      "自分のセッション ID が分かりません (--sid か CLAUDE_CODE_SESSION_ID)",
+    );
   }
   const paths = resolvePaths();
   const conn = await connect(paths.socket);
   if (conn === undefined) {
-    return fail(`ccmsg: ${paths.socket} に繋がりません (instance は動いていません)`);
+    throw new CommandError(
+      "instance_unreachable",
+      `${paths.socket} に繋がりません (instance は動いていません)`,
+    );
   }
   try {
     const greeting = await conn.ask({
@@ -389,16 +830,20 @@ async function call(
       ...meta,
     });
     if (greeting["ok"] !== true) {
-      return fail(`ccmsg: hello が拒否されました: ${JSON.stringify(greeting)}`);
+      throw new CommandError("forbidden", `hello が拒否されました: ${JSON.stringify(greeting)}`);
     }
     const answer = await conn.ask(request);
     if (answer["ok"] !== true) {
-      return fail(`ccmsg: 送れませんでした: ${JSON.stringify(answer)}`);
+      const error = answer["error"] as { code?: string; msg?: string } | undefined;
+      throw new CommandError(
+        (error?.code as CommandError["code"] | undefined) ?? "internal_error",
+        error?.msg ?? JSON.stringify(answer),
+      );
     }
     // A reply carries its result beside the envelope's own fields rather than
     // nested under one, so what the op answered is the frame itself.
-    process.stdout.write(`${report(answer)}\n`);
-    return 0;
+    const { ok: _ok, request_id: _id, op: _op, ...result } = answer;
+    return result;
   } finally {
     conn.close();
   }
@@ -427,7 +872,7 @@ const spawnSpeech: Spawn = (command) =>
  * that is the form a shim exists to preserve. */
 export async function say(args: readonly string[], spawn: Spawn = spawnSpeech): Promise<number> {
   if (args.length === 1 && (args[0] === "--help" || args[0] === "-h")) {
-    process.stdout.write(USAGE);
+    process.stdout.write(help([ROOT, ROOT.children?.find((one) => one.name === "say") as Command]));
     return 0;
   }
   await posted(args.join(" "));
@@ -474,15 +919,6 @@ async function posted(text: string): Promise<void> {
   }
 }
 
-/** What became of the message, in the words of §4.2: delivered, or waiting for
- * a recipient that is named along with why it is waiting. */
-function describe(result: MessageSendResult): string {
-  if (result.delivered) return "ccmsg: 届きました";
-  const candidates = result.candidates?.map((session) => session.sid) ?? [];
-  const instead = candidates.length === 0 ? "" : `。代わりに送れる相手: ${candidates.join(", ")}`;
-  return `ccmsg: inbox に積みました (${result.reason ?? "理由なし"})${instead}`;
-}
-
 /** Long options and what is left over.
  *
  * Only the names the command declares are accepted, and `--` ends the options
@@ -491,7 +927,7 @@ function options(
   args: readonly string[],
   named: readonly string[],
   flags: readonly string[] = [],
-): { named: Map<string, string>; flags: Set<string>; rest: string[] } | string {
+): { named: Map<string, string>; flags: Set<string>; rest: string[] } {
   const values = new Map<string, string>();
   const raised = new Set<string>();
   const rest: string[] = [];
@@ -510,118 +946,15 @@ function options(
       raised.add(name);
       continue;
     }
-    if (!named.includes(name)) return `ccmsg: 知らないオプションです: ${arg}`;
+    if (!named.includes(name)) {
+      throw new CommandError("invalid_args", `知らないオプションです: ${arg}`);
+    }
     const value = args[at + 1];
-    if (value === undefined) return `ccmsg: ${arg} には値が要ります`;
+    if (value === undefined) throw new CommandError("invalid_args", `${arg} には値が要ります`);
     values.set(name, value);
     at += 1;
   }
   return { named: values, flags: raised, rest };
-}
-
-function fail(message: string): Promise<number> {
-  process.stderr.write(`${message}\n`);
-  return Promise.resolve(1);
-}
-
-/** Ask the running instance to stop, over its own socket.
- *
- * It is the contract's op rather than a signal, so the request goes through
- * the same authorization every other op does and the caller is told it was
- * accepted before the process goes down. */
-async function stop(): Promise<number> {
-  const paths = resolvePaths();
-  const conn = await connect(paths.socket);
-  if (conn === undefined) {
-    return fail(`ccmsg: ${paths.socket} に繋がりません (instance は動いていません)`);
-  }
-  try {
-    const greeting = await conn.ask({
-      op: "hello",
-      role: "user",
-      protocol_version: PROTOCOL_VERSION,
-    });
-    if (greeting["ok"] !== true) {
-      return fail(`ccmsg: hello が拒否されました: ${JSON.stringify(greeting)}`);
-    }
-    const answer = await conn.ask({ op: "instance_shutdown" });
-    if (answer["ok"] !== true) {
-      return fail(`ccmsg: 停止を拒否されました: ${JSON.stringify(answer)}`);
-    }
-    process.stdout.write("ccmsg: 停止を要求しました\n");
-    return 0;
-  } finally {
-    conn.close();
-  }
-}
-
-interface Conn {
-  /** One request, and the reply to it. The CLI asks one thing at a time, so
-   * the `request_id` is a counter and the answer is simply the next frame. */
-  ask(request: Record<string, unknown>): Promise<Record<string, unknown>>;
-  close(): void;
-}
-
-/** The instance's own socket, or nothing when there is no instance behind it. */
-async function connect(path: string): Promise<Conn | undefined> {
-  const replies = new Replies();
-  let socket: Bun.Socket<undefined>;
-  try {
-    socket = await Bun.connect({
-      unix: path,
-      socket: {
-        data(_socket, chunk) {
-          replies.push(chunk);
-        },
-      },
-    });
-  } catch {
-    return undefined;
-  }
-  let counter = 0;
-  return {
-    ask(request) {
-      counter += 1;
-      socket.write(`${JSON.stringify({ request_id: `${counter}`, ...request })}\n`);
-      return replies.next();
-    },
-    close() {
-      socket.end();
-    },
-  };
-}
-
-/** Reassemble the replies of one short exchange. The CLI sends one request at
- * a time, so this needs no correlation beyond arrival order. */
-class Replies {
-  readonly #ready: Record<string, unknown>[] = [];
-  #waiting: ((frame: Record<string, unknown>) => void) | undefined;
-  #buffer = "";
-
-  push(chunk: Uint8Array): void {
-    this.#buffer += new TextDecoder().decode(chunk);
-    let at: number;
-    while ((at = this.#buffer.indexOf("\n")) >= 0) {
-      const line = this.#buffer.slice(0, at);
-      this.#buffer = this.#buffer.slice(at + 1);
-      if (line.trim() === "") continue;
-      const frame = JSON.parse(line) as Record<string, unknown>;
-      const waiting = this.#waiting;
-      if (waiting === undefined) this.#ready.push(frame);
-      else {
-        this.#waiting = undefined;
-        waiting(frame);
-      }
-    }
-  }
-
-  next(): Promise<Record<string, unknown>> {
-    const first = this.#ready.shift();
-    if (first !== undefined) return Promise.resolve(first);
-    return new Promise((resolve) => {
-      this.#waiting = resolve;
-    });
-  }
 }
 
 if (import.meta.main) {

@@ -24,7 +24,7 @@ function disposable(config: (root: string) => Record<string, unknown> = () => ({
   mkdirSync(join(root, "home", "sessions"), { recursive: true });
   mkdirSync(join(root, "config"), { recursive: true });
   mkdirSync(join(root, "repos"), { recursive: true });
-  writeFileSync(join(root, "config", "config.json"), JSON.stringify(config(root)));
+  writeFileSync(join(root, "config", "config.json"), JSON.stringify({ defaults: config(root) }));
   return {
     root,
     env: {

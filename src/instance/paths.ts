@@ -13,6 +13,9 @@ export interface InstancePaths {
   readonly configHome: string;
   /** What distinguishes this instance's files from another instance's. */
   readonly key: string;
+  /** The one file a person edits, shared by every instance on this host: it
+   * carries the defaults and the list of config homes, so it is not derived
+   * from the config home the way the rest of these are. */
   readonly configFile: string;
   readonly stateDir: string;
   /** The address clients connect to. A symlink to whichever `socketReal` is
@@ -82,7 +85,7 @@ export function resolveConfigHome(env: Env = process.env): string {
 export function resolvePaths(env: Env = process.env): InstancePaths {
   const configHome = resolveConfigHome(env);
   const key = instanceKey(configHome);
-  const configDir = appDir(env, "CCMSG_CONFIG_DIR", "XDG_CONFIG_HOME", [".config"], key);
+  const configDir = resolveConfigDir(env);
   const stateDir = appDir(env, "CCMSG_STATE_DIR", "XDG_STATE_HOME", [".local", "state"], key);
   const socketDir = socketDirFor(stateDir, key);
   return {
@@ -99,6 +102,35 @@ export function resolvePaths(env: Env = process.env): InstancePaths {
     logFile: join(stateDir, "daemon.log"),
     entryTokenFile: join(stateDir, "entry.token"),
   };
+}
+
+/** Where the shared config file lives.
+ *
+ * No instance segment, unlike the state: config is what a person edits, and
+ * one file listing every config home is what lets them add an instance without
+ * already knowing the key ccmsg would derive for it. */
+export function resolveConfigDir(env: Env = process.env): string {
+  const direct = env["CCMSG_CONFIG_DIR"];
+  if (direct !== undefined && direct !== "") return direct;
+  const xdg = env["XDG_CONFIG_HOME"];
+  const base = xdg !== undefined && isAbsolute(xdg) ? xdg : join(home(env), ".config");
+  return join(base, "ccmsg");
+}
+
+/** Where things that belong to no single instance keep their state — the
+ * supervisor's log above all. The instance segment is what a per-instance state
+ * directory adds to this, so this is that path without it. */
+export function resolveStateRoot(env: Env = process.env): string {
+  const direct = env["CCMSG_STATE_DIR"];
+  if (direct !== undefined && direct !== "") return direct;
+  const xdg = env["XDG_STATE_HOME"];
+  const base = xdg !== undefined && isAbsolute(xdg) ? xdg : join(home(env), ".local", "state");
+  return join(base, "ccmsg");
+}
+
+/** The shared config file, for a caller that has no instance to resolve. */
+export function resolveConfigFile(env: Env = process.env): string {
+  return join(resolveConfigDir(env), "config.json");
 }
 
 /** A name for one config home that is readable and cannot collide.

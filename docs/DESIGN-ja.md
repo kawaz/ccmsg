@@ -528,6 +528,19 @@ config は小さく、再起動が安い (状態のほとんどが揮発で、�
 「編集が次のリクエストから効く」ための mtime 監視・再読込・再配線を持つ理由がない。
 config を変えたら instance を再起動する、が唯一の反映手順になる。
 
+**ファイルは 1 つで、2 段になっている**。`${XDG_CONFIG_HOME:-~/.config}/ccmsg/config.json` に
+
+```json
+{ "defaults": { ...全 instance に配る設定... },
+  "instances": [ { "dir": "<config home>", ...この instance だけの上書き... } ] }
+```
+
+を置き、instance の各項目は `instances[].<key>` → `defaults.<key>` → 組み込み既定 の順に
+解決する。config home ごとに別ファイルを持たないのは、この 2 つがどちらも「集合についての
+事実」だからである — peers は全 instance に同じものを配れる (§7.1) し、「どの config home が
+instance を持つか」は個々の instance が自分について答えられる問いではない。`instances[]` に
+無い config home を `ccmsg daemon run` した場合は `defaults` + 組み込み既定になる。
+
 ### 8.3 起動の順序
 
 1. パス解決と state dir の作成
@@ -559,9 +572,22 @@ config を変えたら instance を再起動する、が唯一の反映手順に
 ### 8.4 instance は常駐する
 
 **lazy 起動 (その config home のセッションが最初に `ccmsg` を呼んだ時に起動する) は採らない**
-(DV-Q10)。instance は常駐し、`ccmsg plugin install` が起動を登録する。**起動の登録
-(launchd 等) 自体は別単位であり、`ccmsg plugin install` が今配るのはエージェント側の
-plugin だけである。**
+(DV-Q10)。instance は常駐し、**常駐の面倒を見るのは 2 段の監督**である。
+
+- `ccmsg daemon supervise` — foreground の監督者。共通 config の `instances[]` を起動時に
+  1 回読み (DV-Q8)、各 config home の instance を子プロセスとして起動し、落ちたら上げ直す。
+  再起動の待ちは指数的に伸びる (根拠は実装のコメント: 起動直後に落ちる config 不備を
+  spin させないため)。SIGTERM を受けたら各子を `instance_shutdown` で §8.5 の順に止める
+- `ccmsg service register` — その監督者を launchd (macOS) / systemd --user (Linux) に
+  登録する。ログインを跨いで常駐させるのはこの層の責務であり、`ccmsg plugin install` が
+  配るのはエージェント側の plugin だけである
+
+監督者は特定の config home に属さないので、その出力だけは §8.1 の「config home から導く」の
+例外として `${XDG_STATE_HOME:-~/.local/state}/ccmsg/service.log` に置く (systemd では unit の
+出力は journal に行くので、`ccmsg service log` はそちらを読む)。`ccmsg service status` は
+ccmsg 側の読み (registered / running) と **init system 側の読み** (`service`: loaded /
+running / pid / last exit) を並べる — file はあるのに launchd が知らない、のような食い違いを
+潰さずに見せるためである
 
 理由は mesh から見た区別が付かないこと。lazy だと、dial できない instance が
 「寝ているだけ (呼べば起きる)」なのか「落ちている」のかを外から判別できない。判別できないまま
@@ -694,7 +720,7 @@ mesh-peer-auth §10 / mesh-self-identification §7 のテスト表をそのま�
 | DV-Q7 | transcript の fold | **1 本** (M5)。軽 / 重の 2 段は持たない | §3.3 |
 | DV-Q8 | config の反映 | **起動時 1 回に統一**。無再起動反映は持たない | §8.2 |
 | DV-Q9 | 壊れた config | **起動失敗** (fail-fast、自己識別の失敗と同じ扱い) | §8.3 |
-| DV-Q10 | 起動タイミング | **常駐** (`ccmsg plugin install` 時に起動登録)。lazy 起動は採らない | §8.4 |
+| DV-Q10 | 起動タイミング | **常駐** (`ccmsg daemon supervise` が面倒を見て、`ccmsg service register` が OS に登録する)。lazy 起動は採らない | §8.4 |
 | DV-Q11 | 自己識別の緩和 | **採る** (到達しない peer は一致数から外す。起動失敗は一致 0 / 2 以上のみ) | §7.1 |
 | DV-Q12 | 断絶 instance の全量 | **再接続まで保持し、7 日で破棄** (inbox / last_live と同じ窓) | §7.5 |
 

@@ -601,6 +601,21 @@ persisted are the 4 kinds in §3.6), there is no reason to hold mtime watching /
 rewiring so that "an edit takes effect on the next request." Restarting the instance is the
 sole way to make a config change take effect.
 
+**There is one file, and it has two levels.** `${XDG_CONFIG_HOME:-~/.config}/ccmsg/config.json`
+holds
+
+```json
+{ "defaults": { ...settings handed to every instance... },
+  "instances": [ { "dir": "<config home>", ...overrides for this instance alone... } ] }
+```
+
+and each of an instance's settings resolves in the order `instances[].<key>` →
+`defaults.<key>` → the built-in default. There is no file per config home because both of the
+things this one carries are facts about the set — the same peer list can go to every instance
+(§7.1), and "which config homes have an instance" is not a question a single instance can
+answer about itself. A config home that `instances[]` does not list, run with
+`ccmsg daemon run`, is `defaults` plus the built-in defaults.
+
 ### 8.3 Startup order
 
 1. Path resolution and creation of the state dir
@@ -638,9 +653,24 @@ subscription.
 ### 8.4 An instance is long-running
 
 **Lazy startup (starting when a session in that config home first calls `ccmsg`) is not
-adopted** (DV-Q10). The instance is long-running (resident), and `ccmsg plugin install`
-registers it for startup. **Registering that startup (via launchd or the like) is its own
-piece of work; what `ccmsg plugin install` hands out today is the agent-side plugin alone.**
+adopted** (DV-Q10). The instance is long-running (resident), and **keeping it that way is two
+levels of supervision**:
+
+- `ccmsg daemon supervise` — the foreground supervisor. It reads the shared config's
+  `instances[]` once at startup (DV-Q8), starts each config home's instance as a child
+  process, and starts it again when it dies. The wait before a restart grows exponentially
+  (the reason is on the values themselves: a config that fails at startup must not spin the
+  supervisor). On SIGTERM it stops each child with `instance_shutdown`, in the order of §8.5
+- `ccmsg service register` — registers that supervisor with launchd (macOS) or
+  systemd --user (Linux). Surviving a logout is this layer's business; what
+  `ccmsg plugin install` hands out is the agent-side plugin alone
+
+The supervisor belongs to no single config home, so its output is the one exception to §8.1's
+"derived from the config home": it goes to `${XDG_STATE_HOME:-~/.local/state}/ccmsg/service.log`
+(on systemd a unit's output goes to the journal, so `ccmsg service log` reads that instead).
+`ccmsg service status` puts ccmsg's own reading (registered / running) beside **the init
+system's** (`service`: loaded / running / pid / last exit) — so that a disagreement, such as a
+file that exists while launchd has never heard of it, is visible rather than smoothed over
 
 The reason is that mesh cannot tell the difference. With lazy startup, an instance we cannot
 dial could be either "just sleeping (wakes on a call)" or "down," and there is no way to tell
@@ -788,7 +818,7 @@ Lead's ruling (2026-09-08). The relevant sections of the body text are written i
 | DV-Q7 | transcript's fold | **A single one** (M5). No light/heavy two-tier setup | §3.3 |
 | DV-Q8 | Reflecting config | **Unified to once, at startup**. No hot reload | §8.2 |
 | DV-Q9 | A broken config | **Startup fails** (fail-fast, the same treatment as a self-identification failure) | §8.3 |
-| DV-Q10 | Startup timing | **Long-running (resident)** (registered for startup at `ccmsg plugin install` time). Lazy startup is not adopted | §8.4 |
+| DV-Q10 | Startup timing | **Long-running (resident)** (`ccmsg daemon supervise` keeps it up; `ccmsg service register` registers that with the OS). Lazy startup is not adopted | §8.4 |
 | DV-Q11 | Self-identification relaxation | **Adopted** (unreached peers are excluded from the match count; startup failure only at a match count of 0 or 2+) | §7.1 |
 | DV-Q12 | A disconnected instance's full value set | **Kept until reconnection, discarded after 7 days** (the same window as inbox / last_live) | §7.5 |
 

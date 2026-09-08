@@ -143,7 +143,7 @@ async function startWith(
   const config: Record<string, unknown> = { entry: { host: "127.0.0.1", port: 0 } };
   if (upstream !== undefined) config["upstream"] = upstream(tokenFile);
   mkdirSync(join(root, "config"), { recursive: true });
-  writeFileSync(join(root, "config", "config.json"), JSON.stringify(config));
+  writeFileSync(join(root, "config", "config.json"), JSON.stringify({ defaults: config }));
   const env: Env = {
     CLAUDE_CONFIG_DIR: home,
     CCMSG_STATE_DIR: join(root, "state"),

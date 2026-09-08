@@ -23,11 +23,17 @@ import { OP_NAMES, opAttributes } from "@ccmsg/protocol";
  * sends when it dials a peer, where the word announces what this connection is
  * rather than judging what somebody else's may do. Which peer connections are
  * accepted is decided by the handshake, and a peer that passes it is settled
- * through the same `hello` reply every other role is. */
+ * through the same `hello` reply every other role is. The daemon's control
+ * connection is left out for the CLI's reason and is the CLI's code moved out
+ * of it: the `"user"` there is what the command announces itself as. The
+ * service definitions are left out because the `"user"` in them is a directory
+ * segment of systemd's own layout, which grants nobody anything. */
 const FOREIGN = new Set([
   "cli.ts",
+  "daemon/control.ts",
   "mesh/mesh.ts",
   "messaging/direct.ts",
+  "service/service.ts",
   "transcript/fold.ts",
   "upstream/events.ts",
 ]);

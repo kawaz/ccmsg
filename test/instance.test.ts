@@ -22,9 +22,11 @@ import {
   Instance,
   isRunning,
   loadConfig,
+  loadShared,
   REAL_SOCKET,
   realSocketName,
   resolvePaths,
+  saveShared,
   start,
 } from "../src/instance/index.ts";
 import { connectUds, type LineClient } from "./client.ts";
@@ -39,6 +41,9 @@ function disposable(): { env: Env; root: string; home: string } {
   const root = mkdtempSync(join(tmpdir(), "ccmsg-instance-"));
   const home = join(root, "home");
   mkdirSync(join(home, "sessions"), { recursive: true });
+  // What makes the directory a config home rather than any directory: the CLI
+  // refuses to run an instance for one without it.
+  writeFileSync(join(home, "settings.json"), "{}\n");
   return {
     root,
     home,
@@ -85,7 +90,9 @@ describe("paths", () => {
     const two = resolvePaths({ CLAUDE_CONFIG_DIR: "/homes/.claude-b", HOME: "/homes" });
     expect(one.socket).not.toBe(two.socket);
     expect(one.stateDir).not.toBe(two.stateDir);
-    expect(one.configFile).not.toBe(two.configFile);
+    // The config file is the exception: one file lists every instance, so it
+    // is the one path two instances share.
+    expect(one.configFile).toBe(two.configFile);
   });
 
   test("two config homes of the same name under different parents stay apart", () => {
@@ -114,54 +121,106 @@ describe("paths", () => {
 });
 
 describe("config", () => {
+  /** The shared file, with one flat block of settings as the defaults. Every
+   * instance sees them, which is what makes this the short way to write "an
+   * instance configured like so". */
+  function shared(root: string, defaults: Record<string, unknown>): string {
+    const file = join(root, "config", "config.json");
+    mkdirSync(join(root, "config"), { recursive: true });
+    writeFileSync(file, JSON.stringify({ defaults }));
+    return file;
+  }
+
   test("no config file is not a broken one", () => {
-    const { root } = disposable();
-    expect(loadConfig(join(root, "config", "config.json"))).toEqual(DEFAULT_CONFIG);
+    const { root, home } = disposable();
+    expect(loadConfig(join(root, "config", "config.json"), home)).toEqual(DEFAULT_CONFIG);
   });
 
   test("route (a) is on unless the config turns it off, and only by a boolean", () => {
-    const { root } = disposable();
-    const file = join(root, "config", "config.json");
-    mkdirSync(join(root, "config"), { recursive: true });
-    writeFileSync(file, JSON.stringify({}));
-    expect(loadConfig(file).direct_delivery).toBe(true);
-    writeFileSync(file, JSON.stringify({ direct_delivery: false }));
-    expect(loadConfig(file).direct_delivery).toBe(false);
-    writeFileSync(file, JSON.stringify({ direct_delivery: "no" }));
-    expect(() => loadConfig(file)).toThrow(ConfigError);
+    const { root, home } = disposable();
+    expect(loadConfig(shared(root, {}), home).direct_delivery).toBe(true);
+    expect(loadConfig(shared(root, { direct_delivery: false }), home).direct_delivery).toBe(false);
+    const wrong = shared(root, { direct_delivery: "no" });
+    expect(() => loadConfig(wrong, home)).toThrow(ConfigError);
   });
 
   test("a broken config throws rather than dropping the setting it carried", () => {
-    const { root } = disposable();
+    const { root, home } = disposable();
     const file = join(root, "config", "config.json");
     mkdirSync(join(root, "config"), { recursive: true });
     writeFileSync(file, "{ this is not json");
-    expect(() => loadConfig(file)).toThrow(ConfigError);
-    writeFileSync(file, JSON.stringify({ peers: ["not-a-url"] }));
-    expect(() => loadConfig(file)).toThrow(ConfigError);
-    writeFileSync(file, JSON.stringify({ entry: { port: "8643" } }));
-    expect(() => loadConfig(file)).toThrow(ConfigError);
+    expect(() => loadConfig(file, home)).toThrow(ConfigError);
+    expect(() => loadConfig(shared(root, { peers: ["not-a-url"] }), home)).toThrow(ConfigError);
+    expect(() => loadConfig(shared(root, { entry: { port: "8643" } }), home)).toThrow(ConfigError);
+    // The shape of the file itself is checked the same way: a settings block
+    // written at the top level would otherwise be read as no settings at all.
+    writeFileSync(file, JSON.stringify({ peers: [] }));
+    expect(() => loadConfig(file, home)).toThrow(ConfigError);
+    writeFileSync(file, JSON.stringify({ instances: [{ dir: "relative" }] }));
+    expect(() => loadConfig(file, home)).toThrow(ConfigError);
+    writeFileSync(file, JSON.stringify({ instances: [{ dir: "/a" }, { dir: "/a" }] }));
+    expect(() => loadShared(file)).toThrow(ConfigError);
   });
 
   test("the four things config carries (§8.2)", () => {
     const { root, env, home } = disposable();
-    const file = join(root, "config", "config.json");
-    mkdirSync(join(root, "config"), { recursive: true });
-    writeFileSync(
-      file,
-      JSON.stringify({
-        peers: ["wss://elsewhere.example/ccmsg"],
-        entry: { host: "127.0.0.1", port: 0, source_ips: ["127.0.0.1"], origins: ["http://ui"] },
-        upstream: { gateway_url: "https://gateway.example" },
-      }),
-    );
-    const config = loadConfig(file);
+    const file = shared(root, {
+      peers: ["wss://elsewhere.example/ccmsg"],
+      entry: { host: "127.0.0.1", port: 0, source_ips: ["127.0.0.1"], origins: ["http://ui"] },
+      upstream: { gateway_url: "https://gateway.example" },
+    });
+    const config = loadConfig(file, home);
     // The config home is the fourth, and it is the environment's rather than
     // the file's: an instance is the config home it was started in (A2).
     expect(resolvePaths(env).configHome).toBe(home);
     expect(config.peers).toEqual(["wss://elsewhere.example/ccmsg"]);
     expect(config.entry?.origins).toEqual(["http://ui"]);
     expect(config.upstream.gateway_url).toBe("https://gateway.example");
+  });
+
+  test("an instance's own entry wins over the defaults, key by key", () => {
+    const { root, home } = disposable();
+    const file = join(root, "config", "config.json");
+    mkdirSync(join(root, "config"), { recursive: true });
+    writeFileSync(
+      file,
+      JSON.stringify({
+        defaults: {
+          direct_delivery: false,
+          fork_origin: true,
+          upstream: { gateway_url: "https://shared.example" },
+        },
+        instances: [
+          { dir: home, direct_delivery: true },
+          { dir: "/elsewhere/.claude", fork_origin: false },
+        ],
+      }),
+    );
+    const mine = loadConfig(file, home);
+    // Stated in my entry: mine. Stated only in the defaults: the defaults'.
+    // Stated in nobody's: the built-in.
+    expect(mine.direct_delivery).toBe(true);
+    expect(mine.fork_origin).toBe(true);
+    expect(mine.upstream.gateway_url).toBe("https://shared.example");
+    expect(mine.peers).toEqual([]);
+    // The override is per instance, so the other entry keeps the default.
+    expect(loadConfig(file, "/elsewhere/.claude").direct_delivery).toBe(false);
+    expect(loadConfig(file, "/elsewhere/.claude").fork_origin).toBe(false);
+    // A config home the file does not list is the defaults and nothing else.
+    expect(loadConfig(file, "/unlisted/.claude").direct_delivery).toBe(false);
+  });
+
+  test("the shared file survives a round trip through the registry's writer", () => {
+    const { root, home } = disposable();
+    const file = join(root, "config", "config.json");
+    saveShared(file, {
+      defaults: { fork_origin: true },
+      instances: [{ dir: home, settings: { direct_delivery: false } }],
+    });
+    const read = loadShared(file);
+    expect(read.defaults).toEqual({ fork_origin: true });
+    expect(read.instances).toEqual([{ dir: home, settings: { direct_delivery: false } }]);
+    expect(loadConfig(file, home).direct_delivery).toBe(false);
   });
 });
 
@@ -181,7 +240,7 @@ describe("the start order (§8.3)", () => {
     // whole of the recovery, with no leftover to clear by hand.
     expect(existsSync(resolvePaths(env).socket)).toBe(false);
     expect(existsSync(resolvePaths(env).lockFile)).toBe(false);
-    writeFileSync(join(root, "config", "config.json"), JSON.stringify({ peers: [] }));
+    writeFileSync(join(root, "config", "config.json"), JSON.stringify({ defaults: { peers: [] } }));
     const instance = await startAt(env);
     expect(instance.config.peers).toEqual([]);
   });

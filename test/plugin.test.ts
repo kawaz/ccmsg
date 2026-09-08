@@ -501,7 +501,7 @@ describe("the hooks against a running instance", () => {
 
     expect(
       await hello(["--sid", SID, "--repo", "ccmsg", "--ws", "main", "--cwd", "/repos/ccmsg/main"]),
-    ).toBe(0);
+    ).toMatchObject({ greeted: true });
 
     // While it is connected the instance repeats what it was told, which is
     // what a message from this session is shown as having come from.
@@ -520,7 +520,7 @@ describe("the hooks against a running instance", () => {
 
   test("a greeting with no instance behind it costs the session nothing", async () => {
     home();
-    expect(await hello(["--sid", SID])).toBe(0);
+    expect(await hello(["--sid", SID])).toMatchObject({ greeted: false, reason: "no_instance" });
   });
 
   test("the session-end hook reads the session and the reason off the event it is handed", async () => {
@@ -539,7 +539,7 @@ describe("the hooks against a running instance", () => {
       reason: "prompt_input_exit",
       cwd: "/repos/ccmsg/main",
     });
-    expect(await stopping(["--hook"], () => Promise.resolve(event))).toBe(0);
+    expect(await stopping(["--hook"], () => Promise.resolve(event))).toHaveProperty("stopped_at");
 
     // Declared and then gone is a pause, which is the difference the hook
     // exists to make: the harness still names the session, and it is the

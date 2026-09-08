@@ -60,7 +60,7 @@ export function homeFor(port: number, peers: readonly InstanceId[]): Env {
   mkdirSync(configDir, { recursive: true });
   writeFileSync(
     join(configDir, "config.json"),
-    JSON.stringify({ peers, entry: { host: "127.0.0.1", port } }),
+    JSON.stringify({ defaults: { peers, entry: { host: "127.0.0.1", port } } }),
   );
   return {
     CLAUDE_CONFIG_DIR: home,

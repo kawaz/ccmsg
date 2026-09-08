@@ -145,7 +145,7 @@ export async function start(options: StartOptions = {}): Promise<StartOutcome> {
   try {
     // 3. the config. A broken one ends the start rather than turning the
     // setting it carried silently off (DV-Q9).
-    const config = loadConfig(paths.configFile);
+    const config = loadConfig(paths.configFile, paths.configHome);
     // What the config says of the gateway, resolved before anything is built
     // from it: a webhook source whose secret cannot be read ends the start
     // here, for the same reason a broken config does (DV-Q9).
@@ -830,7 +830,7 @@ export class Instance {
  * serves only the unix socket there is no address to name, and the config
  * home's key stands in — unique per instance, which is what everything below
  * mesh needs it for. */
-function selfId(key: string, config: InstanceConfig): InstanceId {
+export function selfId(key: string, config: InstanceConfig): InstanceId {
   const entry = config.entry;
   if (entry === undefined || entry.port === 0) return `ws://localhost/${key}`;
   return `ws://${entry.host}:${entry.port}`;

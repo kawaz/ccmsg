@@ -105,7 +105,9 @@ async function greet(gatewayUrl?: string): Promise<LineClient> {
   mkdirSync(join(root, "config"), { recursive: true });
   writeFileSync(
     join(root, "config", "config.json"),
-    JSON.stringify(gatewayUrl === undefined ? {} : { upstream: { gateway_url: gatewayUrl } }),
+    JSON.stringify({
+      defaults: gatewayUrl === undefined ? {} : { upstream: { gateway_url: gatewayUrl } },
+    }),
   );
   const env: Env = {
     CLAUDE_CONFIG_DIR: join(root, "home"),
