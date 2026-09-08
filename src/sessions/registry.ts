@@ -41,6 +41,10 @@ export interface SessionsDeps {
    * simply unknown and every rule that reads them behaves as it does for a
    * session whose transcript has said nothing. */
   readonly transcript?: TranscriptSource;
+  /** What the gateway has seen of a session (§5.1). Absent on an instance with
+   * no gateway configured, which costs the classification one of its five
+   * inputs and none of its states. */
+  readonly gateway?: GatewaySource;
   /** The sessions this instance speaks about, or what the fold says about one,
    * has changed. What rests on either — the topics whose value is derived from
    * the same fold, and the tails they keep running (§6.3) — is told to catch
@@ -55,6 +59,12 @@ export interface SessionsDeps {
  * (§3.3 — the current value lives with whoever owns it). */
 export interface TranscriptSource {
   facts(sid: Sid): TranscriptFacts;
+}
+
+/** The gateway, as the sessions domain reads it: when it last saw inference
+ * for one session, asked for when a payload is built (§3.3). */
+export interface GatewaySource {
+  activeAt(sid: Sid): Timestamp | undefined;
 }
 
 /** What a session said about itself when it greeted.
@@ -166,8 +176,10 @@ export class Sessions implements UpstreamResource {
     const row = this.#harness.rows.get(sid);
     const stored = this.#lastLive.get(sid);
     const facts = this.deps.transcript?.facts(sid);
+    const gatewayActiveAt = this.deps.gateway?.activeAt(sid);
     return {
       connected: this.#connected.has(sid),
+      ...(gatewayActiveAt === undefined ? {} : { gateway_active_at: gatewayActiveAt }),
       ...(facts === undefined || stoppedOn(facts) === undefined ? {} : { api_error_stopped: true }),
       ...(row === undefined
         ? {}

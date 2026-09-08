@@ -32,6 +32,12 @@ import {
   serveWs,
   Transport,
 } from "../transport/index.ts";
+import {
+  Gateway,
+  gatewayCapabilities,
+  type GatewaySetup,
+  gatewaySetup,
+} from "../upstream/index.ts";
 import { type InstanceConfig, loadConfig } from "./config.ts";
 import { completeHandlers } from "./handlers.ts";
 import { acquireLock, type Held, isHeldByUs, type Lock } from "./lock.ts";
@@ -71,7 +77,8 @@ export function isRunning(outcome: StartOutcome): outcome is Instance {
  * connect to it, and the dial last. */
 export async function start(options: StartOptions = {}): Promise<StartOutcome> {
   // 1. paths, and the directory the rest of them live in
-  const paths = resolvePaths(options.env ?? process.env);
+  const env = options.env ?? process.env;
+  const paths = resolvePaths(env);
   mkdirSync(paths.stateDir, { recursive: true });
 
   // 2. the single instance. A previous run's file with nobody behind it is
@@ -86,8 +93,12 @@ export async function start(options: StartOptions = {}): Promise<StartOutcome> {
     // 3. the config. A broken one ends the start rather than turning the
     // setting it carried silently off (DV-Q9).
     const config = loadConfig(paths.configFile);
+    // What the config says of the gateway, resolved before anything is built
+    // from it: a webhook source whose secret cannot be read ends the start
+    // here, for the same reason a broken config does (DV-Q9).
+    const gateway = gatewaySetup(config.upstream, paths.configFile, env);
     // 4-7 are the instance's own construction and listen.
-    const instance = new Instance(paths, config, lock, log, options.pollMs);
+    const instance = new Instance(paths, config, lock, log, options.pollMs, gateway);
     await instance.listen();
     return instance;
   } catch (cause) {
@@ -108,6 +119,7 @@ export class Instance {
   readonly #sessions: Sessions;
   readonly #status: SessionStatus;
   readonly #transcripts: Transcripts;
+  readonly #gateway: Gateway;
   readonly #delivery: Delivery;
   readonly #handlers: Handlers;
   readonly #capabilities: ReadonlySet<Capability>;
@@ -125,6 +137,7 @@ export class Instance {
     private readonly lock: Lock,
     private readonly log: Log,
     pollMs?: number,
+    setup: GatewaySetup = {},
   ) {
     // 5. `self`. §7.1 settles this by asking the peers who they cannot see,
     // and there is no mesh yet, so it is derived from where this instance
@@ -132,10 +145,27 @@ export class Instance {
     // the instance uses it for. The derivation is replaced, not extended, when
     // §7.1 lands.
     this.self = selfId(paths.key, config);
-    // Nothing is configured that would grant one yet: every capability in the
-    // contract rests on an upstream this instance does not reach.
-    this.#capabilities = new Set();
+    // Every capability rests on an upstream, so what is configured is what
+    // this instance can name. A client is told before it subscribes, rather
+    // than being refused when it does.
+    this.#capabilities = new Set(gatewayCapabilities(setup));
     this.#topics = new Topics(this.self, this.#capabilities);
+
+    // What the gateway saw. It feeds two topics and one input of the sessions
+    // domain (§5.1), so it is built before both.
+    this.#gateway = new Gateway({
+      self: this.self,
+      setup,
+      publish: (topic, data) => {
+        this.#topics.publish(topic, data);
+      },
+      onActivity: () => {
+        this.#sessions.refresh();
+      },
+      log: (msg, fields) => {
+        this.log.write(msg, fields);
+      },
+    });
 
     // The transcript tails and their folds. Built before the sessions domain
     // and reading from it lazily: the fold is one of the sessions domain's
@@ -165,6 +195,7 @@ export class Instance {
         this.#topics.publish(topic, data);
       },
       transcript: this.#transcripts,
+      gateway: this.#gateway,
       onChanged: () => {
         this.#status.refresh();
       },
@@ -211,6 +242,8 @@ export class Instance {
     this.#topics.attach("transcript", this.#transcripts);
     this.#topics.attach("session_status", this.#status);
     this.#topics.attach("session_errors", this.#status);
+    this.#topics.attach("llm_requests", this.#gateway.requests);
+    this.#topics.attach("llm_status", this.#gateway.statusResource);
 
     this.#handlers = completeHandlers({
       hello: this.#sessions.hello,
@@ -254,6 +287,9 @@ export class Instance {
           conns: this.#conns,
           handle: (frame, conn) => this.handle(frame, conn),
           entry: entryPolicy(this.config),
+          // The gateway posts to the address this instance already serves,
+          // behind the same entry check (§3.1).
+          route: (request) => this.#gateway.route(request),
         }),
       );
     }
@@ -283,6 +319,15 @@ export class Instance {
    * outside the domain that owns them. */
   get watching(): boolean {
     return this.#sessions.watching;
+  }
+
+  /** When the gateway last saw inference for a session (§5.1).
+   *
+   * The one input of the classification that arrives from outside this host,
+   * and the only place it is observable from: it is an attribute of a row
+   * rather than a state (§5.2), so nothing on the wire carries it yet. */
+  gatewayActiveAt(sid: Sid): Timestamp | undefined {
+    return this.#gateway.activeAt(sid);
   }
 
   /** A session said it was stopping, which is what makes it Paused rather than
@@ -350,6 +395,9 @@ export class Instance {
     // A tail may also be held for a value this instance states rather than for
     // a subscriber, and those holds end here.
     this.#transcripts.stopAll();
+    // The read the gateway's own events can ask for is one more thing that
+    // outlives its subscribers if nothing drops it here.
+    this.#gateway.close();
     // 3. tell the connections, while they can still be told
     const restarting: RestartingEvent = { ev: "restarting", instance: this.self };
     for (const conn of this.#conns) conn.send(restarting);

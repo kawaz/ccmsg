@@ -14,8 +14,16 @@ import { Glob } from "bun";
  * frame type — a foreign protocol's spelling, on a path that authorizes
  * nothing. The fold is left out for the same reason: `"user"` there is the
  * harness's own name for a kind of transcript record, read from a file that
- * grants nobody anything. */
-const FOREIGN = new Set(["cli.ts", "messaging/direct.ts", "transcript/fold.ts"]);
+ * grants nobody anything. The gateway's reader is left out because `"instance"`
+ * there names a field of the contract's own request type — the one the
+ * publisher stamps and the parser therefore omits — on a path that reads a
+ * posted document and authorizes nobody. */
+const FOREIGN = new Set([
+  "cli.ts",
+  "messaging/direct.ts",
+  "transcript/fold.ts",
+  "upstream/events.ts",
+]);
 const ROLE_LITERAL = /"(?:session|user|instance)"/;
 const ROLE_COMPARISON = /\brole\s*[=!]==/;
 

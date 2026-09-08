@@ -17,14 +17,19 @@ export interface EntryConfig {
   readonly origins: readonly string[];
 }
 
-/** The upstreams an instance writes down but does not read yet.
+/** The upstreams an instance reaches, and the ones it only writes down.
  *
- * Stated as a type so a config carrying them is accepted rather than rejected
- * as unknown, and so what is missing is missing in one visible place. Nothing
- * in the instance reads these fields. */
+ * The two gateway fields are read: the address is where its service report is
+ * asked for, and the source is the path segment it posts what it saw to. The
+ * rest are stated as a type so a config carrying them is accepted rather than
+ * rejected as unknown, and so what is missing is missing in one visible
+ * place. */
 export interface UpstreamConfig {
   readonly gateway_url?: string;
   readonly gateway_webhook_source?: string;
+  /** Where the secret the gateway presents is kept. Absent uses the path the
+   * gateway itself defaults to, which is the one it wrote. */
+  readonly gateway_webhook_token_file?: string;
   readonly terminal_gateway?: string;
   readonly launcher_template?: string;
   readonly sandbox_origin?: string;

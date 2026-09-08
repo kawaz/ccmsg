@@ -19,6 +19,14 @@ export interface WsOptions {
   readonly handle: FrameHandler;
   readonly entry?: EntryPolicy;
   readonly onConn?: (conn: Conn) => void;
+  /** An HTTP request that is not the upgrade, answered by whoever wants it.
+   *
+   * It shares this listener rather than opening a second one: a producer that
+   * posts to this instance reaches it at the address it already has, and the
+   * entry check of §3.1 runs before this is asked, so a route cannot be
+   * reached by anyone the WebSocket could not be. Answering `undefined` leaves
+   * the request to the upgrade, which refuses it. */
+  readonly route?: (request: Request) => Promise<Response | undefined>;
 }
 
 /** Accept the webui, and later mesh peers, over WebSocket.
@@ -38,9 +46,11 @@ export function serveWs(options: WsOptions): Listener {
   const server = Bun.serve({
     hostname: options.hostname ?? "127.0.0.1",
     port: options.port,
-    fetch(request, srv) {
+    async fetch(request, srv) {
       if (entry.allowRequest?.(request) === false)
         return new Response("Forbidden", { status: 403 });
+      const routed = await options.route?.(request);
+      if (routed !== undefined) return routed;
       if (new URL(request.url).pathname !== path) return new Response("Not Found", { status: 404 });
       if (srv.upgrade(request)) return undefined;
       return new Response("Expected a WebSocket upgrade", { status: 426 });

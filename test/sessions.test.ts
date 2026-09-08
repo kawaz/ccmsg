@@ -13,7 +13,13 @@ import {
   validationErrors,
 } from "@ccmsg/protocol";
 import { Topics } from "../src/topics/index.ts";
-import { classify, LastLiveStore, type SessionInputs, Sessions } from "../src/sessions/index.ts";
+import {
+  classify,
+  type GatewaySource,
+  LastLiveStore,
+  type SessionInputs,
+  Sessions,
+} from "../src/sessions/index.ts";
 import { connAs, SELF, SID, OTHER_SID, TestConn } from "./frames.ts";
 
 /** A throwaway config home under the OS temp dir, which is where the harness's
@@ -65,7 +71,7 @@ interface Published {
 /** A `Sessions` with somewhere to publish and a poll fast enough that a test
  * does not depend on `fs.watch` being prompt. Both routes are live: a test
  * asserting the watch itself sets `pollMs` high. */
-function sessions(overrides: { pollMs?: number } = {}) {
+function sessions(overrides: { pollMs?: number; gateway?: GatewaySource } = {}) {
   const dirs = home();
   const published: Published[] = [];
   const waiters: (() => void)[] = [];
@@ -81,6 +87,7 @@ function sessions(overrides: { pollMs?: number } = {}) {
       for (const waiter of waiters.splice(0)) waiter();
     },
     pollMs: overrides.pollMs ?? 50,
+    ...(overrides.gateway === undefined ? {} : { gateway: overrides.gateway }),
   });
   running.push(domain);
   /** Resolves when a publish satisfying `want` has happened, waiting for the
@@ -403,6 +410,25 @@ describe("last_live", () => {
     restarted.start("peers");
     restarted.stop("peers");
     expect(readdirSync(context.stateDir)).toEqual(["last-live.json"]);
+  });
+});
+
+describe("the inputs of §5.1", () => {
+  test("what the gateway saw reaches the classification through the domain", () => {
+    const seen = Date.now() - 1_000;
+    const context = sessions({ gateway: { activeAt: (sid) => (sid === SID ? seen : undefined) } });
+
+    expect(context.domain.inputs(SID).gateway_active_at).toBe(seen);
+    // Nothing is connected and the harness holds no row, so this session is
+    // alive on the gateway's word alone (§5.2).
+    expect(context.domain.classify(SID)).toBe("live_unmanaged");
+    expect(context.domain.inputs(OTHER_SID).gateway_active_at).toBeUndefined();
+    expect(context.domain.classify(OTHER_SID)).toBeUndefined();
+  });
+
+  test("an instance with no gateway leaves the input absent rather than old", () => {
+    const context = sessions();
+    expect(context.domain.inputs(SID).gateway_active_at).toBeUndefined();
   });
 });
 
