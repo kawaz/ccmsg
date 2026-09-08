@@ -1,6 +1,11 @@
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { InboxMessage, Sid } from "@ccmsg/protocol";
+import {
+  DIRECT_DELIVERY_FROM,
+  type InboxMessage,
+  renderDirectDelivery,
+  type Sid,
+} from "@ccmsg/protocol";
 
 /** What route (a) answered (§4.1).
  *
@@ -70,11 +75,11 @@ const DROP_REASONS = new Set([
 
 /** Who the message says it is from (§4.1: fixed by ccmsg, never caller input).
  *
- * Deliberately not a `uds:<path>` address. That form is the one the harness
+ * The contract's, so the frame and the envelope inside it name the same sender.
+ * Deliberately not a `uds:<path>` address: that form is the one the harness
  * answers to, and answering a socket that is not there ends the recipient's
- * turn in `state: "failed"` — measured with a sender that had already exited.
- * A plain name asks for no answer, so there is nothing to dangle. */
-const FROM = "ccmsg";
+ * turn in `state: "failed"` — measured with a sender that had already exited. */
+const FROM = DIRECT_DELIVERY_FROM;
 
 /** The state file of one session, as far as route (a) reads it. */
 interface HarnessTarget {
@@ -168,10 +173,14 @@ export class ClaudeCodeSocketRoute implements DirectRoute {
 /** The two lines one send writes: the auth frame the harness's own senders
  * write first, then the message.
  *
- * The body is the message's text and nothing else. The wrapper a session sees
- * around a peer message is the receiving harness's, added on the way to the
- * model, so adding one here would put it in the text twice. Nothing in the
- * contract's `InboxMessage` is reply wording either, so none is invented.
+ * The body is the contract's wording for this route. On it the recipient is
+ * the model rather than a client: it reads one block of text and has no frame
+ * to look at, so `mid` and `from` have to be in the text or nothing can be
+ * answered. `<cross-session-message>` is what the harness's own senders embed
+ * in `message.content` — measured on a real send, where it reached the model
+ * literal rather than expanded — so sitting on it means the receiving harness
+ * reads an origin it already knows. The wording is the contract's and this
+ * route only carries it.
  *
  * `session_id` rides along because the harness checks it against its own and
  * drops a mismatch: a state file read a moment before the pid was reused turns
@@ -183,7 +192,7 @@ function frames(sid: Sid, token: string, message: InboxMessage): string {
     from: FROM,
     session_id: sid,
     msg_id: message.mid,
-    message: { content: message.text },
+    message: { content: renderDirectDelivery(message) },
   };
   return `${JSON.stringify(auth)}\n${JSON.stringify(user)}\n`;
 }

@@ -2,7 +2,12 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { InboxMessage, Sid } from "@ccmsg/protocol";
+import {
+  directDeliveryReplyLine,
+  type InboxMessage,
+  parseDirectDelivery,
+  type Sid,
+} from "@ccmsg/protocol";
 import {
   ClaudeCodeSocketRoute,
   Delivery,
@@ -146,27 +151,43 @@ describe("route (a) over the messaging socket (§4.1)", () => {
 
     const [auth, user] = await received(harness);
     expect(auth).toEqual({ type: "auth", token: TOKEN });
-    expect(user).toEqual({
+    const { message: body, ...frame } = user as { message: { content: string } };
+    expect(frame).toEqual({
       type: "user",
       from: "ccmsg",
       session_id: SID,
       msg_id: `${SELF}/1`,
-      message: { content: "over the socket" },
     });
+    expect(parseDirectDelivery(body.content)?.text).toBe("over the socket");
   });
 
-  test("the body is the message's text, with no envelope of ours around it", async () => {
+  test("the body is the contract's wording, and reads back as the message", async () => {
+    const { configHome, harness } = rig();
+    const route = new ClaudeCodeSocketRoute({ configHome });
+    const sent = message("just this");
+
+    await route.send(SID, sent);
+
+    const user = (await received(harness))[1] as { message: { content: string } };
+    // What the recipient holds is text, so what it can answer has to be
+    // recoverable from that text alone (§4.1).
+    expect(parseDirectDelivery(user.message.content)).toEqual({
+      mid: sent.mid,
+      from: sent.from,
+      from_label: sent.from_label,
+      text: "just this",
+    });
+    expect(user.message.content).toContain(directDeliveryReplyLine(sent.mid));
+  });
+
+  test("what it answers rides along when the message answers something", async () => {
     const { configHome, harness } = rig();
     const route = new ClaudeCodeSocketRoute({ configHome });
 
-    await route.send(SID, message("just this"));
+    await route.send(SID, { ...message("answering"), reply_to: `${SELF}/7` });
 
     const user = (await received(harness))[1] as { message: { content: string } };
-    expect(user.message.content).toBe("just this");
-    // The wrapper a session sees is the receiving harness's, so nothing here
-    // names a sender, a reply route, or how to answer.
-    expect(JSON.stringify(user)).not.toContain("reply");
-    expect(user.message).toEqual({ content: "just this" });
+    expect(parseDirectDelivery(user.message.content)?.reply_to).toBe(`${SELF}/7`);
   });
 
   /** Each row is one of §4.1's conditions failing, and every one of them ends
@@ -260,6 +281,8 @@ describe("delivery over route (a)", () => {
 
     expect(result).toEqual({ delivered: true });
     const user = (await received(harness))[1] as { message: { content: string } };
-    expect(user.message.content).toBe("straight there");
+    const delivered = parseDirectDelivery(user.message.content);
+    expect(delivered?.text).toBe("straight there");
+    expect(delivered?.from).toBe(SID);
   });
 });
