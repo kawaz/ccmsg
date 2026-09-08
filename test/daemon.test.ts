@@ -130,6 +130,29 @@ describe("the round trip against real processes", () => {
     await stop(target);
   }, 30_000);
 
+  test("the command that started one ends, rather than waiting on the child", async () => {
+    const at = host();
+    const home = at.home("one");
+    add(process.env, home);
+    // Run as its own process, which is the only place this shows: a live child
+    // handle holds the parent's event loop open, and a test calling `start`
+    // in-process has a runner keeping the loop alive anyway.
+    const started = Bun.spawn(
+      [
+        process.execPath,
+        new URL("../src/cli.ts", import.meta.url).pathname,
+        "daemon",
+        "start",
+        home,
+      ],
+      { stdout: "pipe", stderr: "pipe", env: { ...process.env } as Record<string, string> },
+    );
+    const code = await started.exited;
+    expect(code).toBe(0);
+    expect(json(await new Response(started.stdout).text())).toMatchObject({ running: true });
+    await stop(targetFor(process.env, home));
+  }, 30_000);
+
   test("stopping one that is not running says so rather than pretending", async () => {
     const at = host();
     const home = at.home("one");
@@ -146,7 +169,13 @@ describe("the supervisor", () => {
     const exited = new Promise<number>((resolve) => {
       end = resolve;
     });
-    return { pid, exited, kill: () => end(143), die: (code) => end(code) };
+    return {
+      pid,
+      exited,
+      kill: () => end(143),
+      release: () => undefined,
+      die: (code) => end(code),
+    };
   }
 
   test("a child that dies is started again, after a wait that grows", async () => {

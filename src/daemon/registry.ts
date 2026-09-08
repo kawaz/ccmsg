@@ -202,6 +202,14 @@ export interface Child {
   readonly pid: number;
   readonly exited: Promise<number>;
   kill(signal?: NodeJS.Signals): void;
+  /** Stop holding this process open on the child's account.
+   *
+   * A live child handle keeps the parent's event loop running, which is right
+   * for the supervisor — waiting for children is its whole job — and wrong for
+   * a command that started one and is finished: it would sit at an empty loop
+   * instead of exiting. So the hold is released where it stops being wanted
+   * rather than never taken. */
+  release(): void;
 }
 
 /** How a child instance is started. Injected so a test drives the supervisor
@@ -218,6 +226,9 @@ export const spawnInstance: SpawnInstance = (dir, env) => {
     exited: proc.exited,
     kill: (signal) => {
       proc.kill(signal ?? "SIGTERM");
+    },
+    release: () => {
+      proc.unref();
     },
   };
 };
@@ -262,6 +273,9 @@ export async function start(
     gone,
   ]);
   if (appeared instanceof CommandError) throw appeared;
+  // Started and serving: this command's part is over, and holding the child
+  // would keep it from ending.
+  child.release();
   const row = rowFor(target);
   if (!row.running) {
     throw new CommandError("internal_error", `${target.dir} の instance が起動しませんでした`);
