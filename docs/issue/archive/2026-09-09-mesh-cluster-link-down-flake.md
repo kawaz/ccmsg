@@ -1,6 +1,6 @@
 ---
 title: mesh-cluster の link-down テストが suite 全体負荷時に flake する
-status: open
+status: resolved
 category: bug
 created: 2026-09-09T03:31:14+09:00
 last_read:
@@ -9,10 +9,10 @@ wip_entered:
 blocked_entered:
 pending_entered:
 discarded_entered:
-resolved_entered:
+resolved_entered: 2026-09-09T04:21:52+09:00
 discard_reason:
 pending_reason:
-close_reason:
+close_reason: ["done: Mesh.stop() が accepted 側 link を close していなかったのが真因 (glare の向きで顕在化)。全 link close する修正 + 決定的な RED/GREEN テストで固定 (v0.0.22, commit 8d1d74e7)。50 回連続実行は負荷のため未実施"]
 blocked_by:
 origin: 自リポ TODO
 ---

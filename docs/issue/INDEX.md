@@ -4,7 +4,6 @@ active な issue の一覧。close 済みは archive/ にあり、ここには�
 
 | date | category | status | slug | 概要 |
 |---|---|---|---|---|
-| 2026-09-09 | bug | open | [mesh-cluster-link-down-flake](./2026-09-09-mesh-cluster-link-down-flake.md) | `test/mesh-cluster.test.ts` の「a link going down shows up on the topic, w... |
 | 2026-09-09 | design | open | [mesh-tls-trust-root](./2026-09-09-mesh-tls-trust-root.md) | mesh-peer-auth の信頼の根は TLS サーバ証明書 (2 層) だが、daemon の listener... |
 | 2026-09-09 | design | open | [sandbox-grant-delivery-path](./2026-09-09-sandbox-grant-delivery-path.md) | sandbox_grant は capability URL を発行するが、`SandboxGrants.find` の呼び... |
 | 2026-09-09 | design | open | [daemon-invented-limits-contract-promotion](./2026-09-09-daemon-invented-limits-contract-promotion.md) | daemon 実装が独自に決めている上限値 (`TITLE_MAX` / `READ_LIMIT` / `transcri... |
