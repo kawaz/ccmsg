@@ -48,13 +48,20 @@ describe("nothing pushes a topic frame outside the topic mechanism (M5)", () => 
     expect(comparers).toEqual([]);
   });
 
-  test("the two places that serialize are framing and that suppression", async () => {
+  test("serialization is framing, that suppression, and what is written to disk", async () => {
     const serializers: string[] = [];
     for (const path of files) {
       if ((await offendersIn(path, /JSON\.stringify\(/)).length > 0) serializers.push(path);
     }
-    // Framing turns a frame into a line; the mechanism turns a value into the
-    // form it compares. A third would be a second answer to "is this new".
-    expect(serializers.sort()).toEqual(["topics/topics.ts", "transport/conn.ts"]);
+    // Framing turns a frame into a line, the mechanism turns a value into the
+    // form it compares, and persistence turns one of the three things of §3.6
+    // into its file. Another comparison of a value against the last one would
+    // be a second answer to "is this new"; a writer is not one, which is why
+    // this list is by file and the case above is by shape.
+    expect(serializers.sort()).toEqual([
+      "sessions/last-live.ts",
+      "topics/topics.ts",
+      "transport/conn.ts",
+    ]);
   });
 });
