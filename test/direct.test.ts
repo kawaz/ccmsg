@@ -177,7 +177,7 @@ describe("route (a) over the messaging socket (§4.1)", () => {
       from_label: sent.from_label,
       text: "just this",
     });
-    expect(user.message.content).toContain(directDeliveryReplyLine(sent.mid));
+    expect(user.message.content).toContain(directDeliveryReplyLine(sent.mid, sent.from));
   });
 
   test("what it answers rides along when the message answers something", async () => {
