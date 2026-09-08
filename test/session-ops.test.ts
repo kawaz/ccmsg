@@ -13,6 +13,7 @@ import {
 } from "@ccmsg/protocol";
 import { type HandlerInput, OpError } from "../src/dispatch/index.ts";
 import {
+  elapsedSeconds,
   hostProcessDeps,
   lastLivePath,
   LastLiveStore,
@@ -90,10 +91,10 @@ afterEach(() => {
 
 /** One harness state file, as the harness writes it: camelCase, its own status
  * words, and the pid of the process it describes. */
-function writeState(configHome: string, pid: number, sid: Sid) {
+function writeState(configHome: string, pid: number, sid: Sid, startedAt = Date.now()) {
   writeFileSync(
     join(configHome, "sessions", `${pid}.json`),
-    JSON.stringify({ pid, sessionId: sid, cwd: CWD, kind: "interactive", startedAt: 1 }),
+    JSON.stringify({ pid, sessionId: sid, cwd: CWD, kind: "interactive", startedAt }),
   );
 }
 
@@ -326,6 +327,35 @@ describe("session_kill", () => {
     const killed = await run("session_kill", handlers.session_kill, { sid: SID, force: true });
     expect(killed["terminated"]).toBe(true);
     expect(signalled).toEqual([{ pid, signal: "SIGKILL" }]);
+  });
+
+  test("a pid recycled since the row was written is refused, not signalled", async () => {
+    const pid = child();
+    const { configHome, handlers, signalled } = ops();
+    // The row was written for a session that started hours ago; the process
+    // under its pid started moments ago, which is what a recycled pid looks
+    // like. argv0 alone accepts it — the harness's own name is what a
+    // recycled pid would be running if it were another session of the same
+    // harness — so the start times are what separate them.
+    writeState(configHome, pid, SID, Date.now() - 3 * 60 * 60 * 1000);
+    expect(await refusalOf(() => run("session_kill", handlers.session_kill, { sid: SID }))).toBe(
+      "session_not_found",
+    );
+    expect(signalled).toEqual([]);
+    expect(alive(pid)).toBe(true);
+  });
+
+  test("the process the row was written for is signalled, start times and all", async () => {
+    const pid = child();
+    const { configHome, handlers, signalled } = ops();
+    // The row is written after its process comes up, so the two instants are
+    // near but not equal — the tolerance is what that gap is for, and the real
+    // start time is read from the host rather than stated by the test.
+    writeState(configHome, pid, SID, Date.now() + 400);
+    expect((await run("session_kill", handlers.session_kill, { sid: SID }))["terminated"]).toBe(
+      true,
+    );
+    expect(signalled).toEqual([{ pid, signal: "SIGTERM" }]);
   });
 
   test("a pid whose process is no longer the harness is refused, not signalled", async () => {
@@ -655,3 +685,16 @@ function alive(pid: number): boolean {
     return false;
   }
 }
+
+describe("how long a process has been running, as `ps` states it", () => {
+  test("the units are read from the end, so every form of it is one instant", () => {
+    expect(elapsedSeconds("00:07")).toBe(7);
+    expect(elapsedSeconds("12:34")).toBe(12 * 60 + 34);
+    expect(elapsedSeconds("01:02:03")).toBe(3_723);
+    expect(elapsedSeconds("2-03:04:05")).toBe(2 * 86_400 + 3 * 3_600 + 4 * 60 + 5);
+    // A host whose `ps` states it some other way leaves the guard on argv0
+    // alone rather than on a number read out of the wrong shape.
+    expect(elapsedSeconds("")).toBeUndefined();
+    expect(elapsedSeconds("Wed Sep  9 02:45:31 2026")).toBeUndefined();
+  });
+});

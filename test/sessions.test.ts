@@ -20,6 +20,8 @@ import {
   LastLiveStore,
   type SessionInputs,
   Sessions,
+  hostTerminalReader,
+  type TerminalReader,
 } from "../src/sessions/index.ts";
 import { connAs, greeting, SELF, SID, OTHER_SID, TestConn } from "./frames.ts";
 
@@ -45,6 +47,26 @@ let transcriptPath = "";
 
 const homes: string[] = [];
 const running: Sessions[] = [];
+const children: number[] = [];
+
+/** A process of this test's own to read a terminal out of, with whatever
+ * environment the case is about. Nothing is ever signalled through it: what is
+ * being read is the environment of a pid the harness's directory names. */
+function child(env: Record<string, string>): number {
+  // This test process may itself be running in a terminal the daemon would
+  // read, and a child inherits what names it. What the case is about is what
+  // the case states, so the inherited names go first.
+  const outside = { ...process.env };
+  delete outside["HYOUI_SESSION_ID"];
+  delete outside["HYOUI_NAMESPACE"];
+  const spawned = Bun.spawn(["sleep", "30"], {
+    env: { ...outside, ...env },
+    stdout: "ignore",
+    stderr: "ignore",
+  });
+  children.push(spawned.pid);
+  return spawned.pid;
+}
 afterEach(() => {
   // A watch left running is a real file watch and a real timer: leaving them
   // behind loads the very FSEvents queue the poll exists to cover for, and the
@@ -52,6 +74,13 @@ afterEach(() => {
   for (const domain of running.splice(0)) {
     domain.stop("peers");
     domain.stop("agents");
+  }
+  for (const pid of children.splice(0)) {
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {
+      // Already gone, which is nothing this test needed it for.
+    }
   }
   for (const root of homes.splice(0)) rmSync(root, { recursive: true, force: true });
 });
@@ -82,7 +111,9 @@ interface Published {
 /** A `Sessions` with somewhere to publish and a poll fast enough that a test
  * does not depend on `fs.watch` being prompt. Both routes are live: a test
  * asserting the watch itself sets `pollMs` high. */
-function sessions(overrides: { pollMs?: number; gateway?: GatewaySource } = {}) {
+function sessions(
+  overrides: { pollMs?: number; gateway?: GatewaySource; terminals?: TerminalReader } = {},
+) {
   const dirs = home();
   const published: Published[] = [];
   const waiters: (() => void)[] = [];
@@ -99,6 +130,7 @@ function sessions(overrides: { pollMs?: number; gateway?: GatewaySource } = {}) 
     },
     pollMs: overrides.pollMs ?? 50,
     ...(overrides.gateway === undefined ? {} : { gateway: overrides.gateway }),
+    ...(overrides.terminals === undefined ? {} : { terminals: overrides.terminals }),
   });
   running.push(domain);
   /** Resolves when a publish satisfying `want` has happened, waiting for the
@@ -651,3 +683,73 @@ const NOW = 1_800_000_000_000;
 function frame(topic: string, data: unknown) {
   return { ev: "topic", topic, snapshot: true, instance: SELF, data };
 }
+
+describe("the terminal a live session runs in", () => {
+  /** The domain with the host's own reader and no confirmation poll: a publish
+   * then comes from one place only, which is a read of a process finishing.
+   * Waiting for that beats waiting for a length of time. */
+  function withTerminals(reads: number[] = []) {
+    const host = hostTerminalReader();
+    const read: TerminalReader = async (pid) => {
+      reads.push(pid);
+      return await host(pid);
+    };
+    return { ...sessions({ pollMs: 600_000, terminals: read }), reads };
+  }
+
+  test("a session whose process names one is reachable, and says which terminal", async () => {
+    const context = withTerminals();
+    const pid = child({ HYOUI_SESSION_ID: "t-1", HYOUI_NAMESPACE: "work" });
+    writeState(context.sessionsDir, pid, SID);
+
+    // The scan is what notices the pid, and the read is what follows it.
+    expect(context.domain.agents().agents[0]?.terminal_id).toBeUndefined();
+    await context.until(() => context.domain.agents().agents[0]?.terminal_id === "t-1");
+    expect(context.domain.agents().agents[0]?.terminal_namespace).toBe("work");
+    // Reachable through its terminal with no connection to this instance,
+    // which is the whole of what the terminal is read for (§5.2).
+    expect(context.domain.classify(SID)).toBe("live");
+  });
+
+  test("a session whose process names none stays the one nothing can reach", async () => {
+    const context = withTerminals();
+    const pid = child({});
+    writeState(context.sessionsDir, pid, SID);
+    // The read is asked for while the list is built, and its finishing is the
+    // one thing that publishes here.
+    context.domain.agents();
+    await context.until((frames) => agentsOf(frames).length > 0);
+
+    const row = context.domain.agents().agents[0];
+    expect(row?.sid).toBe(SID);
+    expect(row?.terminal_id).toBeUndefined();
+    expect(context.domain.classify(SID)).toBe("live_unmanaged");
+  });
+
+  test("a process is read once, however many questions are asked of the list", async () => {
+    const reads: number[] = [];
+    const context = withTerminals(reads);
+    const pid = child({ HYOUI_SESSION_ID: "t-2" });
+    writeState(context.sessionsDir, pid, SID);
+    await context.until(() => context.domain.agents().agents[0]?.terminal_id === "t-2");
+    for (let asked = 0; asked < 5; asked += 1) context.domain.classify(SID);
+    expect(reads).toEqual([pid]);
+  });
+
+  test("a pid the harness no longer names is forgotten, so a resumed session is read afresh", async () => {
+    const reads: number[] = [];
+    const context = withTerminals(reads);
+    const pid = child({ HYOUI_SESSION_ID: "t-3" });
+    writeState(context.sessionsDir, pid, SID);
+    await context.until(() => context.domain.agents().agents[0]?.terminal_id === "t-3");
+
+    rmSync(join(context.sessionsDir, `${pid}.json`));
+    context.domain.agents();
+    // The same pid again is a process this instance knows nothing about: what
+    // it named before was named by whatever was running under it then.
+    writeState(context.sessionsDir, pid, SID);
+    context.domain.agents();
+    await context.until(() => reads.length === 2);
+    expect(reads).toEqual([pid, pid]);
+  });
+});

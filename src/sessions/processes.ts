@@ -1,5 +1,6 @@
-import type { AgentInfo, Sid } from "@ccmsg/protocol";
+import type { AgentInfo, Sid, Timestamp } from "@ccmsg/protocol";
 import { OpError } from "../dispatch/index.ts";
+import type { TerminalReader } from "./terminals.ts";
 
 /** How long a child this instance runs to observe a process may take. A wedged
  * reader must not hold a request open; the answer it would have given is worth
@@ -23,6 +24,21 @@ export const GRACE_MS = 3_000;
  * finished kill reads as unconfirmed. */
 export const LIVENESS_POLL_MS = 200;
 
+/** How far apart the row's `startedAt` and the process's own start time may be
+ * and still be one process, in each direction.
+ *
+ * The two are different events: the process starts, and the harness writes the
+ * row once it has come up. So the process is the earlier of the two by however
+ * long that took, which a session that waits on a prompt before writing its
+ * row can stretch to a minute; and it is later than the row only by
+ * measurement error, which is `ps` stating how long the process has been
+ * running truncated to the second.
+ *
+ * A recycled pid is nowhere near either bound: its process began after the
+ * row's process exited, which is the whole life of a session later. */
+export const STARTED_BEFORE_TOLERANCE_MS = 120_000;
+export const STARTED_AFTER_TOLERANCE_MS = 5_000;
+
 /** What acting on a session's process needs from the world around it.
  *
  * Every effect is injectable because the alternative is a test that signals
@@ -37,6 +53,9 @@ export interface ProcessDeps {
   readonly command: (pid: number) => Promise<string>;
   /** The process's own environment, as the platform exposes it. */
   readonly environment: (pid: number) => Promise<string>;
+  /** When the process was started, as the platform states it. Undefined when
+   * the platform stated something this instance could not read as an instant. */
+  readonly started: (pid: number) => Promise<Timestamp | undefined>;
   readonly signal: (pid: number, signal: "SIGTERM" | "SIGKILL") => void;
   readonly alive: (pid: number) => boolean;
   readonly sleep: (ms: number) => Promise<void>;
@@ -56,6 +75,14 @@ export interface Terminal {
 /** The environment variables a session's terminal is named by. */
 const TERMINAL_ID = "HYOUI_SESSION_ID";
 const TERMINAL_NAMESPACE = "HYOUI_NAMESPACE";
+
+/** The terminal an environment names, or nothing when it names none. */
+export function terminalOf(env: Record<string, string>): Terminal | undefined {
+  const id = env[TERMINAL_ID];
+  if (id === undefined || id === "") return undefined;
+  const namespace = env[TERMINAL_NAMESPACE];
+  return { id, ...(namespace === undefined || namespace === "" ? {} : { namespace }) };
+}
 
 /** The ops that act on the process behind a session.
  *
@@ -84,6 +111,9 @@ export class SessionProcesses {
       throw new OpError("session_not_found", `${sid} is no session of this instance`);
     }
     if (!(await this.isHarness(row.pid))) {
+      throw new OpError("session_not_found", `the process of ${sid} is gone`);
+    }
+    if (!(await this.isSameProcess(row.pid, row.started_at))) {
       throw new OpError("session_not_found", `the process of ${sid} is gone`);
     }
     return row.pid;
@@ -136,12 +166,11 @@ export class SessionProcesses {
    * runs in. */
   async terminal(sid: Sid): Promise<Terminal> {
     const { env } = await this.environment(sid);
-    const id = env[TERMINAL_ID];
-    if (id === undefined || id === "") {
+    const terminal = terminalOf(env);
+    if (terminal === undefined) {
       throw new OpError("not_found", `${sid} names no terminal to type into`);
     }
-    const namespace = env[TERMINAL_NAMESPACE];
-    return { id, ...(namespace === undefined || namespace === "" ? {} : { namespace }) };
+    return terminal;
   }
 
   /** Type into a session's terminal. */
@@ -170,6 +199,32 @@ export class SessionProcesses {
       return false;
     }
     return executable(command) === HARNESS;
+  }
+
+  /** Whether the process running under the pid now is the one the row was
+   * written for.
+   *
+   * The second half of the recycling guard, and the half that catches what
+   * argv0 cannot: a pid recycled onto another session of the same harness is a
+   * process the argv0 check accepts. What separates them is when they started
+   * — a recycled pid belongs to a process that began after the row was
+   * written, since the pid was not free until the row's own process had
+   * exited.
+   *
+   * A start time the host stated in a form this instance could not read leaves
+   * the pid on the argv0 check alone. Refusing instead would make the ops
+   * unusable on such a host, which is a certain loss against the one this
+   * guards. */
+  private async isSameProcess(pid: number, startedAt: Timestamp): Promise<boolean> {
+    let started: Timestamp | undefined;
+    try {
+      started = await this.deps.started(pid);
+    } catch {
+      return true;
+    }
+    if (started === undefined) return true;
+    const after = started - startedAt;
+    return after <= STARTED_AFTER_TOLERANCE_MS && -after <= STARTED_BEFORE_TOLERANCE_MS;
   }
 
   /** Send one signal. Answers whether the process was already gone, which is
@@ -274,6 +329,48 @@ export async function run(argv: string[], timeoutMs = CHILD_TIMEOUT_MS): Promise
   return out;
 }
 
+/** The environment of one process, as this host exposes it: a file on Linux,
+ * and only `ps` on macOS. */
+function hostEnvironment(pid: number): Promise<string> {
+  return process.platform === "linux"
+    ? Bun.file(`/proc/${pid}/environ`).text()
+    : run(["ps", "eww", "-p", String(pid), "-o", "command="]);
+}
+
+/** When one process started, as this host states it.
+ *
+ * Asked for as the time it has been running rather than as the instant it
+ * began: `ps` prints an instant in local time with no zone on it, which a
+ * reader in another zone — a daemon started under one, a test run under UTC —
+ * turns into an instant hours away. Elapsed time carries no zone at all.
+ *
+ * The format is `[[dd-]hh:]mm:ss`, and its resolution is the second, which is
+ * why the guard that compares it allows for one. */
+async function hostStarted(pid: number): Promise<Timestamp | undefined> {
+  const elapsed = elapsedSeconds((await run(["ps", "-p", String(pid), "-o", "etime="])).trim());
+  return elapsed === undefined ? undefined : Date.now() - elapsed * 1000;
+}
+
+/** `[[dd-]hh:]mm:ss` in seconds. Undefined for anything else, which is a host
+ * whose `ps` states elapsed time in some other form. */
+export function elapsedSeconds(etime: string): number | undefined {
+  const [days, clock] = etime.includes("-") ? etime.split("-", 2) : [undefined, etime];
+  const parts = (clock ?? "").split(":");
+  if (parts.length < 2 || parts.length > 3) return undefined;
+  const numbers = [...(days === undefined ? [] : [days]), ...parts].map(Number);
+  if (numbers.some((part) => !Number.isInteger(part) || part < 0)) return undefined;
+  // Seconds are last whatever was stated before them, so the units are read
+  // from the end: seconds, minutes, hours, days.
+  return numbers
+    .reverse()
+    .reduce((total, part, at) => total + part * [1, 60, 3600, 86_400][at]!, 0);
+}
+
+/** The reader the terminal cache is filled through, as this host provides it. */
+export function hostTerminalReader(): TerminalReader {
+  return async (pid) => terminalOf(parseEnvironment(await hostEnvironment(pid), process.platform));
+}
+
 /** The effects as this host provides them. */
 export function hostProcessDeps(
   rows: () => ReadonlyMap<Sid, AgentInfo>,
@@ -282,10 +379,8 @@ export function hostProcessDeps(
   return {
     rows,
     command: (pid) => run(["ps", "-p", String(pid), "-o", "command="]),
-    environment: (pid) =>
-      process.platform === "linux"
-        ? Bun.file(`/proc/${pid}/environ`).text()
-        : run(["ps", "eww", "-p", String(pid), "-o", "command="]),
+    environment: hostEnvironment,
+    started: hostStarted,
     signal: (pid, signal) => {
       process.kill(pid, signal);
     },

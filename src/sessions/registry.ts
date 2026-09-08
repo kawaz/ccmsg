@@ -24,6 +24,7 @@ import { classify, type SessionInputs } from "./classify.ts";
 import { HarnessSessions, isWaiting } from "./harness.ts";
 import { LastLiveStore, type StoredEntry } from "./last-live.ts";
 import { stoppedOn } from "./status.ts";
+import { TerminalCache, type TerminalReader } from "./terminals.ts";
 
 /** What the sessions domain needs from the instance around it. */
 export interface SessionsDeps {
@@ -56,6 +57,10 @@ export interface SessionsDeps {
   readonly onChanged?: () => void;
   /** How often the confirmation poll runs, for a test that cannot wait. */
   readonly pollMs?: number;
+  /** How the terminal a session runs in is read from its process. Absent on a
+   * host where no process's environment can be read, where every row's
+   * terminal stays unknown — which is a state the classification has. */
+  readonly terminals?: TerminalReader;
   /** The mesh, on an instance that has one. It answers the one greeting this
    * domain cannot judge: a peer's, whose claim is settled by an exchange of its
    * own rather than by anything a session says (§7.2). */
@@ -134,6 +139,7 @@ interface Connected {
 export class Sessions implements UpstreamResource {
   readonly #connected = new Map<Sid, Connected>();
   readonly #harness: HarnessSessions;
+  readonly #terminals: TerminalCache | undefined;
   readonly #lastLive: LastLiveStore;
   /** Sessions seen live since the last recompute, kept so the moment one stops
    * being live is what writes its `last_live` entry. */
@@ -160,7 +166,11 @@ export class Sessions implements UpstreamResource {
     );
     this.#lastLive = new LastLiveStore(join(deps.stateDir, "last-live.json"));
     this.#lastLive.load();
-    this.#live = this.#liveNow(Date.now(), this.#harness.scan());
+    this.#terminals =
+      deps.terminals === undefined
+        ? undefined
+        : new TerminalCache(deps.terminals, () => this.changed());
+    this.#live = this.#liveNow(Date.now(), this.#rows());
   }
 
   /** `hello`, which is where a session becomes something this instance can
@@ -237,7 +247,29 @@ export class Sessions implements UpstreamResource {
    * question, and a caller answering several about the same instant passes the
    * result on rather than reading again. */
   #rows(): ReadonlyMap<Sid, AgentInfo> {
-    return this.#harness.scan();
+    const rows = this.#harness.scan();
+    const terminals = this.#terminals;
+    if (terminals === undefined) return rows;
+    // What the scan found is what exists: a pid that has left it is one whose
+    // terminal is no longer anybody's, and one that has arrived is read once.
+    terminals.observe([...rows.values()].map((row) => row.pid));
+    const named = new Map<Sid, AgentInfo>();
+    for (const [sid, row] of rows) {
+      const terminal = terminals.get(row.pid);
+      named.set(
+        sid,
+        terminal === undefined
+          ? row
+          : {
+              ...row,
+              terminal_id: terminal.id,
+              ...(terminal.namespace === undefined
+                ? {}
+                : { terminal_namespace: terminal.namespace }),
+            },
+      );
+    }
+    return named;
   }
 
   /** Everything the classification of one session reads, exposed so the rule

@@ -4,12 +4,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   type KvEntry,
+  LAST_LIVE_RETENTION_MS,
   OP_SCHEMAS,
   PROTOCOL_VERSION,
   TOPIC_SCHEMAS,
   validationErrors,
 } from "@ccmsg/protocol";
-import { KvStore } from "../src/kv/index.ts";
+import { KvStore, mergeHeld, mergeNamespace } from "../src/kv/index.ts";
 import { type Env, type Instance, isRunning, start } from "../src/instance/index.ts";
 import { connectUds, type LineClient } from "./client.ts";
 import { SELF } from "./frames.ts";
@@ -246,6 +247,139 @@ describe("the store on its own", () => {
     expect(other.read({ ns: "theme", key: "default" })).toEqual({
       value: "one",
       updated_at: 5,
+    });
+  });
+});
+
+describe("what settles a key two writers disagree on", () => {
+  test("a write older than what the key holds does not displace it", async () => {
+    const { env } = disposable();
+    const { client } = await greet(env);
+    const later = 1_700_000_002_000;
+    await ask(client, "kv_write", {
+      ns: "theme",
+      key: "default",
+      value: "kept",
+      updated_at: later,
+    });
+
+    // A write that happened while this instance was unreachable arrives now
+    // and is still the older of the two.
+    const stale = await ask(client, "kv_write", {
+      ns: "theme",
+      key: "default",
+      value: "stale",
+      updated_at: 1_700_000_001_000,
+    });
+    // The answer is what the key carries, which is how the caller learns its
+    // write is not the one standing.
+    expect(stale["updated_at"]).toBe(later);
+    const read = await ask(client, "kv_read", { ns: "theme", key: "default" });
+    expect(read["value"]).toBe("kept");
+    expect(read["updated_at"]).toBe(later);
+  });
+
+  test("a removal is not undone by a write that happened before it", async () => {
+    const { env } = disposable();
+    const { client } = await greet(env);
+    await ask(client, "kv_write", { ns: "theme", key: "default", value: 1, updated_at: 1_000 });
+    await ask(client, "kv_delete", { ns: "theme", key: "default" });
+    await ask(client, "kv_write", { ns: "theme", key: "default", value: 2, updated_at: 2_000 });
+    expect(
+      ((await ask(client, "kv_read", { ns: "theme", key: "default" }))["error"] as { code: string })
+        .code,
+    ).toBe("not_found");
+  });
+
+  test("a removal outlives the instance that recorded it, and stays out of a snapshot", async () => {
+    const { env } = disposable();
+    const first = await greet(env);
+    await ask(first.client, "kv_write", { ns: "theme", key: "default", value: 1 });
+    await ask(first.client, "kv_delete", { ns: "theme", key: "default" });
+    await first.client.close();
+    clients.length = 0;
+    await first.instance.stop();
+    running.length = 0;
+
+    const second = await greet(env);
+    // Written down, so a write from before the removal still loses after a
+    // restart — and still absent from what a subscriber is shown.
+    await ask(second.client, "kv_write", { ns: "theme", key: "default", value: 2, updated_at: 5 });
+    expect(
+      (
+        (await ask(second.client, "kv_read", { ns: "theme", key: "default" }))["error"] as {
+          code: string;
+        }
+      ).code,
+    ).toBe("not_found");
+    second.client.send({ op: "topic_subscribe", request_id: "sub", topic: "kv:theme" });
+    expect(entriesOf(await nextTopic(second.client, "kv:theme"))).toEqual([]);
+  });
+});
+
+describe("mirroring one namespace onto another instance's", () => {
+  test("the later instant is the one that stands, whichever side holds it", () => {
+    const mine = { value: "mine", updated_at: 2 };
+    const theirs = { value: "theirs", updated_at: 3 };
+    expect(mergeHeld(mine, theirs)).toBe(theirs);
+    expect(mergeHeld(theirs, mine)).toBe(theirs);
+    // A key only one side has is a key both sides have afterwards.
+    expect(mergeHeld(undefined, mine)).toBe(mine);
+    expect(mergeHeld(mine, undefined)).toBe(mine);
+  });
+
+  test("a removal is a write, and beats the writes it was meant to undo", () => {
+    const written = { value: "back", updated_at: 4 };
+    const removed = { updated_at: 5, deleted: true } as const;
+    expect(mergeHeld(written, removed)).toBe(removed);
+    expect(mergeHeld(removed, written)).toBe(removed);
+    // At one instant the removal is what both sides settle on, so neither is
+    // left holding a value the other deleted.
+    const sameInstant = { updated_at: 5, deleted: true } as const;
+    expect(mergeHeld({ value: "back", updated_at: 5 }, sameInstant)).toBe(sameInstant);
+    expect(mergeHeld(sameInstant, { value: "back", updated_at: 5 })).toBe(sameInstant);
+  });
+
+  test("a namespace merged holds every key of both, and no removal old enough to forget", () => {
+    const now = 1_700_000_000_000;
+    const local = new Map([
+      ["kept", { value: "old", updated_at: now - 10 }],
+      ["mine", { value: 1, updated_at: now }],
+      ["long gone", { updated_at: now - LAST_LIVE_RETENTION_MS - 1, deleted: true } as const],
+    ]);
+    const remote = new Map([
+      ["kept", { value: "new", updated_at: now - 5 }],
+      ["theirs", { value: 2, updated_at: now }],
+      ["just gone", { updated_at: now - 1, deleted: true } as const],
+    ]);
+    const merged = mergeNamespace(local, remote, now);
+    expect([...merged.keys()].sort()).toEqual(["just gone", "kept", "mine", "theirs"]);
+    expect(merged.get("kept")).toEqual({ value: "new", updated_at: now - 5 });
+    // Merging is symmetric, which is what leaves both instances holding the
+    // same namespace rather than each preferring its own.
+    expect(mergeNamespace(remote, local, now)).toEqual(merged);
+  });
+});
+
+describe("a removal this store no longer remembers", () => {
+  test("is forgotten when it is read, without a clock of its own", () => {
+    const { state } = disposable();
+    const recent = new KvStore(join(state, "recent"), SELF, () => undefined);
+    const at = Date.now();
+    recent.delete({ ns: "theme", key: "default" }, at);
+    // Inside the window the removal stands against a write from before it.
+    recent.write({ ns: "theme", key: "default", value: "back", updated_at: at - 1 });
+    expect(() => recent.read({ ns: "theme", key: "default" })).toThrow();
+
+    // Past it, nothing is holding that write back any more: the removal is
+    // gone from what the namespace states, without a timer having run.
+    const stale = new KvStore(join(state, "stale"), SELF, () => undefined);
+    const expiredAt = at - LAST_LIVE_RETENTION_MS - 1;
+    stale.delete({ ns: "theme", key: "default" }, expiredAt);
+    stale.write({ ns: "theme", key: "default", value: "back", updated_at: expiredAt - 1 });
+    expect(stale.read({ ns: "theme", key: "default" })).toEqual({
+      value: "back",
+      updated_at: expiredAt - 1,
     });
   });
 });

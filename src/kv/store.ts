@@ -13,13 +13,9 @@ import type {
 } from "@ccmsg/protocol";
 import { type HandlerInput, OpError, type Requester } from "../dispatch/index.ts";
 import { topicParam, type TopicValue, type UpstreamResource } from "../topics/index.ts";
+import { expired, type Held } from "./merge.ts";
 
 export const KV_DIR = "kv";
-
-interface Held {
-  value: unknown;
-  updated_at: Timestamp;
-}
 
 /** The values clients keep here, and the topic that shows them changing.
  *
@@ -44,15 +40,30 @@ export class KvStore implements UpstreamResource {
 
   read(args: KvReadArgs): KvReadResult {
     const held = this.#load(args.ns).get(args.key);
-    if (held === undefined) {
+    // A removal that is still remembered is a key the namespace does not hold.
+    if (held === undefined || held.deleted === true) {
       throw new OpError("not_found", `${args.ns} holds no ${args.key}`);
     }
     return { value: held.value, updated_at: held.updated_at };
   }
 
+  /** Writes one value, unless what the key holds is newer.
+   *
+   * The instant decides, not the order of arrival: a caller states when the
+   * write it is reporting happened, and one that happened while this instance
+   * was unreachable must not displace what was written since. The answer is
+   * what the key carries now — equal to what the caller stated when its write
+   * stands, and later than it when an existing value did. */
   write(args: KvWriteArgs, now: Timestamp = Date.now()): KvWriteResult {
     const entries = this.#load(args.ns);
     const updatedAt = args.updated_at ?? now;
+    const held = entries.get(args.key);
+    // Older than what the key holds, so it does not displace it. A write that
+    // arrived at the same instant does stand: two calls a millisecond apart
+    // are not a disagreement between instances, and the second is the newer.
+    if (held !== undefined && held.updated_at > updatedAt) {
+      return { updated_at: held.updated_at };
+    }
     entries.set(args.key, { value: args.value, updated_at: updatedAt });
     this.#persist(args.ns, entries);
     this.publish(`kv:${args.ns}`, {
@@ -66,8 +77,15 @@ export class KvStore implements UpstreamResource {
    * that has the entry has to be told it is gone. */
   delete(args: KvDeleteArgs, now: Timestamp = Date.now()): KvDeleteResult {
     const entries = this.#load(args.ns);
-    if (entries.delete(args.key)) {
-      this.#persist(args.ns, entries);
+    const before = entries.get(args.key);
+    // A removal older than what the key holds undoes nothing, which is the
+    // same rule a write is held to.
+    if (before !== undefined && before.updated_at > now) return {};
+    entries.set(args.key, { updated_at: now, deleted: true });
+    this.#persist(args.ns, entries);
+    // A removal is announced only when something was there to remove: a
+    // subscriber holding no entry has nothing to be told is gone.
+    if (before !== undefined && before.deleted !== true) {
       this.publish(`kv:${args.ns}`, {
         entries: [{ key: args.key, updated_at: now, deleted: true }],
       });
@@ -86,17 +104,15 @@ export class KvStore implements UpstreamResource {
   snapshot(topic: string, _conn: Requester): readonly TopicValue[] {
     const ns = topicParam(topic);
     if (ns === undefined) return [];
-    const entries: KvEntry[] = [...this.#load(ns)].map(([key, held]) => ({
-      key,
-      value: held.value,
-      updated_at: held.updated_at,
-    }));
+    const entries: KvEntry[] = [...this.#load(ns)]
+      .filter(([, held]) => held.deleted !== true)
+      .map(([key, held]) => ({ key, value: held.value, updated_at: held.updated_at }));
     return [{ instance: this.self, data: { entries } }];
   }
 
-  #load(ns: string): Map<string, Held> {
+  #load(ns: string, now: Timestamp = Date.now()): Map<string, Held> {
     const known = this.#namespaces.get(ns);
-    if (known !== undefined) return known;
+    if (known !== undefined) return forget(known, now);
     const entries = new Map<string, Held>();
     let text: string;
     try {
@@ -120,11 +136,16 @@ export class KvStore implements UpstreamResource {
         const fields = held as Record<string, unknown>;
         const updatedAt = fields["updated_at"];
         if (typeof updatedAt !== "number") continue;
-        entries.set(key, { value: fields["value"], updated_at: updatedAt });
+        entries.set(
+          key,
+          fields["deleted"] === true
+            ? { updated_at: updatedAt, deleted: true }
+            : { value: fields["value"], updated_at: updatedAt },
+        );
       }
     }
     this.#namespaces.set(ns, entries);
-    return entries;
+    return forget(entries, now);
   }
 
   #persist(ns: string, entries: Map<string, Held>): void {
@@ -147,6 +168,20 @@ export class KvStore implements UpstreamResource {
   #file(ns: string): string {
     return join(this.dir, `${ns}.json`);
   }
+}
+
+/** Drop the removals nothing can still be carrying an older write for.
+ *
+ * Done where the namespace is read rather than on a clock of its own: a timer
+ * would have this instance touching a store nobody is asking about, and a
+ * removal that outlives its window until the next read is one no read can see
+ * anyway. The file keeps it until the namespace is next written, which is the
+ * only moment the file is rewritten at all. */
+function forget(entries: Map<string, Held>, now: Timestamp): Map<string, Held> {
+  for (const [key, held] of entries) {
+    if (expired(held, now)) entries.delete(key);
+  }
+  return entries;
 }
 
 export function kvHandlers(store: KvStore) {

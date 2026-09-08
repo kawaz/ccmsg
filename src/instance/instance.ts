@@ -39,6 +39,7 @@ import {
 import { Inbox } from "../messaging/inbox.ts";
 import {
   hostProcessDeps,
+  hostTerminalReader,
   sessionCapabilities,
   sessionHandlers,
   SessionProcesses,
@@ -387,6 +388,7 @@ export class Instance {
       },
       transcript: this.#transcripts,
       gateway: this.#gateway,
+      terminals: hostTerminalReader(),
       ...(this.#mesh === undefined ? {} : { mesh: this.#mesh }),
       onChanged: () => {
         this.#status.refresh();
