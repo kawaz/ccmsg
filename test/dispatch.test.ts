@@ -10,8 +10,7 @@ import {
 } from "@ccmsg/protocol";
 import { dispatch, type DispatchDeps } from "../src/dispatch/dispatch.ts";
 import type { HandlerInput, Handlers } from "../src/dispatch/handler.ts";
-import { ANONYMOUS, type ConnIdentity } from "../src/dispatch/identity.ts";
-import { frameFor, frameProblems, OTHER_INSTANCE, SELF, SID } from "./frames.ts";
+import { connAs, frameFor, frameProblems, OTHER_INSTANCE, SELF, TestConn } from "./frames.ts";
 
 /** The roles and capabilities the contract defines, read from the contract so
  * the sweeps below cover whatever it holds rather than a copy of it. */
@@ -44,8 +43,11 @@ function deps(over: Partial<DispatchDeps> = {}): DispatchDeps {
   };
 }
 
-function as(role: Role): ConnIdentity {
-  return { state: "settled", role, sid: SID };
+const as = connAs;
+
+/** A connection with no identity settled, for the steps that run before hello. */
+function anonymous(): TestConn {
+  return new TestConn();
 }
 
 /** A role the op allows, for sweeps that want to get past step 4. */
@@ -96,9 +98,9 @@ describe("step 4: roles outside the table are refused (swept over the table)", (
 
 describe("each step answers on its own", () => {
   test("a frame that is not an object is bad_request", async () => {
-    expect(errorCode(await dispatch("[]", ANONYMOUS, deps()))).toBe("bad_request");
-    expect(errorCode(await dispatch(null, ANONYMOUS, deps()))).toBe("bad_request");
-    expect(errorCode(await dispatch([], ANONYMOUS, deps()))).toBe("bad_request");
+    expect(errorCode(await dispatch("[]", anonymous(), deps()))).toBe("bad_request");
+    expect(errorCode(await dispatch(null, anonymous(), deps()))).toBe("bad_request");
+    expect(errorCode(await dispatch([], anonymous(), deps()))).toBe("bad_request");
   });
 
   test("a frame without an op or a request_id is bad_request", async () => {
@@ -124,13 +126,13 @@ describe("each step answers on its own", () => {
   });
 
   test("step 3: an op needing hello is refused before the identity is settled", async () => {
-    const result = await dispatch(frameFor("session_search"), ANONYMOUS, deps());
+    const result = await dispatch(frameFor("session_search"), anonymous(), deps());
     expect(errorCode(result)).toBe("hello_required");
   });
 
   test("step 3: the two ops that run before hello are reached anonymously", async () => {
     for (const op of OP_NAMES.filter((name) => !opAttributes(name).needs_hello)) {
-      const result = await dispatch(frameFor(op), ANONYMOUS, deps());
+      const result = await dispatch(frameFor(op), anonymous(), deps());
       expect([op, result.kind]).toEqual([op, "reply"]);
     }
   });

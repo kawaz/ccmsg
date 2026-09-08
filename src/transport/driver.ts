@@ -1,12 +1,12 @@
 import type { OpName, Role, Sid } from "@ccmsg/protocol";
-import { type ConnIdentity, type DispatchResult, failure } from "../dispatch/index.ts";
+import { type DispatchResult, failure, type Requester } from "../dispatch/index.ts";
 import type { Conn } from "./conn.ts";
 import { MAX_LINE_BYTES } from "./framing.ts";
 
 /** What transport calls once a line is a frame. In the instance this is
  * `dispatch` bound to its deps; in tests it is whatever the test needs. */
 export interface FrameHandler {
-  (frame: unknown, identity: ConnIdentity): Promise<DispatchResult>;
+  (frame: unknown, conn: Requester): Promise<DispatchResult>;
 }
 
 /** The op whose reply settles the connection's identity. Transport knows this
@@ -32,10 +32,13 @@ export function createDriver(conn: Conn, handle: FrameHandler) {
         );
         return;
       }
-      void handle(frame, conn.identity).then(
+      void handle(frame, conn).then(
         (result) => {
           settleIfHello(conn, frame, result);
           conn.send(responseOf(result));
+          // Whatever the implementation queued for after its reply — the
+          // snapshot of a fresh subscription (§6.1) — goes out here.
+          conn.flushDeferred();
         },
         (cause: unknown) => {
           conn.send(

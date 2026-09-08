@@ -1,11 +1,16 @@
-import { ANONYMOUS, type ConnIdentity, type SettledIdentity } from "../dispatch/index.ts";
+import {
+  ANONYMOUS,
+  type ConnIdentity,
+  type Requester,
+  type SettledIdentity,
+} from "../dispatch/index.ts";
 
 /** One accepted connection, as the layers above transport see it.
  *
  * UDS and WS produce this same type, so nothing above transport can tell them
  * apart (daemon-v2 §3.1). Everything that differs between the two — how a line
  * reaches the peer, how a blocked write is retried — is settled behind `send`. */
-export interface Conn {
+export interface Conn extends Requester {
   /** Distinguishes connections within one process run. It is not an identity:
    * a connection is anonymous until `hello` settles one. */
   readonly id: number;
@@ -17,6 +22,11 @@ export interface Conn {
   /** Queue one frame as a line. Ordering is preserved; delivery is
    * best-effort, as it is for any socket that may go away mid-write. */
   send(frame: object): void;
+  /** Queue one frame to go out once the reply to the request in flight has.
+   * `flushDeferred` is what releases it, and only the driver calls that. */
+  deferSend(frame: object): void;
+  /** Send everything `deferSend` queued, in the order it was queued. */
+  flushDeferred(): void;
   /** Close the underlying socket. Idempotent. */
   close(): void;
   /** Run when the connection is gone. Anything held per connection — the
@@ -37,6 +47,7 @@ export class BaseConn implements Conn {
   #identity: ConnIdentity = ANONYMOUS;
   #closed = false;
   readonly #listeners: (() => void)[] = [];
+  readonly #deferred: object[] = [];
 
   constructor(
     readonly id: number,
@@ -54,6 +65,14 @@ export class BaseConn implements Conn {
   send(frame: object): void {
     if (this.#closed) return;
     this.socket.send(`${JSON.stringify(frame)}\n`);
+  }
+
+  deferSend(frame: object): void {
+    this.#deferred.push(frame);
+  }
+
+  flushDeferred(): void {
+    for (const frame of this.#deferred.splice(0)) this.send(frame);
   }
 
   close(): void {

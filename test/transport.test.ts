@@ -9,7 +9,7 @@ import {
   validationErrors,
   OP_SCHEMAS,
 } from "@ccmsg/protocol";
-import { type ConnIdentity, dispatch, type Handlers } from "../src/dispatch/index.ts";
+import { dispatch, type Handlers, type Requester } from "../src/dispatch/index.ts";
 import {
   type Conn,
   ConnRegistry,
@@ -55,8 +55,8 @@ function handlers(): Handlers {
   return Object.fromEntries(entries) as Handlers;
 }
 
-function handle(frame: unknown, identity: ConnIdentity) {
-  return dispatch(frame, identity, {
+function handle(frame: unknown, conn: Requester) {
+  return dispatch(frame, conn, {
     self: SELF,
     capabilities: new Set(),
     resolveInstance: () => undefined,

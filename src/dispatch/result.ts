@@ -10,6 +10,22 @@ export type DispatchResult =
   | { readonly kind: "error"; readonly response: ErrorResponse }
   | { readonly kind: "forward"; readonly to: InstanceId; readonly frame: Record<string, unknown> };
 
+/** An implementation's refusal, in the contract's own vocabulary.
+ *
+ * The six steps before a handler answer with codes dispatch derives from the
+ * attribute table. The codes an op lists for itself (`topic_unknown` and the
+ * like) are known only to the implementation, so it throws this and dispatch
+ * turns it into the same error envelope every other refusal uses. */
+export class OpError extends Error {
+  constructor(
+    readonly code: ErrorCode,
+    msg: string,
+  ) {
+    super(msg);
+    this.name = "OpError";
+  }
+}
+
 /** The reply envelope, built here and nowhere else so the wire shape stays in
  * one place (daemon-v2 §11.1). */
 export function reply(

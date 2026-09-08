@@ -1,5 +1,22 @@
 import type { OpName, Role } from "@ccmsg/protocol";
-import type { SettledIdentity } from "./identity.ts";
+import type { ConnIdentity, SettledIdentity } from "./identity.ts";
+
+/** The connection a request arrived on, as an implementation sees it.
+ *
+ * It is the `Conn` transport accepted, narrowed to what an op may do with it:
+ * read the identity, push frames, and learn that the connection is gone. A
+ * subscription is held by a connection and ends with it (daemon-v2 §6.3), so
+ * this is what the topic mechanism keys its subscribers on. Declared here
+ * rather than imported from transport because dispatch sits below it. */
+export interface Requester {
+  readonly identity: ConnIdentity;
+  /** Push one frame that is not a reply — a topic frame or a connection event. */
+  send(frame: object): void;
+  /** Push one frame after the reply to the request being handled goes out, so
+   * a subscribe's snapshot follows its acknowledgement rather than preceding it. */
+  deferSend(frame: object): void;
+  onClose(listener: () => void): void;
+}
 
 /** What an op implementation receives.
  *
@@ -8,6 +25,10 @@ import type { SettledIdentity } from "./identity.ts";
  * check of its own. */
 export interface HandlerInput {
   readonly op: OpName;
+  /** The connection the request arrived on. Ops that hold something for the
+   * length of a connection — the subscriptions of daemon-v2 §6.3 — need it;
+   * ops that only answer ignore it. */
+  readonly conn: Requester;
   /** The whole request frame, validated against the op's request schema. */
   readonly args: Record<string, unknown>;
   /** The connection's identity, absent for the two ops that run before `hello`. */

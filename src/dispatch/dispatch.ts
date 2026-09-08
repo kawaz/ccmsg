@@ -8,9 +8,8 @@ import {
   type OpName,
   validationErrors,
 } from "@ccmsg/protocol";
-import type { Handlers } from "./handler.ts";
-import type { ConnIdentity } from "./identity.ts";
-import { type DispatchResult, failure, reply } from "./result.ts";
+import type { Handlers, Requester } from "./handler.ts";
+import { type DispatchResult, failure, OpError, reply } from "./result.ts";
 
 /** What dispatch needs from the instance around it. */
 export interface DispatchDeps {
@@ -37,9 +36,10 @@ function isOpName(op: string): op is OpName {
  * schema and an implementation — never a check in this function (M1). */
 export async function dispatch(
   frame: unknown,
-  identity: ConnIdentity,
+  conn: Requester,
   deps: DispatchDeps,
 ): Promise<DispatchResult> {
+  const identity = conn.identity;
   if (typeof frame !== "object" || frame === null || Array.isArray(frame)) {
     return failure(undefined, "bad_request", "a request must be a JSON object");
   }
@@ -98,12 +98,18 @@ export async function dispatch(
   }
 
   // 7. the implementation, which starts from "validated and allowed"
-  const body = await deps.handlers[op]({
-    op,
-    args: fields,
-    identity: identity.state === "settled" ? identity : undefined,
-    // The one route by which a role reaches an implementation (§3.2).
-    role: attrs.scope === "role" && identity.state === "settled" ? identity.role : undefined,
-  });
-  return reply(requestId, body);
+  try {
+    const body = await deps.handlers[op]({
+      op,
+      args: fields,
+      conn,
+      identity: identity.state === "settled" ? identity : undefined,
+      // The one route by which a role reaches an implementation (§3.2).
+      role: attrs.scope === "role" && identity.state === "settled" ? identity.role : undefined,
+    });
+    return reply(requestId, body);
+  } catch (cause) {
+    if (cause instanceof OpError) return failure(requestId, cause.code, cause.message);
+    throw cause;
+  }
 }
