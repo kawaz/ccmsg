@@ -525,6 +525,13 @@ export class Sessions implements UpstreamResource {
   #entry(sid: Sid, now: Timestamp, rows: ReadonlyMap<Sid, AgentInfo>): StoredEntry {
     const held = this.#connected.get(sid);
     const row = rows.get(sid);
+    // What answered last, not what the session named when it greeted: the
+    // greeting is one instant and `/model` moves afterwards, so the fold is
+    // asked first and the greeting only fills in for a transcript that has
+    // said nothing yet.
+    const answered = this.deps.transcript?.facts(sid);
+    const model = answered?.model ?? held?.meta.model;
+    const effort = answered?.model === undefined ? held?.meta.effort : answered.effort;
     return {
       sid,
       instance: this.deps.self,
@@ -532,8 +539,8 @@ export class Sessions implements UpstreamResource {
       // it goes first and what the session named overrides it.
       ...(row?.name === undefined ? {} : { title: row.name }),
       ...this.#where(sid, rows),
-      ...(held?.meta.model === undefined ? {} : { model: held.meta.model }),
-      ...(held?.meta.effort === undefined ? {} : { effort: held.meta.effort }),
+      ...(model === undefined ? {} : { model }),
+      ...(effort === undefined ? {} : { effort }),
       ...(held === undefined ? {} : { connected_at: held.connected_at }),
       last_seen_at: now,
     };

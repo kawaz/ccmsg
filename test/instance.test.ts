@@ -262,6 +262,9 @@ process.stdin.on("end", () => process.exit(0));
     expect(existsSync(paths.socket)).toBe(true);
     expect(readFileSync(paths.pidFile, "utf8").trim()).toBe(String(process.pid));
     expect(instance.ping().pid).toBe(process.pid);
+    // Nothing here reaches off the host, so the instance says the link is not
+    // watched rather than reporting a state it never observed.
+    expect(instance.ping().network).toBe("off");
   });
 
   test("no upstream watch runs until something subscribes (§8.3)", async () => {

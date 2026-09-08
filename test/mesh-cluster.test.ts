@@ -374,6 +374,40 @@ describe("what the peers topic says about the instances (§7.5)", () => {
   });
 });
 
+describe("what the instance says about the host link", () => {
+  test("the peers that answer are what `instance_ping` reads the link off", async () => {
+    const { a, b } = await pair();
+    const user = await client(a);
+    await greet(user, {});
+    const up = await ask(user, { op: "instance_ping", request_id: "up" });
+    expect(up["network"]).toBe("online");
+
+    await b.stop();
+    // Every configured peer silent at once is the link gone, which is a
+    // different answer from the same instance having no mesh to read.
+    await eventually(() => a.mesh?.reachable(b.self) === false);
+    const down = await ask(user, { op: "instance_ping", request_id: "down" });
+    expect(down["network"]).toBe("offline");
+  });
+
+  test("a link going down is announced to every client, once", async () => {
+    const { a, b } = await pair();
+    const user = await client(a);
+    // No subscription: the event is about the connection's own instance rather
+    // than about a topic, so it arrives on any connection that greeted.
+    await greet(user, {});
+    await b.stop();
+    const frames: Record<string, unknown>[] = [];
+    await eventually(async () => {
+      frames.push(await user.next());
+      return frames.some((frame) => frame["ev"] === "net_online");
+    });
+    expect(frames.filter((frame) => frame["ev"] === "net_online")).toEqual([
+      { ev: "net_online", instance: a.self, online: false },
+    ]);
+  });
+});
+
 describe("a message to a session on another instance (§4)", () => {
   test("it is carried there and handed over", async () => {
     const { a, session } = await pair();

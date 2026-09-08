@@ -24,6 +24,7 @@ import {
   hostTerminalReader,
   type TerminalReader,
 } from "../src/sessions/index.ts";
+import { NO_FACTS, type TranscriptFacts } from "../src/transcript/index.ts";
 import { connAs, greeting, SELF, SID, OTHER_SID, TestConn } from "./frames.ts";
 
 /** A throwaway config home under the OS temp dir, which is where the harness's
@@ -157,7 +158,12 @@ interface Published {
  * does not depend on `fs.watch` being prompt. Both routes are live: a test
  * asserting the watch itself sets `pollMs` high. */
 function sessions(
-  overrides: { pollMs?: number; gateway?: GatewaySource; terminals?: TerminalReader } = {},
+  overrides: {
+    pollMs?: number;
+    gateway?: GatewaySource;
+    terminals?: TerminalReader;
+    transcript?: { facts: (sid: Sid) => TranscriptFacts };
+  } = {},
 ) {
   const dirs = home();
   const published: Published[] = [];
@@ -176,6 +182,7 @@ function sessions(
     pollMs: overrides.pollMs ?? 50,
     ...(overrides.gateway === undefined ? {} : { gateway: overrides.gateway }),
     ...(overrides.terminals === undefined ? {} : { terminals: overrides.terminals }),
+    ...(overrides.transcript === undefined ? {} : { transcript: overrides.transcript }),
   });
   running.push(domain);
   /** Resolves when a publish satisfying `want` has happened, waiting for the
@@ -644,6 +651,32 @@ describe("the classification on the wire", () => {
       model: greeted.model,
       effort: greeted.effort,
       repo: greeted.repo,
+    });
+  });
+
+  test("what it ran as is the transcript's last turn, not what it greeted as", () => {
+    // The greeting names one instant; `/model` moves the session afterwards
+    // without greeting again, so a resume reads the transcript.
+    const facts: TranscriptFacts = { ...NO_FACTS, model: "claude-opus-5", effort: "xhigh" };
+    const context = sessions({ transcript: { facts: () => facts } });
+    const conn = greeting();
+    helloFrom(context.domain, conn);
+    conn.close();
+    expect(context.domain.peers().last_live[0]).toMatchObject({
+      model: "claude-opus-5",
+      effort: "xhigh",
+    });
+  });
+
+  test("a transcript nothing has read leaves the greeting standing", () => {
+    const context = sessions({ transcript: { facts: () => NO_FACTS } });
+    const conn = greeting();
+    helloFrom(context.domain, conn);
+    conn.close();
+    const greeted = meta();
+    expect(context.domain.peers().last_live[0]).toMatchObject({
+      model: greeted.model,
+      effort: greeted.effort,
     });
   });
 });

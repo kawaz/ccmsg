@@ -4,6 +4,7 @@ import {
   type Capability,
   type InstanceId,
   type InstancePingResult,
+  type NetOnlineEvent,
   type RestartingEvent,
   type Sid,
   type Timestamp,
@@ -286,6 +287,9 @@ export class Instance {
    * 1: a request arriving after it is refused rather than half-served. */
   #stopping = false;
   #stopped: Promise<void> | undefined;
+  /** The link state the last `net_online` announced, so the event marks a
+   * change rather than repeating what every client already holds. */
+  #announced: boolean | undefined;
   /** The secret a WebSocket client presents, once there is a WebSocket to
    * present it to. An instance serving only the unix socket has none. */
   #entryToken: string | undefined;
@@ -340,6 +344,7 @@ export class Instance {
       // it is restated when that view moves (§7.5).
       changed: () => {
         this.#sessions.refresh();
+        this.#linkMoved();
       },
     });
 
@@ -642,10 +647,41 @@ export class Instance {
       exe: process.execPath,
       ...(process.argv[1] === undefined ? {} : { script: process.argv[1] }),
       http: this.http,
-      // Nothing watches the host link yet, so the instance says it does not
-      // know rather than reporting a state it never checked.
-      network: "unknown",
+      network: this.network,
     };
+  }
+
+  /** What this instance can say about the host link.
+   *
+   * The mesh is the only thing here that reaches off the host, so it is what
+   * the answer is read from: a peer that answers is the link working, and
+   * every configured peer silent at once is the link gone. Nothing else is
+   * probed — an instance does not dial the internet to have an opinion about
+   * it, and the peers are already being dialled for their own reasons (§8.3).
+   *
+   * Two cases state no verdict rather than guessing one. `off` is an instance
+   * with no mesh: nothing here watches the link at all. `unknown` is a mesh
+   * whose peer list holds nobody but ourselves — the link is watched, and no
+   * observation of it can be made. */
+  get network(): InstancePingResult["network"] {
+    if (this.#mesh === undefined) return "off";
+    const peers = this.#mesh.peers;
+    if (peers.length === 0) return "unknown";
+    return peers.some((peer) => this.#mesh?.reachable(peer) === true) ? "online" : "offline";
+  }
+
+  /** A link came up or went down. Told to every client when it changes what
+   * the instance would answer about the host link, and to nobody when the set
+   * of reachable peers moved without changing that — a five-peer cluster
+   * losing one is not this host going offline. */
+  #linkMoved(): void {
+    const network = this.network;
+    if (network !== "online" && network !== "offline") return;
+    const online = network === "online";
+    if (this.#announced === online) return;
+    this.#announced = online;
+    const event: NetOnlineEvent = { ev: "net_online", instance: this.self, online };
+    for (const conn of this.#conns) conn.send(event);
   }
 
   /** One frame, from either transport. The re-entry guard of §8.5 step 1 sits

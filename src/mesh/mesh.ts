@@ -936,27 +936,32 @@ export class Mesh {
     this.#stopping = true;
     for (const timer of this.#retries.values()) clearTimeout(timer);
     this.#retries.clear();
-    // The timers go, and so do the sockets this instance opened — but not the
-    // ones it accepted.
+    // The timers go, and so does every link — the ones this instance dialled
+    // and the ones it accepted alike.
     //
-    // An accepted socket belongs to transport, which releases every one of
-    // them after the connections have been told (§8.5 steps 3 and 5): closing
-    // one here would take it away before the notice, and measured against Bun
-    // 1.3.13 a socket closed from the server side also keeps the listener from
-    // ever being given up.
+    // The far end has no other way to learn this instance is going: it would
+    // keep the link, keep answering `reachable`, and keep routing
+    // `instance-local` ops here until its own heartbeat gave up minutes later,
+    // where the disconnection of §7.5 is supposed to be immediate. Which side
+    // dialled a link is decided by the glare rule from a comparison of
+    // endpoint strings (§8.1), so which of a peer's links this instance
+    // accepted is not something either end chose — leaving those open makes a
+    // clean stop look like a silent one to whichever half of the cluster the
+    // comparison put on this side.
     //
-    // A dialled one has no listener behind it, so nothing else will ever
-    // release it, and the far end has no other way to learn this instance is
-    // going: it would keep the link, keep answering `reachable`, and keep
-    // routing `instance-local` ops here until its own heartbeat gave up
-    // minutes later — where the disconnection of §7.5 is supposed to be
-    // immediate. Which of the two a link is comes from the glare rule and so
-    // from a comparison of endpoint strings (§8.1), which means every peer is
-    // on the dialled side of some link: leaving these open makes a clean stop
-    // look like a silent one to half the cluster.
+    // An accepted socket is transport's to release (§8.5 step 5), and left to
+    // it the far end is told whenever the listener gets round to it: measured
+    // against Bun 1.3.13, `stop` on a server that has itself closed a
+    // WebSocket — which the mesh does, to drop the loser of a glare — never
+    // settles, and the wait for it is capped rather than trusted. That cap
+    // bounds this instance's own exit; it cannot bound when the peer hears.
+    // Closing here is what makes the notice the mesh's own rather than a side
+    // effect of a listener going down. The step-3 notice this precedes is
+    // `restarting`, which is addressed to clients — a peer learns from the
+    // link, and that is the whole of what §7.5 asks for.
     for (const link of this.#links.values()) {
       clearInterval(link.heartbeat);
-      if (link.dialledByUs) link.conn.close();
+      link.conn.close();
     }
     for (const peer of this.#links.keys()) this.#abandon(peer);
     this.#links.clear();

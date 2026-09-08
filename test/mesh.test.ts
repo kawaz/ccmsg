@@ -312,6 +312,25 @@ describe("glare (mesh-peer-auth §8.1)", () => {
   });
 });
 
+describe("stopping tells the peers (§7.5)", () => {
+  test("a peer that dialled here is told, rather than left to its heartbeat", async () => {
+    // The link under test is one this instance accepted: the glare rule
+    // decides which end dialled from a comparison of endpoint strings, so
+    // whether a peer is told cannot be allowed to depend on which side of that
+    // comparison it fell. Left to the listener's own teardown, a peer learns
+    // whenever that gets round to it, and until then it keeps the link, keeps
+    // answering `reachable`, and keeps routing here.
+    const { instance, peer } = await withFakePeer();
+    const reply = await peer.greet(instance.self);
+    expect(reply["ok"]).toBe(true);
+    expect(instance.mesh?.reachable(peer.id)).toBe(true);
+    // The mesh alone, with the listener still up: what the peer hears has to
+    // be the mesh letting the link go, not the socket disappearing under it.
+    instance.mesh?.stop();
+    await eventually(() => peer.closed);
+  });
+});
+
 describe("the heartbeat (mesh-peer-auth §8.3)", () => {
   test("a link that stops answering is dropped and the peer stops being reachable", async () => {
     const { instance, peer } = await withFakePeer({

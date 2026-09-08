@@ -236,6 +236,31 @@ describe("the fold (§3.3)", () => {
     expect(fold.facts.api_error?.occurred_at).toBe(NOW + 7);
   });
 
+  test("what answered last is the last turn's, not the first's", () => {
+    const turn = (model: string, effort: string | undefined, offsetMs: number) => ({
+      type: "assistant",
+      timestamp: at(offsetMs),
+      message: { model, content: [{ type: "text", text: "here you go" }] },
+      ...(effort === undefined ? {} : { effort }),
+    });
+    const fold = new TranscriptFold();
+    fold.line(JSON.stringify(turn("claude-fable-5", "low", 1)));
+    expect(fold.facts).toMatchObject({ model: "claude-fable-5", effort: "low" });
+    // `/model` and `/effort` mid-session: the newest row is what the session
+    // must resume as, and each is read off the row that states it.
+    fold.line(JSON.stringify(turn("claude-opus-5", "xhigh", 2)));
+    expect(fold.facts).toMatchObject({ model: "claude-opus-5", effort: "xhigh" });
+    // Neither a subagent's model nor the harness's own synthetic row is the
+    // session answering.
+    fold.line(JSON.stringify({ ...turn("claude-haiku-4-5", "low", 3), isSidechain: true }));
+    fold.line(JSON.stringify(apiError("Prompt is too long", 4)));
+    expect(fold.facts).toMatchObject({ model: "claude-opus-5", effort: "xhigh" });
+    // A turn that names no effort has none to report, rather than keeping what
+    // an older turn ran as.
+    fold.line(JSON.stringify(turn("claude-opus-5", undefined, 5)));
+    expect(fold.facts.effort).toBeUndefined();
+  });
+
   test("a fold that has read an error is what makes a live session Waiting (§5.2)", () => {
     const fold = new TranscriptFold();
     fold.line(JSON.stringify(apiError("Prompt is too long")));

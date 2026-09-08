@@ -27,6 +27,14 @@ export interface TranscriptFacts {
   readonly api_error?: SessionApiError;
   /** When a person last put something into the session (§5.3). */
   readonly last_user_input_at?: Timestamp;
+  /** What answered on the latest turn, and how hard it was asked to think.
+   *
+   * Both are the transcript's answer rather than the greeting's: a session
+   * names its model once, when it greets, and `/model` and `/effort` move it
+   * afterwards without saying so again. The two are read off the same row, so
+   * they can never describe different turns. */
+  readonly model?: string;
+  readonly effort?: string;
   /** Every absolute path the transcript named, whichever way it named it.
    *
    * Not yet the contract's `external_files`, which is the paths outside the
@@ -66,6 +74,8 @@ export const NO_FACTS: TranscriptFacts = {
 export class TranscriptFold {
   #apiError: SessionApiError | undefined;
   #lastUserInputAt: Timestamp | undefined;
+  #model: string | undefined;
+  #effort: string | undefined;
   /** Paths in the order they were first named, so the value is stable across
    * reads of the same file. */
   readonly #files = new Map<string, ExternalFile>();
@@ -83,6 +93,8 @@ export class TranscriptFold {
     return {
       ...(this.#apiError === undefined ? {} : { api_error: this.#apiError }),
       ...(this.#lastUserInputAt === undefined ? {} : { last_user_input_at: this.#lastUserInputAt }),
+      ...(this.#model === undefined ? {} : { model: this.#model }),
+      ...(this.#effort === undefined ? {} : { effort: this.#effort }),
       named_files: [...this.#files.values()],
       todos: [...this.#todos.values()],
       teammates: [...this.#teammates.values()].map((each) => each.status),
@@ -95,6 +107,8 @@ export class TranscriptFold {
   reset(): void {
     this.#apiError = undefined;
     this.#lastUserInputAt = undefined;
+    this.#model = undefined;
+    this.#effort = undefined;
     this.#files.clear();
     this.#todos.clear();
     this.#teammates.clear();
@@ -121,6 +135,7 @@ export class TranscriptFold {
     if (!isRecord(row)) return false;
     // Every value this fold derives, derived from the one parse (M5).
     let changed = this.#foldApiError(row);
+    if (this.#foldAnswered(row)) changed = true;
     if (this.#foldUserInput(row)) changed = true;
     if (this.#foldCalls(row)) changed = true;
     if (this.#foldResult(row)) changed = true;
@@ -168,6 +183,32 @@ export class TranscriptFold {
     // one the person is stuck on.
     if (this.#apiError?.text === text && this.#apiError.occurred_at === occurredAt) return false;
     this.#apiError = { text, occurred_at: occurredAt };
+    return true;
+  }
+
+  /** What answered the latest turn, from an assistant row.
+   *
+   * The model sits on `message.model` and the effort beside it on the row, and
+   * both are taken from the same row so that they describe one turn. The
+   * newest row wins outright: a session moved to another model mid-transcript
+   * is on that model now, which is the whole reason this is not the greeting's
+   * value.
+   *
+   * A row the harness wrote itself carries `model: "<synthetic>"` and says
+   * nothing about what is answering, and a sidechain row is a subagent, which
+   * runs on a model of its own. Effort absent from an otherwise real row
+   * clears what an earlier row said rather than keeping it: the row states the
+   * turn, and a turn that names no effort has none to report. */
+  #foldAnswered(row: Record<string, unknown>): boolean {
+    if (row["type"] !== "assistant" || row["isSidechain"] === true) return false;
+    const message = row["message"];
+    if (!isRecord(message)) return false;
+    const model = str(message["model"]);
+    if (model === undefined || model === "<synthetic>") return false;
+    const effort = str(row["effort"]);
+    if (this.#model === model && this.#effort === effort) return false;
+    this.#model = model;
+    this.#effort = effort;
     return true;
   }
 
