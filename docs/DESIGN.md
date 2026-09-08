@@ -277,7 +277,7 @@ way the meaning of clearing and retention period is unchanged).
 
 The receiving side has rate limiting (token bucket / duplicate detection / queue limit) and
 may decline and drop a message. **A dropped message is not marked as delivered** (DV-Q2). It
-stays in inbox with a backoff before resending, and the sender receives
+stays in inbox awaiting the next occasion to be offered again, and the sender receives
 `delivered: false, reason: "throttled"`.
 
 Reason: a drop means "the destination cannot receive it right now," neither "it arrived" nor
@@ -288,8 +288,12 @@ receivable again).
 
 `throttled` is a reason defined by the contract, not something the daemon adds on its own. The
 daemon only returns the contract's reasons and does not extend the set of reasons on its own
-side. The backoff interval should be derived from "the recovery rate of the peer's token
-bucket" (M3 — do not decide by guesswork).
+side. What occasions a re-offer is exactly §4.3's dequeue condition (the next `message_send` to
+the same sid got through on (a) / `inbox` got subscribed / the session became live again), not
+the passage of time. There is no periodic resend timer (M3 — no primary source states the
+recovery rate of the peer's token bucket, so an interval cannot be anything but guesswork).
+Messages go out one at a time, oldest first, stopping at the first one that does not get
+through; the rest stay in inbox in order.
 
 ## 5. Session state model
 

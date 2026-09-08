@@ -100,6 +100,33 @@ class StubDirectRoute implements DirectRoute {
   close(): void {}
 }
 
+/** Route (a) as a script: one outcome per send, in order, and a note of what it
+ * was asked to carry. What the offer of §4.3 is about is the order of those
+ * sends and where they stop, neither of which one fixed outcome can state. */
+class ScriptedDirectRoute implements DirectRoute {
+  readonly carried: InboxMessage[] = [];
+  /** Run while a send is in flight, so a test can have something else happen
+   * partway through an offer. */
+  during: ((message: InboxMessage) => void) | undefined;
+
+  constructor(private readonly outcomes: DirectOutcome[]) {}
+
+  async send(_sid: Sid, message: InboxMessage): Promise<DirectOutcome> {
+    this.carried.push(message);
+    // A real send gives up the turn on a socket; this gives it up on nothing,
+    // which is what lets a subscribe land in the middle of an offer.
+    await Promise.resolve();
+    this.during?.(message);
+    return this.outcomes.shift() ?? "unavailable";
+  }
+
+  close(): void {}
+
+  texts(): string[] {
+    return this.carried.map((message) => message.text);
+  }
+}
+
 interface Rig {
   sessions: FakeSessions;
   topics: Topics;
@@ -516,5 +543,104 @@ describe("the inbox on disk (§3.6 / §4.3)", () => {
     // A restart, so a file written only on the way up would show here too.
     rig({ dir });
     expect(readdirSync(dir).sort()).toEqual(["inbox.jsonl"]);
+  });
+});
+
+describe("what is held is offered again when the session can take it", () => {
+  test("route (a) getting through empties what was waiting, oldest first", async () => {
+    // Two turned away, then one that gets through: the session is taking
+    // messages again, so the two it turned away go now (§4.3).
+    const route = new ScriptedDirectRoute([
+      "refused",
+      "refused",
+      "delivered",
+      "delivered",
+      "delivered",
+    ]);
+    const { sessions, inbox, send } = rig({ direct: route });
+    sessions.live(SID);
+    sessions.live(OTHER_SID);
+    const sender = connAs("session", SID);
+
+    expect(await send(sender, OTHER_SID, "first")).toEqual({
+      delivered: false,
+      reason: "throttled",
+    });
+    expect(await send(sender, OTHER_SID, "second")).toEqual({
+      delivered: false,
+      reason: "throttled",
+    });
+
+    expect(await send(sender, OTHER_SID, "third")).toEqual({ delivered: true });
+    expect(route.texts()).toEqual(["first", "second", "third", "first", "second"]);
+    expect(inbox.undelivered(OTHER_SID)).toEqual([]);
+  });
+
+  test("an offer stops where the session turns one away, and the rest stay in order", async () => {
+    const route = new ScriptedDirectRoute([
+      "refused",
+      "refused",
+      "delivered",
+      "delivered",
+      "refused",
+    ]);
+    const { sessions, inbox, send } = rig({ direct: route });
+    sessions.live(SID);
+    sessions.live(OTHER_SID);
+    const sender = connAs("session", SID);
+
+    await send(sender, OTHER_SID, "first");
+    await send(sender, OTHER_SID, "second");
+    await send(sender, OTHER_SID, "third");
+
+    // "second" was refused again and "first" is gone, so nothing was offered
+    // after the refusal and the one left is still the older of the two.
+    expect(route.texts()).toEqual(["first", "second", "third", "first", "second"]);
+    expect(inbox.undelivered(OTHER_SID).map((message) => message.text)).toEqual(["second"]);
+  });
+
+  test("a subscribe landing mid-offer is handed nothing the offer is carrying", async () => {
+    const route = new ScriptedDirectRoute(["refused", "refused", "delivered", "delivered"]);
+    const { sessions, topics, inbox, delivery, send } = rig({ direct: route });
+    sessions.live(SID);
+    sessions.live(OTHER_SID);
+    const sender = connAs("session", SID);
+    await send(sender, OTHER_SID, "first");
+    await send(sender, OTHER_SID, "second");
+
+    let snapshot: InboxMessage[] = [];
+    route.during = () => {
+      if (snapshot.length > 0 || route.carried.length !== 3) return;
+      snapshot = messagesOf(inboxFrames(listening(topics, OTHER_SID, true))[0]);
+    };
+    await delivery.retry();
+
+    // Each message went out once: over route (a) here, and so not in the
+    // snapshot the subscribe answered.
+    expect(route.texts()).toEqual(["first", "second", "first", "second"]);
+    expect(snapshot).toEqual([]);
+    expect(inbox.undelivered(OTHER_SID)).toEqual([]);
+  });
+
+  test("a session that is back is offered what was held while it was gone", async () => {
+    // The session is gone, so its socket is too: route (a) does not apply, and
+    // the message is held under the reason §4.2 names for that.
+    const route = new ScriptedDirectRoute(["unavailable", "delivered"]);
+    const { sessions, inbox, delivery, send } = rig({ direct: route });
+    sessions.live(SID);
+    sessions.gone(OTHER_SID, "disappeared");
+
+    const result = await send(connAs("session", SID), OTHER_SID, "while away");
+    expect(result.reason).toBe("disappeared");
+    // Nothing is offered to a session that is still gone, so the route was
+    // asked once — by the send itself — and not again.
+    await delivery.retry();
+    expect(route.carried).toHaveLength(1);
+
+    sessions.states.set(OTHER_SID, "live");
+    await delivery.retry();
+
+    expect(route.texts()).toEqual(["while away", "while away"]);
+    expect(inbox.undelivered(OTHER_SID)).toEqual([]);
   });
 });

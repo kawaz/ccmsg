@@ -85,6 +85,16 @@ export interface DeliveryDeps {
 export class Delivery implements UpstreamResource {
   #counter: number;
 
+  /** The sessions an offer is running for, so two of them cannot run at once
+   * and send one message twice or send an older one after a newer. */
+  readonly #offering = new Set<Sid>();
+
+  /** The messages an offer has taken responsibility for, per session. They are
+   * still in the inbox — an offer that does not reach the end leaves them
+   * there — but they are spoken for, so the snapshot below hands them to
+   * nobody: one message goes out on one route (§4.3). */
+  readonly #claimed = new Map<Sid, Set<Mid>>();
+
   constructor(private readonly deps: DeliveryDeps) {
     this.#counter = deps.inbox.lastCounter(`${deps.self}/`);
   }
@@ -103,7 +113,13 @@ export class Delivery implements UpstreamResource {
     const message = this.#message(args, this.#sender(input));
 
     const direct = await this.deps.direct.send(to, message);
-    if (direct === "delivered") return { delivered: true };
+    if (direct === "delivered") {
+      // Route (a) reaching this session is the session being able to receive,
+      // which is what the inbox waits for (§4.3). Whatever is still held for it
+      // is offered now, on the route that just worked.
+      await this.#offer(to);
+      return { delivered: true };
+    }
     if (direct === "refused") {
       // Turned away for now, which is neither delivered nor undeliverable: it
       // waits in the inbox and is offered again (§4.4).
@@ -157,6 +173,50 @@ export class Delivery implements UpstreamResource {
     );
   }
 
+  /** Offer what is held to every session that might take it now.
+   *
+   * Called where the sessions domain says something about a session changed:
+   * one of the things that can have changed is a session being live again, and
+   * a session that is back is one route (a) can be tried against. Sessions with
+   * nothing waiting are not asked about, so the cost of a change nobody is owed
+   * anything after is one map read. */
+  retry = async (): Promise<void> => {
+    for (const sid of this.deps.inbox.sids()) {
+      const state = this.deps.sessions.classify(sid);
+      if (state === undefined || state === "paused" || state === "disappeared") continue;
+      await this.#offer(sid);
+    }
+  };
+
+  /** Hand a session what it is owed, oldest first, over route (a).
+   *
+   * Stops at the first message the route does not carry, whatever it answered:
+   * a refusal means the session is taking nothing more for now (§4.4), and an
+   * unavailable route means route (b) is the one that applies — either way the
+   * rest stay held, in order, for the next time this session becomes able to
+   * receive. */
+  async #offer(to: Sid): Promise<void> {
+    if (this.#offering.has(to)) return;
+    const held = this.deps.inbox.undelivered(to);
+    if (held.length === 0) return;
+    this.#offering.add(to);
+    this.#claimed.set(to, new Set(held.map((message) => message.mid)));
+    try {
+      for (const message of held) {
+        const outcome = await this.deps.direct.send(to, message);
+        // Out of the inbox one at a time rather than in one batch at the end:
+        // an offer interrupted partway through has still delivered what it
+        // delivered, and a daemon killed here must not offer those again.
+        if (outcome !== "delivered") break;
+        this.#claimed.get(to)?.delete(message.mid);
+        this.deps.inbox.delivered(to, [message.mid]);
+      }
+    } finally {
+      this.#claimed.delete(to);
+      this.#offering.delete(to);
+    }
+  }
+
   // --- UpstreamResource (§6.3)
 
   /** Nothing upstream to run: what is undelivered is already in hand, and the
@@ -173,12 +233,19 @@ export class Delivery implements UpstreamResource {
    * queued on the connection before this returns, and a message the session has
    * been handed is not one that is still waiting for it (§4.3). A connection
    * with no session — a person watching — is handed nothing, because the topic
-   * carries what was said to a session and they are not one. */
+   * carries what was said to a session and they are not one.
+   *
+   * A message an offer over route (a) has claimed is left out: it is on its way
+   * on the other route, and the session subscribing while that runs must not
+   * make it two messages. */
   snapshot(topic: string, conn: Requester): readonly TopicValue[] {
     const identity = conn.identity;
     const sid = identity.state === "settled" ? identity.sid : undefined;
     if (topic !== INBOX || sid === undefined) return [];
-    const held = this.deps.inbox.undelivered(sid);
+    const claimed = this.#claimed.get(sid);
+    const held = this.deps.inbox
+      .undelivered(sid)
+      .filter((message) => claimed?.has(message.mid) !== true);
     this.deps.inbox.delivered(
       sid,
       held.map((message) => message.mid),

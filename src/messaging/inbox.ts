@@ -111,6 +111,13 @@ export class Inbox {
     for (const mid of mids) this.#append({ v: "delivered", sid, mid });
   }
 
+  /** Every session something is waiting for. What reads it is the offer of
+   * §4.3: when a session becomes able to receive, what it is owed has to be
+   * findable without asking about each sid in turn. */
+  sids(): Sid[] {
+    return [...this.#held.keys()];
+  }
+
   /** The highest counter this instance has already issued, so a restart does
    * not hand out a `mid` that a held message already carries. */
   lastCounter(prefix: string): number {

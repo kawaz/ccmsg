@@ -390,6 +390,9 @@ export class Instance {
       ...(this.#mesh === undefined ? {} : { mesh: this.#mesh }),
       onChanged: () => {
         this.#status.refresh();
+        // A session that is live again is one route (a) can be tried against,
+        // which is what the inbox is waiting for (§4.3).
+        void this.#delivery.retry();
       },
       ...(pollMs === undefined ? {} : { pollMs }),
     });
