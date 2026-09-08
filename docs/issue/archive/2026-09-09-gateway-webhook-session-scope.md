@@ -1,6 +1,6 @@
 ---
 title: gateway webhook の session_id が config home でスコープされない
-status: open
+status: resolved
 category: design
 created: 2026-09-09T00:19:04+09:00
 last_read:
@@ -9,10 +9,10 @@ wip_entered:
 blocked_entered:
 pending_entered:
 discarded_entered:
-resolved_entered:
+resolved_entered: 2026-09-09T03:56:15+09:00
 discard_reason:
 pending_reason:
-close_reason:
+close_reason: ["done: v0.0.21 で gateway の活動時刻はこの instance が知る sid (接続中 / last_live / 自 config home の sessions/) にだけ効かせ、llm_requests には流す形に実装 (commit d3537f19)。§5.1 に明記"]
 blocked_by:
 origin: 2026-09-08 の設計監査 (fable5-high)
 ---
