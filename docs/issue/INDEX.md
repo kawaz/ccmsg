@@ -5,6 +5,7 @@ active な issue の一覧。close 済みは archive/ にあり、ここには�
 | date | category | status | slug | 概要 |
 |---|---|---|---|---|
 | 2026-09-08 | bug | open | [fs-watch-alone-test-timeout](./2026-09-08-fs-watch-alone-test-timeout.md) | `test/sessions.test.ts` の「the file watch alone carries a change, with the poll too... |
+| 2026-09-08 | design | open | [terminal-id-for-unmanaged-classification](./2026-09-08-terminal-id-for-unmanaged-classification.md) | `AgentInfo.terminal_id` を harness の poll では埋めていない (契約は「走っているプロセスの env... |
 
 <!--
 INDEX の列構成・canonical 順序・行形式の唯一の正本:
