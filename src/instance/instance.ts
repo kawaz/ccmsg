@@ -402,6 +402,7 @@ export class Instance {
       self: this.self,
       sessions: () => this.#sessions.connectedSids(),
       facts: (sid) => this.#transcripts.facts(sid),
+      where: (sid) => this.#sessions.where(sid),
       hold: (sid) => {
         this.#transcripts.hold(sid);
       },
@@ -471,7 +472,7 @@ export class Instance {
       roots: (sid): SessionRoots | undefined => {
         const where = this.#sessions.where(sid);
         if (where.root === undefined && where.cwd === undefined) return undefined;
-        const status = sessionStatusOf(sid, this.#transcripts.facts(sid));
+        const status = sessionStatusOf(sid, this.#transcripts.facts(sid), where);
         return {
           ...where,
           workspace_folders: status.workspace_folders.map((folder) => folder.path),

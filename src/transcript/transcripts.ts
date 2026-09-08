@@ -1,6 +1,6 @@
 import type { InstanceId, Sid } from "@ccmsg/protocol";
 import { topicParam, type TopicValue, type UpstreamResource } from "../topics/index.ts";
-import { type TranscriptFacts, TranscriptFold } from "./fold.ts";
+import { NO_FACTS, type TranscriptFacts, TranscriptFold } from "./fold.ts";
 import { type Appended, TranscriptTail } from "./tail.ts";
 
 export interface TranscriptsDeps {
@@ -62,7 +62,7 @@ export class Transcripts implements UpstreamResource {
   /** What the fold currently says about a session. Empty for one not being
    * followed, which is the same as a transcript that has said nothing. */
   facts(sid: Sid): TranscriptFacts {
-    return this.#followed.get(sid)?.fold.facts ?? {};
+    return this.#followed.get(sid)?.fold.facts ?? NO_FACTS;
   }
 
   /** Whether a session's transcript is being followed, which is how "the

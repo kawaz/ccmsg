@@ -82,6 +82,7 @@ function domain(sids: Sid[]) {
     self: SELF,
     sessions: () => live,
     facts: (sid) => folds.facts(sid),
+    where: () => ({}),
     hold: (sid) => folds.hold(sid),
     release: (sid) => folds.release(sid),
     publish: (topic, data) => published.push({ topic, data: data as Record<string, unknown> }),

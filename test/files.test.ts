@@ -26,6 +26,8 @@ import {
   SandboxGrants,
   type SessionRoots,
 } from "../src/files/index.ts";
+import { sessionStatusOf } from "../src/sessions/index.ts";
+import { TranscriptFold } from "../src/transcript/index.ts";
 import { OTHER_SID, SID, TestConn } from "./frames.ts";
 
 /** A tree with one of each surface, and one file outside every surface.
@@ -609,5 +611,101 @@ describe("sandbox", () => {
       path: join(base, "outside/named.txt"),
     });
     expect(grant.url.endsWith(grant.token)).toBe(true);
+  });
+});
+
+/** The surfaces, reached the way the instance reaches them: what the fold read
+ * out of a transcript becomes the allowlist a path is admitted by. Nothing here
+ * states an allowlist directly — a fixture that did would pass while the fold
+ * that has to fill it stayed empty. */
+describe("the allowlists a session's own facts state", () => {
+  const NAMED = "/named.txt";
+  const UNNAMED = "/secret.txt";
+
+  /** The status frame for a transcript of these rows, as `session_status:<sid>`
+   * would carry it and as containment reads it. */
+  function stated(rows: object[], where: { root?: string; cwd?: string }) {
+    const fold = new TranscriptFold();
+    for (const row of rows) fold.line(JSON.stringify(row));
+    const status = sessionStatusOf(SID, fold.facts, where);
+    return {
+      status,
+      containment: new Containment({
+        roots: (sid) =>
+          sid === SID
+            ? {
+                ...where,
+                workspace_folders: status.workspace_folders.map((each) => each.path),
+                external_files: status.external_files.map((each) => each.path),
+              }
+            : undefined,
+      }),
+    };
+  }
+
+  const read = (path: string) => ({
+    type: "assistant",
+    timestamp: "2026-09-08T10:00:00.000Z",
+    message: {
+      model: "claude-fable-5",
+      content: [{ type: "tool_use", id: "t1", name: "Read", input: { file_path: path } }],
+    },
+  });
+
+  /** Read inside each test: the fixture tree is built in `beforeAll`. */
+  const where = () => ({ root: join(base, "repo"), cwd: join(base, "repo/ws") });
+
+  test("a file the transcript named outside the root is reachable as external", () => {
+    const { status, containment } = stated([read(join(base, "outside", NAMED))], where());
+    expect(status.external_files).toEqual([{ path: join(base, "outside", NAMED), origin: "tool" }]);
+    expect(
+      containment.locate({ sid: SID, kind: "external", path: join(base, "outside", NAMED) }).real,
+    ).toBe(join(base, "outside", NAMED));
+  });
+
+  test("a file the transcript never named is not", () => {
+    const { containment } = stated([read(join(base, "outside", NAMED))], where());
+    expect(() =>
+      containment.locate({ sid: SID, kind: "external", path: join(base, "outside", UNNAMED) }),
+    ).toThrow(OpError);
+  });
+
+  test("a file inside the root is not external, since external is what is outside it", () => {
+    const inside = join(base, "repo/ws/hello.txt");
+    const { status } = stated([read(inside)], where());
+    expect(status.external_files).toEqual([]);
+  });
+
+  test("a session that stated no root admits none of the paths it named", () => {
+    const { status } = stated([read(join(base, "outside", NAMED))], { cwd: join(base, "repo/ws") });
+    expect(status.external_files).toEqual([]);
+  });
+
+  test("a workspace file beside the working directory admits its whole subtree", () => {
+    writeFileSync(
+      join(base, "repo/ws/project.code-workspace"),
+      // With a comment and a trailing comma, as the editors that write these allow.
+      `{\n  // the folders of this workspace\n  "folders": [{ "path": "../../space", "name": "docs" },],\n}\n`,
+    );
+    try {
+      const { status, containment } = stated([], where());
+      expect(status.workspace_folders).toEqual([{ name: "docs", path: join(base, "space") }]);
+      expect(
+        containment.locate({ sid: SID, kind: "workspace", path: join(base, "space/doc.md") }).kind,
+      ).toBe("workspace");
+      expect(() =>
+        containment.locate({ sid: SID, kind: "workspace", path: join(base, "outside", NAMED) }),
+      ).toThrow(OpError);
+    } finally {
+      rmSync(join(base, "repo/ws/project.code-workspace"));
+    }
+  });
+
+  test("a working directory with no workspace file names no folder", () => {
+    const { status, containment } = stated([], where());
+    expect(status.workspace_folders).toEqual([]);
+    expect(() =>
+      containment.locate({ sid: SID, kind: "workspace", path: join(base, "space/doc.md") }),
+    ).toThrow(OpError);
   });
 });

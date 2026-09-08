@@ -5,9 +5,11 @@ import type {
   SessionStatusSnapshot,
   Sid,
 } from "@ccmsg/protocol";
+import { canonical, within } from "../files/containment.ts";
 import type { TopicValue, UpstreamResource } from "../topics/index.ts";
 import { topicParam } from "../topics/index.ts";
 import type { TranscriptFacts } from "../transcript/index.ts";
+import { workspaceFolders } from "./workspace.ts";
 
 /** What the fold says stopped a session, read in one place.
  *
@@ -21,27 +23,49 @@ export function stoppedOn(facts: TranscriptFacts): SessionApiError | undefined {
 
 /** The `session_status:<sid>` payload.
  *
- * The fold settles one of its fields. The rest are the empty lists the
- * contract spells "nothing was declared", which is also what this instance can
- * honestly say about a transcript it reads for the error state alone. */
+ * Almost every field is the fold's, stated as the fold left it: one pass over
+ * the transcript settles the error, the task list, the files it named and what
+ * is running below it, and this assembles them rather than reading anything a
+ * second time (M5).
+ *
+ * The two fields that are not the fold's are the ones the transcript does not
+ * carry. `workspace_folders` is read from the editor's own workspace file, and
+ * `external_files` needs a root to be outside of — a greeting's fact, not a
+ * transcript's — so the paths the fold collected are filtered here, where the
+ * root is known. A session that stated no root contributes none of them rather
+ * than all of them: the list is the allowlist an `external` read is checked
+ * against, so not knowing where the session works has to admit nothing. */
 export function sessionStatusOf(
   sid: Sid,
   facts: TranscriptFacts,
+  where: SessionWhere = {},
 ): SessionStatusSnapshot & {
   sid: Sid;
 } {
   const stopped = stoppedOn(facts);
+  const root = where.root === undefined ? undefined : canonical(where.root);
   return {
     sid,
-    todos: [],
-    workflows: [],
-    background: [],
-    teammates: [],
-    agent_tree: { teammates: [], agents: [], workflows: [] },
-    external_files: [],
-    workspace_folders: [],
+    todos: [...facts.todos],
+    workflows: [...facts.workflows],
+    background: [...facts.background],
+    teammates: [...facts.teammates],
+    agent_tree: facts.agent_tree,
+    external_files:
+      root === undefined
+        ? []
+        : facts.named_files.filter((file) => !within(canonical(file.path), root)),
+    workspace_folders: workspaceFolders(where.cwd),
     ...(stopped === undefined ? {} : { api_error: stopped }),
   };
+}
+
+/** Where a session works, as it greeted (§5.1). The same two values the file
+ * surfaces are decided against, asked for here so that what `session_status`
+ * says and what a read is admitted by come from one answer. */
+export interface SessionWhere {
+  readonly root?: string;
+  readonly cwd?: string;
 }
 
 export interface SessionStatusDeps {
@@ -51,6 +75,9 @@ export interface SessionStatusDeps {
    * (§5.1). A session it cannot follow has no error to fold. */
   readonly sessions: () => readonly Sid[];
   readonly facts: (sid: Sid) => TranscriptFacts;
+  /** Where each session works, for the two fields the transcript does not
+   * state. */
+  readonly where: (sid: Sid) => SessionWhere;
   /** The tail behind a session's fold, asked for and let go by name. */
   readonly hold: (sid: Sid) => void;
   readonly release: (sid: Sid) => void;
@@ -145,7 +172,9 @@ export class SessionStatus implements UpstreamResource {
   private value(topic: string): unknown {
     if (topic === "session_errors") return this.errors();
     const sid = topicParam(topic);
-    return sid === undefined ? undefined : sessionStatusOf(sid, this.deps.facts(sid));
+    return sid === undefined
+      ? undefined
+      : sessionStatusOf(sid, this.deps.facts(sid), this.deps.where(sid));
   }
 
   /** Bring the held tails in line with what the subscriptions need. */

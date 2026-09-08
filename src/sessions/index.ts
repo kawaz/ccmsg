@@ -17,3 +17,4 @@ export {
 export * from "./registry.ts";
 export { search, type SearchDeps } from "./search.ts";
 export * from "./status.ts";
+export { workspaceFolders } from "./workspace.ts";
