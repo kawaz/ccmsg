@@ -3,7 +3,7 @@ title: 負荷下でのみ落ちるテスト 2 件の flake 調査
 status: open
 category: bug
 created: 2026-09-09T04:21:50+09:00
-last_read:
+last_read: 2026-09-09T16:31:05+09:00
 open_entered: 2026-09-09T04:21:50+09:00
 wip_entered:
 blocked_entered:
