@@ -28,6 +28,12 @@ WS の入口は entry token (state ディレクトリの 0600 file) で守って
 - 受けた instance は `iss` が自分なら HMAC で jwt を検証し `jti` を消費する。WebAuthn 登録の検証 (L2 §7.1): `clientDataJSON.type` = `webauthn.create`、`challenge` = 発行した値、`origin` ∈ `entry.origins`、`crossOrigin` / `topOrigin` が無いこと、`authData.rpIdHash` = sha256(`rp_id`)、UP と UV の flag、`fmt` = `none` で `attStmt` が空、credential id が既存 record と重複しないこと。通ったら `{ sub, unit, credential id, COSE 公開鍵, user.id, 登録時刻 }` を **credential record** として保存する。`iss` が自分でなければ `iss` へ転送する (§2.6)
 - `iss` が再起動していれば secret が消えて失敗する。登録に fallback は無く、CLI で URL を発行し直す (エラー文言は「登録 URL を再発行してください」)
 - リモートからの登録経路は無い。復旧も CLI だけ。`passkey list` / `passkey remove <sub>`
+- **保守情報**: `passkey add --name <名前>` とページ側の名前入力を受け、credential record に `name` / `user_agent` / `registered_at` / `registered_from` (IP) / `last_used_at` を持つ。`passkey list` はこれを並べ、不要な passkey を名前と日時で選んで消せるようにする
+
+#### 任意のゲート (最低限プロトコルの上に独立に積む。ccmsg では後続)
+
+- **CLI 提示コード**: `passkey add` が 6 桁のコードを表示し (URL には含めない。登録の一次 secret と一緒に発行 instance が保持)、ページはそれを入力させる。URL を持っているだけでは登録できなくなる (URL 漏洩への防御)。jwt から導出したコードを両方に表示して目視照合する形は「端末が CLI の隣にある」確認にしかならないので採らない
+- **ホスト PC の FIDO 承認**: 発行 instance は `/auth/register` を受けても完了せず保留し、`passkey add` を実行中の CLI に登録内容 (名前 / 端末 / コード / 時刻) を提示して OS の生体認証 (macOS は LocalAuthentication) を要求、CLI からの承認で完了する。離席中の第三者による登録を防ぐ。承認の起点を CLI に置くのは、登録がローカルに閉じている §2.2 の性質をそのまま延ばすため
 
 ### 2.3 RP ID は domain、既定は endpoint のホスト
 
