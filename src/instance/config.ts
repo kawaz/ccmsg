@@ -14,7 +14,11 @@ export interface EntryConfig {
   /** Source addresses allowed to connect. Empty means every address the bind
    * itself already permits, which for the default loopback bind is this host. */
   readonly source_ips: readonly string[];
-  /** `Origin` values a browser connection may present. Empty means any. */
+  /** `Origin` values a browser connection may present. Empty admits no
+   * browser at all: a request carrying no `Origin` is not a browser's and is
+   * judged on the address and the token alone, so the list only ever widens
+   * what reaches the socket, and an unlisted webui is refused rather than
+   * let in by default. */
   readonly origins: readonly string[];
 }
 
