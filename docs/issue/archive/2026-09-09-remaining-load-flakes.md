@@ -1,6 +1,6 @@
 ---
 title: 負荷下でのみ落ちるテスト 2 件の flake 調査
-status: wip
+status: resolved
 category: bug
 created: 2026-09-09T04:21:50+09:00
 last_read: 2026-09-09T17:21:31+09:00
@@ -9,10 +9,10 @@ wip_entered: 2026-09-09T17:19:26+09:00
 blocked_entered:
 pending_entered:
 discarded_entered:
-resolved_entered:
+resolved_entered: 2026-09-09T17:33:49+09:00
 discard_reason:
 pending_reason:
-close_reason:
+close_reason: ["done:freePort をリース化 (実 listener に引き渡すまでポートを保持、release を await してから bind) し、link 断の観測を peers topic 通知のイベント駆動に置き換えた。負荷下 20 反復 fail 0。"]
 blocked_by:
 origin: 自リポ TODO
 ---
