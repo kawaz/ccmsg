@@ -32,7 +32,9 @@ afterEach(async () => {
  * configuration (§2.3). */
 let nextPort = 45_000 + Math.floor(Math.random() * 10_000);
 
-async function serving(): Promise<{ instance: Instance; origin: string }> {
+async function serving(
+  options: { now?: () => number } = {},
+): Promise<{ instance: Instance; origin: string }> {
   const port = (nextPort += 1);
   const origin = `http://127.0.0.1:${String(port)}`;
   const root = mkdtempSync(join(tmpdir(), "ccmsg-auth-"));
@@ -49,7 +51,11 @@ async function serving(): Promise<{ instance: Instance; origin: string }> {
     CCMSG_STATE_DIR: join(root, "state"),
     CCMSG_CONFIG_DIR: join(root, "config"),
   };
-  const outcome = await start({ env, echoLog: false });
+  const outcome = await start({
+    env,
+    echoLog: false,
+    ...(options.now === undefined ? {} : { now: options.now }),
+  });
   if (!isRunning(outcome)) throw new Error("another instance holds this config home");
   running.push(outcome);
   return { instance: outcome, origin };
@@ -628,18 +634,24 @@ describe("extending a connection (§2.5)", () => {
     expect(extended.auth_expires_at).toBeGreaterThanOrEqual(greeting.auth_expires_at);
   });
 
-  test("a connection whose token ran out is closed", async () => {
-    const at = await serving();
+  test("a connection nobody extended is closed at its deadline", async () => {
+    // The instance's own clock, moved rather than waited out: an access token
+    // lasts hours, and what this is about is the deadline arriving on the path
+    // it really arrives on — the timer the connection was held with.
+    let now = Date.now();
+    const at = await serving({ now: () => now });
     const minted = at.instance.auth.mint("brief");
+    // Almost the whole life of the token has passed by the time the handshake
+    // happens, so the connection is held with a deadline moments away.
+    now = minted.session.access.expires_at - 60;
+
     const client = await connectWs(at.instance.http[0] ?? "", minted.session.access.value);
     client.send({ op: "hello", request_id: "1", role: "user", protocol_version: PROTOCOL_VERSION });
-    await client.next();
-    // What the deadline does when nobody extended it, without waiting hours for
-    // one: removing the person is the same close on the same path (§2.5).
-    const closed = Promise.withResolvers<void>();
-    void client.close().then(() => closed.resolve());
-    at.instance.auth.disconnect("brief");
-    await closed.promise;
+    const greeting = (await client.next()) as { auth_expires_at: number };
+    expect(greeting.auth_expires_at).toBe(minted.session.access.expires_at);
+
+    now = minted.session.access.expires_at + 1;
+    await client.whenClosed;
     expect(at.instance.auth.held.connections).toBe(0);
   });
 });

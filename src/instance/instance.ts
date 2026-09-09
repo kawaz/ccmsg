@@ -106,6 +106,14 @@ export interface StartOptions {
   /** Overrides the mesh's own intervals, for a test that cannot wait out a
    * heartbeat or a reconnection backoff. */
   readonly meshTiming?: MeshTiming;
+  /** The clock the person's authentication judges expiry against.
+   *
+   * An access token lasts hours, so a test that wanted to watch a connection
+   * reach its deadline would have to wait them out. Moving this instead lets
+   * the deadline arrive on the real path — the timer the connection was held
+   * with, and the close at the end of it — rather than through a second way of
+   * closing that only a test ever takes. */
+  readonly now?: () => Timestamp;
 }
 
 /** The mesh intervals a caller may shorten. The values themselves, and why they
@@ -191,6 +199,7 @@ export async function start(options: StartOptions = {}): Promise<StartOutcome> {
       gateway,
       helper,
       wiring,
+      options.now,
     );
     wiring?.attach(instance);
     await instance.listen();
@@ -334,6 +343,8 @@ export class Instance {
     setup: GatewaySetup = {},
     helper?: string,
     wiring?: MeshWiring,
+    /** The clock the person's authentication reads (`StartOptions.now`). */
+    now?: () => Timestamp,
   ) {
     this.#conns = wiring?.conns ?? new ConnRegistry();
     this.#mesh = wiring?.mesh;
@@ -505,6 +516,7 @@ export class Instance {
     const records = new AuthRecords({
       dir: recordsDir(paths.stateDir),
       self: this.self,
+      ...(now === undefined ? {} : { now }),
       publish: (written) => {
         this.#topics.publish("auth_records", { records: written });
       },
@@ -518,6 +530,7 @@ export class Instance {
       ...(this.#mesh === undefined
         ? {}
         : { ask: (to, op, args) => (this.#mesh as Mesh).ask(to, op, args) }),
+      ...(now === undefined ? {} : { now }),
       log: (msg, fields) => {
         this.log.write(msg, fields);
       },

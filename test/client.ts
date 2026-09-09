@@ -7,6 +7,10 @@ export interface LineClient {
   sendRaw(text: string): void;
   /** The next line the instance writes, parsed. */
   next(): Promise<Record<string, unknown>>;
+  /** Resolves when the connection goes, whichever end let it go. What a test
+   * about the instance closing a connection waits on — `close` below asks for
+   * one, which is a different question. */
+  readonly whenClosed?: Promise<void>;
   close(): Promise<void>;
 }
 
@@ -112,6 +116,10 @@ export async function connectWs(address: string, token?: string): Promise<LineCl
       reject(new Error("the websocket did not open"));
     });
   });
+  const gone = Promise.withResolvers<void>();
+  ws.addEventListener("close", () => {
+    gone.resolve();
+  });
   return {
     send: (frame) => {
       ws.send(`${JSON.stringify(frame)}\n`);
@@ -120,12 +128,10 @@ export async function connectWs(address: string, token?: string): Promise<LineCl
       ws.send(text);
     },
     next: () => lines.next(),
-    close: () =>
-      new Promise<void>((resolve) => {
-        ws.addEventListener("close", () => {
-          resolve();
-        });
-        ws.close();
-      }),
+    whenClosed: gone.promise,
+    close: () => {
+      ws.close();
+      return gone.promise;
+    },
   };
 }
