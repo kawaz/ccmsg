@@ -10,6 +10,7 @@ active な issue の一覧。close 済みは archive/ にあり、ここには�
 | 2026-09-09 | design | open | [transcript-topic-snapshot-vs-read-asymmetry](./2026-09-09-transcript-topic-snapshot-vs-read-asymmetry.md) | `transcript:<sid>` topic と `transcript_read` の見つけ方が非対称。`Transcript... |
 | 2026-09-09 | bug | open | [cli-peers-greets-as-session-leaves-last-live-row](./2026-09-09-cli-peers-greets-as-session-leaves-last-live-row.md) | `ccmsg peers` は `CLAUDE_CODE_SESSION_ID` (or `--sid`) があると role sess... |
 | 2026-09-09 | bug | open | [hello-drops-transcript-path-silently](./2026-09-09-hello-drops-transcript-path-silently.md) | hello で境界外の transcript_path が黙って捨てられ、送り手に理由が返らない。... |
+| 2026-09-09 | bug | open | [test-spawned-daemons-outlive-the-run](./2026-09-09-test-spawned-daemons-outlive-the-run.md) | テストが spawn した daemon プロセスが実行終了後も孤児で残存する... |
 
 <!--
 INDEX の列構成・canonical 順序・行形式の唯一の正本:
