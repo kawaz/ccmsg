@@ -10,7 +10,7 @@ import {
 } from "@ccmsg/protocol";
 import { type Env, type Instance } from "../src/instance/index.ts";
 import { Relay } from "../src/mesh/index.ts";
-import { connectUds, type LineClient } from "./client.ts";
+import { connectUds, connectWs, type LineClient } from "./client.ts";
 import {
   endpoint,
   endpointOf,
@@ -599,3 +599,48 @@ describe("what a disconnected instance leaves behind (§7.5, DV-Q12)", () => {
     expect(relay.snapshot("inbox")).toEqual([]);
   });
 });
+
+describe("the credentials and tokens the cluster shares (DR-0001 §2.6)", () => {
+  test("a record written on one instance authenticates at the other", async () => {
+    const { a, b } = await pair();
+    // What a registration would have left behind, written where it happened.
+    const session = a.auth.mint("someone");
+    await eventually(() => b.auth.admits(session.access.value) !== undefined);
+    expect(b.auth.admits(session.access.value)?.sub).toBe("someone");
+
+    // The endpoint the record travelled to takes the token on its own
+    // handshake, which is the whole point of replicating it: the instance a
+    // person registered at may be down.
+    const client = await connectWs(addressOf(b), session.access.value);
+    client.send({ op: "hello", request_id: "1", role: "user", protocol_version: PROTOCOL_VERSION });
+    expect(await client.next()).toMatchObject({ ok: true });
+    await client.close();
+  });
+
+  test("a rotation is carried to the instance that minted the family", async () => {
+    const { a, b } = await pair();
+    a.auth.mint("someone");
+    const held = a.auth.takeRefresh();
+    await eventually(() => b.auth.records.byRefresh(held?.refresh.value ?? "") !== undefined);
+
+    // B holds the family but may not write it, so it asks A — the single
+    // writer — and answers with what A minted (§2.4).
+    const rotated = await b.auth.refreshToken(held?.refresh.value ?? "");
+    expect(rotated.sub).toBe("someone");
+    expect(a.auth.admits(rotated.access.value)?.sub).toBe("someone");
+  });
+
+  test("a removal travels, and refuses the credential everywhere", async () => {
+    const { a, b } = await pair();
+    const session = a.auth.mint("goes-away");
+    await eventually(() => b.auth.admits(session.access.value) !== undefined);
+    a.auth.remove("goes-away");
+    await eventually(() => b.auth.records.removed("goes-away"));
+    expect(b.auth.admits(session.access.value)).toBeUndefined();
+  });
+});
+
+/** Where an instance's WebSocket is bound, for a client that dials it. */
+function addressOf(instance: Instance): string {
+  return instance.http[0] as string;
+}

@@ -1,6 +1,7 @@
 import { mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
+  type AuthRecord,
   type Capability,
   type Endpoint,
   type InstanceId,
@@ -360,6 +361,14 @@ export class Instance {
       handle: (frame, conn) => this.handle(frame, conn),
       publish: (topic, data, instance) => {
         this.#topics.publish(topic, data, instance);
+      },
+      // What a peer wrote on `auth_records`, folded into the set this instance
+      // holds. It is not relayed onward: every instance subscribes to every
+      // peer, so a record reaches all of them without anyone repeating it, and
+      // what this instance writes travels as its own (DR-0001 §2.6).
+      element: (_topic, _instance, data) => {
+        const stated = (data as { records?: AuthRecord[] } | undefined)?.records;
+        if (Array.isArray(stated)) this.#auth.records.merge(stated);
       },
       // What `peers` says about the instances is this instance's own view, so
       // it is restated when that view moves (§7.5).
