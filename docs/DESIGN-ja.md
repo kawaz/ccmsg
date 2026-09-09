@@ -96,12 +96,15 @@ persistence 落ちて上がっても失われては困るものだけを書く
 | 入口の許可 | source IP の allowlist、Origin の許可集合、mesh 相手の TLS |
 | identity の確定 | `hello` の結果として接続に role と (session なら) sid を束縛する |
 
-**人の認証は passkey が担う** (DR-0001)。それが入るまでの間、WS の user 接続は
-`entry.origins` と `source_ips` の 2 つだけで通す: daemon の中に秘密を置いても
-**A4 の uid 境界を WS に言い直すだけ**であり、利用者が単一で到達経路が tailnet の内側に
-限られるこの構成には、その境界を破れる相手が居ない。UDS は到達すること自体が
-ディレクトリの権限を通ることなので何も提示しない。mesh は相手の TLS と `iss` / `aud` +
-proof (§7.2)、webhook は `Authorization: Bearer` で、どちらも経路自身が秘密を持つ。
+**人の認証は passkey が担う** (DR-0001、実装の接続点は §3.7)。人の WS 接続は subprotocol
+`ccmsg.token.<access token>` を提示し、token が record に引けなければ handshake を断る。
+`entry.origins` と `source_ips` は「どこから来られるか」の allowlist として残るが、
+**「誰が来たか」に答えるのは token だけ**である。token を持たない handshake は匿名の人として
+通すのではなく断る。access token の `exp` が接続の期限で、`hello` の応答の
+`auth_expires_at` がそれを名乗り、同じ接続上の `auth_refresh` で延ばす。UDS は到達すること
+自体がディレクトリの権限を通ることなので何も提示せず、期限も付かない。mesh は相手の TLS と
+`iss` / `aud` + proof (§7.2)、webhook は `Authorization: Bearer` で、どちらも経路自身が
+秘密を持つ。
 
 **人と gateway の入口 (`/ws`、`/auth/*`、`/webhook/<source>`) はパスの末尾で照合し、
 prefix を問わない** (DR-0001 §2.7)。proxy は prefix を剥がさずそのまま渡してよく、
@@ -175,7 +178,7 @@ domain に入る境界で ccmsg の型に変換する** (単位を Unix ms に�
 
 ### 3.6 persistence
 
-書くのは 5 種類だけにする。
+書くのは 6 種類だけにする。
 
 | 対象 | 理由 |
 |---|---|
@@ -184,6 +187,11 @@ domain に入る境界で ccmsg の型に変換する** (単位を Unix ms に�
 | ログ | 落ちた原因を後から読むため。exit 直前の行を落とさない writer を 1 つ持つ |
 | inbox (未配送メッセージ) | 他のどこからも再構成できない状態 (§4.3) |
 | kv (`kv_write` で保存された値) | 人が保存した値そのもの。派生値ではなく、client 側の複製は写しでしかない |
+| auth records (`<state dir>/auth/records.json`、mode 0600) | 登録された credential・token family・tombstone (§3.7)。credential は authenticator とここにしか無く、family を失うことは人をログアウトさせること |
+
+auth records も同じ理屈で M4 の対象外である: credential は authenticator の中とここにしか
+無く、他のどこからも再構成できない。cluster の他 instance が写しを持つのは複製であって
+導出ではない (全 instance が同時に失えば戻らない)。
 
 inbox と kv は M4 の例外ではなく、M4 の対象外である。M4 が禁じるのは**派生値**の永続化であり、
 未配送メッセージは派生値ではない。送信側の `message_send` は既に応答を返して終わっており、
@@ -217,6 +225,44 @@ M4 とも矛盾しない。M4 が禁じるのは派生値をディスクに置�
 位置づけは「人が op で作らせた成果物」で、launcher が立てた子プロセスや sandbox が発行した URL
 と同じく、instance が要求に応じて世界に残す作用であって instance の状態ではない。破棄する
 仕組みは持たない。
+
+### 3.7 人の認証 (passkey)
+
+正本は DR-0001。ここに置くのは他の層との接続点だけである。
+
+**登録はローカルからしか始まらない。** `ccmsg daemon passkey add <unit> [endpoint]` が
+登録用 URL (`<webui の origin>/#register=<jwt>`) と **6 桁のコード**を 1 組出す。URL に
+コードは入らず、コードは端末にしか出ない — 2 つが別経路で browser に届くので、URL が
+漏れただけでは登録にならない。jwt を署名する secret は発行 instance のメモリにだけ在り、
+再起動で消える (永続鍵を持たない)。この 3 つの命令 (`add` / `list` / `remove`) は
+**契約の op ではなく instance の UDS にだけ届く管理フレーム**である: 契約はネットワーク
+越しに instance へ届くものの定義であり、登録はまさにそこへ出してはならないものだから。
+到達すること自体が権限である UDS は、監督者の制御要求と同じ足場になる。
+
+**HTTP の 4 経路** (`/auth/challenge` `/auth/register` `/auth/assert` `/auth/refresh`) は
+「`needs_hello: false` の op を HTTP で運ぶもの」で、`request_id` は carrier が合成する。
+末尾照合なのは `/ws` と同じ理由である (§3.1)。未認証で叩けるので `Origin` を
+`entry.origins` と照合し、4 経路で 1 つの rate limit を共有する。CORS は `entry.origins` に
+在る origin にだけ `Access-Control-Allow-Origin` + `Allow-Credentials` を返す。
+
+**token は署名しない opaque 値**で、検証は record の lookup である。access は応答の body、
+refresh は httpOnly cookie (`__Secure-ccmsg-<sha256(instance id + 改行 + sub) の先頭 16 hex>`、
+`HttpOnly; Secure; SameSite=Strict; Path=<request のパスの /auth/ までの prefix>`)。
+family を書けるのは mint した instance (`iss`) だけで、別の instance に届いた rotate は
+`auth_rotate` で `iss` へ転送する (§7.3 の経路)。直前 1 世代は再送の猶予として
+「前回の答え」を返し、猶予切れの再利用は family ごと失効させる。family が覚えているのは
+2 世代なので、それより古い値は照合先が無く、単に断られる。
+
+**challenge は 32 byte の乱数 + 発行者 (instance id)、寿命 5 分、使い切り。** LB で発行と
+応答の instance が違ってよく、応答を受けた側が assertion を検証し、challenge の消費と
+登録 jwt の検証だけを `auth_resolve` で発行者に頼む。
+
+**credential record / token family / tombstone は `auth_records` topic で複製する。**
+§7.4 の relay には乗らない — element 粒度なので「instance ごとの全体値」が無く、受け取る側が
+key で畳む。roles は `instance` だけで、relay が `caller` を付ける他の topic と違い
+**instance のまま購読する**: 人が読める場所に置けば token がそのまま漏れる。
+`passkey remove` は sub 単位の tombstone を打ち、tombstone はその key 配下への以後の
+書き込みを拒む (LWW の例外)。credential の tombstone に保持期限は無く、family のそれは 7 日。
 
 ## 4. 配送
 
@@ -688,7 +734,8 @@ listen した path が stop で unlink されるのは Bun の挙動 (1.3.13 実
 | 契約の検証ロジック | A1。protocol リポの検証器を呼ぶ |
 | v1 との互換 | 新系は別 instance として横に立てる (DR-0032 §2.2)。両受けしない |
 
-**人の認証はここに入らない。** 「誰が来たか」には daemon 自身が passkey で答える (DR-0001)。
+**人の認証はここに入らない。** 「誰が来たか」には daemon 自身が passkey で答える (DR-0001、
+実装の接続点は §3.7)。
 前段 (proxy の forward auth / tunnel の identity) に寄せると、その構成が利用者ごとに違うぶん
 daemon が受け取る identity の形も揃わないためで、前段は透過でよい (DR-0001 §3)。権限分離を
 持たないこと (A4) とは両立する: daemon が持つのは「誰か」を確定するところまでで、確定した後の

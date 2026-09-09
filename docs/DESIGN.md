@@ -105,13 +105,16 @@ persistence writes only what must not be lost across a crash and restart
 | Entry-point permission | source IP allowlist, allowed Origin set, mesh peer TLS |
 | Determining identity | binds a role and (for sessions) a sid to the connection as the result of `hello` |
 
-**A person is authenticated by a passkey** (DR-0001). Until that lands, a WS user connection is
-admitted on `entry.origins` and `source_ips` and nothing else: a secret held inside the daemon
-would only **restate A4's uid boundary on the WebSocket**, and in this deployment — one person,
-reachable only from inside a tailnet — nobody can cross that boundary anyway. UDS presents
-nothing, since reaching it already means passing the directory's permissions. mesh has the peer's
-TLS plus `iss` / `aud` and a proof (§7.2), and webhook has `Authorization: Bearer`; each of those
-routes carries a secret of its own.
+**A person is authenticated by a passkey** (DR-0001; where it joins the rest is §3.7). A person's
+WS connection presents the subprotocol `ccmsg.token.<access token>`, and a handshake whose token
+no record answers to is refused. `entry.origins` and `source_ips` remain as the allowlist for
+*where* a connection may come from, but **what answers "who came" is the token alone**: a
+handshake without one is refused rather than let in as an anonymous person. The access token's
+expiry is the connection's, stated by `hello`'s `auth_expires_at` and extended by `auth_refresh`
+on the connection itself. UDS presents nothing and carries no expiry, since reaching it already
+means passing the directory's permissions. mesh has the peer's TLS plus `iss` / `aud` and a proof
+(§7.2), and webhook has `Authorization: Bearer`; each of those routes carries a secret of its
+own.
 
 **A person's and a gateway's entry points (`/ws`, `/auth/*`, `/webhook/<source>`) are matched by
 the end of the path, and the prefix is not asked about** (DR-0001 §2.7). A proxy may pass the
@@ -192,7 +195,7 @@ payload.
 
 ### 3.6 persistence
 
-Write only 5 kinds of things.
+Write only 6 kinds of things.
 
 | Target | Reason |
 |---|---|
@@ -201,6 +204,12 @@ Write only 5 kinds of things.
 | Logs | To read the cause after a crash. Keep a single writer that does not drop the line right before exit |
 | inbox (undelivered messages) | State that cannot be reconstructed from anywhere else (§4.3) |
 | kv (values saved through `kv_write`) | The value a person saved, itself. Not a derived value: a client's copy is a copy |
+| auth records (`<state dir>/auth/records.json`, mode 0600) | The registered credentials, token families and tombstones (§3.7). A credential exists nowhere but the authenticator and here, and losing a family logs its person out |
+
+auth records are outside M4's scope for the same reason: a credential exists in the
+authenticator and here, and nowhere else it could be reconstructed from. The copies the other
+instances hold are replication rather than derivation — lose them all at once and nothing brings
+them back.
 
 inbox and kv are not exceptions to M4 — they are outside M4's scope. What M4 forbids is persisting
 **derived values**, and an undelivered message is not a derived value. The sender's
@@ -240,6 +249,51 @@ never made to follow the source, so no such procedure arises. Its standing is "a
 person had an op make": like a child process the launcher started or a URL the sandbox minted,
 it is an effect the instance leaves in the world on request, not state of the instance. Nothing
 discards them.
+
+### 3.7 Authenticating a person (passkey)
+
+DR-0001 is the source of truth. What is here is only where it joins the other layers.
+
+**Registration can only begin locally.** `ccmsg daemon passkey add <unit> [endpoint]` issues one
+registration URL (`<the web UI's origin>/#register=<jwt>`) and **a six-digit code**. The code is
+not in the URL and is shown only on the terminal — the two halves reach the browser by different
+routes, so a leaked URL is not a registration. The secret signing the jwt lives only in the
+issuing instance's memory and is lost on a restart: there is no lasting key. These three commands
+(`add` / `list` / `remove`) are **not ops of the contract but administrative frames that reach
+only the instance's unix socket**: the contract defines what reaches an instance over a network,
+and registration is precisely what must not. Reaching the unix socket is itself the permission,
+which is the footing the supervisor's own control requests stand on.
+
+**The four HTTP routes** (`/auth/challenge`, `/auth/register`, `/auth/assert`, `/auth/refresh`)
+are "ops with `needs_hello: false` carried over HTTP", and the carrier synthesizes the
+`request_id`. They are matched by the end of the path for the reason `/ws` is (§3.1). They are
+reachable before anything is proven, so `Origin` is compared against `entry.origins` and the four
+share one rate limit. CORS answers `Access-Control-Allow-Origin` and `Allow-Credentials` only to
+an origin `entry.origins` names.
+
+**Tokens are unsigned opaque values**, verified by looking a record up. The access token is in
+the response body; the refresh token is an httpOnly cookie
+(`__Secure-ccmsg-<first 16 hex of sha256(instance id + newline + sub)>`,
+`HttpOnly; Secure; SameSite=Strict; Path=<the request path up to its /auth/>`). A family is
+written by the instance that minted it (`iss`) alone, so a rotation that lands elsewhere is
+forwarded there with `auth_rotate` (the route of §7.3). The generation before the standing one is
+answered with the previous reply as a retry's grace; reusing a value past that grace fails the
+whole family. A family remembers two generations, so anything older matches nothing and is simply
+refused.
+
+**A challenge is 32 bytes of randomness plus its issuer (an instance id), good for five minutes
+and good once.** Behind a load balancer the instance that issued it need not be the one that
+receives the answer: the receiver verifies the assertion itself and asks the issuer only to spend
+the challenge and to check a registration jwt, with `auth_resolve`.
+
+**Credential records, token families and tombstones are replicated on the `auth_records`
+topic.** It does not ride the relay of §7.4 — its granularity is `element`, so there is no whole
+value per instance and the receiver folds entries by key. Its only role is `instance`, and unlike
+every other topic the relay carries, **it is subscribed to as the instance** rather than on a
+person's behalf: put where a person can read it, a token would be their session. `passkey remove`
+writes a tombstone per subject, and a tombstone refuses every later write under its key (the
+exception to last-write-wins). A credential's tombstone is kept without end; a family's for seven
+days.
 
 ## 4. Delivery
 
@@ -781,7 +835,7 @@ add something listed here, the right first question is to revisit §1.
 | Compatibility with v1 | The new lineage stands as a separate instance alongside it (DR-0032 §2.2). We do not serve both at once |
 
 **Authenticating a person does not belong on this list.** The daemon answers "who came" itself,
-with a passkey (DR-0001). Leaving it to whatever sits in front (a proxy's forward auth, a
+with a passkey (DR-0001; where it joins the rest is §3.7). Leaving it to whatever sits in front (a proxy's forward auth, a
 tunnel's identity) would mean the shape of the identity the daemon receives varies as much as
 those deployments do, so the front stays transparent (DR-0001 §3). It coexists with having no
 privilege separation (A4): what the daemon holds is settling who someone is, and the boundary on
