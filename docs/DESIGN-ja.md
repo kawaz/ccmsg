@@ -231,7 +231,10 @@ M4 とも矛盾しない。M4 が禁じるのは派生値をディスクに置�
 正本は DR-0001。ここに置くのは他の層との接続点だけである。
 
 **登録はローカルからしか始まらない。** `ccmsg daemon passkey add <unit> [endpoint]` が
-登録用 URL (`<webui の origin>/#register=<jwt>`) と **6 桁のコード**を 1 組出す。URL に
+登録用 URL (`<endpoint から WS の `/ws` を落とした prefix>/#register=<jwt>`) と
+**6 桁のコード**を 1 組出す。endpoint は入口の住所で、webui はその入口が在る場所に配られる
+(`wss://h/personal/ws` → `https://h/personal/`) ので、`/ws` を残すと本人を webui ではなく
+WebSocket に送ってしまう。URL に
 コードは入らず、コードは端末にしか出ない — 2 つが別経路で browser に届くので、URL が
 漏れただけでは登録にならない。jwt を署名する secret は発行 instance のメモリにだけ在り、
 再起動で消える (永続鍵を持たない)。この 3 つの命令 (`add` / `list` / `remove`) は

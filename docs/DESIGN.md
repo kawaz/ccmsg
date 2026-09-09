@@ -255,7 +255,10 @@ discards them.
 DR-0001 is the source of truth. What is here is only where it joins the other layers.
 
 **Registration can only begin locally.** `ccmsg daemon passkey add <unit> [endpoint]` issues one
-registration URL (`<the web UI's origin>/#register=<jwt>`) and **a six-digit code**. The code is
+registration URL (`<the endpoint with the WebSocket's own `/ws` segment taken off>/#register=<jwt>`)
+and **a six-digit code**. An endpoint is the address of a door and the web UI is served where that
+door is (`wss://h/personal/ws` → `https://h/personal/`), so leaving the segment on would send the
+person to the WebSocket rather than to the page. The code is
 not in the URL and is shown only on the terminal — the two halves reach the browser by different
 routes, so a leaked URL is not a registration. The secret signing the jwt lives only in the
 issuing instance's memory and is lost on a restart: there is no lasting key. These three commands

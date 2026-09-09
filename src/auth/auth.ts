@@ -35,6 +35,7 @@ import {
   WebAuthnError,
 } from "./webauthn.ts";
 import { CborError } from "./cbor.ts";
+import { ENTRY_PATH } from "../transport/index.ts";
 
 /** How long an access token is accepted, and how long a refresh token is.
  *
@@ -963,15 +964,20 @@ export function hostOf(endpoint: Endpoint): string {
   return new URL(endpoint).hostname;
 }
 
-/** Where the page that runs the registration is served from: the endpoint's
- * origin over HTTP, which is where the web UI sits in the ordinary
- * configuration (§2.3). */
+/** Where the page that runs the registration is served from.
+ *
+ * The endpoint over HTTP, with the WebSocket's own path segment taken off: an
+ * endpoint is the address of a door (`wss://h/personal/ws`), and the web UI is
+ * what is served where that door is (`https://h/personal/`). Leaving the
+ * segment on would send the person to the WebSocket rather than to the page
+ * (DR-0001 §2.2). An endpoint that names no path is an instance whose UI is at
+ * the root. */
 export function webOrigin(endpoint: Endpoint): string {
   const url = new URL(endpoint);
   url.protocol = url.protocol === "wss:" ? "https:" : "http:";
-  const origin = url.origin;
   const path = url.pathname.replace(/\/$/, "");
-  return `${origin}${path}`;
+  const prefix = path.endsWith(ENTRY_PATH) ? path.slice(0, -ENTRY_PATH.length) : path;
+  return `${url.origin}${prefix}`;
 }
 
 /** Whether a relying party id is the host or a domain the host sits under.

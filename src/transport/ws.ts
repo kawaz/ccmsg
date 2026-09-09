@@ -51,7 +51,7 @@ export interface WsOptions {
  * is either buffered whole by Bun or dropped whole — and the queue absorbs
  * that difference here (§3.1). */
 export function serveWs(options: WsOptions): Listener {
-  const path = options.path ?? "/ws";
+  const path = options.path ?? ENTRY_PATH;
   const entry = options.entry ?? OPEN;
   // The per-connection state is made in `open`, where the socket to write to
   // exists, so the upgrade carries nothing and the socket keeps no data of its
@@ -157,6 +157,12 @@ export function serveWs(options: WsOptions): Listener {
     },
   };
 }
+
+/** Where a person's WebSocket is answered, on whatever prefix a proxy puts the
+ * instance under. Named here because it is one door, and more than one place
+ * has to know what it is called: the entry match below, and the registration
+ * URL, which is the same address without it (DR-0001 §2.2). */
+export const ENTRY_PATH = "/ws";
 
 /** Whether a request's path is this listener's entry.
  *

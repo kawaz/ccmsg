@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { PROTOCOL_VERSION } from "@ccmsg/protocol";
 import { type Env, type Instance, isRunning, start } from "../src/instance/index.ts";
 import { Auth, AuthRecords, cookieName, cookiePath, PREVIOUS_GRACE_MS } from "../src/auth/index.ts";
+import { webOrigin } from "../src/auth/index.ts";
 import { SoftAuthenticator } from "./authenticator.ts";
 import { connectWs, type LineClient } from "./client.ts";
 
@@ -764,5 +765,37 @@ describe("the user handle a subject is known by (§2.2)", () => {
     expect(at.instance.auth.issue({ sub: issued.sub }).user_id).toBe(issued.user_id);
     // A different subject gets one of its own.
     expect(at.instance.auth.issue({}).user_id).not.toBe(issued.user_id);
+  });
+});
+
+describe("where the registration URL points (§2.2)", () => {
+  test("the WebSocket's own segment is not part of the page's address", () => {
+    // An endpoint is the address of a door; the web UI is served where that
+    // door is, not at it. Sending the person to `/ws` would hand them the
+    // WebSocket instead of the page.
+    expect(webOrigin("wss://h.example/personal/ws")).toBe("https://h.example/personal");
+    expect(webOrigin("wss://h.example/ws")).toBe("https://h.example");
+    expect(webOrigin("ws://127.0.0.1:8080/ws")).toBe("http://127.0.0.1:8080");
+    // An endpoint naming no path is an instance whose UI is at the root, and a
+    // trailing slash says the same thing.
+    expect(webOrigin("ws://127.0.0.1:8080")).toBe("http://127.0.0.1:8080");
+    expect(webOrigin("ws://127.0.0.1:8080/")).toBe("http://127.0.0.1:8080");
+    // A prefix that merely ends in those letters is not the segment.
+    expect(webOrigin("wss://h.example/notws")).toBe("https://h.example/notws");
+  });
+
+  test("the URL a command issues is the page, with the token in its fragment", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ccmsg-auth-url-shape-"));
+    const self = "0".repeat(32);
+    const auth = new Auth({
+      self,
+      records: new AuthRecords({ dir, self, publish: () => {} }),
+      origins: () => ["https://h.example"],
+      endpoint: () => "wss://h.example/personal/ws",
+      unit: "unit",
+    });
+    const issued = auth.issue({});
+    expect(issued.url.startsWith("https://h.example/personal/#register=")).toBe(true);
+    expect(issued.rp_id).toBe("h.example");
   });
 });
