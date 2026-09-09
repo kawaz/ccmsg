@@ -288,6 +288,34 @@ describe("removing a person (§2.6)", () => {
 });
 
 describe("a token reused after its grace fails the family (§2.4)", () => {
+  test("what the family remembers outlives the instance that rotated it", () => {
+    // The digests travel with the family, so an instance that restarts — or a
+    // peer the reused value is presented to — still recognises it (M4).
+    const dir = mkdtempSync(join(tmpdir(), "ccmsg-auth-retired-"));
+    const self = "0".repeat(32);
+    const deps = {
+      self,
+      origins: () => [],
+      endpoint: () => undefined,
+      unit: "unit",
+    };
+    const before = new Auth({
+      ...deps,
+      records: new AuthRecords({ dir, self, publish: () => {} }),
+    });
+    const zero = before.mint("someone").refresh.value;
+    const one = before.rotate(zero);
+    const two = before.rotate(one.refresh.value);
+    const [family] = new AuthRecords({ dir, self, publish: () => {} }).families();
+    expect((family?.body.retired ?? []).length).toBe(2);
+
+    // A fresh domain over the same records: nothing of the rotation is left in
+    // memory, and the value from two generations back is still recognised.
+    const after = new Auth({ ...deps, records: new AuthRecords({ dir, self, publish: () => {} }) });
+    expect(() => after.rotate(zero)).toThrow();
+    expect(after.admits(two.access.value)).toBeUndefined();
+  });
+
   test("the generation the family still remembers is what reuse is caught by", () => {
     // Against the domain rather than a listener, because what decides this is a
     // clock: the grace on the previous generation is a minute, and a test that

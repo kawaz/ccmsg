@@ -153,22 +153,6 @@ export class Auth {
   readonly #pending = new Map<string, Pending>();
   readonly #challenges = new Map<Base64Url, Issued>();
   readonly #authorized = new Map<Requester, AuthorizedConn>();
-  /** The refresh values this instance has rotated away, as digests, until the
-   * instant each would have expired anyway (DR-0001 §2.4).
-   *
-   * A family carries two generations, which is what a peer needs to answer a
-   * retry. Catching a token that was taken needs more than that: a value stolen
-   * three rotations ago matches neither, and would be refused as a stranger
-   * rather than recognised as this family's. So the issuer — the only instance
-   * that rotates a family, because rotation is forwarded to it — keeps the rest
-   * here. Digests, so the memory holding them is not itself a list of usable
-   * tokens.
-   *
-   * Held rather than written down: it lives exactly as long as the process, and
-   * an instance that restarts has forgotten what it rotated away. A durable
-   * form would be a field of the family, which the contract does not yet
-   * have. */
-  readonly #retired = new Map<string, { digest: string; expiresAt: Timestamp }[]>();
   #window = 0;
   #served = 0;
 
@@ -653,20 +637,15 @@ export class Auth {
       access: { value: token(), expires_at: at + ACCESS_TTL_MS },
       refresh: { value: token(), expires_at: at + REFRESH_TTL_MS },
       previous_refresh: { value: held.body.refresh.value, expires_at: at + PREVIOUS_GRACE_MS },
+      // The value going out of service is remembered as a digest for as long as
+      // it would have been accepted, so that presenting it later is recognised
+      // as this family's token rather than as a stranger's. The digest travels
+      // with the family, so the memory survives this instance restarting and
+      // holds wherever the reused value is presented (contract, `TokenFamily`).
+      retired: retire(held.body, at),
     };
-    // The value going out of service is remembered for as long as it would have
-    // been accepted, so that presenting it later is recognised as this family's
-    // token rather than as a stranger's.
-    this.#retire(held.key, held.body.refresh.value, held.body.refresh.expires_at);
     this.deps.records.write(held.key, rotated, at);
     return { sub: rotated.sub, access: rotated.access, refresh: rotated.refresh };
-  }
-
-  #retire(key: string, value: Base64Url, expiresAt: Timestamp): void {
-    const now = this.#now();
-    const held = (this.#retired.get(key) ?? []).filter((one) => one.expiresAt > now);
-    held.push({ digest: digestOf(value), expiresAt });
-    this.#retired.set(key, held);
   }
 
   /** A value that is nobody's standing token but was somebody's: the family it
@@ -686,15 +665,14 @@ export class Auth {
       const stale =
         equalStrings(held.body.refresh.value, value) ||
         (before !== undefined && equalStrings(before.value, value)) ||
-        (this.#retired.get(held.key) ?? []).some(
-          (one) => one.expiresAt > now && equalStrings(one.digest, digest),
+        (held.body.retired ?? []).some(
+          (one) => one.expires_at > now && equalStrings(one.hash, digest),
         );
       if (!stale) continue;
       this.deps.log?.("a refresh token was reused after it was rotated away", {
         sub: held.body.sub,
       });
       this.deps.records.fail(held.key);
-      this.#retired.delete(held.key);
       // The tokens are gone, and so is what they were holding open: a
       // connection that outlived the family it was admitted on would be the
       // stolen token still working.
@@ -862,6 +840,18 @@ function asRefusal(cause: unknown): unknown {
     return new OpError("auth_invalid", cause.message);
   }
   return cause;
+}
+
+/** What a family remembers of the generations before the one it still names.
+ *
+ * The outgoing refresh token joins the list, and anything whose own expiry has
+ * passed leaves it: past that instant, remembering the value refuses nothing
+ * its expiry would not have refused anyway, so keeping it is only growth. */
+function retire(family: TokenFamily, now: Timestamp): { hash: string; expires_at: Timestamp }[] {
+  return [
+    ...(family.retired ?? []).filter((one) => one.expires_at > now),
+    { hash: digestOf(family.refresh.value), expires_at: family.refresh.expires_at },
+  ];
 }
 
 /** The digest a retired token is remembered by. */

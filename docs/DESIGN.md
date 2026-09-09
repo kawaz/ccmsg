@@ -280,8 +280,11 @@ forwarded there with `auth_rotate` (the route of §7.3). **A copy of a family th
 arriving from a peer, is refused**: with a single writer, a copy coming back is necessarily older
 state, and taking it would revive a family that was failed. The generation before the standing one
 is answered with the previous reply as a retry's grace; presenting any other retired value fails
-the whole family (the `iss` keeps digests of what it rotated away until each would have expired —
-in memory, for the life of the process, and not replicated). Failing a family and receiving a
+the whole family. What was rotated away is kept on the family as `retired`: the sha256 of each
+value until that value would itself have expired. Only the `iss` writes it, but it replicates —
+so the memory survives that instance restarting and holds wherever the reused value is presented.
+Entries past their own expiry are dropped at the next rotation, after which remembering them would
+refuse nothing their expiry does not. Failing a family and receiving a
 tombstone both close the connections that person holds, a tombstone from a peer included.
 
 `hello`'s `auth_expires_at` is the connection's deadline, and `auth_refresh` moves it only with
