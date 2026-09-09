@@ -104,9 +104,13 @@ export function checkClientData(
   }
 }
 
-/** The relying party and the person, as every exchange states them. */
-export function checkAuthenticator(data: AuthenticatorData, rpId: string): void {
-  if (!equalBytes(data.rpIdHash, sha256(rpId))) {
+/** The relying party and the person, as every exchange states them.
+ *
+ * Several relying parties may be named on an assertion, because a credential
+ * does not say which one it was made for and this instance may serve more than
+ * one name. Each is one the operator configured; nothing is widened here. */
+export function checkAuthenticator(data: AuthenticatorData, rpIds: readonly string[]): void {
+  if (!rpIds.some((rpId) => equalBytes(data.rpIdHash, sha256(rpId)))) {
     throw new WebAuthnError("the authenticator answered for another relying party");
   }
   if ((data.flags & FLAG_USER_PRESENT) === 0) throw new WebAuthnError("no person was present");
@@ -153,7 +157,7 @@ export function verifyRegistration(
     throw new WebAuthnError("the attestation object carries no authenticator data");
   }
   const data = parseAuthenticatorData(authData);
-  checkAuthenticator(data, expected.rpId);
+  checkAuthenticator(data, [expected.rpId]);
   if (data.credentialId === undefined || data.publicKey === undefined) {
     throw new WebAuthnError("the registration carries no credential");
   }
@@ -174,7 +178,7 @@ export function verifyRegistration(
 export async function verifyAssertion(
   credential: AssertionCredential,
   known: { publicKey: Base64Url; signCount?: number },
-  expected: { challenge: string; origins: readonly string[]; rpId: string },
+  expected: { challenge: string; origins: readonly string[]; rpIds: readonly string[] },
 ): Promise<{ signCount: number }> {
   const clientDataJson = base64UrlDecode(credential.client_data_json);
   checkClientData(clientDataJson, {
@@ -184,7 +188,7 @@ export async function verifyAssertion(
   });
   const authData = base64UrlDecode(credential.authenticator_data);
   const data = parseAuthenticatorData(authData);
-  checkAuthenticator(data, expected.rpId);
+  checkAuthenticator(data, expected.rpIds);
   // A synced passkey reports zero forever, so only a pair of non-zero readings
   // says anything at all; where both are non-zero, a reading at or below the
   // last one is a credential being used from a copy of itself.

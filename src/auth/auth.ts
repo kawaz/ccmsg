@@ -392,7 +392,7 @@ export class Auth {
         publicKey: record.public_key,
         ...(record.sign_count === undefined ? {} : { signCount: record.sign_count }),
       },
-      { challenge: args.challenge.challenge, origins: this.deps.origins(), rpId },
+      { challenge: args.challenge.challenge, origins: this.deps.origins(), rpIds: rpId },
     );
     const at = this.#now();
     this.deps.records.write(
@@ -409,18 +409,28 @@ export class Auth {
     return this.mint(record.sub);
   }
 
-  /** The relying party this instance verifies against.
+  /** The relying parties an assertion may name.
    *
-   * The endpoint's host, which is the default a registration is issued with. An
-   * instance whose credentials were registered against a wider suffix is one
-   * whose `rp_id` differs from this, and an assertion is checked against what
-   * the credential was made for — so the record's own registration decides,
-   * with the host as the answer where nothing else is known. */
-  #rpIdFor(): string {
+   * A credential record does not carry the `rp_id` it was made for, so what an
+   * assertion is checked against is every name this instance was configured to
+   * be: the hosts of the pages it serves, and the host of its own endpoint.
+   * Nothing is widened to a suffix — a hash matching none of the configured
+   * names is a credential made for somewhere else (§2.3). */
+  #rpIdFor(): string[] {
+    const names = new Set<string>();
+    for (const origin of this.deps.origins()) {
+      try {
+        names.add(new URL(origin).hostname);
+      } catch {
+        // A configured value that is not a URL names no host.
+      }
+    }
     const endpoint = this.deps.endpoint();
-    if (endpoint === undefined)
-      throw new OpError("auth_invalid", "この instance は endpoint を持ちません");
-    return hostOf(endpoint);
+    if (endpoint !== undefined) names.add(hostOf(endpoint));
+    if (names.size === 0) {
+      throw new OpError("auth_invalid", "この instance には relying party がありません");
+    }
+    return [...names];
   }
 
   // --- tokens (§2.4) ---
@@ -516,7 +526,12 @@ export class Auth {
 
   /** A value that is nobody's standing token but was somebody's: the family it
    * belonged to is failed, because a token in use twice is a token that was
-   * taken (§2.4). */
+   * taken (§2.4).
+   *
+   * What can be recognised is the generation the family still remembers: the
+   * standing refresh token past its expiry, and the one before it past its
+   * grace. A value older than that matches nothing here and is simply refused —
+   * a family remembers two generations, so there is nothing to fail it by. */
   #failReused(value: Base64Url): void {
     for (const held of this.deps.records.families()) {
       const before = held.body.previous_refresh;

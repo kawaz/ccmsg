@@ -22,6 +22,13 @@ export const CLUSTER_TOPICS: readonly string[] = PLAIN_TOPICS.filter(
   (topic) => TOPIC_ATTRIBUTES[topic].granularity === "per_instance_whole",
 );
 
+/** The one topic the mesh carries that the relay does not.
+ *
+ * It is `element`-granular, so what travels is the entries that changed and the
+ * receiver merges them by key; and it is the instances' own, so it is asked for
+ * as the instance rather than on a person's behalf (DR-0001 §2.6). */
+export const AUTH_TOPIC = "auth_records";
+
 export function isClusterTopic(topic: string): boolean {
   return CLUSTER_TOPICS.includes(topic);
 }

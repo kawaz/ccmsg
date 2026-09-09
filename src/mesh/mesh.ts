@@ -18,7 +18,7 @@ import {
   type SettledIdentity,
 } from "../dispatch/index.ts";
 import type { TopicValue } from "../topics/index.ts";
-import { isClusterTopic, Relay } from "./relay.ts";
+import { AUTH_TOPIC, isClusterTopic, Relay } from "./relay.ts";
 import {
   ALLOWED_ALGS,
   EphemeralKey,
@@ -120,6 +120,13 @@ export interface MeshHost {
   handle(frame: unknown, conn: Requester): Promise<DispatchResult>;
   /** Hand a relayed frame to this instance's own subscribers (§7.4). */
   publish(topic: string, data: unknown, instance: InstanceId): void;
+  /** Take a frame on a topic the relay does not carry.
+   *
+   * `auth_records` is the one: its granularity is `element`, so a frame states
+   * the entries that moved rather than a whole value per instance, and there is
+   * nothing for the relay's last-value-per-instance table to hold. What
+   * receives it is the set itself, which merges by key (DR-0001 §2.6). */
+  element(topic: string, instance: InstanceId, data: unknown): void;
   /** Which instances can be reached has changed, which is part of what this
    * instance states on `peers` (§7.5). */
   changed(): void;
@@ -280,7 +287,7 @@ export class Mesh {
    * always among them: it is the routing table of §7.3, and a question about
    * where a session lives is answered whether or not anyone is subscribed
    * (§6.3, "reading the current value is not what subscription drives"). */
-  readonly #demanded = new Set<string>(["peers"]);
+  readonly #demanded = new Set<string>(["peers", AUTH_TOPIC]);
   #host: MeshHost | undefined;
 
   /** What the peers said, kept across a disconnection (§7.5). */
@@ -528,7 +535,10 @@ export class Mesh {
    * instance asks of every peer, and the frames come back unchanged (§7.4).
    * `peers` is never given up, because it is also the routing table. */
   demand(topic: string, wanted: boolean): void {
-    if (!isClusterTopic(topic)) return;
+    // `auth_records` is never given up and never asked for on demand: every
+    // instance holds the whole set whether or not anything local is watching
+    // it, the way `peers` is also the routing table (§7.4, DR-0001 §2.6).
+    if (topic === AUTH_TOPIC || !isClusterTopic(topic)) return;
     if (wanted) {
       if (this.#demanded.has(topic)) return;
       this.#demanded.add(topic);
@@ -556,7 +566,13 @@ export class Mesh {
       // have in common is that they are this deployment's people rather than
       // any one session: a cluster topic is the same value for all of them
       // (§6.2), so there is nothing narrower to name.
-      caller: { role: "user" } satisfies CallerIdentity,
+      //
+      // `auth_records` is the exception, and the one topic no person may hear:
+      // it carries the tokens that authenticate them, so the instance asks for
+      // it as itself (DR-0001 §2.6).
+      caller: (topic === AUTH_TOPIC
+        ? { role: "instance" }
+        : { role: "user" }) satisfies CallerIdentity,
     };
     if (afterAck) conn.deferSend(frame);
     else conn.send(frame);
@@ -735,6 +751,10 @@ export class Mesh {
     // Our own value, come back around a triangle. Relaying it again would put
     // this instance's value on the wire as something it received.
     if (instance === this.deps.id) return true;
+    if (topic === AUTH_TOPIC) {
+      this.#host?.element(topic, instance as InstanceId, fields["data"]);
+      return true;
+    }
     this.relay.accept(instance as InstanceId, topic, fields["data"]);
     return true;
   }

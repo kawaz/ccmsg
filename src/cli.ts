@@ -3,6 +3,7 @@ import { type MessageSendArgs, type NotifySendArgs, PROTOCOL_VERSION } from "@cc
 import {
   add as addToConfig,
   ask,
+  type CliErrorCode,
   CommandError,
   configHome,
   connect,
@@ -156,6 +157,37 @@ const ROOT: Command = {
           usage: "ccmsg daemon status [dir] | --all",
           bare: true,
           run: (args) => supervised("supervise_status", args, true),
+        },
+        {
+          name: "passkey",
+          summary: "この config home の instance に登録された passkey を扱う",
+          usage: "ccmsg daemon passkey <subcommand>",
+          children: [
+            {
+              name: "add",
+              summary: "登録用 URL と 6 桁コードを 1 組発行する (10 分で失効)",
+              usage:
+                "ccmsg daemon passkey add <unit> [endpoint] [--rp-id <domain>] [--name <ラベル>]",
+              options: [
+                ["--rp-id <domain>", "WebAuthn の relying party。既定は endpoint のホスト"],
+                ["--name <ラベル>", "誰宛に発行した URL かの管理ラベル"],
+              ],
+              run: (args) => passkeyAdd(args),
+            },
+            {
+              name: "list",
+              summary: "登録済みの credential を、新しい順に並べる",
+              usage: "ccmsg daemon passkey list [unit]",
+              bare: true,
+              run: (args) => passkeyAsk(args[0], { admin: "passkey_list" }),
+            },
+            {
+              name: "remove",
+              summary: "利用者を消す (credential と token を失効させ、その WS を切る)",
+              usage: "ccmsg daemon passkey remove <sub> [unit]",
+              run: (args) => passkeyRemove(args),
+            },
+          ],
         },
         {
           name: "log",
@@ -553,6 +585,65 @@ async function serviceOp(
       return { id: row.id, dir: row.dir, running: row.running };
     }),
   };
+}
+
+/** The passkey commands, which are asked of the instance itself rather than of
+ * the supervisor.
+ *
+ * They travel on the instance's unix socket and nowhere else: registration is
+ * local by design (DR-0001 §2.2), and reaching that address is what says the
+ * caller is on the machine. They are not ops of the contract for the same
+ * reason — the contract is what reaches an instance over a network. */
+async function passkeyAsk(unit: string | undefined, request: Record<string, unknown>) {
+  const target = targetFor(process.env, unit ?? resolveConfigHome());
+  const conn = await connect(target.paths.socket);
+  if (conn === undefined) {
+    throw new CommandError("not_found", `${target.dir} の instance は動いていません`);
+  }
+  try {
+    const answer = await conn.ask(request);
+    if (answer["ok"] === true) {
+      const { ok: _ok, request_id: _id, ...body } = answer;
+      return body;
+    }
+    const error = answer["error"] as { code?: CliErrorCode; msg?: string } | undefined;
+    throw new CommandError(error?.code ?? "internal_error", error?.msg ?? JSON.stringify(answer));
+  } finally {
+    conn.close();
+  }
+}
+
+/** `ccmsg daemon passkey add`: one registration URL, and the code that goes
+ * with it.
+ *
+ * Both are printed here and the code is nowhere else — not in the URL, not in
+ * anything the instance hands out — so that holding the URL is not enough to
+ * register (DR-0001 §2.2). */
+async function passkeyAdd(args: readonly string[]): Promise<unknown> {
+  const parsed = options(args, ["rp-id", "name"]);
+  const [unit, endpoint] = parsed.rest;
+  if (unit === undefined) {
+    throw new CommandError(
+      "invalid_args",
+      "使い方: ccmsg daemon passkey add <unit> [endpoint] [--rp-id <domain>] [--name <ラベル>]",
+    );
+  }
+  const rpId = parsed.named.get("rp-id");
+  const name = parsed.named.get("name");
+  return await passkeyAsk(unit, {
+    admin: "passkey_add",
+    ...(endpoint === undefined ? {} : { endpoint }),
+    ...(rpId === undefined ? {} : { rp_id: rpId }),
+    ...(name === undefined ? {} : { name }),
+  });
+}
+
+async function passkeyRemove(args: readonly string[]): Promise<unknown> {
+  const [sub, unit] = args;
+  if (sub === undefined) {
+    throw new CommandError("invalid_args", "使い方: ccmsg daemon passkey remove <sub> [unit]");
+  }
+  return await passkeyAsk(unit, { admin: "passkey_remove", sub });
 }
 
 /** `ccmsg daemon log`: what one instance wrote down, or what all of them did.

@@ -113,8 +113,18 @@ export class AuthRecords {
     }
   }
 
-  /** Write one record of this instance's own, and tell the cluster. */
-  write(key: string, body: AuthRecord["body"], at: Timestamp = this.#now()): boolean {
+  /** Write one record of this instance's own, and tell the cluster.
+   *
+   * A local write always displaces what the key holds. Last-write-wins settles
+   * a disagreement between instances; this is not one — the writer is the
+   * authority for what it writes — and two writes landing in the same
+   * millisecond, which a rotation and the mint before it easily do, must not
+   * silently drop the second. So the instant is moved past what is held rather
+   * than compared against it. */
+  write(key: string, body: AuthRecord["body"], now: Timestamp = this.#now()): boolean {
+    this.#load();
+    const held = this.#records.get(key);
+    const at = held === undefined ? now : Math.max(now, held.updated_at + 1);
     const record: AuthRecord = { key, updated_at: at, body };
     if (!this.accept(record)) return false;
     this.#persist();
