@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   type HelloResult,
+  MAX_FRAME_BYTES,
   OP_NAMES,
   opAttributes,
   PROTOCOL_VERSION,
@@ -17,7 +18,6 @@ import {
   ConnRegistry,
   createDriver,
   listenUds,
-  MAX_LINE_BYTES,
   Transport,
   serveWs,
   WriteQueue,
@@ -198,7 +198,7 @@ for (const [kind, bind] of TRANSPORTS) {
     test("a line past the limit is refused and the connection survives it", async () => {
       const bound = bind();
       const client = await bound.connect();
-      client.sendRaw(`${"x".repeat(MAX_LINE_BYTES + 1)}\n`);
+      client.sendRaw(`${"x".repeat(MAX_FRAME_BYTES + 1)}\n`);
       expect(await client.next()).toMatchObject({
         ok: false,
         error: { code: "bad_request" },

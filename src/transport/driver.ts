@@ -1,7 +1,6 @@
-import type { OpName, Role, Sid } from "@ccmsg/protocol";
+import { MAX_FRAME_BYTES, type OpName, type Role, type Sid } from "@ccmsg/protocol";
 import { type DispatchResult, failure, type Requester } from "../dispatch/index.ts";
 import type { Conn } from "./conn.ts";
-import { MAX_LINE_BYTES } from "./framing.ts";
 
 /** What transport calls once a line is a frame. In the instance this is
  * `dispatch` bound to its deps; in tests it is whatever the test needs. */
@@ -61,7 +60,7 @@ export function createDriver(conn: Conn, handle: FrameHandler) {
         failure(
           undefined,
           "bad_request",
-          `a request line may not exceed ${MAX_LINE_BYTES} bytes (got at least ${bytes})`,
+          `a request line may not exceed ${MAX_FRAME_BYTES} bytes (got at least ${bytes})`,
         ).response,
       );
     },

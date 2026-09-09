@@ -1,21 +1,22 @@
-import type {
-  Capability,
-  InstanceId,
-  SessionDumpWriteArgs,
-  SessionEnvReadArgs,
-  SessionEnvReadResult,
-  SessionForkOriginArgs,
-  SessionForkOriginResult,
-  SessionKillArgs,
-  SessionKillResult,
-  SessionLastLiveRemoveArgs,
-  SessionLastLiveRemoveResult,
-  SessionRenameArgs,
-  SessionRenameResult,
-  SessionSearchArgs,
-  Sid,
-  TranscriptReadArgs,
-  TranscriptReadResult,
+import {
+  type Capability,
+  type InstanceId,
+  type SessionDumpWriteArgs,
+  type SessionEnvReadArgs,
+  type SessionEnvReadResult,
+  type SessionForkOriginArgs,
+  type SessionForkOriginResult,
+  type SessionKillArgs,
+  type SessionKillResult,
+  type SessionLastLiveRemoveArgs,
+  type SessionLastLiveRemoveResult,
+  type SessionRenameArgs,
+  type SessionRenameResult,
+  type SessionSearchArgs,
+  type Sid,
+  TITLE_MAX_CHARS,
+  type TranscriptReadArgs,
+  type TranscriptReadResult,
 } from "@ccmsg/protocol";
 import { type HandlerInput, OpError } from "../dispatch/index.ts";
 import { sees, type Viewer } from "../files/index.ts";
@@ -24,11 +25,6 @@ import { dumpWrite } from "./dump.ts";
 import { forkOrigin } from "./fork.ts";
 import type { SessionProcesses } from "./processes.ts";
 import { search } from "./search.ts";
-
-/** How long a title may be. It is typed into a terminal and shown as a
- * session's first line, where anything longer is unreadable whatever the
- * terminal would accept. */
-const TITLE_MAX = 200;
 
 /** The two capabilities of the session ops, present only where what they rest
  * on is configured.
@@ -147,8 +143,8 @@ export function sessionHandlers(deps: SessionOpsDeps) {
 function validTitle(raw: string): string {
   const title = raw.trim();
   if (title === "") throw new OpError("invalid_args", "a title is not only whitespace");
-  if (title.length > TITLE_MAX) {
-    throw new OpError("invalid_args", `a title is at most ${TITLE_MAX} characters`);
+  if (title.length > TITLE_MAX_CHARS) {
+    throw new OpError("invalid_args", `a title is at most ${TITLE_MAX_CHARS} characters`);
   }
   for (let at = 0; at < title.length; at++) {
     // Code units are enough: every surrogate half is above this range, so no

@@ -3,22 +3,14 @@
  * The limit and the backpressure handling live here rather than in the UDS and
  * WS listeners, so the two cannot drift into two framings. */
 
-/** The largest line this instance accepts, in bytes.
- *
- * Basis: the messaging socket Claude Code itself speaks on the same host caps a
- * line at 1,048,576 characters (measured 2026-09-08 against Claude Code
- * 2.1.263), so a client that already lives inside that budget cannot be cut off
- * by ours. The contract states no limit of its own and the previous daemon had
- * none, so this is a chosen ceiling, not a contract value: nothing above
- * transport may assume a frame is small. */
-export const MAX_LINE_BYTES = 1_048_576;
+import { MAX_FRAME_BYTES } from "@ccmsg/protocol";
 
 const NEWLINE = 0x0a;
 
 export interface LineReaderSink {
   /** One complete, non-empty line, decoded as UTF-8. */
   line(text: string): void;
-  /** A line that reached `MAX_LINE_BYTES` before its newline. The bytes are
+  /** A line that reached `MAX_FRAME_BYTES` before its newline. The bytes are
    * dropped and reading resumes at the next newline, so one oversized line
    * costs that line and not the connection. */
   overflow(bytes: number): void;
@@ -55,12 +47,12 @@ export class LineReader {
       const at = rest.indexOf(NEWLINE);
       if (at < 0) {
         this.#append(rest);
-        if (this.#buffer.length > MAX_LINE_BYTES) this.#startDiscarding();
+        if (this.#buffer.length > MAX_FRAME_BYTES) this.#startDiscarding();
         return;
       }
       this.#append(rest.subarray(0, at));
       rest = rest.subarray(at + 1);
-      if (this.#buffer.length > MAX_LINE_BYTES) {
+      if (this.#buffer.length > MAX_FRAME_BYTES) {
         this.sink.overflow(this.#buffer.length);
         this.#buffer = new Uint8Array(0);
         continue;

@@ -1,6 +1,7 @@
+import { MAX_FRAME_BYTES } from "@ccmsg/protocol";
 import { BaseConn, type Conn, type ConnRegistry } from "./conn.ts";
 import { createDriver, type FrameHandler } from "./driver.ts";
-import { LineReader, MAX_LINE_BYTES, WriteQueue } from "./framing.ts";
+import { LineReader, WriteQueue } from "./framing.ts";
 import { type EntryPolicy, OPEN } from "./entry.ts";
 import type { Listener } from "./listener.ts";
 
@@ -83,7 +84,7 @@ export function serveWs(options: WsOptions): Listener {
       // answers `bad_request` and keeps the connection. This cap only bounds
       // one message's memory, so it sits above the line limit — a message at
       // or under it always reaches the framing and gets that answer.
-      maxPayloadLength: MAX_LINE_BYTES + 64 * 1024,
+      maxPayloadLength: MAX_FRAME_BYTES + 64 * 1024,
       open(ws) {
         const queue = new WriteQueue<string>({
           encode: (line) => line,
