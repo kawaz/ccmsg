@@ -14,9 +14,9 @@ WS の入口は entry token (state ディレクトリの 0600 file) で守って
 ### 2.1 instance id は固定、endpoint は可変
 
 - **instance id** は `ccmsg daemon add` の時に生成する乱数 (state ディレクトリに保存、引っ越しは state ごと持って行く。`daemon run [dir]` で `instances[]` に無い config home を起こした時も初回起動で state に生成する)。契約では `InstanceId` (opaque id) と `Endpoint` (URL) を別の型にし、`mid` の pattern も id の文字集合に合わせる。契約の `instance` フィールド、`mid` (`<instance>/<連番>`)、kv / inbox / last_live の鍵、認証 record と token の発行者 (`iss`)、challenge に埋める発行者は全部この id
-- **endpoint** は他 instance が dial する URL で、config の `self` (自分) と `peers` (相手) に書く。mesh の TLS 認証と `iss` / `aud` (mesh-peer-auth) の照合値はこの URL のまま (信頼の根は URL にしか無い)。handshake で相手は自分の instance id を名乗り (`MeshHello` に id を足す。proof の後に hello の内容が遡及して信頼される mesh-peer-auth §5.1 R7 の規則に乗る)、受けた側は「認証済み endpoint ↔ id」の対応を保持する。以後の `iss` (id) から dial 先を引くのはこの対応表。**1 つの id は 1 本の認証済み link にしか束縛できない**: 既に別 endpoint に束縛済みの id を名乗る hello は、新しく来た側を close する (endpoint リストが唯一の信頼源なので、既存の束縛を優先する)。引っ越し直後に旧 URL の instance がまだ生きている場合がこれに当たり、各 peer が `peers` を書き換えて再起動すると旧 endpoint はリストに無くなって落ち、新 endpoint からの handshake でその id が束縛し直される。全 instance のリストを更新して回るのは引っ越しの必要コスト
+- **endpoint** は他 instance が dial する URL で、config の `self` (自分) と `peers` (相手) に書く。mesh の TLS 認証と `iss` / `aud` (mesh-peer-auth) の照合値はこの URL のまま (信頼の根は URL にしか無い)。handshake で相手は自分の instance id を名乗り (`MeshHello` に id を足す。proof の後に hello の内容が遡及して信頼される mesh-peer-auth §5.1 R7 の規則に乗る)、受けた側は「認証済み endpoint ↔ id」の対応を保持する。以後の `iss` (id) から dial 先を引くのはこの対応表。**1 つの id は 1 本の認証済み link にしか束縛できない**: 束縛表は自分の (`self`, id) で初期化する (= 自分の id を名乗る peer も拒む)。既に別 endpoint に束縛済みの id を名乗る hello は、新しく来た側を close する (endpoint リストが唯一の信頼源なので、既存の束縛を優先する)。引っ越し直後に旧 URL の instance がまだ生きている場合がこれに当たり、各 peer が `peers` を書き換えて再起動すると旧 endpoint はリストに無くなって落ち、新 endpoint からの handshake でその id が束縛し直される。全 instance のリストを更新して回るのは引っ越しの必要コスト
 - 引っ越し = state を移す → 新 URL で起動 → 各 peer の `peers` を書き換える。record / token / mid は無効にならない
-- 契約の `instance` の意味が「endpoint URL 完全一致」から「opaque な id」に変わるので **世代を 2 → 3 に上げる**。`hello` の応答と `peers` frame の instance 一覧に `endpoint` を別フィールドで持つ
+- 契約の `instance` の意味が「endpoint URL 完全一致」から「opaque な id」に変わるので **世代を 2 → 3 に上げる**。`hello` の応答と `peers` frame の instance 一覧に `endpoint` を別フィールドで持つ。一覧の `id` は handshake が成立するまで未知なので optional (endpoint だけ分かっている peer も一覧に出す)。mesh を持たない instance は名乗る URL が無いので `hello.endpoint` も optional
 
 ### 2.2 登録はローカルからしかできない
 
@@ -78,7 +78,7 @@ tombstone: `passkey remove` は sub 単位の tombstone を credential と全 fa
 - mesh のルート (`/mesh/probe`、`/mesh/jwk/<kid>`) は `self` のパス配下 (§6.3 の鍵空間の分離)
 - **人と gateway の入口** (`/ws`、`/auth/*`、`/webhook/<source>`) は **パスの末尾で照合**し、prefix を問わない。proxy は prefix を剥がさずそのまま渡し、cookie の Path は request のパスから取る。これで alias endpoint (`https://alias.example/…`) や LB (同じパスで複数 instance を束ねる) が `self` と無関係に成立する
 - LB で束ねる instance 群は、人の入口のパスが同じで endpoint のホストが違う。`peers` に LB の名前は入れない
-- `self` を config に持つことは §7.1 の probe 方式を置き換える (mesh-self-identification の「self を設定に書かない」を supersede)。probe は起動時の `peers` 検証 (`self` ∈ `peers` の照合と到達性) として残す。`self` の InstanceId は `ws(s)://`、HTTP ルートは同じ host / path の `http(s)://` として読む
+- `self` を config に持つことは §7.1 の probe 方式を置き換える (mesh-self-identification の「self を設定に書かない」を supersede)。probe は起動時の検証 (`self` に送った probe が自分に返ること = `self` が他人を指していないこと、と各 peer の到達性の記録) として残す。`peers` に自分が含まれている必要は無い。`self` の InstanceId は `ws(s)://`、HTTP ルートは同じ host / path の `http(s)://` として読む
 - `self` と一致しない URL で来た mesh の `hello` は `aud` 不一致で拒否する。人の入口は `self` を名乗らないので、どの FQDN 経由でも token だけで判定する。challenge に埋める発行者は instance id で、endpoint の URL は未認証の相手に見せない
 
 ### 2.8 entry token の廃止
