@@ -265,7 +265,15 @@ handler に渡す前に `OP_SCHEMAS` を通し、`Origin` の無い POST も断�
 
 **challenge は 32 byte の乱数 + 発行者 (instance id)、寿命 5 分、使い切り。** LB で発行と
 応答の instance が違ってよく、応答を受けた側が assertion を検証し、challenge の消費と
-登録 jwt の検証だけを `auth_resolve` で発行者に頼む。
+登録 jwt の検証だけを `auth_resolve` で発行者に頼む。**6 桁のコードは判定せずそのまま
+発行者へ運ぶ**: 受けた側が判定すると、試行回数が instance ごとに別々に数えられ、cluster 全体に
+推測をばら撒けてしまう。jwt・コード・試行回数は発行者だけが持つ。
+
+**利用者の WebAuthn user handle (`user_id`) は発行者が sub ごとに 1 度決める。** 16 byte の
+乱数を jwt に載せ、ページはそれで credential を作り、record の `user_handle` に保存して、
+handle を名乗る assertion をそれに照合する。authenticator は handle を instance の手の届かない
+場所に保存するので、同じ人に 2 つの値を配ると端末上で 2 つのアカウントに見えてしまう。
+同じ sub への追加登録は既にある handle を使い回す。
 
 **credential record / token family / tombstone は `auth_records` topic で複製する。**
 §7.4 の relay には乗らない — element 粒度なので「instance ごとの全体値」が無く、受け取る側が

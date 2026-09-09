@@ -10,6 +10,7 @@ import {
 } from "@ccmsg/protocol";
 import { type Env, type Instance } from "../src/instance/index.ts";
 import { Relay } from "../src/mesh/index.ts";
+import { SoftAuthenticator } from "./authenticator.ts";
 import { connectUds, connectWs, type LineClient } from "./client.ts";
 import {
   endpoint,
@@ -638,6 +639,85 @@ describe("the credentials and tokens the cluster shares (DR-0001 §2.6)", () => 
     expect(b.auth.admits(minted.session.access.value)).toBeUndefined();
   });
 });
+
+describe("registering at one instance with another's URL (DR-0001 §2.6)", () => {
+  test("the issuer checks the URL and the code; the instance reached does the rest", async () => {
+    const { a, b } = await pair();
+    // A makes the URL and holds the secret and the six digits; the browser
+    // lands on B, which knows neither.
+    const issued = a.auth.issue({ endpoint: endpointOf(b) });
+    const authenticator = new SoftAuthenticator(issued.rp_id);
+    const origin = `http://${addressOf(b)}`;
+    const token = issued.url.slice(issued.url.indexOf("#register=") + "#register=".length);
+
+    // The wrong digits are refused by A, and the try is counted there.
+    const challenge = await authChallenge(b, origin);
+    const refused = await authPost(b, origin, "register", {
+      token,
+      code: issued.code === "000000" ? "111111" : "000000",
+      credential: await authenticator.create({
+        challenge: challenge.challenge,
+        origin,
+        userId: issued.user_id,
+      }),
+    });
+    expect(refused.status).toBe(401);
+
+    const second = await authChallenge(b, origin);
+    const accepted = await authPost(b, origin, "register", {
+      token,
+      code: issued.code,
+      challenge: second,
+      credential: await authenticator.create({
+        challenge: second.challenge,
+        origin,
+        userId: issued.user_id,
+      }),
+    });
+    expect(accepted.status).toBe(200);
+    const session = (await accepted.json()) as { sub: string; access: { value: string } };
+    expect(session.sub).toBe(issued.sub);
+
+    // The record was written at B, and reaches A the way every record does.
+    await eventually(() => a.auth.records.credential(authenticator.credentialIdUrl) !== undefined);
+    expect(a.auth.records.credential(authenticator.credentialIdUrl)?.user_handle).toBe(
+      issued.user_id,
+    );
+
+    // And the person can authenticate at either endpoint.
+    const asserted = await authChallenge(a, `http://${addressOf(a)}`);
+    const at = await authPost(a, `http://${addressOf(a)}`, "assert", {
+      credential: await authenticator.get({
+        challenge: asserted.challenge,
+        origin: `http://${addressOf(a)}`,
+      }),
+      challenge: asserted,
+    });
+    expect(at.status).toBe(200);
+  });
+});
+
+/** One `/auth/*` request against an instance in the cluster. */
+async function authPost(
+  instance: Instance,
+  origin: string,
+  route: string,
+  body: unknown,
+): Promise<Response> {
+  return await fetch(`http://${addressOf(instance)}/auth/${route}`, {
+    method: "POST",
+    headers: { "content-type": "application/json", origin },
+    body: JSON.stringify(body),
+  });
+}
+
+async function authChallenge(
+  instance: Instance,
+  origin: string,
+): Promise<{ challenge: string; issuer: string; expires_at: number }> {
+  const answer = await authPost(instance, origin, "challenge", {});
+  return (await answer.json()) as { challenge: string; issuer: string; expires_at: number };
+}
 
 /** Where an instance's WebSocket is bound, for a client that dials it. */
 function addressOf(instance: Instance): string {

@@ -28,6 +28,7 @@ import {
   base64UrlDecode,
   base64UrlEncode,
   checkPublicKey,
+  equalBytes,
   equalStrings,
   verifyAssertion,
   verifyRegistration,
@@ -134,6 +135,10 @@ export interface IssuedRegistration {
   readonly sub: Subject;
   readonly url: string;
   readonly code: string;
+  /** The WebAuthn user handle this subject is known by, which the page creates
+   * the credential against. It is also inside the URL's claims; it is stated
+   * here so the command that issued the URL can show what it settled. */
+  readonly user_id: Base64Url;
   readonly expires_at: Timestamp;
   readonly endpoint: Endpoint;
   readonly rp_id: string;
@@ -218,6 +223,7 @@ export class Auth {
       rp_id: rpId,
       expires_at: at + REGISTER_TTL_MS,
       jti: randomBytes(16).toString("base64url"),
+      user_id: this.#userIdFor(sub),
       ...(options.label === undefined ? {} : { issued_label: options.label }),
     };
     const secret = randomBytes(32);
@@ -227,10 +233,33 @@ export class Auth {
       sub,
       url: `${webOrigin(endpoint)}/#register=${sign(claims, secret)}`,
       code,
+      user_id: claims.user_id,
       expires_at: claims.expires_at,
       endpoint,
       rp_id: rpId,
     };
+  }
+
+  /** The WebAuthn user handle this subject is known by.
+   *
+   * Settled once per subject and reused for every later registration of it: the
+   * authenticator keeps the handle beyond this instance's reach, so a second
+   * value for one person would show up on their device as a second account
+   * (contract, `RegisterClaims.user_id`). A subject that already has a
+   * credential is registered against the handle that credential carries; a
+   * subject in the middle of another registration, against the one that
+   * registration named.
+   *
+   * Sixteen bytes, which is what the specification recommends and what the page
+   * would otherwise have had to choose. */
+  #userIdFor(sub: Subject): Base64Url {
+    for (const record of this.deps.records.credentials()) {
+      if (record.sub === sub) return record.user_handle;
+    }
+    for (const held of this.#pending.values()) {
+      if (held.claims.sub === sub) return held.claims.user_id;
+    }
+    return base64UrlEncode(randomBytes(16));
   }
 
   /** The next `<unit>-N` nobody holds.
@@ -366,7 +395,7 @@ export class Auth {
     args: AuthRegisterArgs,
     from: { ip?: string; userAgent?: string } = {},
   ): Promise<MintedSession> {
-    const claims = this.#claimsOf(args);
+    const claims = await this.#claimsOf(args);
     if (this.deps.records.removed(claims.sub)) {
       throw new OpError("forbidden", `${claims.sub} は削除済みです`);
     }
@@ -399,7 +428,7 @@ export class Auth {
       sub: claims.sub,
       credential_id: verified.credentialId,
       public_key: verified.publicKey,
-      user_handle: args.credential.raw_id,
+      user_handle: claims.user_id,
       rp_id: claims.rp_id,
       sign_count: verified.signCount,
       ...(claims.issued_label === undefined ? {} : { issued_label: claims.issued_label }),
@@ -415,21 +444,26 @@ export class Auth {
   /** What a registration URL authorized.
    *
    * Only its issuer can say, because only the issuer holds the secret that
-   * signed it — and the six digits are held beside that secret, so checking
-   * them anywhere else would put the one defence against a leaked URL where the
-   * URL's holder can reach it. Carrying the code to the issuer is what
-   * `auth_resolve` will do once the contract can express it; until then a
-   * registration that landed at the wrong instance is refused, and the person
-   * is told which instance to go to rather than having a try silently spent. */
-  #claimsOf(args: AuthRegisterArgs): RegisterClaims {
+   * signed it — and the six digits are held beside that secret. So the digits
+   * travel there unjudged: an instance that decided them itself would let
+   * somebody spread guesses across the cluster without any of them counting
+   * against the URL (contract, `AuthResolveArgs`). Nothing is spent here.
+   *
+   * The claims come back from the issuer having been checked and consumed, and
+   * everything after this — the WebAuthn verification, the record — is done by
+   * whichever instance the browser actually reached (§2.6). */
+  async #claimsOf(args: AuthRegisterArgs): Promise<RegisterClaims> {
     const stated = claimsOf(args.token);
-    if (stated.iss !== this.deps.self) {
-      throw new OpError(
-        "auth_unknown_issuer",
-        `この登録 URL を発行したのは ${stated.iss} です。その instance の endpoint で登録してください`,
-      );
+    if (stated.iss === this.deps.self) return this.resolveRegistration(args.token, args.code);
+    const answer = (await this.#atIssuer(stated.iss, "auth_resolve", {
+      kind: "register",
+      token: args.token,
+      code: args.code,
+    } satisfies AuthResolveArgs)) as AuthResolveResult;
+    if (answer.kind !== "register") {
+      throw new OpError("auth_invalid", "登録 URL の発行者が別のものを答えました");
     }
-    return this.resolveRegistration(args.token, args.code);
+    return answer.claims;
   }
 
   /** Check a registration URL against the secret that signed it, and spend it.
@@ -477,6 +511,18 @@ export class Auth {
     const record = this.deps.records.credential(args.credential.raw_id);
     if (record === undefined) {
       throw new OpError("auth_invalid", "この credential は登録されていません");
+    }
+    // A resident credential answers with the handle it was created against,
+    // which is how a person is found without having named an account. It is
+    // held to what the registration settled: a handle naming somebody else is
+    // an authenticator answering for a credential that is not the one this
+    // record describes (contract, `RegisterClaims.user_id`).
+    const handle = args.credential.user_handle;
+    if (
+      handle !== undefined &&
+      !equalBytes(base64UrlDecode(handle), base64UrlDecode(record.user_handle))
+    ) {
+      throw new OpError("auth_invalid", "この assertion は別の利用者の handle を名乗っています");
     }
     // Verified before the challenge is spent, for the reason a registration is
     // (m9): a good-once value burnt by a message that never verified is a value
@@ -770,10 +816,10 @@ export function authHandlers(auth: Auth) {
         auth.spend(args.challenge);
         return { kind: "challenge" };
       }
-      // The code is not carried between instances: it is checked where it was
-      // issued, by the instance the browser reached asking this one to spend
-      // the registration — which is this one, holding both halves (§2.2).
-      return { kind: "register", claims: auth.resolveRegistration(args.token) };
+      // The digits arrive unjudged from wherever the browser landed, and are
+      // checked here — this is the instance holding both the secret that signed
+      // the URL and the count of tries against it (§2.2).
+      return { kind: "register", claims: auth.resolveRegistration(args.token, args.code) };
     },
     auth_rotate: (input: HandlerInput): AuthRotateResult =>
       auth.rotate((input.args as unknown as AuthRotateArgs).refresh_token),

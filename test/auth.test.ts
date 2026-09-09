@@ -84,6 +84,7 @@ async function registered(at: { instance: Instance; origin: string }) {
   const credential = await authenticator.create({
     challenge: challenge.challenge,
     origin: at.origin,
+    userId: issued.user_id,
   });
   const token = issued.url.slice(issued.url.indexOf("#register=") + "#register=".length);
   const response = await post(at, "register", {
@@ -676,5 +677,49 @@ describe("what a peer's records may and may not do (§2.4, §2.6)", () => {
         },
       ]).changed,
     ).toBe(0);
+  });
+});
+
+describe("the user handle a subject is known by (§2.2)", () => {
+  test("the record keeps what the registration settled, and an assertion is held to it", async () => {
+    const at = await serving();
+    const { issued, authenticator } = await registered(at);
+    const [record] = at.instance.auth.list();
+    expect(record?.user_handle).toBe(issued.user_id);
+
+    // The resident credential answers with that handle, and is admitted.
+    const challenge = (await (await post(at, "challenge", {})).json()) as {
+      challenge: string;
+      issuer: string;
+      expires_at: number;
+    };
+    const ok = await post(at, "assert", {
+      credential: await authenticator.get({ challenge: challenge.challenge, origin: at.origin }),
+      challenge,
+    });
+    expect(ok.status).toBe(200);
+
+    // One naming somebody else is an authenticator answering for a credential
+    // this record does not describe.
+    const second = (await (await post(at, "challenge", {})).json()) as {
+      challenge: string;
+      issuer: string;
+      expires_at: number;
+    };
+    authenticator.userHandle = Buffer.from("somebody else").toString("base64url");
+    const refused = await post(at, "assert", {
+      credential: await authenticator.get({ challenge: second.challenge, origin: at.origin }),
+      challenge: second,
+    });
+    expect(refused.status).toBe(401);
+    expect(((await refused.json()) as { error: { code: string } }).error.code).toBe("auth_invalid");
+  });
+
+  test("a second URL for one subject reuses the handle that subject already has", async () => {
+    const at = await serving();
+    const { issued } = await registered(at);
+    expect(at.instance.auth.issue({ sub: issued.sub }).user_id).toBe(issued.user_id);
+    // A different subject gets one of its own.
+    expect(at.instance.auth.issue({}).user_id).not.toBe(issued.user_id);
   });
 });

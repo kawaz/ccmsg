@@ -294,7 +294,16 @@ without the half that matters, and dispatch refuses them from the table. The car
 **A challenge is 32 bytes of randomness plus its issuer (an instance id), good for five minutes
 and good once.** Behind a load balancer the instance that issued it need not be the one that
 receives the answer: the receiver verifies the assertion itself and asks the issuer only to spend
-the challenge and to check a registration jwt, with `auth_resolve`.
+the challenge and to check a registration jwt, with `auth_resolve`. **The six digits travel to the
+issuer unjudged**: a receiver that decided them would count the tries separately per instance,
+letting somebody spread guesses across the cluster. The jwt, the code and the count of attempts
+are the issuer's alone.
+
+**The person's WebAuthn user handle (`user_id`) is settled once per subject by the issuer.**
+Sixteen random bytes go in the jwt, the page creates the credential against them, the record keeps
+them as `user_handle`, and an assertion naming a handle is held to it. An authenticator stores the
+handle beyond this instance's reach, so two values for one person would show up on their device as
+two accounts; a second registration of the same subject reuses the handle it already has.
 
 **Credential records, token families and tombstones are replicated on the `auth_records`
 topic.** It does not ride the relay of §7.4 — its granularity is `element`, so there is no whole

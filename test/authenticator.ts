@@ -23,6 +23,14 @@ export class SoftAuthenticator {
    * `userVerification: "required"` always says yes; one that says no is what a
    * relying party has to turn away. */
   userVerified = true;
+  /** The `user.id` the credential was created against, which a resident
+   * credential answers with. */
+  userHandle: string | undefined;
+
+  /** The credential id as it is spelled on the wire. */
+  get credentialIdUrl(): string {
+    return url(this.credentialId);
+  }
 
   constructor(
     readonly rpId: string,
@@ -40,7 +48,12 @@ export class SoftAuthenticator {
   }
 
   /** What `navigator.credentials.create()` would have produced. */
-  async create(options: { challenge: string; origin: string }): Promise<RegistrationCredential> {
+  async create(options: {
+    challenge: string;
+    origin: string;
+    userId?: string;
+  }): Promise<RegistrationCredential> {
+    this.userHandle = options.userId;
     const jwk = await crypto.subtle.exportKey("jwk", (await this.#pair()).publicKey);
     const cose = encodeCbor(
       new Map<number, unknown>([
@@ -87,6 +100,7 @@ export class SoftAuthenticator {
       client_data_json: url(client),
       authenticator_data: url(authData),
       signature: url(der(raw)),
+      ...(this.userHandle === undefined ? {} : { user_handle: this.userHandle }),
     };
   }
 

@@ -115,7 +115,13 @@ export function homeFor(lease: PortLease, peers: readonly Endpoint[]): Env {
   writeFileSync(
     join(configDir, "config.json"),
     JSON.stringify({
-      defaults: { self: endpoint(port), peers, entry: { host: "127.0.0.1", port } },
+      defaults: {
+        self: endpoint(port),
+        peers,
+        // The page this instance serves, so the `/auth/*` routes have an origin
+        // to compare against (DR-0001 §2.3).
+        entry: { host: "127.0.0.1", port, origins: [`http://127.0.0.1:${String(port)}`] },
+      },
     }),
   );
   const env: Env = {
