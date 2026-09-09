@@ -1,0 +1,29 @@
+{
+  "folders": [
+    {
+      "name": "ccmsg",
+      "path": ".",
+    },
+    {
+      "name": "ccmsg-protocol",
+      "path": "../../ccmsg-protocol/main",
+    },
+    {
+      "name": "ccmsg-webui",
+      "path": "../../ccmsg-webui/main",
+    },
+    {
+      "name": "claude-ccmsg (旧系、凍結)",
+      "path": "../../claude-ccmsg/main",
+    },
+    {
+      "name": "config",
+      "path": "../../../../../../../.config/ccmsg",
+    },
+    {
+      "name": "state",
+      "path": "../../../../../../../.local/state/ccmsg",
+    },
+  ],
+  "settings": {},
+}
