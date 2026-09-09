@@ -9,9 +9,19 @@
  *
  * Indefinite lengths are refused for the same reason: WebAuthn requires
  * canonical CTAP2 encoding, where every length is definite, so accepting one
- * would be accepting something no conforming authenticator produces. */
+ * would be accepting something no conforming authenticator produces.
+ *
+ * Nesting is bounded because the input is attacker-supplied: a value that is
+ * nothing but a few thousand nested arrays costs one byte each to write and a
+ * stack frame each to read, and this decoder runs on a route reachable before
+ * anything is proven. */
 
 export class CborError extends Error {}
+
+/** How deep a value may nest. The two shapes this reads are a map of three
+ * entries holding a map of five, so anything past a handful is not one of
+ * them. */
+const MAX_DEPTH = 8;
 
 /** One decoded value, and where the next one starts. */
 interface Read<T> {
@@ -34,7 +44,7 @@ export type CborValue =
  * the value was not what the encoder said it was, and the caller — which knows
  * whether its input is exactly one value — is where that is worth refusing. */
 export function decodeCbor(bytes: Uint8Array): { value: CborValue; rest: number } {
-  const read = value(bytes, 0);
+  const read = value(bytes, 0, 0);
   return { value: read.value, rest: bytes.length - read.next };
 }
 
@@ -45,7 +55,8 @@ export function decodeCborWhole(bytes: Uint8Array): CborValue {
   return decoded;
 }
 
-function value(bytes: Uint8Array, at: number): Read<CborValue> {
+function value(bytes: Uint8Array, at: number, depth: number): Read<CborValue> {
+  if (depth > MAX_DEPTH) throw new CborError("this value nests too deeply to be read here");
   const initial = byte(bytes, at);
   const major = initial >> 5;
   const minor = initial & 0x1f;
@@ -75,7 +86,7 @@ function value(bytes: Uint8Array, at: number): Read<CborValue> {
       const items: CborValue[] = [];
       let cursor = read.next;
       for (let i = 0; i < read.value; i += 1) {
-        const item = value(bytes, cursor);
+        const item = value(bytes, cursor, depth + 1);
         items.push(item.value);
         cursor = item.next;
       }
@@ -86,11 +97,11 @@ function value(bytes: Uint8Array, at: number): Read<CborValue> {
       const entries = new Map<number | string, CborValue>();
       let cursor = read.next;
       for (let i = 0; i < read.value; i += 1) {
-        const key = value(bytes, cursor);
+        const key = value(bytes, cursor, depth + 1);
         if (typeof key.value !== "number" && typeof key.value !== "string") {
           throw new CborError("a map key here is an integer or a string");
         }
-        const held = value(bytes, key.next);
+        const held = value(bytes, key.next, depth + 1);
         entries.set(key.value, held.value);
         cursor = held.next;
       }

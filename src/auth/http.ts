@@ -1,7 +1,15 @@
 import { createHash } from "node:crypto";
-import type { AuthAssertArgs, AuthRegisterArgs, ErrorCode, InstanceId } from "@ccmsg/protocol";
+import {
+  type AuthAssertArgs,
+  type AuthRegisterArgs,
+  type ErrorCode,
+  type InstanceId,
+  OP_SCHEMAS,
+  type OpName,
+  validationErrors,
+} from "@ccmsg/protocol";
 import { OpError } from "../dispatch/index.ts";
-import type { Auth } from "./auth.ts";
+import type { Auth, MintedSession } from "./auth.ts";
 
 /** The four ops the contract carries over HTTP, and the path each is at.
  *
@@ -11,6 +19,15 @@ import type { Auth } from "./auth.ts";
  * there is no envelope to carry one (DR-0001 §2.9). */
 const ROUTES = ["challenge", "register", "assert", "refresh"] as const;
 type Route = (typeof ROUTES)[number];
+
+/** Which op each route carries. The route is a name a proxy can see; the op is
+ * what the attribute table and the schemas are keyed by. */
+const OP_OF: Record<Route, OpName> = {
+  challenge: "auth_challenge",
+  register: "auth_register",
+  assert: "auth_assert",
+  refresh: "auth_refresh_token",
+};
 
 /** Cap on an `/auth/*` body. Everything these take is a handful of base64url
  * fields; an attestation object is a few hundred bytes. */
@@ -90,6 +107,13 @@ export async function handleAuth(
   if (origin !== null && !allowed.includes(origin)) {
     return new Response("Forbidden", { status: 403 });
   }
+  // These routes change state and are reachable before anything is proven, so
+  // an `Origin` is required rather than merely compared (DR-0001 §2.4): a
+  // request carrying none is not a page this instance serves, and admitting it
+  // would leave the comparison above optional to whoever is making the call.
+  if (origin === null && request.method !== "OPTIONS") {
+    return new Response("Forbidden", { status: 403 });
+  }
   const cors: Record<string, string> =
     origin === null
       ? {}
@@ -122,6 +146,15 @@ export async function handleAuth(
   } catch (cause) {
     return refusal("bad_request", String(cause), cors);
   }
+  // The op's own schema, run before anything reads a field. The carrier
+  // synthesizes the envelope the contract asks for — there is no connection to
+  // carry one — so what is validated is the same frame dispatch would have
+  // validated, and a body missing a field is a refusal rather than a fault
+  // inside a handler.
+  const op = OP_OF[route];
+  const frame = { op, request_id: `http-${crypto.randomUUID()}`, ...args };
+  const problems = validationErrors(OP_SCHEMAS[op].request, frame);
+  if (problems.length > 0) return refusal("invalid_args", problems.join("; "), cors);
 
   const userAgent = request.headers.get("user-agent") ?? undefined;
   const seen = {
@@ -133,20 +166,20 @@ export async function handleAuth(
       case "challenge":
         return answer(deps.auth.challenge(), cors);
       case "register": {
-        const session = await deps.auth.register(args as unknown as AuthRegisterArgs, seen);
-        return answer(session, cors, setCookie(deps, url.pathname));
+        const minted = await deps.auth.register(args as unknown as AuthRegisterArgs, seen);
+        return answer(minted.session, cors, setCookie(deps, url.pathname, minted));
       }
       case "assert": {
-        const session = await deps.auth.assert(args as unknown as AuthAssertArgs, seen);
-        return answer(session, cors, setCookie(deps, url.pathname));
+        const minted = await deps.auth.assert(args as unknown as AuthAssertArgs, seen);
+        return answer(minted.session, cors, setCookie(deps, url.pathname, minted));
       }
       case "refresh": {
         const held = refreshCookie(request, deps);
         if (held === undefined) {
           return refusal("auth_invalid", "この要求には refresh token がありません", cors);
         }
-        const session = await deps.auth.refreshToken(held);
-        return answer(session, cors, setCookie(deps, url.pathname));
+        const minted = await deps.auth.refreshToken(held);
+        return answer(minted.session, cors, setCookie(deps, url.pathname, minted));
       }
     }
   } catch (cause) {
@@ -184,12 +217,17 @@ function refreshCookie(request: Request, deps: AuthRoutesDeps): string | undefin
   return undefined;
 }
 
-/** The `Set-Cookie` for whatever the op just minted, or nothing when it minted
- * no refresh token. */
-function setCookie(deps: AuthRoutesDeps, pathname: string): Record<string, string> {
-  const minted = deps.auth.takeRefresh();
-  if (minted === undefined) return {};
-  const name = cookieName(deps.self, minted.sub);
+/** The `Set-Cookie` for what the op just minted.
+ *
+ * The refresh token is answered by the op to its caller rather than left in a
+ * slot on the domain, so two exchanges in flight cannot hand one caller the
+ * other's token. */
+function setCookie(
+  deps: AuthRoutesDeps,
+  pathname: string,
+  minted: MintedSession,
+): Record<string, string> {
+  const name = cookieName(deps.self, minted.session.sub);
   const maxAge = Math.max(0, Math.floor((minted.refresh.expires_at - Date.now()) / 1000));
   return {
     "set-cookie": [

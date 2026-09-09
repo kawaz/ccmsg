@@ -200,17 +200,16 @@ describe("authenticating and the tokens that follow (§2.4, §2.5)", () => {
     expect((await post(at, "assert", { credential, challenge })).status).toBe(401);
   });
 
-  test("refreshing rotates, and a value two generations back fails the family", async () => {
+  test("refreshing rotates, and any generation rotated away fails the family", async () => {
     const at = await serving();
     const first = at.instance.auth.mint("someone");
     const name = cookieName(at.instance.self, "someone");
-    const held = at.instance.auth.takeRefresh();
-    const zero = `${name}=${held?.refresh.value ?? ""}`;
+    const zero = `${name}=${first.refresh.value}`;
 
     const one = await post(at, "refresh", {}, { cookie: zero });
     expect(one.status).toBe(200);
     const next = (await one.json()) as { access: { value: string } };
-    expect(next.access.value).not.toBe(first.access.value);
+    expect(next.access.value).not.toBe(first.session.access.value);
     const first_rotation = mintedCookie(one, name);
 
     // The generation before the standing one is answered rather than refused: a
@@ -222,10 +221,11 @@ describe("authenticating and the tokens that follow (§2.4, §2.5)", () => {
     expect(two.status).toBe(200);
     const standing = mintedCookie(two, name);
 
-    // Two generations back is older than the family remembers, so there is
-    // nothing to fail it by: it is refused and the standing token stands.
+    // Two generations back is past every grace, and the issuer remembers what
+    // it rotated away — so this is a token being reused, and the family goes
+    // with it, standing token included.
     expect((await post(at, "refresh", {}, { cookie: zero })).status).toBe(401);
-    expect((await post(at, "refresh", {}, { cookie: standing })).status).toBe(200);
+    expect((await post(at, "refresh", {}, { cookie: standing })).status).toBe(401);
   });
 
   test("an origin this instance does not serve is refused before anything else", async () => {
@@ -295,14 +295,13 @@ describe("a token reused after its grace fails the family (§2.4)", () => {
     const dir = mkdtempSync(join(tmpdir(), "ccmsg-auth-unit-"));
     const auth = new Auth({
       self: "0".repeat(32),
-      records: new AuthRecords({ dir, publish: () => {}, now: () => now }),
+      records: new AuthRecords({ dir, self: "0".repeat(32), publish: () => {}, now: () => now }),
       origins: () => [],
       endpoint: () => undefined,
       unit: "unit",
       now: () => now,
     });
-    auth.mint("someone");
-    const zero = auth.takeRefresh()?.refresh.value ?? "";
+    const zero = auth.mint("someone").refresh.value;
     const one = auth.rotate(zero);
 
     // Inside the grace it is the retry it looks like, answered with the pair
@@ -313,5 +312,369 @@ describe("a token reused after its grace fails the family (§2.4)", () => {
     expect(() => auth.rotate(zero)).toThrow();
     // The family went with it, so the value that was standing is gone too.
     expect(auth.admits(one.access.value)).toBeUndefined();
+  });
+});
+
+describe("what a registration or an assertion is refused for", () => {
+  /** Every one of these answers `auth_invalid`, and none of them reaches a
+   * fault: what arrives on these routes is attacker-supplied, so a message that
+   * does not verify is a refusal in the contract's own vocabulary (M6). */
+  async function refusedAssert(
+    at: { instance: Instance; origin: string },
+    make: (challenge: {
+      challenge: string;
+      issuer: string;
+      expires_at: number;
+    }) => Promise<unknown>,
+  ): Promise<{ status: number; code: string }> {
+    const challenge = (await (await post(at, "challenge", {})).json()) as {
+      challenge: string;
+      issuer: string;
+      expires_at: number;
+    };
+    const response = await post(at, "assert", {
+      credential: await make(challenge),
+      challenge,
+    });
+    const body = (await response.json()) as { error?: { code?: string } };
+    return { status: response.status, code: body.error?.code ?? "" };
+  }
+
+  test("a tampered client data is not the one that was signed", async () => {
+    const at = await serving();
+    const { authenticator } = await registered(at);
+    const refused = await refusedAssert(at, async (challenge) => {
+      const credential = await authenticator.get({
+        challenge: challenge.challenge,
+        origin: at.origin,
+      });
+      // The same fields, written again — so the signature is over the bytes the
+      // authenticator produced and not over these.
+      const client = JSON.parse(
+        Buffer.from(credential.client_data_json, "base64url").toString("utf8"),
+      ) as Record<string, unknown>;
+      return {
+        ...credential,
+        client_data_json: Buffer.from(JSON.stringify({ ...client, extra: 1 })).toString(
+          "base64url",
+        ),
+      };
+    });
+    expect(refused).toEqual({ status: 401, code: "auth_invalid" });
+  });
+
+  test("a page from another origin is not one this instance serves", async () => {
+    const at = await serving();
+    const { authenticator } = await registered(at);
+    const refused = await refusedAssert(at, (challenge) =>
+      authenticator.get({ challenge: challenge.challenge, origin: "http://elsewhere.example" }),
+    );
+    expect(refused).toEqual({ status: 401, code: "auth_invalid" });
+  });
+
+  test("an authenticator that verified nobody is turned away", async () => {
+    const at = await serving();
+    const { authenticator } = await registered(at);
+    authenticator.userVerified = false;
+    const refused = await refusedAssert(at, (challenge) =>
+      authenticator.get({ challenge: challenge.challenge, origin: at.origin }),
+    );
+    expect(refused).toEqual({ status: 401, code: "auth_invalid" });
+  });
+
+  test("a counter that does not advance is a copy of the credential", async () => {
+    const at = await serving();
+    const { authenticator } = await registered(at);
+    // A counter that was counting: the record takes the first non-zero reading.
+    authenticator.signCount = 5;
+    const ok = await refusedAssert(at, (challenge) =>
+      authenticator.get({ challenge: challenge.challenge, origin: at.origin }),
+    );
+    expect(ok.status).toBe(200);
+
+    for (const presented of [5, 4, 0]) {
+      authenticator.signCount = presented;
+      const refused = await refusedAssert(at, (challenge) =>
+        authenticator.get({ challenge: challenge.challenge, origin: at.origin }),
+      );
+      expect([presented, refused]).toEqual([presented, { status: 401, code: "auth_invalid" }]);
+    }
+  });
+
+  test("a credential built on rubbish is refused rather than faulted", async () => {
+    const at = await serving();
+    for (const attestation of ["oWNmbXQ", "AAAAAAAA", "_____w"]) {
+      // A URL apiece: the first attempt spends the one it was made for, which
+      // is what §2.2 asks of a registration URL.
+      const issued = at.instance.auth.issue({});
+      const token = issued.url.slice(issued.url.indexOf("#register=") + "#register=".length);
+      const challenge = (await (await post(at, "challenge", {})).json()) as { challenge: string };
+      const client = Buffer.from(
+        JSON.stringify({
+          type: "webauthn.create",
+          challenge: challenge.challenge,
+          origin: at.origin,
+        }),
+      ).toString("base64url");
+      const response = await post(at, "register", {
+        token,
+        code: issued.code,
+        credential: {
+          id: "aaaa",
+          raw_id: "aaaa",
+          client_data_json: client,
+          attestation_object: attestation,
+        },
+      });
+      const body = (await response.json()) as { error?: { code?: string } };
+      expect([attestation, response.status, body.error?.code]).toEqual([
+        attestation,
+        401,
+        "auth_invalid",
+      ]);
+    }
+  });
+
+  test("a body missing a field the contract requires is invalid_args", async () => {
+    const at = await serving();
+    const response = await post(at, "register", { token: "x" });
+    expect(response.status).toBe(401);
+    expect(((await response.json()) as { error: { code: string } }).error.code).toBe(
+      "invalid_args",
+    );
+  });
+
+  test("a POST carrying no Origin is refused", async () => {
+    const at = await serving();
+    const refused = await fetch(`http://${at.instance.http[0] as string}/auth/challenge`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    });
+    expect(refused.status).toBe(403);
+  });
+
+  test("a browser that writes crossOrigin: false is admitted", async () => {
+    // Chromium writes the field on every message. Reading its presence as a
+    // refusal would turn away every credential those browsers make (C1).
+    const at = await serving();
+    const issued = at.instance.auth.issue({});
+    const authenticator = new SoftAuthenticator(issued.rp_id, { crossOrigin: false });
+    const challenge = (await (await post(at, "challenge", {})).json()) as { challenge: string };
+    const token = issued.url.slice(issued.url.indexOf("#register=") + "#register=".length);
+    const response = await post(at, "register", {
+      token,
+      code: issued.code,
+      credential: await authenticator.create({
+        challenge: challenge.challenge,
+        origin: at.origin,
+      }),
+    });
+    expect(response.status).toBe(200);
+  });
+
+  test("a registration URL issued by another instance is refused here", async () => {
+    // Until the contract can carry the six digits between instances, a
+    // registration that landed at the wrong endpoint is told where to go rather
+    // than having one of its five tries silently spent (M5).
+    const at = await serving();
+    const issued = at.instance.auth.issue({});
+    const token = issued.url.slice(issued.url.indexOf("#register=") + "#register=".length);
+    const [header, body, signature] = token.split(".");
+    const claims = JSON.parse(Buffer.from(body as string, "base64url").toString("utf8")) as Record<
+      string,
+      unknown
+    >;
+    const elsewhere = `${header ?? ""}.${Buffer.from(
+      JSON.stringify({ ...claims, iss: "f".repeat(32) }),
+    ).toString("base64url")}.${signature ?? ""}`;
+    const response = await post(at, "register", {
+      token: elsewhere,
+      code: issued.code,
+      credential: {
+        id: "aaaa",
+        raw_id: "aaaa",
+        client_data_json: "e30",
+        attestation_object: "oWNmbXQ",
+      },
+    });
+    expect(((await response.json()) as { error: { code: string } }).error.code).toBe(
+      "auth_unknown_issuer",
+    );
+    // No try was spent: the real URL still works.
+    const challenge = (await (await post(at, "challenge", {})).json()) as { challenge: string };
+    const authenticator = new SoftAuthenticator(issued.rp_id);
+    const ok = await post(at, "register", {
+      token,
+      code: issued.code,
+      credential: await authenticator.create({
+        challenge: challenge.challenge,
+        origin: at.origin,
+      }),
+    });
+    expect(ok.status).toBe(200);
+  });
+});
+
+describe("the registration URL runs out (§2.2)", () => {
+  test("five wrong codes spend the URL, and so does the expiry", () => {
+    let now = 1_000_000;
+    const dir = mkdtempSync(join(tmpdir(), "ccmsg-auth-url-"));
+    const auth = new Auth({
+      self: "0".repeat(32),
+      records: new AuthRecords({ dir, self: "0".repeat(32), publish: () => {}, now: () => now }),
+      origins: () => ["http://ui.example"],
+      endpoint: () => "ws://ui.example",
+      unit: "unit",
+      now: () => now,
+    });
+    const issued = auth.issue({});
+    const token = issued.url.slice(issued.url.indexOf("#register=") + "#register=".length);
+    const wrong = issued.code === "000000" ? "111111" : "000000";
+    // Four tries are refusals of the code; the fifth spends the URL itself, so
+    // guessing costs the registration rather than one attempt.
+    for (let i = 0; i < 4; i += 1) {
+      expect(() => auth.resolveRegistration(token, wrong)).toThrow(/コードが違います/);
+    }
+    expect(() => auth.resolveRegistration(token, wrong)).toThrow(/再発行/);
+    expect(() => auth.resolveRegistration(token, issued.code)).toThrow(/再発行/);
+
+    // A fresh URL, left until its expiry, is gone the same way.
+    const second = auth.issue({});
+    const later = second.url.slice(second.url.indexOf("#register=") + "#register=".length);
+    now = second.expires_at + 1;
+    expect(() => auth.resolveRegistration(later, second.code)).toThrow(/期限切れ|再発行/);
+  });
+
+  test("the default subject is read from the records, not from a counter", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ccmsg-auth-sub-"));
+    const records = new AuthRecords({ dir, self: "0".repeat(32), publish: () => {} });
+    const deps = {
+      self: "0".repeat(32),
+      records,
+      origins: () => ["http://ui.example"],
+      endpoint: () => "ws://ui.example" as const,
+      unit: "unit",
+    };
+    records.write("credential/unit-3/abc", {
+      kind: "credential",
+      sub: "unit-3",
+      credential_id: "abc",
+      public_key: "k",
+      user_handle: "u",
+      registered_at: 1,
+    });
+    // A restart is a new Auth over the same records, and it must not hand the
+    // next person a name somebody already holds (M11).
+    expect(new Auth(deps).issue({}).sub).toBe("unit-4");
+    expect(new Auth(deps).issue({}).sub).toBe("unit-4");
+  });
+});
+
+describe("extending a connection (§2.5)", () => {
+  test("a token of one's own extends it, and somebody else's does not", async () => {
+    const at = await serving();
+    const mine = at.instance.auth.mint("me");
+    const theirs = at.instance.auth.mint("them");
+    const client = await connectWs(at.instance.http[0] ?? "", mine.session.access.value);
+    clients.push(client);
+    client.send({ op: "hello", request_id: "1", role: "user", protocol_version: PROTOCOL_VERSION });
+    const greeting = (await client.next()) as { auth_expires_at: number };
+
+    client.send({ op: "auth_refresh", request_id: "2", access_token: theirs.session.access.value });
+    expect(await client.next()).toMatchObject({
+      ok: false,
+      request_id: "2",
+      error: { code: "auth_invalid" },
+    });
+
+    const next = await at.instance.auth.refreshToken(mine.refresh.value);
+    client.send({
+      op: "auth_refresh",
+      request_id: "3",
+      access_token: next.session.access.value,
+    });
+    const extended = (await client.next()) as { ok: boolean; auth_expires_at: number };
+    expect(extended.ok).toBe(true);
+    expect(extended.auth_expires_at).toBeGreaterThanOrEqual(greeting.auth_expires_at);
+  });
+
+  test("a connection whose token ran out is closed", async () => {
+    const at = await serving();
+    const minted = at.instance.auth.mint("brief");
+    const client = await connectWs(at.instance.http[0] ?? "", minted.session.access.value);
+    client.send({ op: "hello", request_id: "1", role: "user", protocol_version: PROTOCOL_VERSION });
+    await client.next();
+    // What the deadline does when nobody extended it, without waiting hours for
+    // one: removing the person is the same close on the same path (§2.5).
+    const closed = Promise.withResolvers<void>();
+    void client.close().then(() => closed.resolve());
+    at.instance.auth.disconnect("brief");
+    await closed.promise;
+    expect(at.instance.auth.held.connections).toBe(0);
+  });
+});
+
+describe("what a peer's records may and may not do (§2.4, §2.6)", () => {
+  test("a peer cannot write a family this instance minted, nor revive a removal", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ccmsg-auth-merge-"));
+    const self = "0".repeat(32);
+    const records = new AuthRecords({ dir, self, publish: () => {} });
+    const auth = new Auth({
+      self,
+      records,
+      origins: () => [],
+      endpoint: () => undefined,
+      unit: "unit",
+    });
+    const minted = auth.mint("someone");
+    const [family] = records.families();
+    records.fail(family?.key ?? "");
+    expect(auth.admits(minted.session.access.value)).toBeUndefined();
+
+    // The copy a peer still holds is older state about a family it may not
+    // write, and taking it would undo the failure (M2).
+    expect(
+      records.merge([
+        { key: family?.key ?? "", updated_at: Date.now() + 60_000, body: family?.body as never },
+      ]).changed,
+    ).toBe(0);
+    expect(auth.admits(minted.session.access.value)).toBeUndefined();
+
+    // A removal that arrived from a peer refuses the credential here too.
+    records.write("credential/gone/abc", {
+      kind: "credential",
+      sub: "gone",
+      credential_id: "abc",
+      public_key: "k",
+      user_handle: "u",
+      registered_at: 1,
+    });
+    const removal = records.merge([
+      {
+        key: "credential/gone",
+        updated_at: Date.now(),
+        body: { kind: "tombstone", sub: "gone", deleted_at: Date.now() },
+      },
+    ]);
+    expect(removal.removed).toEqual(["gone"]);
+    expect(records.credentials()).toEqual([]);
+    // And nothing brings it back.
+    expect(
+      records.merge([
+        {
+          key: "credential/gone/abc",
+          updated_at: Date.now() + 60_000,
+          body: {
+            kind: "credential",
+            sub: "gone",
+            credential_id: "abc",
+            public_key: "k",
+            user_handle: "u",
+            registered_at: 1,
+          },
+        },
+      ]).changed,
+    ).toBe(0);
   });
 });

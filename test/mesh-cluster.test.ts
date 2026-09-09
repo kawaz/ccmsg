@@ -604,14 +604,14 @@ describe("the credentials and tokens the cluster shares (DR-0001 §2.6)", () => 
   test("a record written on one instance authenticates at the other", async () => {
     const { a, b } = await pair();
     // What a registration would have left behind, written where it happened.
-    const session = a.auth.mint("someone");
-    await eventually(() => b.auth.admits(session.access.value) !== undefined);
-    expect(b.auth.admits(session.access.value)?.sub).toBe("someone");
+    const minted = a.auth.mint("someone");
+    await eventually(() => b.auth.admits(minted.session.access.value) !== undefined);
+    expect(b.auth.admits(minted.session.access.value)?.sub).toBe("someone");
 
     // The endpoint the record travelled to takes the token on its own
     // handshake, which is the whole point of replicating it: the instance a
     // person registered at may be down.
-    const client = await connectWs(addressOf(b), session.access.value);
+    const client = await connectWs(addressOf(b), minted.session.access.value);
     client.send({ op: "hello", request_id: "1", role: "user", protocol_version: PROTOCOL_VERSION });
     expect(await client.next()).toMatchObject({ ok: true });
     await client.close();
@@ -619,24 +619,23 @@ describe("the credentials and tokens the cluster shares (DR-0001 §2.6)", () => 
 
   test("a rotation is carried to the instance that minted the family", async () => {
     const { a, b } = await pair();
-    a.auth.mint("someone");
-    const held = a.auth.takeRefresh();
-    await eventually(() => b.auth.records.byRefresh(held?.refresh.value ?? "") !== undefined);
+    const minted = a.auth.mint("someone");
+    await eventually(() => b.auth.records.byRefresh(minted.refresh.value) !== undefined);
 
     // B holds the family but may not write it, so it asks A — the single
     // writer — and answers with what A minted (§2.4).
-    const rotated = await b.auth.refreshToken(held?.refresh.value ?? "");
-    expect(rotated.sub).toBe("someone");
-    expect(a.auth.admits(rotated.access.value)?.sub).toBe("someone");
+    const rotated = await b.auth.refreshToken(minted.refresh.value);
+    expect(rotated.session.sub).toBe("someone");
+    expect(a.auth.admits(rotated.session.access.value)?.sub).toBe("someone");
   });
 
   test("a removal travels, and refuses the credential everywhere", async () => {
     const { a, b } = await pair();
-    const session = a.auth.mint("goes-away");
-    await eventually(() => b.auth.admits(session.access.value) !== undefined);
+    const minted = a.auth.mint("goes-away");
+    await eventually(() => b.auth.admits(minted.session.access.value) !== undefined);
     a.auth.remove("goes-away");
     await eventually(() => b.auth.records.removed("goes-away"));
-    expect(b.auth.admits(session.access.value)).toBeUndefined();
+    expect(b.auth.admits(minted.session.access.value)).toBeUndefined();
   });
 });
 

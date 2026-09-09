@@ -249,9 +249,19 @@ M4 とも矛盾しない。M4 が禁じるのは派生値をディスクに置�
 refresh は httpOnly cookie (`__Secure-ccmsg-<sha256(instance id + 改行 + sub) の先頭 16 hex>`、
 `HttpOnly; Secure; SameSite=Strict; Path=<request のパスの /auth/ までの prefix>`)。
 family を書けるのは mint した instance (`iss`) だけで、別の instance に届いた rotate は
-`auth_rotate` で `iss` へ転送する (§7.3 の経路)。直前 1 世代は再送の猶予として
-「前回の答え」を返し、猶予切れの再利用は family ごと失効させる。family が覚えているのは
-2 世代なので、それより古い値は照合先が無く、単に断られる。
+`auth_rotate` で `iss` へ転送する (§7.3 の経路)。**peer から届いた「自分が mint した family」の
+写しは受理しない** — 単一 writer なのだから、戻ってくる写しは必ず古い状態であり、
+失効させた family を復活させてしまう。直前 1 世代は再送の猶予として「前回の答え」を返し、
+それ以外の**退役済みの値の提示は世代を問わず family ごと失効させる** (`iss` が退役値の
+ダイジェストを本来の exp まで memory に持つ。プロセスの生存期間だけで、複製もしない)。
+失効と tombstone はどちらも、その sub の認証済み WS を閉じる — peer から届いた tombstone
+でも同じく閉じる。
+
+`hello` の `auth_expires_at` は接続の期限で、`auth_refresh` は **同じ利用者の** access token
+でしか延ばせない。carrier が http の op (`auth_challenge` / `auth_register` / `auth_assert` /
+`auth_refresh_token`) は **frame としては受けない**: cookie の読み書きは開いた接続の上では
+できず、答えの片方が欠けたまま返すことになるので、dispatch が属性表を見て断る。carrier 側は
+handler に渡す前に `OP_SCHEMAS` を通し、`Origin` の無い POST も断る。
 
 **challenge は 32 byte の乱数 + 発行者 (instance id)、寿命 5 分、使い切り。** LB で発行と
 応答の instance が違ってよく、応答を受けた側が assertion を検証し、challenge の消費と

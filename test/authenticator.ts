@@ -13,8 +13,23 @@ export class SoftAuthenticator {
   #keys: CryptoKeyPair | undefined;
   readonly credentialId = new Uint8Array(randomBytes(16));
   signCount = 0;
+  /** What the browser writes beside the origin.
+   *
+   * `undefined` leaves the field out, as Safari does; `false` writes it, as
+   * Chromium does on every message. Both are a same-origin exchange and both
+   * have to be admitted, which is what having the choice here is for. */
+  crossOrigin: boolean | undefined;
+  /** Whether the person was verified. An authenticator asked for
+   * `userVerification: "required"` always says yes; one that says no is what a
+   * relying party has to turn away. */
+  userVerified = true;
 
-  constructor(readonly rpId: string) {}
+  constructor(
+    readonly rpId: string,
+    options: { crossOrigin?: boolean } = {},
+  ) {
+    this.crossOrigin = options.crossOrigin;
+  }
 
   async #pair(): Promise<CryptoKeyPair> {
     this.#keys ??= (await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, [
@@ -48,7 +63,7 @@ export class SoftAuthenticator {
     return {
       id,
       raw_id: id,
-      client_data_json: url(clientData("webauthn.create", options.challenge, options.origin)),
+      client_data_json: url(this.#clientData("webauthn.create", options.challenge, options.origin)),
       attestation_object: url(attestation),
     };
   }
@@ -56,7 +71,7 @@ export class SoftAuthenticator {
   /** What `navigator.credentials.get()` would have produced. */
   async get(options: { challenge: string; origin: string }): Promise<AssertionCredential> {
     const authData = this.#authData(false);
-    const client = clientData("webauthn.get", options.challenge, options.origin);
+    const client = this.#clientData("webauthn.get", options.challenge, options.origin);
     const signed = new Uint8Array(authData.length + 32);
     signed.set(authData, 0);
     signed.set(new Uint8Array(createHash("sha256").update(client).digest()), authData.length);
@@ -75,6 +90,17 @@ export class SoftAuthenticator {
     };
   }
 
+  #clientData(type: string, challenge: string, origin: string): Uint8Array {
+    return new TextEncoder().encode(
+      JSON.stringify({
+        type,
+        challenge,
+        origin,
+        ...(this.crossOrigin === undefined ? {} : { crossOrigin: this.crossOrigin }),
+      }),
+    );
+  }
+
   /** The authenticator data both messages carry: the relying party, the flags
    * that say a person was present and verified, the counter, and — on a
    * registration — the credential this authenticator just made. */
@@ -82,7 +108,7 @@ export class SoftAuthenticator {
     const rpIdHash = new Uint8Array(createHash("sha256").update(this.rpId).digest());
     const head = new Uint8Array(37);
     head.set(rpIdHash, 0);
-    head[32] = attested ? 0x45 : 0x05;
+    head[32] = (attested ? 0x41 : 0x01) | (this.userVerified ? 0x04 : 0x00);
     new DataView(head.buffer).setUint32(33, this.signCount);
     if (!attested || cose === undefined) return head;
     const tail = new Uint8Array(18 + this.credentialId.length + cose.length);
@@ -96,10 +122,6 @@ export class SoftAuthenticator {
     whole.set(tail, head.length);
     return whole;
   }
-}
-
-function clientData(type: string, challenge: string, origin: string): Uint8Array {
-  return new TextEncoder().encode(JSON.stringify({ type, challenge, origin }));
 }
 
 function url(bytes: Uint8Array): string {

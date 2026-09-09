@@ -276,10 +276,20 @@ the response body; the refresh token is an httpOnly cookie
 (`__Secure-ccmsg-<first 16 hex of sha256(instance id + newline + sub)>`,
 `HttpOnly; Secure; SameSite=Strict; Path=<the request path up to its /auth/>`). A family is
 written by the instance that minted it (`iss`) alone, so a rotation that lands elsewhere is
-forwarded there with `auth_rotate` (the route of §7.3). The generation before the standing one is
-answered with the previous reply as a retry's grace; reusing a value past that grace fails the
-whole family. A family remembers two generations, so anything older matches nothing and is simply
-refused.
+forwarded there with `auth_rotate` (the route of §7.3). **A copy of a family this instance minted,
+arriving from a peer, is refused**: with a single writer, a copy coming back is necessarily older
+state, and taking it would revive a family that was failed. The generation before the standing one
+is answered with the previous reply as a retry's grace; presenting any other retired value fails
+the whole family (the `iss` keeps digests of what it rotated away until each would have expired —
+in memory, for the life of the process, and not replicated). Failing a family and receiving a
+tombstone both close the connections that person holds, a tombstone from a peer included.
+
+`hello`'s `auth_expires_at` is the connection's deadline, and `auth_refresh` moves it only with
+**that same person's** access token. The ops the table carries over HTTP (`auth_challenge`,
+`auth_register`, `auth_assert`, `auth_refresh_token`) are **not reachable as frames**: reading or
+setting a cookie is not something an open connection can do, so answering one there would answer
+without the half that matters, and dispatch refuses them from the table. The carrier runs
+`OP_SCHEMAS` before any handler, and refuses a POST that carries no `Origin`.
 
 **A challenge is 32 bytes of randomness plus its issuer (an instance id), good for five minutes
 and good once.** Behind a load balancer the instance that issued it need not be the one that

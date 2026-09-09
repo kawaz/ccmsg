@@ -65,7 +65,12 @@ export function parseAuthenticatorData(bytes: Uint8Array): AuthenticatorData {
   // The key is followed by extensions when there are any, so its own length is
   // what the decoder reports rather than what is left in the buffer.
   const rest = bytes.subarray(idEnd);
-  const { rest: after } = decodeCbor(rest);
+  let after: number;
+  try {
+    ({ rest: after } = decodeCbor(rest));
+  } catch (cause) {
+    throw new WebAuthnError(`the credential's public key could not be read: ${String(cause)}`);
+  }
   const publicKey = rest.subarray(0, rest.length - after);
   return { rpIdHash, flags, signCount, credentialId, publicKey };
 }
@@ -97,9 +102,13 @@ export function checkClientData(
   if (typeof parsed.origin !== "string" || !expected.origins.includes(parsed.origin)) {
     throw new WebAuthnError(`${String(parsed.origin)} is not an origin this instance serves`);
   }
-  // Both must be absent, not merely false: a cross-origin registration is one
-  // an embedding page ran, and this instance admits only its own pages.
-  if (parsed.crossOrigin !== undefined || parsed.topOrigin !== undefined) {
+  // What is refused is an exchange an embedding page ran, which is what either
+  // of these says when it is there to say it. `crossOrigin: false` is not that:
+  // Chromium writes the field on every message, and reading its presence as the
+  // refusal would turn away every credential those browsers make. `topOrigin`
+  // is only ever written when the exchange was cross-origin, so its presence at
+  // all is the refusal.
+  if (parsed.crossOrigin === true || parsed.topOrigin !== undefined) {
     throw new WebAuthnError("this exchange must not be run from an embedded page");
   }
 }
@@ -189,12 +198,14 @@ export async function verifyAssertion(
   const authData = base64UrlDecode(credential.authenticator_data);
   const data = parseAuthenticatorData(authData);
   checkAuthenticator(data, expected.rpIds);
-  // A synced passkey reports zero forever, so only a pair of non-zero readings
-  // says anything at all; where both are non-zero, a reading at or below the
-  // last one is a credential being used from a copy of itself.
+  // A synced passkey reports zero forever, and an authenticator that keeps a
+  // counter only ever counts up. So once a non-zero reading has been recorded,
+  // every later one has to be higher — including a zero, which from an
+  // authenticator that was counting is a different device answering with a copy
+  // of the credential.
   const last = known.signCount ?? 0;
-  if (last !== 0 && data.signCount !== 0 && data.signCount <= last) {
-    throw new WebAuthnError("the authenticator's counter went backwards");
+  if (last !== 0 && data.signCount <= last) {
+    throw new WebAuthnError("the authenticator's counter did not advance");
   }
   const signed = new Uint8Array(authData.length + 32);
   signed.set(authData, 0);
@@ -216,6 +227,22 @@ const RS256 = -257;
 
 export const SUPPORTED_ALGORITHMS: readonly number[] = [ES256, EdDSA, RS256];
 
+/** Import the COSE key a registration carried, so a record is never written
+ * around a key nothing can verify with.
+ *
+ * Done at registration rather than at the first assertion: a key that cannot be
+ * imported is a credential that can never be used, and finding that out when
+ * the person tries to sign in leaves a record nobody can explain. The imported
+ * key itself is thrown away — an assertion imports its own (§2.10). */
+export async function checkPublicKey(cose: Uint8Array): Promise<void> {
+  const key = decodeCborWhole(cose);
+  const alg = mapEntry(key, 3);
+  if (typeof alg !== "number" || !SUPPORTED_ALGORITHMS.includes(alg)) {
+    throw new WebAuthnError("the key names no algorithm this instance verifies");
+  }
+  await importPublicKey(key, alg);
+}
+
 /** Verify one signature against a COSE key.
  *
  * The key is imported per verification rather than kept: an assertion arrives
@@ -229,69 +256,68 @@ async function verifySignature(
 ): Promise<boolean> {
   const key = decodeCborWhole(cose);
   const alg = mapEntry(key, 3);
-  if (typeof alg !== "number") throw new WebAuthnError("the key names no algorithm");
+  if (typeof alg !== "number" || !SUPPORTED_ALGORITHMS.includes(alg)) {
+    throw new WebAuthnError("the key names no algorithm this instance verifies");
+  }
+  const imported = await importPublicKey(key, alg);
+  if (alg === ES256) {
+    // WebAuthn signs ES256 as the ASN.1 sequence X.509 uses, while WebCrypto
+    // verifies the raw pair, so the two halves are taken out of the DER here.
+    const raw = rawEcdsaSignature(signature);
+    if (raw === undefined) return false;
+    return await crypto.subtle.verify(
+      { name: "ECDSA", hash: "SHA-256" },
+      imported,
+      owned(raw),
+      owned(signed),
+    );
+  }
+  const algorithm = alg === EdDSA ? { name: "Ed25519" } : { name: "RSASSA-PKCS1-v1_5" };
+  return await crypto.subtle.verify(algorithm, imported, owned(signature), owned(signed));
+}
+
+/** The COSE key as WebCrypto holds it. A key whose parts are missing or the
+ * wrong shape fails here, which is where both the registration and every
+ * assertion find out. */
+async function importPublicKey(key: CborValue, alg: number): Promise<CryptoKey> {
   switch (alg) {
     case ES256: {
-      const x = bytesAt(key, -2);
-      const y = bytesAt(key, -3);
-      const imported = await crypto.subtle.importKey(
+      if (mapEntry(key, 1) !== 2) throw new WebAuthnError("an ES256 key is an EC2 key");
+      if (mapEntry(key, -1) !== 1) throw new WebAuthnError("an ES256 key is on P-256");
+      const x = bytesAt(key, -2, 32);
+      const y = bytesAt(key, -3, 32);
+      return await crypto.subtle.importKey(
         "jwk",
-        {
-          kty: "EC",
-          crv: "P-256",
-          x: base64UrlEncode(x),
-          y: base64UrlEncode(y),
-        },
+        { kty: "EC", crv: "P-256", x: base64UrlEncode(x), y: base64UrlEncode(y) },
         { name: "ECDSA", namedCurve: "P-256" },
         false,
         ["verify"],
       );
-      // WebAuthn signs ES256 as the ASN.1 sequence X.509 uses, while WebCrypto
-      // verifies the raw pair, so the two halves are taken out of the DER here.
-      const raw = rawEcdsaSignature(signature);
-      if (raw === undefined) return false;
-      return await crypto.subtle.verify(
-        { name: "ECDSA", hash: "SHA-256" },
-        imported,
-        owned(raw),
-        owned(signed),
-      );
     }
     case EdDSA: {
-      const x = bytesAt(key, -2);
-      const imported = await crypto.subtle.importKey(
+      if (mapEntry(key, 1) !== 1) throw new WebAuthnError("an EdDSA key is an OKP key");
+      if (mapEntry(key, -1) !== 6) throw new WebAuthnError("an EdDSA key is on Ed25519");
+      const x = bytesAt(key, -2, 32);
+      return await crypto.subtle.importKey(
         "jwk",
         { kty: "OKP", crv: "Ed25519", x: base64UrlEncode(x) },
         { name: "Ed25519" },
         false,
         ["verify"],
       );
-      return await crypto.subtle.verify(
-        { name: "Ed25519" },
-        imported,
-        owned(signature),
-        owned(signed),
-      );
     }
-    case RS256: {
+    default: {
+      if (mapEntry(key, 1) !== 3) throw new WebAuthnError("an RS256 key is an RSA key");
       const n = bytesAt(key, -1);
       const e = bytesAt(key, -2);
-      const imported = await crypto.subtle.importKey(
+      return await crypto.subtle.importKey(
         "jwk",
         { kty: "RSA", n: base64UrlEncode(n), e: base64UrlEncode(e) },
         { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
         false,
         ["verify"],
       );
-      return await crypto.subtle.verify(
-        { name: "RSASSA-PKCS1-v1_5" },
-        imported,
-        owned(signature),
-        owned(signed),
-      );
     }
-    default:
-      throw new WebAuthnError(`this instance does not verify algorithm ${String(alg)}`);
   }
 }
 
@@ -306,10 +332,13 @@ function owned(bytes: Uint8Array): Uint8Array<ArrayBuffer> {
   return copy;
 }
 
-function bytesAt(key: CborValue, label: number): Uint8Array {
+function bytesAt(key: CborValue, label: number, width?: number): Uint8Array {
   const held = mapEntry(key, label);
   if (!(held instanceof Uint8Array)) {
     throw new WebAuthnError(`the key carries no ${String(label)}`);
+  }
+  if (width !== undefined && held.length !== width) {
+    throw new WebAuthnError(`the key's ${String(label)} is not ${String(width)} bytes`);
   }
   return held;
 }

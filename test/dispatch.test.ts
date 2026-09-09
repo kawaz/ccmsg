@@ -66,9 +66,27 @@ describe("the fixtures", () => {
   });
 });
 
+/** The ops the table says are reached over HTTP.
+ *
+ * They are in the table because the table is where authorization is decided,
+ * but they never arrive as a frame: what they do — set or read a cookie — a
+ * frame on an open connection cannot. So dispatch refuses them, and the sweeps
+ * below ask that of them instead of asking them to answer. */
+const OVER_HTTP = OP_NAMES.filter((op) => opAttributes(op).carrier === "http");
+
+describe("an op the table carries over HTTP is not reachable as a frame", () => {
+  test("dispatch refuses it whoever asks", async () => {
+    expect(OVER_HTTP.length).toBeGreaterThan(0);
+    for (const op of OVER_HTTP) {
+      const result = await dispatch(frameFor(op), as(allowedRole(op)), deps());
+      expect([op, errorCode(result)]).toEqual([op, "bad_request"]);
+    }
+  });
+});
+
 describe("every op in the table goes through dispatch (M1)", () => {
   test("each op reaches its handler and answers", async () => {
-    for (const op of OP_NAMES) {
+    for (const op of OP_NAMES.filter((op) => !OVER_HTTP.includes(op))) {
       const { handlers, seen } = recordingHandlers();
       const result = await dispatch(frameFor(op), as(allowedRole(op)), deps({ handlers }));
       expect([op, result.kind]).toEqual([op, "reply"]);
@@ -132,7 +150,9 @@ describe("each step answers on its own", () => {
   });
 
   test("step 3: the two ops that run before hello are reached anonymously", async () => {
-    for (const op of OP_NAMES.filter((name) => !opAttributes(name).needs_hello)) {
+    for (const op of OP_NAMES.filter(
+      (name) => !opAttributes(name).needs_hello && !OVER_HTTP.includes(name),
+    )) {
       const result = await dispatch(frameFor(op), anonymous(), deps());
       expect([op, result.kind]).toEqual([op, "reply"]);
     }
@@ -222,7 +242,9 @@ describe("each step answers on its own", () => {
 
   test("step 6: cluster ops are answered wherever they arrive", async () => {
     const elsewhere = deps({ resolveInstance: () => OTHER_INSTANCE });
-    for (const op of OP_NAMES.filter((name) => opAttributes(name).locality === "cluster")) {
+    for (const op of OP_NAMES.filter(
+      (name) => opAttributes(name).locality === "cluster" && !OVER_HTTP.includes(name),
+    )) {
       const result = await dispatch(frameFor(op), as(allowedRole(op)), elsewhere);
       expect([op, result.kind]).toEqual([op, "reply"]);
     }

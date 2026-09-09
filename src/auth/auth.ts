@@ -1,4 +1,4 @@
-import { createHmac, randomBytes, randomInt } from "node:crypto";
+import { createHash, createHmac, randomBytes, randomInt } from "node:crypto";
 import type {
   AuthAssertArgs,
   AuthChallenge,
@@ -24,7 +24,16 @@ import type {
 import { AUTH_CHALLENGE_TTL_MS, REGISTER_TTL_MS } from "@ccmsg/protocol";
 import { type HandlerInput, OpError, type Requester } from "../dispatch/index.ts";
 import { AuthRecords, credentialKey, familyKey } from "./records.ts";
-import { base64UrlEncode, equalStrings, verifyAssertion, verifyRegistration } from "./webauthn.ts";
+import {
+  base64UrlDecode,
+  base64UrlEncode,
+  checkPublicKey,
+  equalStrings,
+  verifyAssertion,
+  verifyRegistration,
+  WebAuthnError,
+} from "./webauthn.ts";
+import { CborError } from "./cbor.ts";
 
 /** How long an access token is accepted, and how long a refresh token is.
  *
@@ -82,6 +91,9 @@ interface Issued {
 export interface AuthorizedConn {
   readonly sub: Subject;
   expiresAt: Timestamp;
+  /** The close scheduled for the deadline, cleared when the connection goes so
+   * a departed connection leaves no timer behind. */
+  timer?: ReturnType<typeof setTimeout>;
 }
 
 export interface AuthDeps {
@@ -104,6 +116,19 @@ export interface AuthDeps {
   readonly log?: (msg: string, fields?: Record<string, unknown>) => void;
 }
 
+/** A person's session as this instance just minted it: what the caller is told,
+ * and the refresh token whoever ran the op has to put in a cookie.
+ *
+ * The two travel together rather than through a slot on this object, because
+ * two exchanges may be in flight at once and a slot would hand one caller the
+ * other's token. The contract keeps the refresh token out of the op's result on
+ * purpose (`AuthSession`), so it is answered here and the carrier is what
+ * decides where it goes. */
+export interface MintedSession {
+  readonly session: AuthSession;
+  readonly refresh: { readonly value: Base64Url; readonly expires_at: Timestamp };
+}
+
 /** What a registration URL is, as the command that made it prints it. */
 export interface IssuedRegistration {
   readonly sub: Subject;
@@ -123,6 +148,22 @@ export class Auth {
   readonly #pending = new Map<string, Pending>();
   readonly #challenges = new Map<Base64Url, Issued>();
   readonly #authorized = new Map<Requester, AuthorizedConn>();
+  /** The refresh values this instance has rotated away, as digests, until the
+   * instant each would have expired anyway (DR-0001 §2.4).
+   *
+   * A family carries two generations, which is what a peer needs to answer a
+   * retry. Catching a token that was taken needs more than that: a value stolen
+   * three rotations ago matches neither, and would be refused as a stranger
+   * rather than recognised as this family's. So the issuer — the only instance
+   * that rotates a family, because rotation is forwarded to it — keeps the rest
+   * here. Digests, so the memory holding them is not itself a list of usable
+   * tokens.
+   *
+   * Held rather than written down: it lives exactly as long as the process, and
+   * an instance that restarts has forgotten what it rotated away. A durable
+   * form would be a field of the family, which the contract does not yet
+   * have. */
+  readonly #retired = new Map<string, { digest: string; expiresAt: Timestamp }[]>();
   #window = 0;
   #served = 0;
 
@@ -230,14 +271,31 @@ export class Auth {
   /** Remove one person: the tombstones, and every connection they hold. */
   remove(sub: Subject): { records: AuthRecord[]; closed: number } {
     const records = this.deps.records.remove(sub);
+    return { records, closed: this.disconnect(sub) };
+  }
+
+  /** Close every connection one person holds.
+   *
+   * The other half of a removal, and the half that has to run whoever decided
+   * it: a tombstone that arrived from a peer revokes the same person here, and
+   * a connection left open on a revoked credential is the removal not having
+   * happened (DR-0001 §2.6). Failing a family reaches this the same way. */
+  disconnect(sub: Subject): number {
     let closed = 0;
     for (const [conn, held] of this.#authorized) {
       if (held.sub !== sub) continue;
+      clearTimeout(held.timer);
       this.#authorized.delete(conn);
       conn.close();
       closed += 1;
     }
-    return { records, closed };
+    return closed;
+  }
+
+  /** Take what a peer wrote on `auth_records`, and act on the removals in it. */
+  merge(records: readonly AuthRecord[]): void {
+    const { removed } = this.deps.records.merge(records);
+    for (const sub of removed) this.disconnect(sub);
   }
 
   // --- challenges (§2.6) ---
@@ -307,7 +365,7 @@ export class Auth {
   async register(
     args: AuthRegisterArgs,
     from: { ip?: string; userAgent?: string } = {},
-  ): Promise<AuthSession> {
+  ): Promise<MintedSession> {
     const claims = this.#claimsOf(args);
     if (this.deps.records.removed(claims.sub)) {
       throw new OpError("forbidden", `${claims.sub} は削除済みです`);
@@ -316,11 +374,17 @@ export class Auth {
     // good once, so consuming it for a message that then fails to verify would
     // let a caller burn challenges without ever holding a credential (m9).
     const challenge = challengeIn(args.credential.client_data_json);
-    const verified = verifyRegistration(args.credential, {
-      challenge,
-      origins: this.deps.origins(),
-      rpId: claims.rp_id,
-    });
+    const verified = refusable(() =>
+      verifyRegistration(args.credential, {
+        challenge,
+        origins: this.deps.origins(),
+        rpId: claims.rp_id,
+      }),
+    );
+    // A key nothing can verify with is a credential that can never be used, and
+    // finding that out at the person's next sign-in leaves a record nobody can
+    // explain (M8).
+    await refusableAsync(() => checkPublicKey(base64UrlDecode(verified.publicKey)));
     // The challenge is stated beside the credential when the page knows who
     // issued it. Where it is not, this instance is the only one that can spend
     // it — and one it does not hold is a challenge from somewhere it cannot
@@ -409,7 +473,7 @@ export class Auth {
   async assert(
     args: AuthAssertArgs,
     from: { ip?: string; userAgent?: string } = {},
-  ): Promise<AuthSession> {
+  ): Promise<MintedSession> {
     const record = this.deps.records.credential(args.credential.raw_id);
     if (record === undefined) {
       throw new OpError("auth_invalid", "この credential は登録されていません");
@@ -417,17 +481,19 @@ export class Auth {
     // Verified before the challenge is spent, for the reason a registration is
     // (m9): a good-once value burnt by a message that never verified is a value
     // a caller can burn at will.
-    const { signCount } = await verifyAssertion(
-      args.credential,
-      {
-        publicKey: record.public_key,
-        ...(record.sign_count === undefined ? {} : { signCount: record.sign_count }),
-      },
-      {
-        challenge: args.challenge.challenge,
-        origins: this.deps.origins(),
-        rpIds: this.#rpIdFor(record),
-      },
+    const { signCount } = await refusableAsync(() =>
+      verifyAssertion(
+        args.credential,
+        {
+          publicKey: record.public_key,
+          ...(record.sign_count === undefined ? {} : { signCount: record.sign_count }),
+        },
+        {
+          challenge: args.challenge.challenge,
+          origins: this.deps.origins(),
+          rpIds: this.#rpIdFor(record),
+        },
+      ),
     );
     await this.#spendAnywhere(args.challenge);
     const at = this.#now();
@@ -477,7 +543,7 @@ export class Auth {
   // --- tokens (§2.4) ---
 
   /** Make a family for this person, minted by this instance. */
-  mint(sub: Subject): AuthSession {
+  mint(sub: Subject): MintedSession {
     const at = this.#now();
     const family: TokenFamily = {
       kind: "token_family",
@@ -488,24 +554,7 @@ export class Auth {
     };
     const id = randomBytes(8).toString("hex");
     this.deps.records.write(familyKey(sub, id), family, at);
-    this.#minted = { sub, refresh: family.refresh };
-    return { sub, access: family.access };
-  }
-
-  /** The refresh token the last mint or rotation produced, for the carrier that
-   * has to put it in a cookie.
-   *
-   * Kept aside rather than answered by the op because the contract's result
-   * deliberately does not carry it: a body the page's script can read is the
-   * one thing the cookie exists to prevent (contract, `AuthSession`). */
-  #minted: { sub: Subject; refresh: { value: Base64Url; expires_at: Timestamp } } | undefined;
-
-  takeRefresh():
-    | { sub: Subject; refresh: { value: Base64Url; expires_at: Timestamp } }
-    | undefined {
-    const held = this.#minted;
-    this.#minted = undefined;
-    return held;
+    return { session: { sub, access: family.access }, refresh: family.refresh };
   }
 
   /** Rotate a family from a refresh token, wherever it was minted.
@@ -514,7 +563,7 @@ export class Auth {
    * a family minted elsewhere is carried there rather than done here — two
    * instances rotating one family in parallel would merge by last write and
    * read exactly like a stolen token being replayed (§2.4). */
-  async refreshToken(value: Base64Url): Promise<AuthSession> {
+  async refreshToken(value: Base64Url): Promise<MintedSession> {
     const held = this.deps.records.byRefresh(value);
     if (held === undefined) {
       // Not the standing generation, nor the one before it. Either it never was
@@ -527,12 +576,10 @@ export class Auth {
       const answer = (await this.#atIssuer(held.body.iss, "auth_rotate", {
         refresh_token: value,
       } satisfies AuthRotateArgs)) as AuthRotateResult;
-      this.#minted = { sub: answer.sub, refresh: answer.refresh };
-      return { sub: answer.sub, access: answer.access };
+      return { session: { sub: answer.sub, access: answer.access }, refresh: answer.refresh };
     }
     const rotated = this.rotate(value);
-    this.#minted = { sub: rotated.sub, refresh: rotated.refresh };
-    return { sub: rotated.sub, access: rotated.access };
+    return { session: { sub: rotated.sub, access: rotated.access }, refresh: rotated.refresh };
   }
 
   /** Rotate a family this instance minted. The one writer's own operation, and
@@ -561,30 +608,51 @@ export class Auth {
       refresh: { value: token(), expires_at: at + REFRESH_TTL_MS },
       previous_refresh: { value: held.body.refresh.value, expires_at: at + PREVIOUS_GRACE_MS },
     };
+    // The value going out of service is remembered for as long as it would have
+    // been accepted, so that presenting it later is recognised as this family's
+    // token rather than as a stranger's.
+    this.#retire(held.key, held.body.refresh.value, held.body.refresh.expires_at);
     this.deps.records.write(held.key, rotated, at);
     return { sub: rotated.sub, access: rotated.access, refresh: rotated.refresh };
+  }
+
+  #retire(key: string, value: Base64Url, expiresAt: Timestamp): void {
+    const now = this.#now();
+    const held = (this.#retired.get(key) ?? []).filter((one) => one.expiresAt > now);
+    held.push({ digest: digestOf(value), expiresAt });
+    this.#retired.set(key, held);
   }
 
   /** A value that is nobody's standing token but was somebody's: the family it
    * belonged to is failed, because a token in use twice is a token that was
    * taken (§2.4).
    *
-   * What can be recognised is the generation the family still remembers: the
-   * standing refresh token past its expiry, and the one before it past its
-   * grace. A value older than that matches nothing here and is simply refused —
-   * a family remembers two generations, so there is nothing to fail it by. */
+   * Recognised three ways: the standing refresh token past its expiry, the one
+   * before it past its grace, and any generation this instance rotated away
+   * while it has been running. A value older than what any of those covers
+   * matches nothing and is refused as a stranger. */
   #failReused(value: Base64Url): void {
+    const digest = digestOf(value);
+    const now = this.#now();
     for (const held of this.deps.records.families()) {
+      if (held.body.iss !== this.deps.self) continue;
       const before = held.body.previous_refresh;
       const stale =
         equalStrings(held.body.refresh.value, value) ||
-        (before !== undefined && equalStrings(before.value, value));
+        (before !== undefined && equalStrings(before.value, value)) ||
+        (this.#retired.get(held.key) ?? []).some(
+          (one) => one.expiresAt > now && equalStrings(one.digest, digest),
+        );
       if (!stale) continue;
-      if (held.body.iss !== this.deps.self) continue;
       this.deps.log?.("a refresh token was reused after it was rotated away", {
         sub: held.body.sub,
       });
       this.deps.records.fail(held.key);
+      this.#retired.delete(held.key);
+      // The tokens are gone, and so is what they were holding open: a
+      // connection that outlived the family it was admitted on would be the
+      // stolen token still working.
+      this.disconnect(held.body.sub);
     }
   }
 
@@ -604,13 +672,16 @@ export class Auth {
     const held: AuthorizedConn = { sub: admitted.sub, expiresAt: admitted.expiresAt };
     this.#authorized.set(conn, held);
     conn.onClose(() => {
+      // The timer goes with the connection: a close scheduled for a socket that
+      // is already gone is a handle kept for hours over nothing.
+      clearTimeout(held.timer);
       this.#authorized.delete(conn);
     });
     this.#deadline(conn, held);
   }
 
   #deadline(conn: Requester, held: AuthorizedConn): void {
-    const timer = setTimeout(
+    held.timer = setTimeout(
       () => {
         const standing = this.#authorized.get(conn);
         if (standing === undefined) return;
@@ -625,7 +696,7 @@ export class Auth {
       },
       Math.max(0, held.expiresAt - this.#now()),
     );
-    timer.unref?.();
+    held.timer.unref?.();
   }
 
   /** When this connection's authorization runs out, for `hello` to state. */
@@ -691,11 +762,6 @@ export class Auth {
  * answers for another instance. */
 export function authHandlers(auth: Auth) {
   return {
-    auth_challenge: (): AuthChallengeResult => auth.challenge(),
-    auth_register: (input: HandlerInput): Promise<AuthSession> =>
-      auth.register(input.args as unknown as AuthRegisterArgs),
-    auth_assert: (input: HandlerInput): Promise<AuthSession> =>
-      auth.assert(input.args as unknown as AuthAssertArgs),
     auth_refresh: (input: HandlerInput): AuthRefreshResult =>
       auth.extend(input.conn, input.args as unknown as AuthRefreshArgs),
     auth_resolve: (input: HandlerInput): AuthResolveResult => {
@@ -712,6 +778,49 @@ export function authHandlers(auth: Auth) {
     auth_rotate: (input: HandlerInput): AuthRotateResult =>
       auth.rotate((input.args as unknown as AuthRotateArgs).refresh_token),
   };
+}
+
+/** Run a verification, and answer a refusal in the contract's vocabulary.
+ *
+ * Everything these routes are handed is attacker-supplied, and the libraries
+ * they go through say so in their own languages: a `WebAuthnError` from the
+ * checks here, a `CborError` from a malformed structure, a `DOMException` from
+ * WebCrypto refusing a key, a `RangeError` from a length that does not fit.
+ * They are one answer to the caller — the message was not valid — and letting
+ * any of them out as it is would answer `internal_error` for a bad request
+ * (M6). */
+function refusable<T>(run: () => T): T {
+  try {
+    return run();
+  } catch (cause) {
+    throw asRefusal(cause);
+  }
+}
+
+async function refusableAsync<T>(run: () => Promise<T>): Promise<T> {
+  try {
+    return await run();
+  } catch (cause) {
+    throw asRefusal(cause);
+  }
+}
+
+function asRefusal(cause: unknown): unknown {
+  if (cause instanceof OpError) return cause;
+  if (
+    cause instanceof WebAuthnError ||
+    cause instanceof CborError ||
+    cause instanceof RangeError ||
+    (typeof DOMException !== "undefined" && cause instanceof DOMException)
+  ) {
+    return new OpError("auth_invalid", cause.message);
+  }
+  return cause;
+}
+
+/** The digest a retired token is remembered by. */
+function digestOf(value: Base64Url): string {
+  return createHash("sha256").update(value).digest("hex");
 }
 
 /** A token: 32 bytes of randomness, spelled the way everything on this wire is. */

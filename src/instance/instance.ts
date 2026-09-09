@@ -368,7 +368,7 @@ export class Instance {
       // what this instance writes travels as its own (DR-0001 §2.6).
       element: (_topic, _instance, data) => {
         const stated = (data as { records?: AuthRecord[] } | undefined)?.records;
-        if (Array.isArray(stated)) this.#auth.records.merge(stated);
+        if (Array.isArray(stated)) this.#auth.merge(stated);
       },
       // What `peers` says about the instances is this instance's own view, so
       // it is restated when that view moves (§7.5).
@@ -504,6 +504,7 @@ export class Instance {
     // derived from anything else this instance holds (§3.6).
     const records = new AuthRecords({
       dir: recordsDir(paths.stateDir),
+      self: this.self,
       publish: (written) => {
         this.#topics.publish("auth_records", { records: written });
       },

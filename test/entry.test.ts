@@ -93,7 +93,7 @@ describe("the handshake (§3.1)", () => {
 
 /** An access token for a person, as `/auth/assert` would have answered with. */
 function personToken(instance: Instance): string {
-  return instance.auth.mint("test-person").access.value;
+  return instance.auth.mint("test-person").session.access.value;
 }
 
 describe("the entry is matched at the end of the path (DR-0001 §2.7)", () => {

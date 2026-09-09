@@ -11,7 +11,7 @@ import type {
   TokenFamily,
 } from "@ccmsg/protocol";
 import { FAMILY_TOMBSTONE_RETENTION_MS } from "@ccmsg/protocol";
-import { equalStrings } from "./webauthn.ts";
+import { base64UrlDecode, equalBytes, equalStrings } from "./webauthn.ts";
 
 export const AUTH_DIR = "auth";
 const RECORDS_FILE = "records.json";
@@ -49,6 +49,10 @@ function covers(tombstone: string, key: string): boolean {
 export interface RecordsDeps {
   /** Where the set is written down (§3.6). */
   readonly dir: string;
+  /** This instance's id, which is the one thing that makes a record arriving
+   * from a peer refusable on sight: a family this instance minted is written by
+   * this instance alone (DR-0001 §2.4). */
+  readonly self: InstanceId;
   /** Hand what this instance wrote to the peers, on the `auth_records` topic. */
   readonly publish: (records: readonly AuthRecord[]) => void;
   readonly now?: () => Timestamp;
@@ -132,15 +136,27 @@ export class AuthRecords {
     return true;
   }
 
-  /** Take a batch a peer sent, and say what actually changed — nothing is
-   * relayed onward, so the answer is for the log and for the file. */
-  merge(records: readonly AuthRecord[]): number {
+  /** Take a batch a peer sent.
+   *
+   * Answers the subjects a removal arrived for, because a tombstone means more
+   * than a record going away: the person it names has connections open here,
+   * and they are theirs no longer (DR-0001 §2.6).
+   *
+   * A family this instance minted is refused whatever the peer says about it.
+   * This instance is its only writer, so a copy coming back is a copy of an
+   * older state — which is exactly what a failed family looks like from a peer
+   * that has not heard yet, and taking it would undo the failure. */
+  merge(records: readonly AuthRecord[]): { changed: number; removed: Subject[] } {
     let changed = 0;
+    const removed: Subject[] = [];
     for (const record of records) {
-      if (this.accept(record)) changed += 1;
+      if (record.body.kind === "token_family" && record.body.iss === this.deps.self) continue;
+      if (!this.accept(record)) continue;
+      changed += 1;
+      if (record.body.kind === "tombstone") removed.push(record.body.sub);
     }
     if (changed > 0) this.#persist();
-    return changed;
+    return { changed, removed };
   }
 
   /** Remove one person: their credentials and every token they hold.
@@ -187,9 +203,18 @@ export class AuthRecords {
 
   /** The credential an assertion names. Looked up by the id the authenticator
    * signed, which is what lets a person authenticate without naming a subject
-   * (DR-0001 §2.5). */
+   * (DR-0001 §2.5).
+   *
+   * Compared as bytes rather than as text: base64url is not a canonical
+   * spelling — padding may or may not be there, and a decoder accepts more than
+   * one string for the same value — so two spellings of one credential id would
+   * otherwise be two credentials, and a person would be turned away from their
+   * own. */
   credential(credentialId: Base64Url): CredentialRecord | undefined {
-    return this.credentials().find((record) => equalStrings(record.credential_id, credentialId));
+    const wanted = base64UrlDecode(credentialId);
+    return this.credentials().find((record) =>
+      equalBytes(base64UrlDecode(record.credential_id), wanted),
+    );
   }
 
   families(): { key: string; body: TokenFamily }[] {

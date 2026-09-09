@@ -67,6 +67,15 @@ export async function dispatch(
     return failure(requestId, "invalid_args", problems.join("; "));
   }
 
+  // The carrier the table names. An op marked `http` sets or reads a cookie,
+  // which a frame on an open connection cannot, so it is reachable only where
+  // the carrier can do that — and one arriving here is a caller that would be
+  // answered without the half of the answer that matters (contract,
+  // `OpAttributes.carrier`).
+  if (attrs.carrier === "http") {
+    return failure(requestId, "bad_request", `${op} is reached over HTTP, not on a connection`);
+  }
+
   // 3. the identity `hello` settles, when the op needs one
   if (attrs.needs_hello && identity.state !== "settled") {
     return failure(requestId, "hello_required", `${op} needs an identity settled by hello`);
