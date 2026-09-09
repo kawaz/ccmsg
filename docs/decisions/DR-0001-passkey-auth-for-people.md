@@ -13,8 +13,8 @@ WS の入口は entry token (state ディレクトリの 0600 file) で守って
 
 ### 2.1 instance id は固定、endpoint は可変
 
-- **instance id** は `ccmsg daemon add` の時に生成する乱数 (state ディレクトリに保存、引っ越しは state ごと持って行く)。契約の `instance` フィールド、`mid` (`<instance>/<連番>`)、kv / inbox / last_live の鍵、認証 record と token の発行者 (`iss`)、challenge に埋める発行者は全部この id
-- **endpoint** は他 instance が dial する URL で、config の `self` (自分) と `peers` (相手) に書く。mesh の TLS 認証と `iss` / `aud` (mesh-peer-auth) の照合値はこの URL のまま (信頼の根は URL にしか無い)。handshake で相手は自分の instance id を名乗り、受けた側は「認証済み endpoint ↔ id」の対応を保持する。以後の `iss` (id) から dial 先を引くのはこの対応表
+- **instance id** は `ccmsg daemon add` の時に生成する乱数 (state ディレクトリに保存、引っ越しは state ごと持って行く。`daemon run [dir]` で `instances[]` に無い config home を起こした時も初回起動で state に生成する)。契約では `InstanceId` (opaque id) と `Endpoint` (URL) を別の型にし、`mid` の pattern も id の文字集合に合わせる。契約の `instance` フィールド、`mid` (`<instance>/<連番>`)、kv / inbox / last_live の鍵、認証 record と token の発行者 (`iss`)、challenge に埋める発行者は全部この id
+- **endpoint** は他 instance が dial する URL で、config の `self` (自分) と `peers` (相手) に書く。mesh の TLS 認証と `iss` / `aud` (mesh-peer-auth) の照合値はこの URL のまま (信頼の根は URL にしか無い)。handshake で相手は自分の instance id を名乗り (`MeshHello` に id を足す。proof の後に hello の内容が遡及して信頼される mesh-peer-auth §5.1 R7 の規則に乗る)、受けた側は「認証済み endpoint ↔ id」の対応を保持する。以後の `iss` (id) から dial 先を引くのはこの対応表。**1 つの id は 1 本の認証済み link にしか束縛できない**: 既に別 endpoint に束縛済みの id を名乗る hello は、glare と同じ決定的な規則 (endpoint 文字列の小さい側を残す) で片方を close する。引っ越し直後に旧 URL の instance がまだ生きている場合がこれに当たり、`peers` の書き換えが終われば解消する
 - 引っ越し = state を移す → 新 URL で起動 → 各 peer の `peers` を書き換える。record / token / mid は無効にならない
 - 契約の `instance` の意味が「endpoint URL 完全一致」から「opaque な id」に変わるので **世代を 2 → 3 に上げる**。`hello` の応答と `peers` frame の instance 一覧に `endpoint` を別フィールドで持つ
 
@@ -45,6 +45,7 @@ WebAuthn の RP ID は origin ではなく domain で、passkey は「今開い�
 - 認証と refresh は endpoint の `/auth/` 配下の HTTP。webui が別サブドメイン (§2.3 の `--rp-id` 構成) の時だけ、fetch は `credentials: "include"`、応答は `Access-Control-Allow-Origin: <その origin>` + `Allow-Credentials`。状態を変える `/auth/*` は cross-origin でなくても `Origin` を `entry.origins` と照合し、未認証で叩けるので rate limit を持つ (mesh-peer-auth §6 の鍵取得と同型)
 - endpoint が `/` と `/personal` に分かれていれば cookie の Path も分かれるので、endpoint ごとに 1 回 passkey 認証が要る (record は共有されているので 2 回目以降は要らない)
 - 期限切れの family は `iss` が消す (単一 writer なので GC も担う)
+- LB で challenge の発行と応答の instance が違う時は、**応答を受けた instance が assertion を検証**し、challenge の消費だけを発行者へ問い合わせる。mint する family の `iss` は応答を受けた instance
 
 ### 2.5 接続の期限
 
@@ -56,7 +57,7 @@ WebAuthn の RP ID は origin ではなく domain で、passkey は「今開い�
 
 credential record と token family は peer 間で複製する。載せ先は **`kv` ではなく専用 topic `auth_records`** (`roles: ["instance"]`、element 粒度、LWW + tombstone。`kv` は user role が読み書きでき token が漏れる)。session / user role は購読も読み書きもできない。
 
-知らない値を受けた instance は発行者 (`iss` = instance id) へ問い合わせる。契約に `auth_lookup` op (plane `common`、`roles: ["instance"]`、`needs_hello: true`、`locality: instance-local`) を足し、`to_instance = iss` で §7.3 の転送経路に載せる。問い合わせが要る場面は 3 つ:
+知らない値を受けた instance は発行者 (`iss` = instance id) へ問い合わせる。契約に instance 間 op を 2 つ (`auth_resolve` = jwt / challenge の検証と消費、`auth_rotate` = family の rotate。どちらも plane `common`、`roles: ["instance"]`、`needs_hello: true`、`locality: instance-local`) 足し、`to_instance = iss` で §7.3 の転送経路に載せる。`auth_records` は relay の `caller` を付けず instance role のまま購読する (relay が `caller: user` を付ける他の topic と違う)。問い合わせが要る場面は 3 つ:
 
 - 登録 jwt の検証 (HMAC secret は `iss` にしかない)
 - WebAuthn の challenge (発行 instance の id を challenge に含め、返ってきた側がそこへ転送して照合する。LB で発行と応答の instance が違ってよい。challenge は 16 byte 以上の乱数 + 発行者、寿命 5 分、使い切り)
@@ -64,7 +65,7 @@ credential record と token family は peer 間で複製する。載せ先は **
 
 `iss` が落ちていれば refresh か passkey 認証に落ちる。侵害された peer にこれらが token を返す点は「token は cluster 内の共有秘密」の前提どおりで、新しい穴ではない。
 
-tombstone: `passkey remove` は sub 単位の tombstone を credential と全 family に打ち、tombstone はその key への以後の書き込みを拒む (LWW の例外。分断中の instance が復活させられない)。保持は §7.5 の `LAST_LIVE_RETENTION_MS` と同じ 7 日。
+tombstone: `passkey remove` は sub 単位の tombstone を credential と全 family に打ち、tombstone はその key への以後の書き込みを拒む (LWW の例外。分断中の instance が復活させられない)。**credential の tombstone は保持期限を持たない** (sub ごと数十 byte。7 日超の分断から復帰した peer の snapshot で credential が復活するのを防ぐ)。family は refresh の exp で自然失効するので tombstone は 7 日で足りる。
 
 ### 2.7 ルートの mount と `self`
 
@@ -81,8 +82,9 @@ state ディレクトリの `entry.token` と subprotocol / `?token=` による�
 ### 2.9 契約の変更 (世代 3)
 
 - `instance` は opaque id。`hello` 応答と `peers` の instance 一覧に `endpoint`。`mid` の `<instance>` も id
-- HTTP 経路 `/auth/challenge` / `/auth/register` / `/auth/assert` / `/auth/refresh` は「`needs_hello: false` の op を HTTP で運ぶもの」として op 属性表に載せる (M1 原則: 認可の分岐を表の外に置かない)
-- WS op `auth_refresh` (接続の期限を延ばす)、instance 間 op `auth_lookup`、topic `auth_records`
+- HTTP 経路 `/auth/challenge` / `/auth/register` / `/auth/assert` / `/auth/refresh` は「`needs_hello: false` の op を HTTP で運ぶもの」として op 属性表に載せる (M1 原則: 認可の分岐を表の外に置かない)。identity 未確定の接続から呼べる点は `hello` と同じ扱いで、`request_id` は HTTP の carrier 側が合成する
+- WS op `auth_refresh` (接続の期限を延ばす)、instance 間 op `auth_resolve` / `auth_rotate`、topic `auth_records`
+- `InstanceId` と `Endpoint` の型分離、`MeshHello` に id
 - `hello` 応答に `auth_expires_at` (optional)
 
 ### 2.10 実装は自前
@@ -108,5 +110,5 @@ WebAuthn の検証は library を入れずに書く。要るのは小さな CBOR
 ## 4. 影響
 
 - 契約 major (世代 3): `instance` の意味、`endpoint`、auth 経路 / op / topic → daemon (instance id の生成と保存、`self` の config 化、ルートの末尾照合、CLI `passkey add|list|remove`、`/auth/*`、WebAuthn 検証、cookie、family、`auth_records` の複製、entry token 削除) → webui (登録画面、passkey 認証、refresh、token をメモリに)
-- 設計 §3.1 (WS の entry token → passkey)、§7.1 (probe → `self` config + peers 検証)、§8.2 (`self` と `instances[].id`)、§9 (人の認証は本 DR) を書き換える
+- 設計 §3.1 (WS の entry token → passkey)、§3.6 (永続化に instance id / credential record / token family を足す。id は資源ハンドルでなく identity、auth records は kv と同じく派生値でない。§11.3 の「増やさない」検査もこれに合わせる)、§7.1 (probe → `self` config + peers 検証)、§8.2 (`self` を config に持つ。`peers` に自分の URL を含めてよい = mesh-peer-auth §5.2 に揃える)、§9 (人の認証は本 DR) を書き換える
 - `docs/issue/2026-09-09-mesh-tls-trust-root.md` は「TLS 終端は proxy、daemon の listener は plain のまま」で扱いが変わる (別途更新)
