@@ -554,7 +554,7 @@ describe("the stable address across a succession", () => {
       stderr: "pipe",
     });
     try {
-      await waitFor(() => existsSync(paths.socket));
+      await started(first);
       const predecessor = join(paths.socketDir, realSocketName(first.pid));
       expect(existsSync(predecessor)).toBe(true);
       expect(readlinkSync(paths.socket)).toBe(realSocketName(first.pid));
@@ -604,7 +604,7 @@ describe("a daemon in its own process", () => {
       },
     );
     try {
-      await waitFor(() => existsSync(paths.socket));
+      await started(child);
       const client = await connectUds(paths.socket);
       clients.push(client);
       client.send({
@@ -653,15 +653,10 @@ async function replyTo(client: LineClient, requestId: string): Promise<Record<st
   }
 }
 
-/** Wait for a condition a separate process brings about.
- *
- * Polling, because the thing being waited for is a file appearing in a
- * directory this process does not own the writes to, and a watch on a
- * directory that does not exist yet has the same race one level up. The
- * interval is the shortest one that is not a spin. */
 /** Reads one line at a time off a stream, without waiting for it to end —
- * which a process that is deliberately still running will not do. */
-function lineReader(stream: ReadableStream<Uint8Array>): () => Promise<string> {
+ * which a process that is deliberately still running will not do. Undefined
+ * once the stream is over and there is nothing held back. */
+function lineReader(stream: ReadableStream<Uint8Array>): () => Promise<string | undefined> {
   const reader = stream.getReader();
   const decoder = new TextDecoder();
   let held = "";
@@ -675,15 +670,36 @@ function lineReader(stream: ReadableStream<Uint8Array>): () => Promise<string> {
       }
       const { value, done } = await reader.read();
       if (value !== undefined) held += decoder.decode(value, { stream: true });
-      if (done) return held;
+      if (done) {
+        const rest = held;
+        held = "";
+        return rest === "" ? undefined : rest;
+      }
     }
   };
 }
 
-async function waitFor(ready: () => boolean): Promise<void> {
-  for (let attempt = 0; attempt < 400; attempt += 1) {
-    if (ready()) return;
-    await Bun.sleep(25);
-  }
-  throw new Error("the daemon did not come up");
+/** Wait for a daemon in another process to say it is up.
+ *
+ * The last step of §8.3 is the `started` line the instance writes to its log
+ * and mirrors to stderr, so the event itself is what is waited on. A child that
+ * exits instead ends the wait there, rather than leaving the case to run out
+ * its timeout on a socket that is never going to appear. */
+async function started(child: Bun.Subprocess<"ignore", "pipe", "pipe">): Promise<void> {
+  const read = lineReader(child.stderr);
+  const up = (async () => {
+    for (;;) {
+      const line = await read();
+      if (line === undefined) return false;
+      let event: { message?: unknown };
+      try {
+        event = JSON.parse(line) as { message?: unknown };
+      } catch {
+        continue;
+      }
+      if (event.message === "started") return true;
+    }
+  })();
+  if (await Promise.race([up, child.exited.then(() => false)])) return;
+  throw new Error(`the daemon exited with ${await child.exited} instead of starting`);
 }

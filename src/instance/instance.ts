@@ -245,7 +245,17 @@ async function bindForMesh(
       mesh.accept(conn, info);
     },
   });
-  const self = await mesh.identify();
+  let self: InstanceId;
+  try {
+    self = await mesh.identify();
+  } catch (cause) {
+    // The listener is bound before the identity is settled, so it is this
+    // function's to release when no identity is settled — nothing else holds it
+    // yet, and a port left bound by a refused start is one the next start
+    // cannot have.
+    await ws.close();
+    throw cause;
+  }
   return {
     conns: mesh.conns,
     ws,

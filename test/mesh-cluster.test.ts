@@ -27,14 +27,32 @@ afterEach(async () => {
   await release();
 });
 
-async function client(instance: Instance): Promise<LineClient> {
+/** A client that keeps the frames a reply search steps over.
+ *
+ * Waiting for one request's answer means reading whatever arrives first, and
+ * what arrives first may be the topic frame the case is about. Held in the
+ * order they came, they are still there for the next `next()`. */
+interface HoldingClient extends LineClient {
+  /** What a search stepped over and has not been asked for yet. */
+  readonly held: Record<string, unknown>[];
+  /** The next frame off the connection itself, past anything held. */
+  fresh(): Promise<Record<string, unknown>>;
+}
+
+async function client(instance: Instance): Promise<HoldingClient> {
   const conn = await connectUds(instance.paths.socket);
   closing.push(conn);
-  return conn;
+  const held: Record<string, unknown>[] = [];
+  return {
+    ...conn,
+    held,
+    fresh: () => conn.next(),
+    next: async () => held.shift() ?? (await conn.next()),
+  };
 }
 
 /** Greet, and answer with the reply. */
-async function greet(conn: LineClient, as: object): Promise<Record<string, unknown>> {
+async function greet(conn: HoldingClient, as: object): Promise<Record<string, unknown>> {
   conn.send({
     op: "hello",
     request_id: "hello",
@@ -45,17 +63,26 @@ async function greet(conn: LineClient, as: object): Promise<Record<string, unkno
   return await reply(conn, "hello");
 }
 
-/** The next frame answering this request, skipping the topic frames that may
- * arrive between a request and its reply. */
-async function reply(conn: LineClient, requestId: string): Promise<Record<string, unknown>> {
-  for (;;) {
-    const frame = await conn.next();
-    if (frame["request_id"] === requestId) return frame;
+/** The next frame answering this request. The topic frames that arrive between
+ * a request and its reply are put back rather than dropped: they are the
+ * cluster's own events, and the case reading them next is entitled to them.
+ * Each is stepped over once — what was already held is searched before the
+ * connection is read again, and goes back in front of whatever is behind it. */
+async function reply(conn: HoldingClient, requestId: string): Promise<Record<string, unknown>> {
+  const skipped: Record<string, unknown>[] = [];
+  try {
+    for (;;) {
+      const frame = conn.held.shift() ?? (await conn.fresh());
+      if (frame["request_id"] === requestId) return frame;
+      skipped.push(frame);
+    }
+  } finally {
+    conn.held.unshift(...skipped);
   }
 }
 
 async function ask(
-  conn: LineClient,
+  conn: HoldingClient,
   frame: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
   const requestId = frame["request_id"] as string;
@@ -92,7 +119,7 @@ async function pair(): Promise<{
   b: Instance;
   /** B's home, so a test that stops B can start it again where it was. */
   homeB: Env;
-  session: LineClient;
+  session: HoldingClient;
 }> {
   const [first, second] = [freePort(), freePort()];
   const peers = [endpoint(first), endpoint(second)];

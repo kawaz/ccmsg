@@ -38,6 +38,17 @@ describe("self-identification (mesh-self-identification §7)", () => {
     expect(await refusal(start({ env, echoLog: false }))).toBeInstanceOf(SelfIdentificationError);
   });
 
+  test("a start that no identity settles leaves its port bound to nobody (§7.1)", async () => {
+    const port = freePort();
+    const env = homeFor(port, [endpoint(freePort())]);
+    expect(await refusal(start({ env, echoLog: false }))).toBeInstanceOf(SelfIdentificationError);
+    // The entry listener is up before the identity is settled, so the refusal
+    // has to give the port back: binding it again is what says it did.
+    const after = Bun.serve({ hostname: "127.0.0.1", port, fetch: () => new Response("") });
+    expect(after.port).toBe(port);
+    await after.stop(true);
+  });
+
   test("two matches end the start (§7.1)", async () => {
     const port = freePort();
     // The same instance under two names, which is what a host registered twice
