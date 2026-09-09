@@ -697,6 +697,75 @@ describe("registering at one instance with another's URL (DR-0001 §2.6)", () =>
   });
 });
 
+describe("a token reused at another instance (DR-0001 §2.4)", () => {
+  test("the instance that minted the family is the one that fails it", async () => {
+    const { a, b } = await pair();
+    const minted = a.auth.mint("someone");
+    // Twice, so the value the family started with is past the grace the
+    // generation before the standing one gets: what is left of it is the digest
+    // the family carries.
+    const once = await a.auth.refreshToken(minted.refresh.value);
+    const rotated = await a.auth.refreshToken(once.refresh.value);
+    await eventually(() => b.auth.records.byRefresh(rotated.refresh.value) !== undefined);
+
+    // The value A rotated away, presented at B. B may not write the family —
+    // A minted it — so it asks A to rotate the value, and A finds what B found
+    // and fails its own family (N1).
+    const refused = await b.auth
+      .refreshToken(minted.refresh.value)
+      .then(() => undefined)
+      .catch((cause: unknown) => cause);
+    expect(refused).toBeDefined();
+    await eventually(() => a.auth.admits(rotated.session.access.value) === undefined);
+    expect(a.auth.admits(rotated.session.access.value)).toBeUndefined();
+    await eventually(() => b.auth.admits(rotated.session.access.value) === undefined);
+  });
+});
+
+describe("authenticating where the challenge was not issued (DR-0001 §2.6)", () => {
+  test("the instance reached verifies the assertion and spends the challenge at its issuer", async () => {
+    const { a, b } = await pair();
+    const originB = `http://${addressOf(b)}`;
+    const issued = a.auth.issue({ endpoint: endpointOf(b) });
+    const authenticator = new SoftAuthenticator(issued.rp_id);
+    const token = issued.url.slice(issued.url.indexOf("#register=") + "#register=".length);
+    const registration = await authChallenge(b, originB);
+    expect(
+      (
+        await authPost(b, originB, "register", {
+          token,
+          code: issued.code,
+          challenge: registration,
+          credential: await authenticator.create({
+            challenge: registration.challenge,
+            origin: originB,
+            userId: issued.user_id,
+          }),
+        })
+      ).status,
+    ).toBe(200);
+    await eventually(() => a.auth.records.credential(authenticator.credentialIdUrl) !== undefined);
+
+    // A issues the challenge; B receives the answer. B verifies the assertion
+    // itself and asks A to spend the challenge, which is the whole of what it
+    // needs A for.
+    const challenge = await authChallenge(a, `http://${addressOf(a)}`);
+    expect(challenge.issuer).toBe(a.self);
+    const asserted = await authPost(b, originB, "assert", {
+      credential: await authenticator.get({ challenge: challenge.challenge, origin: originB }),
+      challenge,
+    });
+    expect(asserted.status).toBe(200);
+
+    // And it is good once, wherever it is presented: A spent it.
+    const again = await authPost(b, originB, "assert", {
+      credential: await authenticator.get({ challenge: challenge.challenge, origin: originB }),
+      challenge,
+    });
+    expect(again.status).toBe(401);
+  });
+});
+
 /** One `/auth/*` request against an instance in the cluster. */
 async function authPost(
   instance: Instance,

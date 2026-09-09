@@ -24,20 +24,30 @@ const RECORDS_FILE = "records.json";
  * including ones this instance has never seen, held by a peer that is
  * partitioned right now (DR-0001 §2.6). A tombstone therefore stands for a
  * prefix rather than for one key. */
+/** A subject as a path segment.
+ *
+ * A `Subject` is whatever the operator asked for, separators included, and the
+ * keys here are matched by prefix — so an unescaped `a/b` would sit under the
+ * mark for `a`, and removing one person would remove another. Escaping is what
+ * keeps one subject to one segment. */
+function segment(sub: Subject): string {
+  return encodeURIComponent(sub);
+}
+
 export function credentialKey(sub: Subject, credentialId: Base64Url): string {
-  return `credential/${sub}/${credentialId}`;
+  return `${credentialPrefix(sub)}/${credentialId}`;
 }
 
 export function familyKey(sub: Subject, id: string): string {
-  return `family/${sub}/${id}`;
+  return `${familyPrefix(sub)}/${id}`;
 }
 
 export function credentialPrefix(sub: Subject): string {
-  return `credential/${sub}`;
+  return `credential/${segment(sub)}`;
 }
 
 export function familyPrefix(sub: Subject): string {
-  return `family/${sub}`;
+  return `family/${segment(sub)}`;
 }
 
 /** Whether a tombstone's key covers another key: the key itself, or anything
@@ -256,25 +266,42 @@ export class AuthRecords {
     return undefined;
   }
 
-  /** Drop one family, which is what a reused token does to the whole of it.
+  /** Fail one family, which is what a reused token does to the whole of it.
    *
-   * A plain deletion rather than a tombstone: the family's `iss` is its only
-   * writer, so there is no peer that could write it back, and the deletion
-   * travels as an expired family rather than as a mark of its own. */
+   * A tombstone rather than an expired record. The family's `iss` is its only
+   * writer, but a peer that was partitioned when this happened still holds the
+   * live copy, and an ordinary record would let that copy come back as the
+   * newer write when the partition heals. A mark refuses every later write to
+   * the key, which is exactly what a revoked family needs. It is kept for the
+   * same seven days a removal's is: past the longest refresh token, there is
+   * nothing left for a returning peer to revive. */
   fail(key: string): void {
     this.#load();
     const held = this.#records.get(key);
     if (held === undefined || held.body.kind !== "token_family") return;
     const at = this.#now();
-    // Expired in place rather than removed, because an absence says nothing to
-    // a peer: the record has to travel, and one that has run out is refused
-    // everywhere it lands.
-    const failed: TokenFamily = {
-      ...held.body,
-      access: { value: held.body.access.value, expires_at: at },
-      refresh: { value: held.body.refresh.value, expires_at: at },
-    };
-    this.write(key, failed, at);
+    this.write(key, {
+      kind: "tombstone",
+      sub: held.body.sub,
+      deleted_at: at,
+      expires_at: at + FAMILY_TOMBSTONE_RETENTION_MS,
+    });
+  }
+
+  /** The family a value once belonged to, in any generation and whether or not
+   * that generation has run out.
+   *
+   * What `byRefresh` answers is a token that still works. This answers a token
+   * that was this family's — which is what a reused value looks like, and what
+   * says which instance is allowed to do anything about it (DR-0001 §2.4). */
+  owning(value: Base64Url, digest: string): { key: string; body: TokenFamily } | undefined {
+    for (const held of this.families()) {
+      const before = held.body.previous_refresh;
+      if (equalStrings(held.body.refresh.value, value)) return held;
+      if (before !== undefined && equalStrings(before.value, value)) return held;
+      if ((held.body.retired ?? []).some((one) => equalStrings(one.hash, digest))) return held;
+    }
+    return undefined;
   }
 
   /** Every record, for the snapshot a peer's subscription is answered with. */
@@ -331,7 +358,7 @@ export class AuthRecords {
 
   #persist(): void {
     this.#expire();
-    mkdirSync(this.deps.dir, { recursive: true });
+    mkdirSync(this.deps.dir, { recursive: true, mode: 0o700 });
     const file = this.#file();
     const temporary = `${file}.ccmsg-${String(process.pid)}-${String(Date.now())}`;
     // The set holds tokens, so the file is the instance's own to read: it is

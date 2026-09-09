@@ -280,7 +280,11 @@ forwarded there with `auth_rotate` (the route of §7.3). **A copy of a family th
 arriving from a peer, is refused**: with a single writer, a copy coming back is necessarily older
 state, and taking it would revive a family that was failed. The generation before the standing one
 is answered with the previous reply as a retry's grace; presenting any other retired value fails
-the whole family. What was rotated away is kept on the family as `retired`: the sha256 of each
+the whole family — at the family's `iss`, which the instance the value was presented to reaches
+with `auth_rotate` rather than writing a family it does not own (an unreachable issuer leaves the
+refusal as the whole answer). Failing writes a family tombstone kept for seven days rather than
+deleting the record, so a peer that was partitioned cannot bring its live copy back as the newer
+write. What was rotated away is kept on the family as `retired`: the sha256 of each
 value until that value would itself have expired. Only the `iss` writes it, but it replicates —
 so the memory survives that instance restarting and holds wherever the reused value is presented.
 Entries past their own expiry are dropped at the next rotation, after which remembering them would

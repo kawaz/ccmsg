@@ -473,7 +473,7 @@ describe("what a registration or an assertion is refused for", () => {
   test("a body missing a field the contract requires is invalid_args", async () => {
     const at = await serving();
     const response = await post(at, "register", { token: "x" });
-    expect(response.status).toBe(401);
+    expect(response.status).toBe(400);
     expect(((await response.json()) as { error: { code: string } }).error.code).toBe(
       "invalid_args",
     );
@@ -508,12 +508,13 @@ describe("what a registration or an assertion is refused for", () => {
     expect(response.status).toBe(200);
   });
 
-  test("a registration URL issued by another instance is refused here", async () => {
-    // Until the contract can carry the six digits between instances, a
-    // registration that landed at the wrong endpoint is told where to go rather
-    // than having one of its five tries silently spent (M5).
+  test("a registration URL naming an issuer this instance cannot ask is refused", async () => {
+    // The registration travels to whoever issued the URL (§2.6). On an instance
+    // with no mesh there is nobody to ask, so it is refused — and nothing is
+    // spent: the real URL still works afterwards.
     const at = await serving();
     const issued = at.instance.auth.issue({});
+    const authenticator = new SoftAuthenticator(issued.rp_id);
     const token = issued.url.slice(issued.url.indexOf("#register=") + "#register=".length);
     const [header, body, signature] = token.split(".");
     const claims = JSON.parse(Buffer.from(body as string, "base64url").toString("utf8")) as Record<
@@ -523,28 +524,30 @@ describe("what a registration or an assertion is refused for", () => {
     const elsewhere = `${header ?? ""}.${Buffer.from(
       JSON.stringify({ ...claims, iss: "f".repeat(32) }),
     ).toString("base64url")}.${signature ?? ""}`;
-    const response = await post(at, "register", {
+
+    const first = (await (await post(at, "challenge", {})).json()) as { challenge: string };
+    const refused = await post(at, "register", {
       token: elsewhere,
       code: issued.code,
-      credential: {
-        id: "aaaa",
-        raw_id: "aaaa",
-        client_data_json: "e30",
-        attestation_object: "oWNmbXQ",
-      },
+      credential: await authenticator.create({
+        challenge: first.challenge,
+        origin: at.origin,
+        userId: issued.user_id,
+      }),
     });
-    expect(((await response.json()) as { error: { code: string } }).error.code).toBe(
+    expect(((await refused.json()) as { error: { code: string } }).error.code).toBe(
       "auth_unknown_issuer",
     );
-    // No try was spent: the real URL still works.
-    const challenge = (await (await post(at, "challenge", {})).json()) as { challenge: string };
-    const authenticator = new SoftAuthenticator(issued.rp_id);
+
+    // Neither the URL nor one of its five tries was spent.
+    const second = (await (await post(at, "challenge", {})).json()) as { challenge: string };
     const ok = await post(at, "register", {
       token,
       code: issued.code,
       credential: await authenticator.create({
-        challenge: challenge.challenge,
+        challenge: second.challenge,
         origin: at.origin,
+        userId: issued.user_id,
       }),
     });
     expect(ok.status).toBe(200);

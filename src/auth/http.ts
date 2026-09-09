@@ -152,7 +152,9 @@ export async function handleAuth(
   // validated, and a body missing a field is a refusal rather than a fault
   // inside a handler.
   const op = OP_OF[route];
-  const frame = { op, request_id: `http-${crypto.randomUUID()}`, ...args };
+  // The body first, so a caller cannot name the op or the correlation id by
+  // putting either in it: what the carrier decided is what stands.
+  const frame = { ...args, op, request_id: `http-${crypto.randomUUID()}` };
   const problems = validationErrors(OP_SCHEMAS[op].request, frame);
   if (problems.length > 0) return refusal("invalid_args", problems.join("; "), cors);
 
@@ -252,7 +254,11 @@ function answer(
 /** A refusal in the contract's own error shape, so a page reads one thing
  * whether the op travelled over HTTP or over the WebSocket. */
 function refusal(code: ErrorCode | "bad_request", msg: string, cors: Record<string, string>) {
-  const status = code === "bad_request" ? 400 : code === "internal_error" ? 500 : 401;
+  // A malformed request is the caller's to fix and an authentication failure is
+  // not, so the two do not share a status: 401 says "these credentials were not
+  // accepted", which is the wrong thing to tell somebody who left a field out.
+  const status =
+    code === "bad_request" || code === "invalid_args" ? 400 : code === "internal_error" ? 500 : 401;
   return Response.json({ ok: false, error: { code, msg } }, { status, headers: cors });
 }
 

@@ -252,7 +252,11 @@ family を書けるのは mint した instance (`iss`) だけで、別の instan
 `auth_rotate` で `iss` へ転送する (§7.3 の経路)。**peer から届いた「自分が mint した family」の
 写しは受理しない** — 単一 writer なのだから、戻ってくる写しは必ず古い状態であり、
 失効させた family を復活させてしまう。直前 1 世代は再送の猶予として「前回の答え」を返し、
-それ以外の**退役済みの値の提示は世代を問わず family ごと失効させる**: 退役した refresh の
+それ以外の**退役済みの値の提示は世代を問わず family ごと失効させる** (提示された instance が
+その family の `iss` でなければ `auth_rotate` で `iss` に投げ、`iss` 側で失効させる。単一 writer は
+崩さない。`iss` が不達なら断るだけ)。失効は record の削除ではなく **family tombstone (7 日)** で、
+分断中の peer が持っていた生きた写しが復帰時に新しい書き込みとして戻ってこないようにする。
+退役の記録は退役した refresh の
 sha256 を family の `retired` に、その値本来の exp まで持つ。書けるのは `iss` だけだが
 複製はされるので、instance を再起動しても、別の instance に提示されても検知できる。
 exp を過ぎたものは次の rotate で落とす (その時点以降は、値自身の期限が断るものしか断らない)。

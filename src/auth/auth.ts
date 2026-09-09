@@ -379,10 +379,11 @@ export class Auth {
     args: AuthRegisterArgs,
     from: { ip?: string; userAgent?: string } = {},
   ): Promise<MintedSession> {
-    const claims = await this.#claimsOf(args);
-    if (this.deps.records.removed(claims.sub)) {
-      throw new OpError("forbidden", `${claims.sub} は削除済みです`);
-    }
+    // What the URL says about itself, before anything has vouched for it. It is
+    // read to know which relying party the credential should have been made
+    // under; nothing is decided by it, because the same fields come back
+    // authenticated below and the two are held to each other.
+    const stated = claimsOf(args.token);
     // What the page answered, verified before anything is spent: a challenge is
     // good once, so consuming it for a message that then fails to verify would
     // let a caller burn challenges without ever holding a credential (m9).
@@ -391,13 +392,26 @@ export class Auth {
       verifyRegistration(args.credential, {
         challenge,
         origins: this.deps.origins(),
-        rpId: claims.rp_id,
+        rpId: stated.rp_id,
       }),
     );
     // A key nothing can verify with is a credential that can never be used, and
     // finding that out at the person's next sign-in leaves a record nobody can
     // explain (M8).
     await refusableAsync(() => checkPublicKey(base64UrlDecode(verified.publicKey)));
+    // Only now is the URL spent. It is good once, like the challenge, so
+    // consuming it for a message that then failed to verify would let a caller
+    // burn registrations without ever holding a credential (m9). What comes
+    // back is the authenticated form of what was read above, and the relying
+    // party the credential was actually checked against has to be the one the
+    // issuer authorized.
+    const claims = await this.#claimsOf(args);
+    if (claims.rp_id !== stated.rp_id) {
+      throw new OpError("auth_invalid", "登録 URL が名乗る relying party が一致しません");
+    }
+    if (this.deps.records.removed(claims.sub)) {
+      throw new OpError("forbidden", `${claims.sub} は削除済みです`);
+    }
     // The challenge is stated beside the credential when the page knows who
     // issued it. Where it is not, this instance is the only one that can spend
     // it — and one it does not hold is a challenge from somewhere it cannot
@@ -599,7 +613,7 @@ export class Auth {
       // Not the standing generation, nor the one before it. Either it never was
       // one, or it is a value that has already been rotated away — which is a
       // token being reused, and fails the family it belongs to.
-      this.#failReused(value);
+      await this.#refuseReuse(value);
       throw new OpError("auth_invalid", "この refresh token は使えません");
     }
     if (held.body.iss !== this.deps.self) {
@@ -610,6 +624,32 @@ export class Auth {
     }
     const rotated = this.rotate(value);
     return { session: { sub: rotated.sub, access: rotated.access }, refresh: rotated.refresh };
+  }
+
+  /** A value that works nowhere. If it was once some family's, the family is
+   * failed — by its `iss`, which is the only instance that may write it.
+   *
+   * A family this instance minted is failed here. One minted elsewhere is
+   * failed by asking that instance to rotate the value: it will find the same
+   * thing this instance did, and fail its own family. Forwarding rather than
+   * writing is what keeps the single writer single; an issuer that cannot be
+   * reached leaves the refusal as the whole of the answer. */
+  async #refuseReuse(value: Base64Url): Promise<void> {
+    const owner = this.deps.records.owning(value, digestOf(value));
+    if (owner === undefined) return;
+    if (owner.body.iss === this.deps.self) {
+      this.#failReused(value);
+      return;
+    }
+    try {
+      await this.#atIssuer(owner.body.iss, "auth_rotate", {
+        refresh_token: value,
+      } satisfies AuthRotateArgs);
+    } catch {
+      // Whatever the issuer said, or that it said nothing: the caller is
+      // refused either way, and this instance has no standing to fail a family
+      // it does not write.
+    }
   }
 
   /** Rotate a family this instance minted. The one writer's own operation, and
