@@ -1,3 +1,5 @@
 node_modules/
 # lock は bun.lock。npm publish 系コマンドが副産物として作るものは捨てる
 package-lock.json
+# playwright-cli skill がセッション中に落とす snapshot / console log
+.playwright-cli/
