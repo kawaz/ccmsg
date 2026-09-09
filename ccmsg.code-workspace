@@ -18,11 +18,11 @@
     },
     {
       "name": "config",
-      "path": "../../../../../../../.config/ccmsg",
+      "path": "/Users/kawaz/.config/ccmsg",
     },
     {
       "name": "state",
-      "path": "../../../../../../../.local/state/ccmsg",
+      "path": "/Users/kawaz/.local/state/ccmsg",
     },
   ],
   "settings": {},
