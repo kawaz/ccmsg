@@ -7,6 +7,7 @@ active な issue の一覧。close 済みは archive/ にあり、ここには�
 | 2026-09-09 | design | open | [codex-plugin-delivery-via-thread-queue](./2026-09-09-codex-plugin-delivery-via-thread-queue.md) | codex plugin: 配送は `codex queue --thread <sid>`、hello でハーネス種別を名乗る |
 | 2026-09-09 | design | open | [mesh-tls-trust-root](./2026-09-09-mesh-tls-trust-root.md) | mesh-peer-auth の信頼の根は TLS サーバ証明書 (2 層) だが、daemon の listener... |
 | 2026-09-09 | design | open | [sandbox-grant-delivery-path](./2026-09-09-sandbox-grant-delivery-path.md) | sandbox_grant は capability URL を発行するが、`SandboxGrants.find` の呼び... |
+| 2026-09-09 | design | open | [transcript-topic-snapshot-vs-read-asymmetry](./2026-09-09-transcript-topic-snapshot-vs-read-asymmetry.md) | `transcript:<sid>` topic と `transcript_read` の見つけ方が非対称。`Transcript... |
 | 2026-09-09 | bug | open | [cli-peers-greets-as-session-leaves-last-live-row](./2026-09-09-cli-peers-greets-as-session-leaves-last-live-row.md) | `ccmsg peers` は `CLAUDE_CODE_SESSION_ID` (or `--sid`) があると role sess... |
 | 2026-09-09 | bug | open | [hello-drops-transcript-path-silently](./2026-09-09-hello-drops-transcript-path-silently.md) | hello で境界外の transcript_path が黙って捨てられ、送り手に理由が返らない。... |
 | 2026-09-09 | bug | wip | [remaining-load-flakes](./2026-09-09-remaining-load-flakes.md) | 負荷下でのみ稀に落ちるテストが 2 件ある (2026-09-09 観測、未対応)。timeout ... |
