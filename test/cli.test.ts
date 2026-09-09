@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -11,6 +11,7 @@ import {
 import { main, say, type Spawn } from "../src/cli.ts";
 import { type Instance, isRunning, start } from "../src/instance/index.ts";
 import { connectUds, type LineClient } from "./client.ts";
+import { capture, json } from "./harness.ts";
 import { OTHER_SID, SID } from "./frames.ts";
 
 /** The CLI reads its own environment — that is how a session names itself and
@@ -176,6 +177,89 @@ describe("ccmsg stopping", () => {
     const gone = await until(watcher, (rows) => rows.some((row) => row.sid === OTHER_SID));
     expect(gone.find((row) => row.sid === OTHER_SID)).toMatchObject({ state: "disappeared" });
     expect(gone.find((row) => row.sid === OTHER_SID)?.stopped_at).toBeUndefined();
+  });
+});
+
+describe("ccmsg peers / ccmsg agents", () => {
+  /** One entry per instance, which is what a cluster topic answers with. */
+  type Answer = { instance: string; data: Record<string, unknown> }[];
+
+  async function answered(args: string[]): Promise<Answer> {
+    const written = await capture(() => main(args));
+    expect(written.code).toBe(0);
+    return json(written.out) as Answer;
+  }
+
+  test("peers is the topic's payload, under the instance that stated it", async () => {
+    const at = await instance();
+    // A session to be found. It stays connected, so it is in `peers` rather
+    // than in the list of sessions the instance has lost.
+    await greet(at, { role: "session", sid: OTHER_SID });
+
+    const answer = await answered(["peers", "--sid", SID]);
+
+    expect(answer).toHaveLength(1);
+    const stated = answer[0] as Answer[number];
+    expect(stated.instance).toBe(at.self);
+    // Nothing of the payload is rewritten: the two lists the contract names
+    // are both there, under their own names.
+    expect(Object.keys(stated.data).sort()).toEqual(["last_live", "peers"]);
+    const found = (stated.data["peers"] as { sid: string }[]).map((row) => row.sid);
+    expect(found).toContain(OTHER_SID);
+    // The command greeted as the session it was told it is, so that session is
+    // in the list it just read.
+    expect(found).toContain(SID);
+  });
+
+  test("agents is the harness's own view, which covers a session that never connected", async () => {
+    const at = await instance();
+    // A state file the harness would have written, naming a live process: a
+    // session with no connection here at all.
+    const sessions = join(at.paths.configHome, "sessions");
+    writeFileSync(
+      join(sessions, `${process.pid}.json`),
+      JSON.stringify({
+        sessionId: OTHER_SID,
+        pid: process.pid,
+        cwd: "/tmp",
+        kind: "interactive",
+        startedAt: 1,
+        name: "繋いでいない方",
+      }),
+    );
+
+    const answer = await answered(["agents"]);
+
+    expect(answer).toHaveLength(1);
+    expect(answer[0]?.instance).toBe(at.self);
+    expect(answer[0]?.data["agents"]).toMatchObject([
+      { sid: OTHER_SID, pid: process.pid, cwd: "/tmp", name: "繋いでいない方" },
+    ]);
+  });
+
+  test("without an instance there is nobody to ask, and the command says which socket", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ccmsg-cli-"));
+    dirs.push(root);
+    env("CLAUDE_CONFIG_DIR", join(root, "home"));
+    env("CCMSG_STATE_DIR", join(root, "state"));
+    env("CCMSG_CONFIG_DIR", join(root, "config"));
+
+    const written = await capture(() => main(["peers"]));
+
+    expect(written.code).toBe(1);
+    expect((json(written.err) as { error: { code: string } }).error.code).toBe(
+      "instance_unreachable",
+    );
+  });
+
+  test("one instance answers --all with its own entry, and states the instances it sees", async () => {
+    const at = await instance();
+
+    const answer = await answered(["agents", "--all"]);
+
+    // A host running one instance is a cluster of one: the same shape, with
+    // one entry in it rather than a different answer.
+    expect(answer.map((one) => one.instance)).toEqual([at.self]);
   });
 });
 

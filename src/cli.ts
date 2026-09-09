@@ -6,6 +6,7 @@ import {
   CommandError,
   configHome,
   connect,
+  expectedInstances,
   follow,
   idOf,
   labelled,
@@ -14,6 +15,7 @@ import {
   registered,
   remove as removeFromConfig,
   rowFor,
+  snapshots,
   type SuperviseOp,
   Supervisor,
   tailOf,
@@ -225,6 +227,7 @@ const ROOT: Command = {
           name: "install",
           summary: "そのエージェントに ccmsg のプラグインを入れる",
           usage: "ccmsg plugin install <agent>",
+          options: [["", "開いているセッションには /reload-plugins で反映される"]],
           run: (args) => plugin("install", args[0]),
         },
         {
@@ -240,6 +243,30 @@ const ROOT: Command = {
           run: (args) => plugin("uninstall", args[0]),
         },
       ],
+    },
+    {
+      name: "peers",
+      summary: "instance が知っているセッションを並べる (相手の sid を探す)",
+      usage: "ccmsg peers [--all]",
+      bare: true,
+      options: [
+        ["--all", "mesh 越しの instance が言っている分も含める"],
+        ["--json", "JSON で答える (既定、この CLI は常に JSON で答える)"],
+        ["--sid <sid>", "自分のセッション ID (既定は CLAUDE_CODE_SESSION_ID)"],
+      ],
+      env: sessionEnv(),
+      run: (args) => peers(args),
+    },
+    {
+      name: "agents",
+      summary: "harness 自身が見ているセッションを並べる (繋いでいないものも含む)",
+      usage: "ccmsg agents [--all]",
+      bare: true,
+      options: [
+        ["--all", "mesh 越しの instance が言っている分も含める"],
+        ["--json", "JSON で答える (既定、この CLI は常に JSON で答える)"],
+      ],
+      run: (args) => agents(args),
     },
     {
       name: "post",
@@ -369,7 +396,11 @@ function emit(value: unknown): void {
 function report(cause: unknown): number {
   const error =
     cause instanceof CommandError
-      ? { code: cause.code, msg: cause.message }
+      ? {
+          code: cause.code,
+          msg: cause.message,
+          ...(cause.detail === undefined ? {} : { detail: cause.detail }),
+        }
       : { code: "internal_error", msg: String(cause) };
   process.stderr.write(`${JSON.stringify({ error }, null, 2)}\n`);
   return 1;
@@ -602,6 +633,70 @@ function never(release: () => void): Promise<void> {
   });
 }
 
+/** `ccmsg peers`: the sessions this instance holds, and the ones it has lost.
+ *
+ * The command a session runs to find out who else is there: a `post` needs the
+ * other session's sid, and nothing else states one. It greets as the session it
+ * runs inside when it knows which that is, because one field of the answer is
+ * computed against the asker — `send_message` says whether the harness's own
+ * messaging reaches that peer, and there is nobody to compare against for a
+ * greeting that named no session. Without a sid it asks as a person, which is
+ * the same list minus that field. */
+function peers(args: readonly string[]): Promise<unknown> {
+  const parsed = options(args, ["sid"], ["all", "json"]);
+  const sid = parsed.named.get("sid") ?? process.env["CLAUDE_CODE_SESSION_ID"];
+  return topic(
+    "peers",
+    parsed.flags.has("all"),
+    sid === undefined || sid === ""
+      ? { op: "hello", role: "user", protocol_version: PROTOCOL_VERSION }
+      : { op: "hello", role: "session", sid, protocol_version: PROTOCOL_VERSION, ...statedMeta() },
+  );
+}
+
+/** `ccmsg agents`: the harness's own view, which covers sessions that never
+ * connected here. Asked as a person, because that is who the topic is open to:
+ * it names processes and config homes rather than anything one session is a
+ * party to. */
+function agents(args: readonly string[]): Promise<unknown> {
+  const parsed = options(args, [], ["all", "json"]);
+  return topic("agents", parsed.flags.has("all"), {
+    op: "hello",
+    role: "user",
+    protocol_version: PROTOCOL_VERSION,
+  });
+}
+
+/** Read the current value of a cluster topic and answer with it.
+ *
+ * One entry per instance, carrying the topic's payload exactly as the contract
+ * defines it: a whole value per instance is not something to merge into one
+ * list, since two instances' entries stand side by side and only the frame says
+ * whose is whose. */
+async function topic(
+  name: "peers" | "agents",
+  all: boolean,
+  greeting: Record<string, unknown>,
+): Promise<unknown> {
+  const paths = resolvePaths();
+  const conn = await connect(paths.socket);
+  if (conn === undefined) {
+    throw new CommandError(
+      "instance_unreachable",
+      `${paths.socket} に繋がりません (instance は動いていません)`,
+    );
+  }
+  try {
+    const greeted = await conn.ask(greeting);
+    if (greeted["ok"] !== true) {
+      throw new CommandError("forbidden", `hello が拒否されました: ${JSON.stringify(greeted)}`);
+    }
+    return await snapshots(conn, name, expectedInstances(greeted, all));
+  } finally {
+    conn.close();
+  }
+}
+
 /** `ccmsg post <sid> <text>`: start a conversation with another session. */
 function post(args: readonly string[]): Promise<unknown> {
   const parsed = options(args, ["sid"]);
@@ -779,8 +874,21 @@ async function plugin(
       : what === "status"
         ? await pluginStatus(paths)
         : await uninstall(paths);
-  if (!outcome.ok) throw new CommandError("internal_error", outcome.report.join("\n"));
-  return { ok: true, report: outcome.report };
+  // A refused step is an error rather than an answer, so the command's exit
+  // code says what happened without the report having to be read. The report
+  // itself travels with it: what was done before the refusal is what the next
+  // attempt starts from.
+  if (!outcome.ok) {
+    const refused = outcome.refused;
+    throw new CommandError(
+      "internal_error",
+      refused === undefined
+        ? `plugin ${what} が完了しませんでした`
+        : `${refused.command.join(" ")}: ${refused.said === "" ? `終了コード ${refused.code}` : refused.said}`,
+      outcome,
+    );
+  }
+  return outcome;
 }
 
 /** One `message_send`. */

@@ -46,6 +46,11 @@ export class CommandError extends Error {
   constructor(
     readonly code: CliErrorCode,
     msg: string,
+    /** What the command found before it stopped, for a failure that has more
+     * to say than a line: the same report the command would have answered
+     * with. Printed beside the error so a caller reads one shape whether the
+     * command worked or not. */
+    readonly detail?: unknown,
   ) {
     super(msg);
     this.name = "CommandError";

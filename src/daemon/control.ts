@@ -7,6 +7,11 @@ import { PROTOCOL_VERSION } from "@ccmsg/protocol";
  * lives no longer than the command that opened it. */
 export interface Conn {
   ask(request: Record<string, unknown>): Promise<Record<string, unknown>>;
+  /** The next frame the instance sends without having been asked for one: a
+   * topic frame, or an event about the connection itself. Every frame arrives
+   * on the one stream `ask` reads its reply from, so a caller that subscribes
+   * reads on with this instead of asking again. */
+  next(): Promise<Record<string, unknown>>;
   close(): void;
 }
 
@@ -31,6 +36,9 @@ export async function connect(path: string): Promise<Conn | undefined> {
     ask(request) {
       counter += 1;
       socket.write(`${JSON.stringify({ request_id: `${counter}`, ...request })}\n`);
+      return replies.next();
+    },
+    next() {
       return replies.next();
     },
     close() {

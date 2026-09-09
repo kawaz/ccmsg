@@ -199,6 +199,7 @@ describe("ccmsg plugin install", () => {
     const again = await install(paths, VERSION, claude.run);
 
     expect(again.ok).toBe(true);
+    expect(again.plugin).toEqual({ id: PLUGIN_ID, installed: true, replaced: true });
     expect(claude.held.get(PLUGIN_ID)).toBe(VERSION);
     expect(claude.commands).toContainEqual(["plugin", "uninstall", PLUGIN_ID, "-y"]);
   });
@@ -213,7 +214,15 @@ describe("ccmsg plugin install", () => {
     const done = await install(paths, VERSION, refusing);
 
     expect(done.ok).toBe(false);
-    expect(done.report.at(-1)).toContain("そんな marketplace は追加できません");
+    // The refusal names the command that was refused, so the caller does not
+    // read a sentence to find out which step it has to fix.
+    expect(done.refused).toEqual({
+      command: ["claude", "plugin", "marketplace", "add", join(paths.pluginsDir, "claude")],
+      code: 1,
+      said: "そんな marketplace は追加できません",
+    });
+    expect(done.marketplace.registered).toBe(false);
+    expect(done.plugin.installed).toBe(false);
     const receipt = await receiptOf(paths);
     expect(receipt.commands).toEqual([]);
     expect(receipt.marketplace).toBeUndefined();
@@ -292,36 +301,85 @@ describe("the plugin's files", () => {
 });
 
 describe("ccmsg plugin status", () => {
-  test("with nothing installed it says so, and names a plugin somebody else put there", async () => {
+  test("with no receipt there is nothing of ccmsg's, and a plugin somebody else put there is still named", async () => {
     const paths = home();
     const claude = agent();
 
     const clean = await status(paths, claude.run);
-    expect(clean.report.join("\n")).toContain("ccmsg からは入れていません");
+    expect(clean.receipt).toBeUndefined();
+    expect(clean.plugin).toEqual({});
+    expect(clean.marketplace).toEqual({ name: MARKETPLACE_NAME, registered: false });
 
     claude.markets.set(MARKETPLACE_NAME, "/somewhere/else");
     claude.held.set(PLUGIN_ID, "1.2.3");
     const foreign = await status(paths, claude.run);
-    expect(foreign.report.join("\n")).toContain("ccmsg 以外が入れたものです");
+    // What says somebody else installed it: a version is there with no receipt
+    // stating one, which is two fields rather than a sentence about them.
+    expect(foreign.receipt).toBeUndefined();
+    expect(foreign.plugin).toEqual({
+      id: PLUGIN_ID,
+      installed_version: "1.2.3",
+      enabled: true,
+    });
   });
 
   test("it reads the receipt against what is actually there", async () => {
     const paths = home();
     const claude = agent();
+    const root = join(paths.pluginsDir, "claude");
     await install(paths, VERSION, claude.run);
 
     const agreed = await status(paths, claude.run);
-    expect(agreed.report.join("\n")).toContain("件すべてあります");
-    expect(agreed.report.join("\n")).toContain("登録どおりです");
-    expect(agreed.report.join("\n")).toContain(`${PLUGIN_ID}: ${VERSION} が入っています`);
+    expect(agreed).toMatchObject({
+      agent: "claude",
+      ok: true,
+      version: VERSION,
+      config_home: paths.configHome,
+      root,
+      files: { expected: 4, present: 4, missing: [] },
+      marketplace: { name: MARKETPLACE_NAME, registered: true },
+      plugin: {
+        id: PLUGIN_ID,
+        installed_version: VERSION,
+        enabled: true,
+        expected_version: VERSION,
+      },
+    });
+    expect(agreed.receipt).toContain("claude.receipt.json");
+    // Agreement is the absence of the drift fields, not a field claiming it.
+    expect(agreed.marketplace.points_at).toBeUndefined();
 
-    // The two ways the world moves out from under a receipt: somebody removed
-    // the plugin, and somebody deleted what it was reading.
+    // The three ways the world moves out from under a receipt: somebody removed
+    // the plugin, somebody deleted what it was reading, and the marketplace of
+    // that name now points somewhere else.
     claude.held.delete(PLUGIN_ID);
-    rmSync(join(paths.pluginsDir, "claude", "hooks", "hooks.json"));
+    claude.markets.set(MARKETPLACE_NAME, "/somewhere/else");
+    rmSync(join(root, "hooks", "hooks.json"));
+
     const drifted = await status(paths, claude.run);
-    expect(drifted.report.join("\n")).toContain("hooks/hooks.json");
-    expect(drifted.report.join("\n")).toContain(`${PLUGIN_ID}: 入っていません`);
+    expect(drifted.files).toEqual({
+      expected: 4,
+      present: 3,
+      missing: ["hooks/hooks.json"],
+    });
+    expect(drifted.marketplace).toEqual({
+      name: MARKETPLACE_NAME,
+      registered: true,
+      points_at: "/somewhere/else",
+    });
+    expect(drifted.plugin).toEqual({ id: PLUGIN_ID, expected_version: VERSION });
+  });
+
+  test("a version other than the receipt's is two fields that differ", async () => {
+    const paths = home();
+    const claude = agent();
+    await install(paths, VERSION, claude.run);
+    claude.held.set(PLUGIN_ID, "0.0.1");
+
+    const seen = await status(paths, claude.run);
+
+    expect(seen.plugin.installed_version).toBe("0.0.1");
+    expect(seen.plugin.expected_version).toBe(VERSION);
   });
 });
 
@@ -335,6 +393,11 @@ describe("ccmsg plugin uninstall", () => {
     const done = await uninstall(paths, claude.run);
 
     expect(done.ok).toBe(true);
+    expect(done.removed).toEqual({
+      plugin: PLUGIN_ID,
+      marketplace: MARKETPLACE_NAME,
+      root,
+    });
     expect(claude.held.has(PLUGIN_ID)).toBe(false);
     expect(claude.markets.has(MARKETPLACE_NAME)).toBe(false);
     expect(existsSync(root)).toBe(false);
@@ -365,6 +428,8 @@ describe("ccmsg plugin uninstall", () => {
     const done = await uninstall(paths, claude.run);
 
     expect(done.ok).toBe(true);
+    expect(done.receipt).toBeUndefined();
+    expect(done.removed).toEqual({});
     expect(claude.commands).toEqual([]);
   });
 
@@ -383,6 +448,7 @@ describe("ccmsg plugin uninstall", () => {
     // Nothing was registered, so nothing is unregistered; the files that were
     // written are the whole of what there is to take away.
     expect(claude.commands).toEqual([]);
+    expect(done.removed).toEqual({ root: join(paths.pluginsDir, "claude") });
     expect(existsSync(join(paths.pluginsDir, "claude"))).toBe(false);
   });
 });

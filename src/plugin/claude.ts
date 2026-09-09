@@ -64,6 +64,19 @@ ccmsg post <sid> <text>
 
 相手の \`<sid>\` は、届いた封筒の \`ccmsg-from\` の値。
 
+## 相手を探す
+
+まだ話したことのない相手の \`<sid>\` は、繋がっているセッションの一覧から探す。
+
+\`\`\`
+ccmsg peers            この instance が知っているセッション
+ccmsg peers --all      他ホストの instance が知っている分も含める
+\`\`\`
+
+答えは instance ごとの JSON。\`peers[]\` が今繋がっているセッション、\`last_live[]\` が
+居なくなったセッションで、各行の \`repo\` / \`ws\` / \`branch\` / \`title\` で見分けて
+\`sid\` を取る。\`send_message\` が \`true\` の相手には harness 自身の機能でも届く。
+
 ## 見ている人へ知らせる
 
 \`\`\`

@@ -34,15 +34,94 @@ export const runClaude: Run = async (args) => {
   return { code: await spawned.exited, stdout, stderr };
 };
 
-/** What one of these commands did, and what to tell the person who ran it.
- *
- * The report is the result: these commands exist to change something outside
- * ccmsg and to say what they changed, so there is nothing to hand back beyond
- * the account of it and whether it went through. */
-export interface Outcome {
-  readonly ok: boolean;
-  readonly report: readonly string[];
+/** Why one of these commands stopped where it did: the agent command that was
+ * refused, and what it said. */
+export interface Refusal {
+  readonly command: readonly string[];
+  readonly code: number;
+  readonly said: string;
 }
+
+/** What the three commands answer with.
+ *
+ * Fields rather than sentences: these commands are read by whatever runs them
+ * as much as by a person, and a line of prose is something a caller has to
+ * parse back into the facts it was built from. The words a person wants are in
+ * `--help`; what is here is what was found. */
+interface Report {
+  readonly agent: Agent;
+  /** Whether the command did everything it set out to do. */
+  readonly ok: boolean;
+  /** The step that stopped it. Absent while `ok`. */
+  readonly refused?: Refusal;
+}
+
+export interface InstallReport extends Report {
+  readonly version: string;
+  readonly config_home: string;
+  readonly root: string;
+  /** The files laid down, by their path under `root`. */
+  readonly files: readonly string[];
+  readonly marketplace: { readonly name: string; readonly registered: boolean };
+  readonly plugin: {
+    readonly id: string;
+    readonly installed: boolean;
+    /** Whether a copy of the same id was taken out first, which is what makes
+     * a repeated install run what was just laid down. */
+    readonly replaced: boolean;
+  };
+  /** The agent commands that were run, as they were run. */
+  readonly commands: readonly (readonly string[])[];
+}
+
+export interface StatusReport extends Report {
+  /** Where the receipt is. Absent when ccmsg installed nothing here, which is
+   * what makes every field below it absent too. */
+  readonly receipt?: string;
+  readonly installed_at?: string;
+  /** What the receipt says was installed. */
+  readonly version?: string;
+  readonly config_home?: string;
+  readonly root?: string;
+  /** The receipt's files, counted against what is under `root` now. */
+  readonly files?: {
+    readonly expected: number;
+    readonly present: number;
+    readonly missing: readonly string[];
+  };
+  readonly marketplace: {
+    readonly name?: string;
+    /** Whether the agent has it. Absent when the agent could not be asked,
+     * which is a different thing from it not being registered. */
+    readonly registered?: boolean;
+    /** Where the agent thinks it points, when that is not where the receipt
+     * put it. */
+    readonly points_at?: string;
+  };
+  readonly plugin: {
+    readonly id?: string;
+    /** What the agent reports having, and whether it has it switched on.
+     * Present with no `expected_version` beside it means something other than
+     * ccmsg installed it. */
+    readonly installed_version?: string;
+    readonly enabled?: boolean;
+    /** What the receipt says should be there. */
+    readonly expected_version?: string;
+  };
+}
+
+export interface UninstallReport extends Report {
+  readonly receipt?: string;
+  /** What was actually taken back out. A step the receipt does not name was
+   * never taken, so it is not undone and does not appear here. */
+  readonly removed: {
+    readonly plugin?: string;
+    readonly marketplace?: string;
+    readonly root?: string;
+  };
+}
+
+export type Outcome = InstallReport | StatusReport | UninstallReport;
 
 /** What one install did, so that uninstall can undo exactly that.
  *
@@ -105,10 +184,9 @@ export async function install(
   paths: InstancePaths,
   version: string,
   run: Run = runClaude,
-): Promise<Outcome> {
+): Promise<InstallReport> {
   const root = rootFor(paths, "claude");
   const files = claudePluginFiles(version);
-  const report: string[] = [];
   for (const [path, content] of files) {
     const file = join(root, path);
     await mkdir(dirname(file), { recursive: true });
@@ -117,7 +195,6 @@ export async function install(
       typeof content === "string" ? content : `${JSON.stringify(content, null, 2)}\n`,
     );
   }
-  report.push(`プラグインを ${root} に置きました (${files.size} ファイル)`);
 
   // Kept as it grows rather than rebuilt per step: each step adds what it did
   // to what the earlier ones did, and the file on disk is that running total.
@@ -133,9 +210,23 @@ export async function install(
   };
   await writeReceipt(paths, receipt);
 
-  const step = async (args: string[], done: Partial<Receipt>): Promise<string | undefined> => {
+  let replaced = false;
+  const so = (ok: boolean, refused?: Refusal): InstallReport => ({
+    agent: "claude",
+    ok,
+    version,
+    config_home: paths.configHome,
+    root,
+    files: receipt.files,
+    marketplace: { name: MARKETPLACE_NAME, registered: receipt.marketplace !== undefined },
+    plugin: { id: PLUGIN_ID, installed: receipt.plugin_id !== undefined, replaced },
+    commands: receipt.commands,
+    ...(refused === undefined ? {} : { refused }),
+  });
+
+  const step = async (args: string[], done: Partial<Receipt>): Promise<Refusal | undefined> => {
     const ran = await run(args);
-    if (ran.code !== 0) return `claude ${args.join(" ")} が失敗しました: ${failure(ran)}`;
+    if (ran.code !== 0) return refusal(args, ran);
     receipt = { ...receipt, ...done, commands: [...receipt.commands, args] };
     await writeReceipt(paths, receipt);
     return undefined;
@@ -144,74 +235,88 @@ export async function install(
   const added = await step(["plugin", "marketplace", "add", root], {
     marketplace: MARKETPLACE_NAME,
   });
-  if (added !== undefined) return { ok: false, report: [...report, added] };
-  report.push(`marketplace ${MARKETPLACE_NAME} を登録しました`);
+  if (added !== undefined) return so(false, added);
 
   if (await installed(run)) {
-    const ran = await run(["plugin", "uninstall", PLUGIN_ID, "-y"]);
-    if (ran.code !== 0) {
-      return { ok: false, report: [...report, `入れ直しに失敗しました: ${failure(ran)}`] };
-    }
-    report.push(`既に入っていた ${PLUGIN_ID} を入れ直します`);
+    const args = ["plugin", "uninstall", PLUGIN_ID, "-y"];
+    const ran = await run(args);
+    if (ran.code !== 0) return so(false, refusal(args, ran));
+    replaced = true;
   }
 
   const put = await step(["plugin", "install", PLUGIN_ID], { plugin_id: PLUGIN_ID });
-  if (put !== undefined) return { ok: false, report: [...report, put] };
-  report.push(`${PLUGIN_ID} を ${paths.configHome} に入れました`);
-  report.push("開いているセッションには /reload-plugins で反映されます");
-  return { ok: true, report };
+  return put === undefined ? so(true) : so(false, put);
 }
 
-/** What the receipt says was done, beside what is actually there now. */
-export async function status(paths: InstancePaths, run: Run = runClaude): Promise<Outcome> {
+/** What the receipt says was done, beside what is actually there now.
+ *
+ * Reading it is what tells the two apart: every field the receipt states has
+ * the current reading of the same thing beside it, so drift — a file deleted, a
+ * marketplace pointed elsewhere, a version other than the one installed — is
+ * two fields that differ rather than a sentence about them. */
+export async function status(paths: InstancePaths, run: Run = runClaude): Promise<StatusReport> {
   const receipt = await readReceipt(paths, "claude");
   const here = await installedRow(run);
   const registered = await marketplaces(run);
-  const report: string[] = [];
   if (receipt === undefined) {
-    report.push("claude 用のプラグインは ccmsg からは入れていません");
-    if (here !== undefined) {
-      report.push(
-        `ただし ${PLUGIN_ID} (${here.version}) が入っています — ccmsg 以外が入れたものです`,
-      );
-    }
-    return { ok: true, report };
+    // No receipt, so there is nothing of ccmsg's to compare against. A plugin
+    // of the same id is still worth naming: it is there, and taking it out is
+    // not this command's to do.
+    return {
+      agent: "claude",
+      ok: true,
+      marketplace: known(registered, MARKETPLACE_NAME),
+      plugin:
+        here === undefined
+          ? {}
+          : { id: PLUGIN_ID, installed_version: here.version, enabled: here.enabled },
+    };
   }
-  report.push(`受領書: ${receiptFile(paths, "claude")}`);
-  report.push(`  入れた日時: ${receipt.installed_at} / version ${receipt.version}`);
-  report.push(`  置き場所: ${receipt.root}`);
-  report.push(`  config home: ${receipt.config_home}`);
-
   const missing: string[] = [];
   for (const path of receipt.files) {
     if (!(await Bun.file(join(receipt.root, path)).exists())) missing.push(path);
   }
-  report.push(
-    missing.length === 0
-      ? `  ファイル: ${receipt.files.length} 件すべてあります`
-      : `  ファイル: ${missing.length} 件ありません (${missing.join(", ")})`,
-  );
+  const market = known(registered, receipt.marketplace, receipt.root);
+  return {
+    agent: "claude",
+    ok: true,
+    receipt: receiptFile(paths, "claude"),
+    installed_at: receipt.installed_at,
+    version: receipt.version,
+    config_home: receipt.config_home,
+    root: receipt.root,
+    files: {
+      expected: receipt.files.length,
+      present: receipt.files.length - missing.length,
+      missing,
+    },
+    marketplace: market,
+    plugin: {
+      ...(receipt.plugin_id === undefined ? {} : { id: receipt.plugin_id }),
+      ...(here === undefined ? {} : { installed_version: here.version, enabled: here.enabled }),
+      expected_version: receipt.version,
+    },
+  };
+}
 
-  const market = registered?.get(receipt.marketplace ?? MARKETPLACE_NAME);
-  report.push(
-    receipt.marketplace === undefined
-      ? "  marketplace: 登録していません"
-      : market === undefined
-        ? `  marketplace ${receipt.marketplace}: 登録が外れています`
-        : market === receipt.root
-          ? `  marketplace ${receipt.marketplace}: 登録どおりです`
-          : `  marketplace ${receipt.marketplace}: 別の場所を指しています (${market})`,
-  );
-  report.push(
-    receipt.plugin_id === undefined
-      ? "  plugin: 入れていません"
-      : here === undefined
-        ? `  plugin ${receipt.plugin_id}: 入っていません`
-        : here.version === receipt.version
-          ? `  plugin ${receipt.plugin_id}: ${here.version} が入っています${here.enabled ? "" : " (無効)"}`
-          : `  plugin ${receipt.plugin_id}: ${here.version} が入っています (受領書は ${receipt.version})`,
-  );
-  return { ok: true, report };
+/** One marketplace as the agent has it, against where it was put.
+ *
+ * An agent that could not be asked leaves `registered` unsaid, because "we do
+ * not know" and "it is not registered" lead to different next steps. */
+function known(
+  registered: Map<string, string> | undefined,
+  name: string | undefined,
+  root?: string,
+): StatusReport["marketplace"] {
+  const named = name === undefined ? {} : { name };
+  if (registered === undefined || name === undefined) return named;
+  const at = registered.get(name);
+  if (at === undefined) return { ...named, registered: false };
+  return {
+    ...named,
+    registered: true,
+    ...(root === undefined || at === root || at === "" ? {} : { points_at: at }),
+  };
 }
 
 /** Undo what the receipt says was done, and nothing else.
@@ -220,36 +325,33 @@ export async function status(paths: InstancePaths, run: Run = runClaude): Promis
  * then of the marketplace that offered it, and only then are the files it was
  * reading taken away. A step the receipt does not name is a step that was
  * never taken, so it is not undone. */
-export async function uninstall(paths: InstancePaths, run: Run = runClaude): Promise<Outcome> {
+export async function uninstall(
+  paths: InstancePaths,
+  run: Run = runClaude,
+): Promise<UninstallReport> {
   const receipt = await readReceipt(paths, "claude");
-  if (receipt === undefined) {
-    return { ok: true, report: ["ccmsg から入れたものはありません"] };
-  }
-  const report: string[] = [];
+  if (receipt === undefined) return { agent: "claude", ok: true, removed: {} };
+  const file = receiptFile(paths, "claude");
+  let removed: UninstallReport["removed"] = {};
   if (receipt.plugin_id !== undefined) {
-    const ran = await run(["plugin", "uninstall", receipt.plugin_id, "-y"]);
+    const args = ["plugin", "uninstall", receipt.plugin_id, "-y"];
+    const ran = await run(args);
     if (ran.code !== 0) {
-      return { ok: false, report: [`${receipt.plugin_id} を外せませんでした: ${failure(ran)}`] };
+      return { agent: "claude", ok: false, receipt: file, removed, refused: refusal(args, ran) };
     }
-    report.push(`${receipt.plugin_id} を外しました`);
+    removed = { ...removed, plugin: receipt.plugin_id };
   }
   if (receipt.marketplace !== undefined) {
-    const ran = await run(["plugin", "marketplace", "remove", receipt.marketplace]);
+    const args = ["plugin", "marketplace", "remove", receipt.marketplace];
+    const ran = await run(args);
     if (ran.code !== 0) {
-      return {
-        ok: false,
-        report: [
-          ...report,
-          `marketplace ${receipt.marketplace} を外せませんでした: ${failure(ran)}`,
-        ],
-      };
+      return { agent: "claude", ok: false, receipt: file, removed, refused: refusal(args, ran) };
     }
-    report.push(`marketplace ${receipt.marketplace} の登録を外しました`);
+    removed = { ...removed, marketplace: receipt.marketplace };
   }
   await rm(receipt.root, { recursive: true, force: true });
-  report.push(`${receipt.root} を削除しました`);
-  await rm(receiptFile(paths, receipt.agent), { force: true });
-  return { ok: true, report };
+  await rm(file, { force: true });
+  return { agent: "claude", ok: true, receipt: file, removed: { ...removed, root: receipt.root } };
 }
 
 /** One installed plugin, as the agent lists it. */
@@ -305,9 +407,10 @@ function rows(output: string): Record<string, unknown>[] {
     : [];
 }
 
-/** What to show of a command that did not work: what it said, or its exit code
- * when it said nothing. */
-function failure(ran: Ran): string {
+/** A command the agent refused, as the report carries it: what was run, what it
+ * exited with, and its first line of complaint. The exit code is stated apart
+ * from the words because a command that said nothing still failed. */
+function refusal(command: readonly string[], ran: Ran): Refusal {
   const said = `${ran.stderr}${ran.stdout}`.trim();
-  return said === "" ? `終了コード ${ran.code}` : (said.split("\n")[0] ?? "");
+  return { command: ["claude", ...command], code: ran.code, said: said.split("\n")[0] ?? "" };
 }
