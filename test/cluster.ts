@@ -32,13 +32,48 @@ export async function release(): Promise<void> {
   for (const close of closing.splice(0)) close();
 }
 
-/** A port nothing is listening on.
+/** A port held for the listener that is going to take it.
  *
  * The peer list has to name the endpoints before any of them is bound, because
  * the whole point of §7.1 is that the list is written without knowing which
- * entry is whose — so the ports are picked first and handed to the instances. */
-export function freePort(): number {
-  const server = Bun.serve({ port: 0, fetch: () => new Response("") });
+ * entry is whose — so the ports are picked first and handed to the instances.
+ * Between the two the address belongs to nobody, and anything else on the
+ * machine asking the kernel for a port can be given it; a lease keeps the
+ * kernel's own answer, that this address is taken, standing across that gap.
+ *
+ * Bun has no way to bind a socket and hand it to `Bun.serve`, so the handover
+ * is a close and a bind rather than a transfer. `release` is awaited before the
+ * real listener binds because the close is not synchronous: dropped without
+ * waiting, one rebind in a few hundred is refused the address it just gave up. */
+export interface PortLease {
+  readonly port: number;
+  /** Give the address up, for the listener about to take it. */
+  release(): Promise<void>;
+}
+
+export function leasePort(): PortLease {
+  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("") });
+  let given: Promise<void> | undefined;
+  const lease: PortLease = {
+    port: server.port as number,
+    release: () => (given ??= server.stop(true).then(() => undefined)),
+  };
+  // A lease no listener ends up taking is still holding an address.
+  closing.push(() => {
+    void lease.release();
+  });
+  return lease;
+}
+
+/** An address nothing answers on: what an endpoint that is asleep looks like.
+ *
+ * Not a lease, because a lease answers — and what these cases are about is a
+ * peer that does not. A stranger arriving on the address afterwards cannot be
+ * mistaken for one of ours: being counted as this instance takes echoing our
+ * own probe token back to us (§7.2), and being reached takes speaking the mesh
+ * handshake. */
+export function deadPort(): number {
+  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("") });
   const port = server.port as number;
   void server.stop(true);
   return port;
@@ -48,11 +83,18 @@ export function endpoint(port: number): InstanceId {
   return `ws://127.0.0.1:${port}`;
 }
 
+/** The lease each home was written against, so that the instance started from
+ * it is what takes the address over. A home carries its port in a config file
+ * and the instance binds inside `start`, which leaves nowhere else to put the
+ * handover: the home is what pairs the two. */
+const leaseOf = new WeakMap<Env, PortLease>();
+
 /** One instance's disposable home, configured to listen and to know the peers.
  *
  * The list is the same for every instance in a test, itself included, which is
  * exactly what §8.2 says a peer list is: one file that can go to all of them. */
-export function homeFor(port: number, peers: readonly InstanceId[]): Env {
+export function homeFor(lease: PortLease, peers: readonly InstanceId[]): Env {
+  const port = lease.port;
   const root = mkdtempSync(join(tmpdir(), "ccmsg-mesh-"));
   const home = join(root, "home");
   mkdirSync(join(home, "sessions"), { recursive: true });
@@ -62,11 +104,13 @@ export function homeFor(port: number, peers: readonly InstanceId[]): Env {
     join(configDir, "config.json"),
     JSON.stringify({ defaults: { peers, entry: { host: "127.0.0.1", port } } }),
   );
-  return {
+  const env: Env = {
     CLAUDE_CONFIG_DIR: home,
     CCMSG_STATE_DIR: join(root, "state"),
     CCMSG_CONFIG_DIR: configDir,
   };
+  leaseOf.set(env, lease);
+  return env;
 }
 
 export interface Timing {
@@ -80,6 +124,10 @@ export interface Timing {
 export const NO_RETRY: Timing = { reconnectMinMs: 60_000 };
 
 export async function startAt(env: Env, timing: Timing = NO_RETRY): Promise<Instance> {
+  // The address this home names goes from the lease to the instance here, and
+  // nowhere in between: a home started a second time after its instance stopped
+  // finds the lease already given up, which is what makes this idempotent.
+  await leaseOf.get(env)?.release();
   const outcome = await start({ env, echoLog: false, meshTiming: timing });
   if (!isRunning(outcome)) throw new Error("another instance holds this config home");
   running.push(outcome);
@@ -132,7 +180,14 @@ export class FakePeer {
   /** Called when the key is asked for, before the proof goes out. */
   onKeyAsked: (() => void) | undefined;
 
-  constructor(port: number) {
+  /** Take the address a lease is holding and serve on it. Private so that the
+   * handover cannot be skipped: this peer binds as it is built. */
+  static async at(lease: PortLease): Promise<FakePeer> {
+    await lease.release();
+    return new FakePeer(lease.port);
+  }
+
+  private constructor(port: number) {
     this.id = endpoint(port);
     this.#server = Bun.serve({
       hostname: "127.0.0.1",
@@ -255,10 +310,10 @@ export async function withFakePeer(timing: Timing = NO_RETRY): Promise<{
   instance: Instance;
   peer: FakePeer;
 }> {
-  const realPort = freePort();
-  const peerPort = freePort();
-  const peers = [endpoint(realPort), endpoint(peerPort)];
-  const peer = new FakePeer(peerPort);
-  const instance = await startAt(homeFor(realPort, peers), timing);
+  const real = leasePort();
+  const peerLease = leasePort();
+  const peers = [endpoint(real.port), endpoint(peerLease.port)];
+  const peer = await FakePeer.at(peerLease);
+  const instance = await startAt(homeFor(real, peers), timing);
   return { instance, peer };
 }

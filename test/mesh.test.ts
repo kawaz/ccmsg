@@ -10,11 +10,12 @@ import {
   SelfIdentificationError,
 } from "../src/mesh/index.ts";
 import {
+  deadPort,
   endpoint,
   eventually,
   FakePeer,
-  freePort,
   homeFor,
+  leasePort,
   reachable,
   release,
   startAt,
@@ -23,46 +24,80 @@ import {
 
 afterEach(release);
 
+/** The peer list is written before anything binds (§7.1), so between choosing
+ * an address and listening on it there is a gap that only the kernel's own
+ * record of who holds the port keeps anyone else out of. These say the fixture
+ * keeps that record standing, because a test that lost the race would fail as
+ * this cluster's own fault rather than the machine's. */
+describe("the addresses a test hands out", () => {
+  test("a leased address is not free for anything else to be given", () => {
+    const lease = leasePort();
+    expect(() =>
+      Bun.serve({ hostname: "127.0.0.1", port: lease.port, fetch: () => new Response("") }),
+    ).toThrow();
+  });
+
+  test("two instances started at once each get the address they were promised", async () => {
+    const [a, b] = [leasePort(), leasePort()];
+    const peers = [endpoint(a.port), endpoint(b.port)];
+    const [first, second] = await Promise.all([
+      startAt(homeFor(a, peers), { reconnectMinMs: 20 }),
+      startAt(homeFor(b, peers), { reconnectMinMs: 20 }),
+    ]);
+    expect([first.self, second.self].sort()).toEqual([...peers].sort());
+  });
+});
+
 describe("self-identification (mesh-self-identification §7)", () => {
   test("one match settles `self` (§7.1)", async () => {
-    const port = freePort();
-    const instance = await startAt(homeFor(port, [endpoint(port)]));
-    expect(instance.self).toBe(endpoint(port));
+    const lease = leasePort();
+    const instance = await startAt(homeFor(lease, [endpoint(lease.port)]));
+    expect(instance.self).toBe(endpoint(lease.port));
   });
 
   test("no match ends the start (§7.1)", async () => {
-    const port = freePort();
     // A list this instance is not in: the endpoint named is one nothing serves,
     // so the probe reaches nobody and there is nothing to be.
-    const env = homeFor(port, [endpoint(freePort())]);
+    const lease = leasePort();
+    const env = homeFor(lease, [endpoint(deadPort())]);
+    // `start` binds the address this home names, so the lease on it is given up
+    // here rather than by `startAt`, which is what does it for a start expected
+    // to run.
+    await lease.release();
     expect(await refusal(start({ env, echoLog: false }))).toBeInstanceOf(SelfIdentificationError);
   });
 
   test("a start that no identity settles leaves its port bound to nobody (§7.1)", async () => {
-    const port = freePort();
-    const env = homeFor(port, [endpoint(freePort())]);
+    const lease = leasePort();
+    const env = homeFor(lease, [endpoint(deadPort())]);
+    await lease.release();
     expect(await refusal(start({ env, echoLog: false }))).toBeInstanceOf(SelfIdentificationError);
     // The entry listener is up before the identity is settled, so the refusal
     // has to give the port back: binding it again is what says it did.
-    const after = Bun.serve({ hostname: "127.0.0.1", port, fetch: () => new Response("") });
-    expect(after.port).toBe(port);
+    const after = Bun.serve({
+      hostname: "127.0.0.1",
+      port: lease.port,
+      fetch: () => new Response(""),
+    });
+    expect(after.port).toBe(lease.port);
     await after.stop(true);
   });
 
   test("two matches end the start (§7.1)", async () => {
-    const port = freePort();
+    const lease = leasePort();
     // The same instance under two names, which is what a host registered twice
     // looks like: both probes come back, and which name is its own cannot be
     // decided here.
-    const env = homeFor(port, [endpoint(port), `ws://localhost:${port}`]);
+    const env = homeFor(lease, [endpoint(lease.port), `ws://localhost:${lease.port}`]);
+    await lease.release();
     expect(await refusal(start({ env, echoLog: false }))).toBeInstanceOf(SelfIdentificationError);
   });
 
   test("a peer that cannot be reached is left out of the count, not fatal (§7.1, DV-Q11)", async () => {
-    const port = freePort();
-    const asleep = endpoint(freePort());
-    const instance = await startAt(homeFor(port, [endpoint(port), asleep]));
-    expect(instance.self).toBe(endpoint(port));
+    const lease = leasePort();
+    const asleep = endpoint(deadPort());
+    const instance = await startAt(homeFor(lease, [endpoint(lease.port), asleep]));
+    expect(instance.self).toBe(endpoint(lease.port));
     // It stays a peer to dial: unreachable now is not unreachable for good.
     expect(instance.mesh?.peers).toEqual([asleep]);
     expect(reachable(instance, asleep)).toBe(false);
@@ -73,20 +108,20 @@ describe("self-identification (mesh-self-identification §7)", () => {
     // Nothing was sent, so no token in existence is one of ours — which is what
     // a probe arriving from elsewhere is.
     identification.accept("00".repeat(16));
-    expect(await refusal(identification.settle([endpoint(freePort())]))).toBeInstanceOf(
+    expect(await refusal(identification.settle([endpoint(deadPort())]))).toBeInstanceOf(
       SelfIdentificationError,
     );
   });
 
   test("the table is gone once the run is over (§7.3)", async () => {
     const identification = new SelfIdentification();
-    const port = freePort();
-    const instance = await startAt(homeFor(port, [endpoint(port)]));
-    expect(instance.self).toBe(endpoint(port));
+    const lease = leasePort();
+    const instance = await startAt(homeFor(lease, [endpoint(lease.port)]));
+    expect(instance.self).toBe(endpoint(lease.port));
     // A token accepted after the run cannot match anything, because the table
     // it would have been matched against no longer exists.
     identification.accept("11".repeat(16));
-    expect(await refusal(identification.settle([endpoint(freePort())]))).toBeInstanceOf(
+    expect(await refusal(identification.settle([endpoint(deadPort())]))).toBeInstanceOf(
       SelfIdentificationError,
     );
   });
@@ -113,7 +148,7 @@ describe("the mesh handshake (mesh-peer-auth §10.3)", () => {
 
   test("an `iss` that is not a configured peer is refused (§5.7-2)", async () => {
     const { instance, peer } = await withFakePeer();
-    peer.claim = { iss: endpoint(freePort()) };
+    peer.claim = { iss: endpoint(deadPort()) };
     const reply = await peer.greet(instance.self);
     expect(reply["ok"]).toBe(false);
   });
@@ -262,19 +297,19 @@ describe("what a handshake leaves behind (mesh-peer-auth §10.5)", () => {
   });
 
   test("several handshakes at once come back to nothing held", async () => {
-    const realPort = freePort();
-    const ports = [freePort(), freePort(), freePort()];
-    const peers = [endpoint(realPort), ...ports.map(endpoint)];
-    const doubles = ports.map((port) => new FakePeer(port));
-    const instance = await startAt(homeFor(realPort, peers));
+    const real = leasePort();
+    const leases = [leasePort(), leasePort(), leasePort()];
+    const peers = [endpoint(real.port), ...leases.map((lease) => endpoint(lease.port))];
+    const doubles = await Promise.all(leases.map((lease) => FakePeer.at(lease)));
+    const instance = await startAt(homeFor(real, peers));
     const replies = await Promise.all(doubles.map((peer) => peer.greet(instance.self)));
     expect(replies.map((reply) => reply["ok"])).toEqual([true, true, true]);
     expect(instance.mesh?.held).toEqual({ keys: 0, handshakes: 0, links: 3 });
   });
 
   test("a dialling instance destroys its key once it is acknowledged (§7)", async () => {
-    const [a, b] = [freePort(), freePort()];
-    const peers = [endpoint(a), endpoint(b)];
+    const [a, b] = [leasePort(), leasePort()];
+    const peers = [endpoint(a.port), endpoint(b.port)];
     const first = await startAt(homeFor(a, peers));
     const second = await startAt(homeFor(b, peers));
     await eventually(() => first.mesh?.reachable(second.self) === true);
@@ -306,8 +341,8 @@ describe("glare (mesh-peer-auth §8.1)", () => {
   });
 
   test("two instances that dial each other end up holding one link each", async () => {
-    const [a, b] = [freePort(), freePort()];
-    const peers = [endpoint(a), endpoint(b)];
+    const [a, b] = [leasePort(), leasePort()];
+    const peers = [endpoint(a.port), endpoint(b.port)];
     // Started together and retrying quickly, so both ends dial while the other
     // is still deciding — which is the situation the rule exists for.
     const [first, second] = await Promise.all([

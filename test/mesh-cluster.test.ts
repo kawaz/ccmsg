@@ -11,7 +11,7 @@ import {
 import { type Env, type Instance } from "../src/instance/index.ts";
 import { Relay } from "../src/mesh/index.ts";
 import { connectUds, type LineClient } from "./client.ts";
-import { endpoint, eventually, FakePeer, freePort, homeFor, release, startAt } from "./cluster.ts";
+import { endpoint, eventually, FakePeer, homeFor, leasePort, release, startAt } from "./cluster.ts";
 
 /** What a cluster does with a request and with an event once the links of
  * mesh-peer-auth are up: daemon-v2 §11.5's daemon-specific cases.
@@ -121,8 +121,8 @@ async function pair(): Promise<{
   homeB: Env;
   session: HoldingClient;
 }> {
-  const [first, second] = [freePort(), freePort()];
-  const peers = [endpoint(first), endpoint(second)];
+  const [first, second] = [leasePort(), leasePort()];
+  const peers = [endpoint(first.port), endpoint(second.port)];
   const homeB = homeFor(second, peers);
   transcriptIn(homeB, SID_ON_B);
   const [a, b] = await Promise.all([
@@ -226,10 +226,11 @@ describe("forwarding an op (§7.3)", () => {
 describe("who a forwarded request runs as (§7.3)", () => {
   /** A real instance with a peer under the test's control on its link. */
   async function linked(): Promise<{ instance: Instance; peer: FakePeer }> {
-    const realPort = freePort();
-    const peerPort = freePort();
-    const peer = new FakePeer(peerPort);
-    const instance = await startAt(homeFor(realPort, [endpoint(realPort), endpoint(peerPort)]));
+    const real = leasePort();
+    const peerLease = leasePort();
+    const peers = [endpoint(real.port), endpoint(peerLease.port)];
+    const peer = await FakePeer.at(peerLease);
+    const instance = await startAt(homeFor(real, peers));
     expect((await peer.greet(instance.self))["ok"]).toBe(true);
     return { instance, peer };
   }
@@ -486,8 +487,8 @@ describe("what a disconnected instance leaves behind (§7.5, DV-Q12)", () => {
     // the smaller `iss` leaves the survivor holding a link it accepted, and
     // stopping the larger leaves it holding one it dialled.
     for (const stopSmaller of [true, false]) {
-      const [first, second] = [freePort(), freePort()];
-      const peers = [endpoint(first), endpoint(second)];
+      const [first, second] = [leasePort(), leasePort()];
+      const peers = [endpoint(first.port), endpoint(second.port)];
       const [one, two] = await Promise.all([
         startAt(homeFor(first, peers), { reconnectMinMs: 20 }),
         startAt(homeFor(second, peers), { reconnectMinMs: 20 }),
@@ -497,11 +498,26 @@ describe("what a disconnected instance leaves behind (§7.5, DV-Q12)", () => {
       const ordered = [one, two].sort((left, right) => (left.self < right.self ? -1 : 1));
       const [going, staying] = stopSmaller ? ordered : [...ordered].reverse();
 
+      // The survivor's own account of its links, on the topic a subscriber is
+      // told of a disconnection on (§7.5). Subscribed before the stop, so what
+      // arrives after it is the notice itself.
+      const watcher = await client(staying);
+      await greet(watcher, {});
+      await ask(watcher, { op: "topic_subscribe", request_id: "sub", topic: "peers" });
+
       await going.stop();
-      // Within a moment, not within a heartbeat: a stop is something the far
-      // end is told by the link ending, and the heartbeat is there for the
-      // silence nobody announces (§7.5, §8.3).
-      await eventually(() => staying.mesh?.reachable(going.self) === false, 1_000);
+      // Told by the link ending, not by a heartbeat: the silence a heartbeat is
+      // there for takes minutes to be called (§7.5, §8.3), so a notice that
+      // arrives at all is one the closing link carried. And when it arrives the
+      // answer is already there rather than on its way — which is what makes
+      // the disconnection immediate, with no interval on this side to wait out.
+      await eventually(async () => {
+        const frame = await watcher.next();
+        if (frame["topic"] !== "peers" || frame["instance"] !== staying.self) return false;
+        const instances = (frame["data"] as { instances?: InstanceInfo[] }).instances;
+        return instances?.some((held) => held.id === going.self && !held.reachable) === true;
+      });
+      expect(staying.mesh?.reachable(going.self)).toBe(false);
       await release();
     }
   });
