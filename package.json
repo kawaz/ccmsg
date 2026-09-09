@@ -1,6 +1,6 @@
 {
   "name": "@ccmsg/cli",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "The ccmsg daemon, CLI and agent plugins for one instance (= one config home)",
   "license": "MIT",
   "author": "kawaz",
