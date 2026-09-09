@@ -3,9 +3,9 @@
  * Two questions, because they are asked of different things. `allowRequest`
  * runs for every HTTP request the listener takes, the routed ones included, and
  * answers "may this address, presenting this `Origin`, speak to us at all".
- * `allowUpgrade` runs only for the WebSocket handshake and answers "does this
- * handshake carry the instance's entry token" — a route that carries its own
- * secret is not asked for a second one.
+ * `allowUpgrade` runs only for the WebSocket handshake and answers what the
+ * connection is let in as, which is what decides the subprotocol the reply
+ * selects.
  *
  * The checks are config-driven and the instance supplies them; transport only
  * asks, so no policy is written into the listener. */
@@ -27,9 +27,9 @@ export type UpgradeDecision =
   | {
       readonly ok: true;
       readonly protocol?: string;
-      /** Let in as a peer rather than on the entry token. Such a connection has
-       * shown nothing yet: what it is gets decided by the mesh handshake, so
-       * until that finishes it may do only the one thing that can decide it. */
+      /** Let in as a peer. Such a connection has shown nothing yet: what it is
+       * gets decided by the mesh handshake, so until that finishes it may do
+       * only the one thing that can decide it. */
       readonly mesh?: boolean;
     }
   | { readonly ok: false; readonly reason: string };
@@ -37,13 +37,3 @@ export type UpgradeDecision =
 /** Accepts everything. A listener given no policy is open to whatever can reach
  * the address it is bound to. */
 export const OPEN: EntryPolicy = {};
-
-/** The subprotocol a WebSocket client carries its entry token in.
- *
- * A browser cannot put a header on a WebSocket handshake, and the subprotocol
- * list is the one field it can set, so the token travels as one of its values.
- * A query parameter is accepted beside it for clients that are not browsers. */
-export const TOKEN_PROTOCOL = "ccmsg.token.";
-
-/** The query parameter that carries the same token. */
-export const TOKEN_PARAM = "token";

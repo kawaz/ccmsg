@@ -11,7 +11,16 @@ import {
 import { type Env, type Instance } from "../src/instance/index.ts";
 import { Relay } from "../src/mesh/index.ts";
 import { connectUds, type LineClient } from "./client.ts";
-import { endpoint, eventually, FakePeer, homeFor, leasePort, release, startAt } from "./cluster.ts";
+import {
+  endpoint,
+  endpointOf,
+  eventually,
+  FakePeer,
+  homeFor,
+  leasePort,
+  release,
+  startAt,
+} from "./cluster.ts";
 
 /** What a cluster does with a request and with an event once the links of
  * mesh-peer-auth are up: daemon-v2 §11.5's daemon-specific cases.
@@ -129,8 +138,8 @@ async function pair(): Promise<{
     startAt(homeFor(first, peers), { reconnectMinMs: 20 }),
     startAt(homeB, { reconnectMinMs: 20 }),
   ]);
-  await eventually(() => a.mesh?.reachable(b.self) === true);
-  await eventually(() => b.mesh?.reachable(a.self) === true);
+  await eventually(() => a.mesh?.reachable(endpointOf(b)) === true);
+  await eventually(() => b.mesh?.reachable(endpointOf(a)) === true);
   const session = await client(b);
   await greet(session, { role: "session", sid: SID_ON_B });
   return { a, b, homeB, session };
@@ -181,7 +190,7 @@ describe("forwarding an op (§7.3)", () => {
     });
 
     await b.stop();
-    await eventually(() => a.mesh?.reachable(b.self) === false);
+    await eventually(() => a.mesh?.reachable(endpointOf(b)) === false);
     const gone = await ask(user, { op: "transcript_read", request_id: "gone", sid: SID_ON_B });
     expect(gone["ok"]).toBe(false);
     expect(errorOf(gone)).toBe("instance_unreachable");
@@ -189,7 +198,7 @@ describe("forwarding an op (§7.3)", () => {
     // The same instance, back where it was. Nothing had to be told: the link
     // is redialled and the op it could not carry goes through again.
     const returned = await startAt(homeB, { reconnectMinMs: 20 });
-    await eventually(() => a.mesh?.reachable(returned.self) === true);
+    await eventually(() => a.mesh?.reachable(endpointOf(returned)) === true);
     const back = await client(returned);
     await greet(back, { role: "session", sid: SID_ON_B });
     await eventually(async () => {
@@ -211,7 +220,7 @@ describe("forwarding an op (§7.3)", () => {
     expect(errorOf(missing)).toBe("session_not_found");
 
     await b.stop();
-    await eventually(() => a.mesh?.reachable(b.self) === false);
+    await eventually(() => a.mesh?.reachable(endpointOf(b)) === false);
     // The same sid, and now an instance that might hold it cannot be asked. The
     // answer is about the instance rather than about the session (§4.2).
     const unsure = await ask(user, {
@@ -231,7 +240,7 @@ describe("who a forwarded request runs as (§7.3)", () => {
     const peers = [endpoint(real.port), endpoint(peerLease.port)];
     const peer = await FakePeer.at(peerLease);
     const instance = await startAt(homeFor(real, peers));
-    expect((await peer.greet(instance.self))["ok"]).toBe(true);
+    expect((await peer.greet(endpointOf(instance)))["ok"]).toBe(true);
     return { instance, peer };
   }
 
@@ -245,8 +254,8 @@ describe("who a forwarded request runs as (§7.3)", () => {
       op: "session_last_live_remove",
       request_id: "nameless",
       sid: UNKNOWN_SID,
-      from_instance: "ws://127.0.0.1:1",
-      hops: ["ws://127.0.0.1:1"],
+      from_instance: peer.id,
+      hops: [peer.id],
     });
     const refused = await peer.answer("nameless");
     expect(refused["ok"]).toBe(false);
@@ -413,7 +422,7 @@ describe("what the instance says about the host link", () => {
     await b.stop();
     // Every configured peer silent at once is the link gone, which is a
     // different answer from the same instance having no mesh to read.
-    await eventually(() => a.mesh?.reachable(b.self) === false);
+    await eventually(() => a.mesh?.reachable(endpointOf(b)) === false);
     const down = await ask(user, { op: "instance_ping", request_id: "down" });
     expect(down["network"]).toBe("offline");
   });
@@ -466,7 +475,7 @@ describe("a message to a session on another instance (§4)", () => {
     const user = await client(a);
     await greet(user, {});
     await b.stop();
-    await eventually(() => a.mesh?.reachable(b.self) === false);
+    await eventually(() => a.mesh?.reachable(endpointOf(b)) === false);
     const sent = await ask(user, {
       op: "message_send",
       request_id: "held",
@@ -493,8 +502,8 @@ describe("what a disconnected instance leaves behind (§7.5, DV-Q12)", () => {
         startAt(homeFor(first, peers), { reconnectMinMs: 20 }),
         startAt(homeFor(second, peers), { reconnectMinMs: 20 }),
       ]);
-      await eventually(() => one.mesh?.reachable(two.self) === true);
-      await eventually(() => two.mesh?.reachable(one.self) === true);
+      await eventually(() => one.mesh?.reachable(endpointOf(two)) === true);
+      await eventually(() => two.mesh?.reachable(endpointOf(one)) === true);
       const ordered = [one, two].sort((left, right) => (left.self < right.self ? -1 : 1));
       const [going, staying] = stopSmaller ? ordered : [...ordered].reverse();
 
@@ -517,7 +526,7 @@ describe("what a disconnected instance leaves behind (§7.5, DV-Q12)", () => {
         const instances = (frame["data"] as { instances?: InstanceInfo[] }).instances;
         return instances?.some((held) => held.id === going.self && !held.reachable) === true;
       });
-      expect(staying.mesh?.reachable(going.self)).toBe(false);
+      expect(staying.mesh?.reachable(endpointOf(going))).toBe(false);
       await release();
     }
   });
@@ -529,7 +538,7 @@ describe("what a disconnected instance leaves behind (§7.5, DV-Q12)", () => {
     await eventually(() => a.mesh?.relay.snapshot("peers").length === 1);
 
     await b.stop();
-    await eventually(() => a.mesh?.reachable(b.self) === false);
+    await eventually(() => a.mesh?.reachable(endpointOf(b)) === false);
     // Still there, and marked: a subscriber that arrives now sees B's sessions
     // rather than an empty cluster (§7.5).
     expect(a.mesh?.relay.snapshot("peers").length).toBe(1);
@@ -543,7 +552,7 @@ describe("what a disconnected instance leaves behind (§7.5, DV-Q12)", () => {
     // Back, with nothing greeted to it this time. What it says now stands in
     // place of what it said before, rather than being merged with it.
     const returned = await startAt(homeB, { reconnectMinMs: 20 });
-    await eventually(() => a.mesh?.reachable(returned.self) === true);
+    await eventually(() => a.mesh?.reachable(endpointOf(returned)) === true);
     await eventually(() => a.mesh?.relay.unreachable(returned.self) === false);
     await eventually(() => {
       const held = a.mesh?.relay.snapshot("peers") ?? [];

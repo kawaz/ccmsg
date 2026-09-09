@@ -61,7 +61,9 @@ export function serveWs(options: WsOptions): Listener {
       }
       const routed = await options.route?.(request);
       if (routed !== undefined) return routed;
-      if (new URL(request.url).pathname !== path) return new Response("Not Found", { status: 404 });
+      if (!entryPath(new URL(request.url).pathname, path)) {
+        return new Response("Not Found", { status: 404 });
+      }
       // The handshake's own check, asked after the routes so a route carrying
       // its own secret is not also asked for the entry token.
       const decision = entry.allowUpgrade?.(request) ?? { ok: true as const };
@@ -143,6 +145,22 @@ export function serveWs(options: WsOptions): Listener {
       await Promise.race([server.stop(true), Bun.sleep(STOP_DEADLINE_MS)]);
     },
   };
+}
+
+/** Whether a request's path is this listener's entry.
+ *
+ * Matched at the end rather than whole, so a proxy that puts the instance under
+ * a prefix of its own passes the request through untouched and an alias URL
+ * reaches the same door (DR-0001 §2.7). The boundary before it has to be a
+ * separator, or `/notws` would answer for `/ws`. The mesh's own routes are not
+ * matched this way: they stay under the configured endpoint, which is what
+ * keeps two instances on one origin from answering for each other's keys.
+ *
+ * The prefix is not read: which instance a proxy meant is settled by which
+ * address it forwarded to, and a person's connection names itself by
+ * authenticating rather than by the path it arrived on. */
+export function entryPath(pathname: string, path: string): boolean {
+  return pathname === path || pathname.endsWith(`/${path.replace(/^\//, "")}`);
 }
 
 /** How long the stop above waits before trusting the address over the promise.

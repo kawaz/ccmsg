@@ -25,7 +25,7 @@ import {
   type Terminal,
 } from "../src/sessions/index.ts";
 import { TranscriptFiles } from "../src/transcript/index.ts";
-import { OTHER_SID, SELF, SID, TestConn } from "./frames.ts";
+import { OTHER_SID, SELF, SELF_ENDPOINT, SID, TestConn } from "./frames.ts";
 
 /** A transcript, in the harness's own spelling: its record types, its ISO
  * instants, its block arrays. Nothing here is the contract's — what turns one
@@ -142,6 +142,7 @@ function ops(over: Partial<ProcessDeps> & { typed?: string[][]; lastLive?: Sid[]
   }
   const domain = new Sessions({
     self: SELF,
+    endpoint: SELF_ENDPOINT,
     configHome,
     stateDir,
     capabilities: [],

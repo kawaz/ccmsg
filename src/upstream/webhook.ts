@@ -9,6 +9,21 @@ export const MAX_BODY_BYTES = 1024 * 1024;
  * traversal or a case that matches two ways. */
 export const SOURCE_NAME = /^[a-z0-9-]{1,64}$/;
 
+/** The producer a path names, matched at the end of the path.
+ *
+ * A gateway posts to whatever URL its operator gave it, which may sit under a
+ * proxy's prefix, so the segment before `/webhook/` is not read (DR-0001 §2.7).
+ * Which instance is meant was settled by the address the proxy forwarded to;
+ * what still has to be right is the source name and the token it presents.
+ *
+ * The last `/webhook/` wins, so a source cannot be smuggled in through a
+ * prefix that contains the marker itself. */
+export function sourceOfPath(pathname: string): string | undefined {
+  const marker = "/webhook/";
+  const at = pathname.lastIndexOf(marker);
+  return at === -1 ? undefined : pathname.slice(at + marker.length);
+}
+
 export interface WebhookSource {
   /** The path segment this producer posts to, after `/webhook/`. */
   readonly name: string;
@@ -34,8 +49,7 @@ export async function handleWebhook(
   source: WebhookSource | undefined,
   log?: (msg: string, fields?: Record<string, unknown>) => void,
 ): Promise<Response | undefined> {
-  const path = new URL(request.url).pathname;
-  const name = path.startsWith("/webhook/") ? path.slice("/webhook/".length) : undefined;
+  const name = sourceOfPath(new URL(request.url).pathname);
   if (name === undefined) return undefined;
   if (request.method !== "POST") return new Response("Method Not Allowed", { status: 405 });
   // An unconfigured source does not exist as far as a caller can tell, which

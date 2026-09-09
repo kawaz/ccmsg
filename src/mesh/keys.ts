@@ -7,7 +7,7 @@ import {
   sign,
   verify,
 } from "node:crypto";
-import type { InstanceId } from "@ccmsg/protocol";
+import type { Endpoint } from "@ccmsg/protocol";
 
 /** The handshake format this instance speaks (mesh-peer-auth §5.3). */
 export const MESH_VER = 1;
@@ -81,8 +81,8 @@ export class EphemeralKey {
 /** What a proof asserts. */
 export interface ProofClaim {
   readonly ver: number;
-  readonly iss: InstanceId;
-  readonly aud: InstanceId;
+  readonly iss: Endpoint;
+  readonly aud: Endpoint;
   readonly challenge: string;
   /** Unix seconds, as a JWS `exp` is. */
   readonly exp: number;

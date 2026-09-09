@@ -3,8 +3,11 @@ import { ANONYMOUS, type ConnIdentity, type Requester } from "../src/dispatch/in
 
 export const SID = "6f1a2b3c-4d5e-4f60-8a91-b2c3d4e5f607";
 export const OTHER_SID = "0e9d8c7b-6a5f-4e3d-9c2b-1a0f9e8d7c6b";
-export const SELF = "wss://host.example.ts.net/ccmsg/personal";
-export const OTHER_INSTANCE = "wss://host.example.ts.net/ccmsg/other";
+export const SELF = "1f0e2d3c4b5a69788796a5b4c3d2e1f0";
+export const OTHER_INSTANCE = "00112233445566778899aabbccddeeff";
+/** Where `SELF` is reached, for the one field that states a URL rather than an
+ * id. Two instances behind one host, which is the shape an id has to survive. */
+export const SELF_ENDPOINT = "wss://host.example.ts.net/ccmsg/personal";
 
 /** One accepted argument set per op, so the authorization steps can be swept
  * across the whole attribute table with frames that reach them.
@@ -14,10 +17,34 @@ export const OTHER_INSTANCE = "wss://host.example.ts.net/ccmsg/other";
  * argument that drifts from the schema fails here rather than turning a later
  * assertion into a silent `invalid_args`. */
 export const REQUEST_ARGS: Record<OpName, Record<string, unknown>> = {
-  hello: { role: "user", protocol_version: 2 },
+  hello: { role: "user", protocol_version: 3 },
   instance_ping: {},
   instance_shutdown: {},
   session_stopping: {},
+  auth_challenge: {},
+  auth_register: {
+    token: "a-registration-url-token",
+    credential: {
+      id: "Y3JlZGVudGlhbA",
+      raw_id: "Y3JlZGVudGlhbA",
+      client_data_json: "e30",
+      attestation_object: "o2M",
+    },
+  },
+  auth_assert: {
+    credential: {
+      raw_id: "Y3JlZGVudGlhbA",
+      client_data_json: "e30",
+      authenticator_data: "YXV0aA",
+      signature: "c2ln",
+    },
+    challenge: { challenge: "Y2hhbGxlbmdl", issuer: SELF, expires_at: 1_757_000_000_000 },
+  },
+  auth_refresh_token: {},
+  auth_refresh: { access_token: "YWNjZXNz" },
+  auth_resolve: { kind: "challenge", challenge: "Y2hhbGxlbmdl" },
+  auth_rotate: { refresh_token: "cmVmcmVzaA" },
+
   topic_subscribe: { topic: "peers" },
   topic_unsubscribe: { topic: "peers" },
 

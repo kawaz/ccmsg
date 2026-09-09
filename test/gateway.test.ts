@@ -123,8 +123,6 @@ function fakeGateway(report: unknown = REPORT): { url: string; reads: () => numb
 interface Started {
   instance: Instance;
   address: string;
-  /** What a WebSocket client presents to be let in (§3.1). */
-  token: string;
   post(body: unknown, init?: { token?: string; path?: string }): Promise<Response>;
 }
 
@@ -156,7 +154,6 @@ async function startWith(
   return {
     instance: outcome,
     address,
-    token: outcome.entryToken ?? "",
     post: (body, init = {}) =>
       fetch(`http://${address}${init.path ?? `/webhook/${SOURCE}`}`, {
         method: "POST",
@@ -180,7 +177,7 @@ function wiredTo(gatewayUrl: string) {
 
 /** Greet as a person and subscribe, returning the reply to the subscribe. */
 async function subscribe(started: Started, topic: string): Promise<LineClient> {
-  const client = await connectWs(started.address, started.token);
+  const client = await connectWs(started.address);
   clients.push(client);
   client.send({ op: "hello", request_id: "h", role: "user", protocol_version: PROTOCOL_VERSION });
   await client.next();
@@ -397,9 +394,28 @@ describe("who may post, and what an instance without a gateway has (§3.1, §5.2
     expect((await started.post("{ not json", {})).status).toBe(400);
   });
 
+  test("the source is read from the end of the path, whatever prefix it arrives under", async () => {
+    // A gateway posts to whatever URL its operator gave it, which may sit under
+    // a proxy's prefix. Which instance was meant is settled by the address the
+    // proxy forwarded to; what still has to be right is the source and the
+    // token (DR-0001 §2.7).
+    const gateway = fakeGateway();
+    const started = await startWith(wiredTo(gateway.url));
+    expect(
+      (await started.post([requestEvent()], { path: `/personal/webhook/${SOURCE}` })).status,
+    ).toBe(204);
+    expect((await started.post([requestEvent()], { path: `/a/b/webhook/${SOURCE}` })).status).toBe(
+      204,
+    );
+    // The prefix does not smuggle a source in: the last marker is the one read.
+    expect(
+      (await started.post([requestEvent()], { path: `/webhook/${SOURCE}/webhook/other` })).status,
+    ).toBe(404);
+  });
+
   test("with no gateway configured there is no route and no capability", async () => {
     const started = await startWith();
-    const client = await connectWs(started.address, started.token);
+    const client = await connectWs(started.address);
     clients.push(client);
     client.send({ op: "hello", request_id: "h", role: "user", protocol_version: PROTOCOL_VERSION });
     const hello = await client.next();
@@ -428,7 +444,7 @@ describe("who may post, and what an instance without a gateway has (§3.1, §5.2
       // the three capabilities together.
       [asked, ["llm_status", "llm_usage", "llm_stats"]],
     ] as const) {
-      const client = await connectWs(started.address, started.token);
+      const client = await connectWs(started.address);
       clients.push(client);
       client.send({
         op: "hello",

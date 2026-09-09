@@ -85,9 +85,9 @@ describe("nothing pushes a topic frame outside the topic mechanism (M5)", () => 
       // HTTP requests to another instance, and the two halves of a proof, whose
       // serialization *is* what gets signed. None is a value pushed to a
       // subscriber, and none is compared against a previous one.
-      "mesh/identify.ts",
       "mesh/keys.ts",
       "mesh/mesh.ts",
+      "mesh/probe.ts",
       // Framing again, on the far side of route (a): the harness's socket takes
       // one JSON object per line, the same as the instance's own connections.
       "messaging/direct.ts",

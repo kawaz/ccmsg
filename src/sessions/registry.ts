@@ -6,6 +6,7 @@ import {
   type Capability,
   type HelloArgs,
   type HelloResult,
+  type Endpoint,
   type InstanceId,
   type InstanceInfo,
   type LastLiveSession,
@@ -29,6 +30,10 @@ import { TerminalCache, type TerminalReader } from "./terminals.ts";
 /** What the sessions domain needs from the instance around it. */
 export interface SessionsDeps {
   readonly self: InstanceId;
+  /** Where this instance says it is reached, which `hello` states beside the
+   * id: the caller got here by some URL of its own — a proxy's, an alias — and
+   * what a peer is to dial is neither that nor derivable from the id. */
+  readonly endpoint: Endpoint;
   /** The one config home this instance answers for (§8.2). Its `sessions/` is
    * the only directory read, and no other config home is ever looked for (M6). */
   readonly configHome: string;
@@ -71,7 +76,7 @@ export interface SessionsDeps {
  * instances there are and which of them can be reached (§7.5). */
 export interface MeshSource {
   greet(conn: Requester, claim: MeshClaim): Promise<void>;
-  instances(self: InstanceId): InstanceInfo[];
+  instances(): InstanceInfo[];
 }
 
 /** The mesh claim a peer greets with, as the contract states it. */
@@ -240,8 +245,14 @@ export class Sessions implements UpstreamResource {
     return {
       protocol_version: PROTOCOL_VERSION,
       instance: this.deps.self,
-      instances: this.deps.mesh?.instances(this.deps.self) ?? [
-        { id: this.deps.self, host: hostname(), reachable: true },
+      endpoint: this.deps.endpoint,
+      instances: this.deps.mesh?.instances() ?? [
+        {
+          id: this.deps.self,
+          endpoint: this.deps.endpoint,
+          host: hostname(),
+          reachable: true,
+        },
       ],
       capabilities: [...this.deps.capabilities],
       version: this.deps.version,
@@ -446,7 +457,7 @@ export class Sessions implements UpstreamResource {
     now: Timestamp = Date.now(),
     rows: ReadonlyMap<Sid, AgentInfo> = this.#rows(),
   ): { peers: PeerInfo[]; last_live: LastLiveSession[]; instances?: InstanceInfo[] } {
-    const instances = this.deps.mesh?.instances(this.deps.self);
+    const instances = this.deps.mesh?.instances();
     return {
       peers: [...this.#connected.values()].map((session) => this.#peer(session, now, rows)),
       last_live: this.#lastLive.entries(now).map((entry) => ({

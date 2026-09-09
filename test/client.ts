@@ -89,15 +89,14 @@ function concat(a: Uint8Array, b: Uint8Array): Uint8Array {
   return both;
 }
 
-/** A WebSocket client, carrying the instance's entry token when there is one.
+/** A WebSocket client.
  *
- * The query parameter is the route a non-browser client takes; the subprotocol
- * route a browser needs is exercised where the policy itself is tested. */
-export async function connectWs(address: string, token?: string): Promise<LineClient> {
+ * It presents nothing: who may reach the socket is the address and the
+ * `Origin`, and who the person is will be a passkey (DR-0001) rather than
+ * anything a test client can hold. */
+export async function connectWs(address: string): Promise<LineClient> {
   const lines = new Lines();
-  const url = new URL(`ws://${address}/ws`);
-  if (token !== undefined) url.searchParams.set("token", token);
-  const ws = new WebSocket(url.href);
+  const ws = new WebSocket(`ws://${address}/ws`);
   ws.addEventListener("message", (event: MessageEvent) => {
     lines.push(String(event.data));
   });

@@ -64,7 +64,7 @@ describe("which config homes there are (daemon add / remove / list)", () => {
     const home = at.home("one");
     const added = add(process.env, home);
     expect(added).toMatchObject({ dir: home, running: false });
-    expect(added.id).toContain("ws://");
+    expect(added.id).toMatch(/^[0-9a-f]{32}$/);
     expect(list(process.env).map((row) => row.dir)).toEqual([home]);
 
     expect(() => add(process.env, home)).toThrow(CommandError);

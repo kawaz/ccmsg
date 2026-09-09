@@ -6,18 +6,20 @@ import {
   glareKeepsNew,
   MESH_VER,
   type ProofClaim,
-  SelfIdentification,
-  SelfIdentificationError,
+  PeerProbe,
+  SelfEndpointError,
 } from "../src/mesh/index.ts";
 import {
   deadPort,
   endpoint,
+  endpointOf,
   eventually,
   FakePeer,
   homeFor,
   leasePort,
   reachable,
   release,
+  rewriteSelf,
   startAt,
   withFakePeer,
 } from "./cluster.ts";
@@ -44,36 +46,63 @@ describe("the addresses a test hands out", () => {
       startAt(homeFor(a, peers), { reconnectMinMs: 20 }),
       startAt(homeFor(b, peers), { reconnectMinMs: 20 }),
     ]);
-    expect([first.self, second.self].sort()).toEqual([...peers].sort());
+    expect([endpointOf(first), endpointOf(second)].sort()).toEqual([...peers].sort());
   });
 });
 
-describe("self-identification (mesh-self-identification §7)", () => {
-  test("one match settles `self` (§7.1)", async () => {
+describe("`self` and the peer list (§7.1)", () => {
+  test("a `self` that answers here starts, and the peers are what is left", async () => {
     const lease = leasePort();
-    const instance = await startAt(homeFor(lease, [endpoint(lease.port)]));
-    expect(instance.self).toBe(endpoint(lease.port));
+    const asleep = endpoint(deadPort());
+    // The list names this instance too, which is what §8.2 says one file going
+    // to every host looks like. It is taken out of what gets dialled.
+    const instance = await startAt(homeFor(lease, [endpoint(lease.port), asleep]));
+    expect(endpointOf(instance)).toBe(endpoint(lease.port));
+    expect(instance.mesh?.peers).toEqual([asleep]);
+    // Unreachable now is not unreachable for good: it stays a peer to dial
+    // (DV-Q11).
+    expect(reachable(instance, asleep)).toBe(false);
   });
 
-  test("no match ends the start (§7.1)", async () => {
-    // A list this instance is not in: the endpoint named is one nothing serves,
-    // so the probe reaches nobody and there is nothing to be.
+  test("an id is what the instance is called, and it is not the endpoint", async () => {
     const lease = leasePort();
-    const env = homeFor(lease, [endpoint(deadPort())]);
+    const instance = await startAt(homeFor(lease, [endpoint(lease.port)]));
+    expect(instance.self).toMatch(/^[0-9a-f]{32}$/);
+    expect(instance.self).not.toBe(endpointOf(instance));
+  });
+
+  test("a `self` nothing answers at ends the start (§7.1)", async () => {
+    // `self` names an address this process does not serve, so the probe it
+    // sends itself never comes back and the setting is wrong.
+    const lease = leasePort();
+    const env = homeFor(lease, [endpoint(lease.port)]);
+    rewriteSelf(env, endpoint(deadPort()));
     // `start` binds the address this home names, so the lease on it is given up
     // here rather than by `startAt`, which is what does it for a start expected
     // to run.
     await lease.release();
-    expect(await refusal(start({ env, echoLog: false }))).toBeInstanceOf(SelfIdentificationError);
+    expect(await refusal(start({ env, echoLog: false }))).toBeInstanceOf(SelfEndpointError);
   });
 
-  test("a start that no identity settles leaves its port bound to nobody (§7.1)", async () => {
+  test("a `self` that answers as somebody else ends the start (§7.1)", async () => {
+    // Another listener holds the address `self` names. It answers the probe,
+    // but the token is not one this instance sent itself.
     const lease = leasePort();
-    const env = homeFor(lease, [endpoint(deadPort())]);
+    const stranger = leasePort();
+    const env = homeFor(lease, [endpoint(lease.port)]);
+    rewriteSelf(env, endpoint(stranger.port));
     await lease.release();
-    expect(await refusal(start({ env, echoLog: false }))).toBeInstanceOf(SelfIdentificationError);
-    // The entry listener is up before the identity is settled, so the refusal
-    // has to give the port back: binding it again is what says it did.
+    expect(await refusal(start({ env, echoLog: false }))).toBeInstanceOf(SelfEndpointError);
+  });
+
+  test("a refused start leaves its port bound to nobody (§7.1)", async () => {
+    const lease = leasePort();
+    const env = homeFor(lease, [endpoint(lease.port)]);
+    rewriteSelf(env, endpoint(deadPort()));
+    await lease.release();
+    expect(await refusal(start({ env, echoLog: false }))).toBeInstanceOf(SelfEndpointError);
+    // The entry listener is up before the endpoint list is checked, so the
+    // refusal has to give the port back: binding it again is what says it did.
     const after = Bun.serve({
       hostname: "127.0.0.1",
       port: lease.port,
@@ -83,109 +112,144 @@ describe("self-identification (mesh-self-identification §7)", () => {
     await after.stop(true);
   });
 
-  test("two matches end the start (§7.1)", async () => {
-    const lease = leasePort();
-    // The same instance under two names, which is what a host registered twice
-    // looks like: both probes come back, and which name is its own cannot be
-    // decided here.
-    const env = homeFor(lease, [endpoint(lease.port), `ws://localhost:${lease.port}`]);
-    await lease.release();
-    expect(await refusal(start({ env, echoLog: false }))).toBeInstanceOf(SelfIdentificationError);
-  });
-
-  test("a peer that cannot be reached is left out of the count, not fatal (§7.1, DV-Q11)", async () => {
-    const lease = leasePort();
-    const asleep = endpoint(deadPort());
-    const instance = await startAt(homeFor(lease, [endpoint(lease.port), asleep]));
-    expect(instance.self).toBe(endpoint(lease.port));
-    // It stays a peer to dial: unreachable now is not unreachable for good.
-    expect(instance.mesh?.peers).toEqual([asleep]);
-    expect(reachable(instance, asleep)).toBe(false);
-  });
-
   test("a token meant for another endpoint does not match (§7.2)", async () => {
-    const identification = new SelfIdentification();
+    const probe = new PeerProbe();
     // Nothing was sent, so no token in existence is one of ours — which is what
     // a probe arriving from elsewhere is.
-    identification.accept("00".repeat(16));
-    expect(await refusal(identification.settle([endpoint(deadPort())]))).toBeInstanceOf(
-      SelfIdentificationError,
-    );
+    probe.accept("00".repeat(16));
+    const dead = endpoint(deadPort());
+    expect(await refusal(probe.verify(dead, [dead]))).toBeInstanceOf(SelfEndpointError);
   });
 
   test("the table is gone once the run is over (§7.3)", async () => {
-    const identification = new SelfIdentification();
+    const probe = new PeerProbe();
     const lease = leasePort();
-    const instance = await startAt(homeFor(lease, [endpoint(lease.port)]));
-    expect(instance.self).toBe(endpoint(lease.port));
+    await startAt(homeFor(lease, [endpoint(lease.port)]));
     // A token accepted after the run cannot match anything, because the table
     // it would have been matched against no longer exists.
-    identification.accept("11".repeat(16));
-    expect(await refusal(identification.settle([endpoint(deadPort())]))).toBeInstanceOf(
-      SelfIdentificationError,
-    );
+    probe.accept("11".repeat(16));
+    const dead = endpoint(deadPort());
+    expect(await refusal(probe.verify(dead, [dead]))).toBeInstanceOf(SelfEndpointError);
   });
 });
 
 describe("the mesh handshake (mesh-peer-auth §10.3)", () => {
   test("a greeting that proves itself is answered, and the peer becomes reachable", async () => {
     const { instance, peer } = await withFakePeer();
-    const reply = await peer.greet(instance.self);
+    const reply = await peer.greet(endpointOf(instance));
     expect(reply["ok"]).toBe(true);
     expect(reply["instance"]).toBe(instance.self);
+    // The two are stated apart: the id says which instance answered, the
+    // endpoint says where it is dialled, and neither follows from the other.
+    expect(reply["endpoint"]).toBe(endpointOf(instance));
     const instances = reply["instances"] as InstanceInfo[];
-    expect(instances.find((one) => one.id === peer.id)?.reachable).toBe(true);
-    expect(instance.mesh?.reachable(peer.id)).toBe(true);
+    const held = instances.find((one) => one.id === peer.id);
+    expect(held?.reachable).toBe(true);
+    expect(held?.endpoint).toBe(peer.endpoint);
+    expect(instance.mesh?.reachable(peer.endpoint)).toBe(true);
+  });
+
+  test("an id already answering elsewhere closes the newcomer (DR-0001 §2.1)", async () => {
+    // Two endpoints, both on this instance's peer list, both naming one id.
+    // The standing binding is what the operator's endpoint list has already
+    // vouched for, so it is the second arrival that is turned away — which is
+    // what an instance that has moved runs into while its old URL is still up.
+    const real = leasePort();
+    const firstLease = leasePort();
+    const secondLease = leasePort();
+    const peers = [endpoint(real.port), endpoint(firstLease.port), endpoint(secondLease.port)];
+    const first = await FakePeer.at(firstLease);
+    const second = await FakePeer.at(secondLease);
+    second.id = first.id;
+    const instance = await startAt(homeFor(real, peers));
+
+    expect((await first.greet(endpointOf(instance)))["ok"]).toBe(true);
+    expect(instance.mesh?.reachable(first.endpoint)).toBe(true);
+
+    const refused = await second.greet(endpointOf(instance));
+    expect(refused["ok"]).toBe(false);
+    expect(instance.mesh?.reachable(second.endpoint)).toBe(false);
+    // The one that was already there is untouched: the newcomer is what the
+    // rule drops, not the binding.
+    expect(instance.mesh?.reachable(first.endpoint)).toBe(true);
+    const instances = instance.mesh?.instances() ?? [];
+    expect(instances.find((one) => one.id === first.id)?.endpoint).toBe(first.endpoint);
+  });
+
+  test("a peer claiming to be this instance is refused (DR-0001 §2.1)", async () => {
+    // What the instance at a moved instance's old URL looks like from the new
+    // one. The binding this instance opens with is its own, so the rule that
+    // keeps a standing binding covers it without a case of its own.
+    const { instance, peer } = await withFakePeer();
+    peer.id = instance.self;
+    const reply = await peer.greet(endpointOf(instance));
+    expect(reply["ok"]).toBe(false);
+    expect(instance.mesh?.reachable(peer.endpoint)).toBe(false);
+  });
+
+  test("a peer under a different id is bound beside the first", async () => {
+    const real = leasePort();
+    const firstLease = leasePort();
+    const secondLease = leasePort();
+    const peers = [endpoint(real.port), endpoint(firstLease.port), endpoint(secondLease.port)];
+    const first = await FakePeer.at(firstLease);
+    const second = await FakePeer.at(secondLease);
+    const instance = await startAt(homeFor(real, peers));
+    expect((await first.greet(endpointOf(instance)))["ok"]).toBe(true);
+    expect((await second.greet(endpointOf(instance)))["ok"]).toBe(true);
+    const instances = instance.mesh?.instances() ?? [];
+    expect(instances.find((one) => one.id === first.id)?.endpoint).toBe(first.endpoint);
+    expect(instances.find((one) => one.id === second.id)?.endpoint).toBe(second.endpoint);
   });
 
   test("an unknown handshake generation is refused (§5.7-1)", async () => {
     const { instance, peer } = await withFakePeer();
     peer.claim = { ver: MESH_VER + 1 };
-    const reply = await peer.greet(instance.self);
+    const reply = await peer.greet(endpointOf(instance));
     expect(reply["ok"]).toBe(false);
-    expect(instance.mesh?.reachable(peer.id)).toBe(false);
+    expect(instance.mesh?.reachable(peer.endpoint)).toBe(false);
   });
 
   test("an `iss` that is not a configured peer is refused (§5.7-2)", async () => {
     const { instance, peer } = await withFakePeer();
     peer.claim = { iss: endpoint(deadPort()) };
-    const reply = await peer.greet(instance.self);
+    const reply = await peer.greet(endpointOf(instance));
     expect(reply["ok"]).toBe(false);
   });
 
   test("an `aud` that is not this instance is refused (§5.7-3)", async () => {
     const { instance, peer } = await withFakePeer();
     peer.claim = { aud: peer.id };
-    const reply = await peer.greet(instance.self);
+    const reply = await peer.greet(endpointOf(instance));
     expect(reply["ok"]).toBe(false);
   });
 
   test("an `iss` sharing our origin but not our path is refused (§5.7, §4.2)", async () => {
     const { instance, peer } = await withFakePeer();
     peer.claim = { iss: `${peer.id}/other` };
-    const reply = await peer.greet(instance.self);
+    const reply = await peer.greet(endpointOf(instance));
     expect(reply["ok"]).toBe(false);
   });
 
   test("an `aud` that merely starts with ours is refused (§5.7)", async () => {
     const { instance, peer } = await withFakePeer();
     peer.claim = { aud: `${instance.self}.evil` };
-    const reply = await peer.greet(instance.self);
+    const reply = await peer.greet(endpointOf(instance));
     expect(reply["ok"]).toBe(false);
   });
 
   test("a proof stating something other than the greeting is refused (§5.7-4)", async () => {
     const { instance, peer } = await withFakePeer();
     peer.claimOverride = { aud: peer.id };
-    const reply = await peer.greet(instance.self);
+    const reply = await peer.greet(endpointOf(instance));
     expect(reply["ok"]).toBe(false);
-    expect(instance.mesh?.reachable(peer.id)).toBe(false);
+    expect(instance.mesh?.reachable(peer.endpoint)).toBe(false);
   });
 
   test("a proof answering another challenge is refused (§5.7-5)", async () => {
     const { instance, peer } = await withFakePeer();
     peer.claimOverride = { challenge: "22".repeat(16) };
-    const reply = await peer.greet(instance.self);
+    const reply = await peer.greet(endpointOf(instance));
     expect(reply["ok"]).toBe(false);
   });
 
@@ -197,19 +261,19 @@ describe("the mesh handshake (mesh-peer-auth §10.3)", () => {
       captured = key.proof(claim);
       return captured;
     };
-    const reply = await peer.greet(instance.self);
+    const reply = await peer.greet(endpointOf(instance));
     expect(reply["ok"]).toBe(true);
     // The challenge was spent when the first proof was read, so replaying it
     // finds no handshake — there is no record of it left to match against.
     peer.send({ mesh: "proof", jws: captured });
     await eventually(() => peer.closed);
-    expect(instance.mesh?.reachable(peer.id)).toBe(false);
+    expect(instance.mesh?.reachable(peer.endpoint)).toBe(false);
   });
 
   test("an expired proof is refused (§5.7-6)", async () => {
     const { instance, peer } = await withFakePeer();
     peer.claimOverride = { exp: Math.floor(Date.now() / 1000) - 1 };
-    const reply = await peer.greet(instance.self);
+    const reply = await peer.greet(endpointOf(instance));
     expect(reply["ok"]).toBe(false);
   });
 
@@ -219,21 +283,21 @@ describe("the mesh handshake (mesh-peer-auth §10.3)", () => {
     // shape a peer of one origin takes when it answers for another (§6.3).
     const other = new EphemeralKey();
     peer.jwk = () => ({ ...other.jwk(), kid: peer.key.kid });
-    const reply = await peer.greet(instance.self);
+    const reply = await peer.greet(endpointOf(instance));
     expect(reply["ok"]).toBe(false);
   });
 
   test("an algorithm outside the allowed set is refused (§5.7-7)", async () => {
     const { instance, peer } = await withFakePeer();
     peer.proof = (claim) => unsigned({ alg: "HS256", kid: peer.key.kid }, claim);
-    const reply = await peer.greet(instance.self);
+    const reply = await peer.greet(endpointOf(instance));
     expect(reply["ok"]).toBe(false);
   });
 
   test("`alg: none` is refused (§5.7-7)", async () => {
     const { instance, peer } = await withFakePeer();
     peer.proof = (claim) => unsigned({ alg: "none", kid: peer.key.kid }, claim);
-    const reply = await peer.greet(instance.self);
+    const reply = await peer.greet(endpointOf(instance));
     expect(reply["ok"]).toBe(false);
   });
 
@@ -241,14 +305,14 @@ describe("the mesh handshake (mesh-peer-auth §10.3)", () => {
     const { instance, peer } = await withFakePeer();
     const other = new EphemeralKey();
     peer.proof = (claim) => other.proof(claim);
-    const reply = await peer.greet(instance.self);
+    const reply = await peer.greet(endpointOf(instance));
     expect(reply["ok"]).toBe(false);
   });
 
   test("a key served under another id than the proof names is refused (§5.7-8)", async () => {
     const { instance, peer } = await withFakePeer();
     peer.jwk = () => ({ ...peer.key.jwk(), kid: "33".repeat(16) });
-    const reply = await peer.greet(instance.self);
+    const reply = await peer.greet(endpointOf(instance));
     expect(reply["ok"]).toBe(false);
   });
 
@@ -259,10 +323,10 @@ describe("the mesh handshake (mesh-peer-auth §10.3)", () => {
     peer.onKeyAsked = () => {
       peer.send({ op: "instance_ping", request_id: "early" });
     };
-    const reply = await peer.greet(instance.self);
+    const reply = await peer.greet(endpointOf(instance));
     expect(reply["ok"]).toBe(false);
     await eventually(() => peer.closed);
-    expect(instance.mesh?.reachable(peer.id)).toBe(false);
+    expect(instance.mesh?.reachable(peer.endpoint)).toBe(false);
   });
 
   test("the key cannot be asked for on the connection being authenticated (§6)", async () => {
@@ -273,7 +337,7 @@ describe("the mesh handshake (mesh-peer-auth §10.3)", () => {
     peer.onKeyAsked = () => {
       peer.send({ mesh: "jwk_req", kid: peer.key.kid, challenge: "44".repeat(16) });
     };
-    const reply = await peer.greet(instance.self);
+    const reply = await peer.greet(endpointOf(instance));
     expect(reply["ok"]).toBe(false);
   });
 });
@@ -281,7 +345,7 @@ describe("the mesh handshake (mesh-peer-auth §10.3)", () => {
 describe("what a handshake leaves behind (mesh-peer-auth §10.5)", () => {
   test("nothing is held once a handshake has finished", async () => {
     const { instance, peer } = await withFakePeer();
-    const reply = await peer.greet(instance.self);
+    const reply = await peer.greet(endpointOf(instance));
     expect(reply["ok"]).toBe(true);
     const held = instance.mesh?.held;
     // One link, and no key and no challenge: the receiving end mints no key,
@@ -292,7 +356,7 @@ describe("what a handshake leaves behind (mesh-peer-auth §10.5)", () => {
   test("a refused handshake leaves no less behind than a successful one", async () => {
     const { instance, peer } = await withFakePeer();
     peer.claimOverride = { challenge: "55".repeat(16) };
-    await peer.greet(instance.self);
+    await peer.greet(endpointOf(instance));
     expect(instance.mesh?.held).toEqual({ keys: 0, handshakes: 0, links: 0 });
   });
 
@@ -302,7 +366,7 @@ describe("what a handshake leaves behind (mesh-peer-auth §10.5)", () => {
     const peers = [endpoint(real.port), ...leases.map((lease) => endpoint(lease.port))];
     const doubles = await Promise.all(leases.map((lease) => FakePeer.at(lease)));
     const instance = await startAt(homeFor(real, peers));
-    const replies = await Promise.all(doubles.map((peer) => peer.greet(instance.self)));
+    const replies = await Promise.all(doubles.map((peer) => peer.greet(endpointOf(instance))));
     expect(replies.map((reply) => reply["ok"])).toEqual([true, true, true]);
     expect(instance.mesh?.held).toEqual({ keys: 0, handshakes: 0, links: 3 });
   });
@@ -312,8 +376,8 @@ describe("what a handshake leaves behind (mesh-peer-auth §10.5)", () => {
     const peers = [endpoint(a.port), endpoint(b.port)];
     const first = await startAt(homeFor(a, peers));
     const second = await startAt(homeFor(b, peers));
-    await eventually(() => first.mesh?.reachable(second.self) === true);
-    await eventually(() => second.mesh?.reachable(first.self) === true);
+    await eventually(() => first.mesh?.reachable(endpointOf(second)) === true);
+    await eventually(() => second.mesh?.reachable(endpointOf(first)) === true);
     // The key exists for one handshake and is gone the moment the peer says it
     // has finished verifying, so a settled mesh holds none.
     expect(first.mesh?.held.keys).toBe(0);
@@ -322,7 +386,7 @@ describe("what a handshake leaves behind (mesh-peer-auth §10.5)", () => {
 
   test("stopping lets the links and the keys go", async () => {
     const { instance, peer } = await withFakePeer();
-    await peer.greet(instance.self);
+    await peer.greet(endpointOf(instance));
     await instance.stop();
     expect(instance.mesh?.held).toEqual({ keys: 0, handshakes: 0, links: 0 });
   });
@@ -349,8 +413,8 @@ describe("glare (mesh-peer-auth §8.1)", () => {
       startAt(homeFor(a, peers), { reconnectMinMs: 20 }),
       startAt(homeFor(b, peers), { reconnectMinMs: 20 }),
     ]);
-    await eventually(() => first.mesh?.reachable(second.self) === true);
-    await eventually(() => second.mesh?.reachable(first.self) === true);
+    await eventually(() => first.mesh?.reachable(endpointOf(second)) === true);
+    await eventually(() => second.mesh?.reachable(endpointOf(first)) === true);
     // One link on each side, not two: whatever the order the two dials landed
     // in, the ends agreed on which connection to keep.
     expect(first.mesh?.held.links).toBe(1);
@@ -367,9 +431,9 @@ describe("stopping tells the peers (§7.5)", () => {
     // whenever that gets round to it, and until then it keeps the link, keeps
     // answering `reachable`, and keeps routing here.
     const { instance, peer } = await withFakePeer();
-    const reply = await peer.greet(instance.self);
+    const reply = await peer.greet(endpointOf(instance));
     expect(reply["ok"]).toBe(true);
-    expect(instance.mesh?.reachable(peer.id)).toBe(true);
+    expect(instance.mesh?.reachable(peer.endpoint)).toBe(true);
     // The mesh alone, with the listener still up: what the peer hears has to
     // be the mesh letting the link go, not the socket disappearing under it.
     instance.mesh?.stop();
@@ -384,11 +448,11 @@ describe("the heartbeat (mesh-peer-auth §8.3)", () => {
       heartbeatTimeoutMs: 60,
       reconnectMinMs: 60_000,
     });
-    await peer.greet(instance.self);
-    expect(instance.mesh?.reachable(peer.id)).toBe(true);
+    await peer.greet(endpointOf(instance));
+    expect(instance.mesh?.reachable(peer.endpoint)).toBe(true);
     // The double answers nothing, which is what a connection silently dropped
     // by something in the middle looks like from here.
-    await eventually(() => instance.mesh?.reachable(peer.id) === false);
+    await eventually(() => instance.mesh?.reachable(peer.endpoint) === false);
     expect(instance.mesh?.held.links).toBe(0);
   });
 });

@@ -1,15 +1,13 @@
 import { existsSync, mkdirSync, watch } from "node:fs";
 import { basename, isAbsolute, join, resolve } from "node:path";
-import type { InstanceId, InstancePingResult } from "@ccmsg/protocol";
+import type { Endpoint, InstanceId, InstancePingResult } from "@ccmsg/protocol";
 import {
   type InstanceEntry,
   loadShared,
-  parseConfig,
   saveShared,
-  settingsFor,
   type SharedConfig,
 } from "../instance/config.ts";
-import { selfId } from "../instance/instance.ts";
+import { instanceIdentity } from "../instance/identity.ts";
 import { alive, lockHolder } from "../instance/lock.ts";
 import { type Env, type InstancePaths, resolvePaths } from "../instance/paths.ts";
 import { prepareSocketDir } from "../instance/socket.ts";
@@ -47,7 +45,10 @@ export interface InstanceRow {
 export interface StatusRow extends InstanceRow {
   readonly version?: string;
   readonly network?: InstancePingResult["network"];
-  readonly peers?: readonly InstanceId[];
+  /** The other instances this one names, each with where it is dialled: the id
+   * says which instance and the endpoint says how to reach it, and neither
+   * follows from the other (DR-0001 §2.1). */
+  readonly peers?: readonly { readonly id: InstanceId; readonly endpoint: Endpoint }[];
 }
 
 /** Everything one command needs to reach one config home. */
@@ -77,7 +78,12 @@ export function add(env: Env, dir: string): InstanceRow {
   }
   const entry: InstanceEntry = { dir: home, settings: {} };
   saveShared(file, { ...shared, instances: [...shared.instances, entry] });
-  return rowFor(targetFor(env, home));
+  const target = targetFor(env, home);
+  // The id is made here rather than at the first start, so that what `add`
+  // prints is what the instance will answer to and so that a person can write
+  // the id into a peer's config before anything has run (DR-0001 §2.1).
+  instanceIdentity(target.paths.instanceIdFile);
+  return rowFor(target);
 }
 
 /** Take a config home off the list.
@@ -100,13 +106,12 @@ export function remove(env: Env, dir: string): { dir: string; removed: boolean }
 
 /** What an instance is called, whether or not it is running.
  *
- * Derived rather than asked, so a stopped instance still has the name the
- * running one answers to: the id follows from the config home's key and the
- * address the config binds, both of which are readable without it. */
+ * Read from the state directory rather than asked, so a stopped instance still
+ * has the name the running one answers to — and written there if it is not
+ * there yet, which is what makes this total for a config home that has been
+ * registered but never started (DR-0001 §2.1). */
 export function idOf(target: Target): InstanceId {
-  const shared = loadShared(target.paths.configFile);
-  const config = parseConfig(target.paths.configFile, settingsFor(shared, target.dir));
-  return selfId(target.paths.key, config);
+  return instanceIdentity(target.paths.instanceIdFile);
 }
 
 export function rowFor(target: Target): InstanceRow {
@@ -133,7 +138,8 @@ export async function status(target: Target): Promise<StatusRow> {
   try {
     const greeting = await greetAsUser(conn);
     if (greeting["ok"] !== true) return row;
-    const peers = (greeting["instances"] as { id: InstanceId }[] | undefined) ?? [];
+    const peers =
+      (greeting["instances"] as { id: InstanceId; endpoint: Endpoint }[] | undefined) ?? [];
     const answer = await conn.ask({ op: "instance_ping" });
     if (answer["ok"] !== true) return row;
     const ping = answer as unknown as InstancePingResult;
@@ -144,7 +150,9 @@ export async function status(target: Target): Promise<StatusRow> {
       pid: ping.pid,
       version: ping.version,
       network: ping.network,
-      peers: peers.map((one) => one.id).filter((id) => id !== ping.instance),
+      peers: peers
+        .filter((one) => one.id !== ping.instance)
+        .map((one) => ({ id: one.id, endpoint: one.endpoint })),
     };
   } finally {
     conn.close();

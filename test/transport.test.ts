@@ -23,7 +23,7 @@ import {
   WriteQueue,
 } from "../src/transport/index.ts";
 import { connectUds, connectWs, type LineClient } from "./client.ts";
-import { frameFor, SELF } from "./frames.ts";
+import { frameFor, SELF, SELF_ENDPOINT } from "./frames.ts";
 
 /** `hello` answers with the contract's own result type, so the reply that
  * settles the identity is the reply the contract describes. The instance has
@@ -31,6 +31,7 @@ import { frameFor, SELF } from "./frames.ts";
 const HELLO_RESULT: HelloResult = {
   protocol_version: PROTOCOL_VERSION,
   instance: SELF,
+  endpoint: SELF_ENDPOINT,
   instances: [],
   capabilities: [],
   version: "0.0.1",

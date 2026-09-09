@@ -162,20 +162,40 @@ describe("config", () => {
     expect(() => loadShared(file)).toThrow(ConfigError);
   });
 
-  test("the four things config carries (§8.2)", () => {
+  test("the five things config carries (§8.2)", () => {
     const { root, env, home } = disposable();
     const file = shared(root, {
+      self: "wss://here.example/ccmsg",
       peers: ["wss://elsewhere.example/ccmsg"],
       entry: { host: "127.0.0.1", port: 0, source_ips: ["127.0.0.1"], origins: ["http://ui"] },
       upstream: { gateway_url: "https://gateway.example" },
     });
     const config = loadConfig(file, home);
-    // The config home is the fourth, and it is the environment's rather than
+    // The config home is the fifth, and it is the environment's rather than
     // the file's: an instance is the config home it was started in (A2).
     expect(resolvePaths(env).configHome).toBe(home);
+    expect(config.self).toBe("wss://here.example/ccmsg");
     expect(config.peers).toEqual(["wss://elsewhere.example/ccmsg"]);
     expect(config.entry?.origins).toEqual(["http://ui"]);
     expect(config.upstream.gateway_url).toBe("https://gateway.example");
+  });
+
+  test("a mesh instance has to be told where it is reached (§8.2)", () => {
+    const { root, home } = disposable();
+    // Peers to dial and an address they could dial back, and no statement of
+    // which URL that is: the one thing an instance cannot work out for itself,
+    // so the start is refused rather than the first handshake (DV-Q9).
+    const file = shared(root, {
+      peers: ["wss://elsewhere.example/ccmsg"],
+      entry: { host: "127.0.0.1", port: 0 },
+    });
+    expect(() => loadConfig(file, home)).toThrow(ConfigError);
+    // Peers with no entry is a setting with no effect rather than a mesh, and
+    // an entry with no peers is an instance nobody dials. Neither needs one.
+    expect(loadConfig(shared(root, { peers: ["wss://a.example"] }), home).self).toBeUndefined();
+    expect(
+      loadConfig(shared(root, { entry: { host: "127.0.0.1", port: 0 } }), home).self,
+    ).toBeUndefined();
   });
 
   test("an instance's own entry wins over the defaults, key by key", () => {
@@ -221,6 +241,31 @@ describe("config", () => {
     expect(read.defaults).toEqual({ fork_origin: true });
     expect(read.instances).toEqual([{ dir: home, settings: { direct_delivery: false } }]);
     expect(loadConfig(file, home).direct_delivery).toBe(false);
+  });
+});
+
+describe("what this instance is called (DR-0001 §2.1)", () => {
+  test("the id is written once and answered to across restarts", async () => {
+    const { env, root } = disposable();
+    const stateDir = join(root, "state");
+    const first = await startAt(env);
+    const id = first.self;
+    expect(id).toMatch(/^[0-9a-f]{32}$/);
+    // On disk rather than derived, so that moving the state directory moves
+    // the instance: everything it has issued is keyed by this.
+    expect(readFileSync(join(stateDir, "instance.id"), "utf8").trim()).toBe(id);
+    await first.stop();
+    const second = await startAt(env);
+    expect(second.self).toBe(id);
+    await second.stop();
+  });
+
+  test("two config homes are called different things", async () => {
+    const first = await startAt(disposable().env);
+    const second = await startAt(disposable().env);
+    expect(first.self).not.toBe(second.self);
+    await first.stop();
+    await second.stop();
   });
 });
 
@@ -468,9 +513,10 @@ describe("what a run leaves behind (M4)", () => {
       if (afterFirst.has(name)) continue;
       throw new Error(`the second run added ${name}`);
     }
-    // The four of §3.6, the dumps a caller asked for, and the handles —
+    // The five of §3.6, the dumps a caller asked for, and the handles —
     // nothing that is a derived value written down.
     const allowed = new Set([
+      "instance.id",
       "last-live.json",
       "daemon.log",
       "inbox.jsonl",

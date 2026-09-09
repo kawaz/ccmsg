@@ -6,10 +6,10 @@
  * travels over it once there is one — and a second copy of "how an instance is
  * started" would let the two drift into testing different deployments. */
 import { expect } from "bun:test";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type InstanceId, PROTOCOL_VERSION } from "@ccmsg/protocol";
+import { type Endpoint, type InstanceId, PROTOCOL_VERSION } from "@ccmsg/protocol";
 import { type Env, Instance, isRunning, start } from "../src/instance/index.ts";
 import {
   EphemeralKey,
@@ -79,8 +79,17 @@ export function deadPort(): number {
   return port;
 }
 
-export function endpoint(port: number): InstanceId {
+export function endpoint(port: number): Endpoint {
   return `ws://127.0.0.1:${port}`;
+}
+
+/** An instance id of the shape the contract spells: sixteen random bytes as
+ * hex. What a real instance keeps in its state directory, made here for a
+ * double that has no state directory. */
+export function instanceId(): InstanceId {
+  return Array.from({ length: 32 }, () => "0123456789abcdef"[Math.floor(Math.random() * 16)]).join(
+    "",
+  );
 }
 
 /** The lease each home was written against, so that the instance started from
@@ -89,11 +98,14 @@ export function endpoint(port: number): InstanceId {
  * handover: the home is what pairs the two. */
 const leaseOf = new WeakMap<Env, PortLease>();
 
-/** One instance's disposable home, configured to listen and to know the peers.
+/** One instance's disposable home, configured to listen, to know where it is
+ * reached, and to know the peers.
  *
- * The list is the same for every instance in a test, itself included, which is
- * exactly what §8.2 says a peer list is: one file that can go to all of them. */
-export function homeFor(lease: PortLease, peers: readonly InstanceId[]): Env {
+ * The peer list is the same for every instance in a test, itself included,
+ * which is exactly what §8.2 says a peer list is: one file that can go to all
+ * of them. `self` is the one setting that differs per home, because it is the
+ * one thing an instance cannot read off the shared list. */
+export function homeFor(lease: PortLease, peers: readonly Endpoint[]): Env {
   const port = lease.port;
   const root = mkdtempSync(join(tmpdir(), "ccmsg-mesh-"));
   const home = join(root, "home");
@@ -102,7 +114,9 @@ export function homeFor(lease: PortLease, peers: readonly InstanceId[]): Env {
   mkdirSync(configDir, { recursive: true });
   writeFileSync(
     join(configDir, "config.json"),
-    JSON.stringify({ defaults: { peers, entry: { host: "127.0.0.1", port } } }),
+    JSON.stringify({
+      defaults: { self: endpoint(port), peers, entry: { host: "127.0.0.1", port } },
+    }),
   );
   const env: Env = {
     CLAUDE_CONFIG_DIR: home,
@@ -111,6 +125,18 @@ export function homeFor(lease: PortLease, peers: readonly InstanceId[]): Env {
   };
   leaseOf.set(env, lease);
   return env;
+}
+
+/** Point a home's `self` at another endpoint, for the cases about a `self`
+ * that is wrong. The config is read once at startup, so rewriting the file
+ * before `start` is the whole of setting it. */
+export function rewriteSelf(env: Env, self: Endpoint): void {
+  const file = join(env["CCMSG_CONFIG_DIR"] as string, "config.json");
+  const config = JSON.parse(readFileSync(file, "utf8")) as {
+    defaults: Record<string, unknown>;
+  };
+  config.defaults["self"] = self;
+  writeFileSync(file, JSON.stringify(config));
 }
 
 export interface Timing {
@@ -134,8 +160,23 @@ export async function startAt(env: Env, timing: Timing = NO_RETRY): Promise<Inst
   return outcome;
 }
 
-export function reachable(instance: Instance, peer: InstanceId): boolean {
-  const found = instance.mesh?.instances(instance.self).find((one) => one.id === peer);
+/** Where this instance is reached, as its own config states it.
+ *
+ * Apart from `instance.self`, which is the id: a test writes endpoints into the
+ * config and reads ids back off the wire, and the two are not interchangeable
+ * (DR-0001 §2.1). */
+export function endpointOf(instance: Instance): Endpoint {
+  const self = instance.mesh?.self;
+  if (self === undefined) throw new Error("this instance has no mesh");
+  return self;
+}
+
+/** Whether this instance holds a proven link to the peer at that endpoint.
+ *
+ * Asked by endpoint rather than by id, because a test writes the endpoints into
+ * the config and learns the ids only from what the instances say. */
+export function reachable(instance: Instance, peer: Endpoint): boolean {
+  const found = instance.mesh?.instances().find((one) => one.endpoint === peer);
   return found?.reachable === true;
 }
 
@@ -164,13 +205,22 @@ export async function eventually(
  * implementation cannot produce them. */
 export class FakePeer {
   readonly key = new EphemeralKey();
-  readonly id: InstanceId;
+  /** Where this double is dialled, and which instance it says answers there.
+   * Apart, as they are for a real instance (DR-0001 §2.1). */
+  readonly endpoint: Endpoint;
+  id: InstanceId = instanceId();
   readonly #server: ReturnType<typeof Bun.serve>;
   #ws: WebSocket | undefined;
   readonly #frames: Record<string, unknown>[] = [];
   #closeCode: number | undefined;
   /** What the greeting claims. Filled in by `greet` and overridable per case. */
-  claim: Partial<{ ver: number; iss: InstanceId; aud: InstanceId; kid: string }> = {};
+  claim: Partial<{
+    ver: number;
+    iss: Endpoint;
+    aud: Endpoint;
+    id: InstanceId;
+    kid: string;
+  }> = {};
   /** What the proof asserts, over the defaults derived from the greeting. */
   claimOverride: Partial<ProofClaim> = {};
   /** The whole proof, when a case needs one no key could produce. */
@@ -188,7 +238,7 @@ export class FakePeer {
   }
 
   private constructor(port: number) {
-    this.id = endpoint(port);
+    this.endpoint = endpoint(port);
     this.#server = Bun.serve({
       hostname: "127.0.0.1",
       port,
@@ -229,8 +279,8 @@ export class FakePeer {
     this.onKeyAsked?.();
     const claim: ProofClaim = {
       ver: MESH_VER,
-      iss: this.claim.iss as InstanceId,
-      aud: this.claim.aud as InstanceId,
+      iss: this.claim.iss as Endpoint,
+      aud: this.claim.aud as Endpoint,
       challenge: asked.challenge ?? "",
       exp: Math.floor(Date.now() / 1000) + 10,
       ...this.claimOverride,
@@ -241,7 +291,7 @@ export class FakePeer {
   }
 
   /** Dial the instance and greet it. Answers with the reply, whatever it is. */
-  async greet(target: InstanceId): Promise<Record<string, unknown>> {
+  async greet(target: Endpoint): Promise<Record<string, unknown>> {
     const ws = new WebSocket(`${target}/ws`, [MESH_PROTOCOL]);
     this.#ws = ws;
     await new Promise<void>((resolve, reject) => {
@@ -262,8 +312,9 @@ export class FakePeer {
     });
     const mesh = {
       ver: MESH_VER,
-      iss: this.id,
+      iss: this.endpoint,
       aud: target,
+      id: this.id,
       kid: this.key.kid,
       ...this.claim,
     };
