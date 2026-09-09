@@ -106,19 +106,24 @@ function watchOf(dir: string, pollMs: number) {
 /** A process of this test's own to read a terminal out of, with whatever
  * environment the case is about. Nothing is ever signalled through it: what is
  * being read is the environment of a pid the harness's directory names. */
-function child(env: Record<string, string>): number {
+async function child(env: Record<string, string>): Promise<number> {
   // This test process may itself be running in a terminal the daemon would
   // read, and a child inherits what names it. What the case is about is what
   // the case states, so the inherited names go first.
   const outside = { ...process.env };
   delete outside["HYOUI_SESSION_ID"];
   delete outside["HYOUI_NAMESPACE"];
+  const ready = `ccmsg-test-${crypto.randomUUID()}`;
   const spawned = Bun.spawn(["sleep", "30"], {
-    env: { ...outside, ...env },
+    env: { ...outside, ...env, CCMSG_TEST_CHILD_READY: ready },
     stdout: "ignore",
     stderr: "ignore",
   });
   children.push(spawned.pid);
+  if (process.platform === "linux") {
+    const record = `CCMSG_TEST_CHILD_READY=${ready}`;
+    while (!(await Bun.file(`/proc/${spawned.pid}/environ`).text()).split("\0").includes(record)) {}
+  }
   return spawned.pid;
 }
 afterEach(() => {
@@ -944,7 +949,7 @@ describe("the terminal a live session runs in", () => {
 
   test("a session whose process names one is reachable, and says which terminal", async () => {
     const context = withTerminals();
-    const pid = child({ HYOUI_SESSION_ID: "t-1", HYOUI_NAMESPACE: "work" });
+    const pid = await child({ HYOUI_SESSION_ID: "t-1", HYOUI_NAMESPACE: "work" });
     writeState(context.sessionsDir, pid, SID);
 
     // The scan is what notices the pid, and the read is what follows it.
@@ -958,7 +963,7 @@ describe("the terminal a live session runs in", () => {
 
   test("a session whose process names none stays the one nothing can reach", async () => {
     const context = withTerminals();
-    const pid = child({});
+    const pid = await child({});
     writeState(context.sessionsDir, pid, SID);
     // The read is asked for while the list is built, and its finishing is the
     // one thing that publishes here.
@@ -974,7 +979,7 @@ describe("the terminal a live session runs in", () => {
   test("a process is read once, however many questions are asked of the list", async () => {
     const reads: number[] = [];
     const context = withTerminals(reads);
-    const pid = child({ HYOUI_SESSION_ID: "t-2" });
+    const pid = await child({ HYOUI_SESSION_ID: "t-2" });
     writeState(context.sessionsDir, pid, SID);
     await context.until(() => context.domain.agents().agents[0]?.terminal_id === "t-2");
     for (let asked = 0; asked < 5; asked += 1) context.domain.classify(SID);
@@ -984,7 +989,7 @@ describe("the terminal a live session runs in", () => {
   test("a pid the harness no longer names is forgotten, so a resumed session is read afresh", async () => {
     const reads: number[] = [];
     const context = withTerminals(reads);
-    const pid = child({ HYOUI_SESSION_ID: "t-3" });
+    const pid = await child({ HYOUI_SESSION_ID: "t-3" });
     writeState(context.sessionsDir, pid, SID);
     await context.until(() => context.domain.agents().agents[0]?.terminal_id === "t-3");
 
