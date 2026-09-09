@@ -606,8 +606,8 @@ An endpoint that has finished one handshake stays in it after a disconnection an
 **A peer the config names appears in `instances[]` before any handshake too**, with no `id` on
 its row, because nobody has claimed one yet. Hiding a row without an id would hide the peer
 whose link is down — the very row a reader is looking for — so it is stated with its endpoint
-and `reachable` alone. An instance with no mesh has no URL to be named by, so it states neither
-`hello`'s `endpoint` nor a row of its own in `instances[]`.
+and `reachable` alone. An instance with no mesh has no URL to be named by, so it states no
+`endpoint` — neither on the reply nor on its own row, which is still there.
 
 ### 7.2 Dial and glare
 

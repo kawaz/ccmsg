@@ -123,7 +123,6 @@ export class Auth {
   readonly #pending = new Map<string, Pending>();
   readonly #challenges = new Map<Base64Url, Issued>();
   readonly #authorized = new Map<Requester, AuthorizedConn>();
-  #counter = 0;
   #window = 0;
   #served = 0;
 
@@ -165,8 +164,7 @@ export class Auth {
     if (!isRegistrableSuffix(rpId, host)) {
       throw new OpError("invalid_args", `${rpId} は ${host} の登録可能なドメインではありません`);
     }
-    this.#counter += 1;
-    const sub = options.sub ?? `${this.deps.unit}-${String(this.#counter)}`;
+    const sub = options.sub ?? this.#nextSubject();
     if (this.deps.records.removed(sub)) {
       throw new OpError("forbidden", `${sub} は削除済みなので、この名前では登録できません`);
     }
@@ -192,6 +190,34 @@ export class Auth {
       endpoint,
       rp_id: rpId,
     };
+  }
+
+  /** The next `<unit>-N` nobody holds.
+   *
+   * Read from the records rather than counted in memory: a counter would start
+   * at one again after a restart and hand the next person a name somebody
+   * already has, which would be a second person under one subject rather than a
+   * new one. A name a removal took is skipped too — the tombstone over it
+   * refuses every later write, so issuing it would produce a URL that cannot
+   * complete.
+   *
+   * The pending registrations count as taken as well: two URLs made before
+   * either is spent are two people. */
+  #nextSubject(): Subject {
+    const prefix = `${this.deps.unit}-`;
+    const taken = new Set<string>();
+    for (const record of this.deps.records.credentials()) taken.add(record.sub);
+    for (const held of this.#pending.values()) taken.add(held.claims.sub);
+    let highest = 0;
+    for (const sub of taken) {
+      if (!sub.startsWith(prefix)) continue;
+      const counted = Number(sub.slice(prefix.length));
+      if (Number.isInteger(counted) && counted > highest) highest = counted;
+    }
+    for (let next = highest + 1; ; next += 1) {
+      const sub = `${prefix}${String(next)}`;
+      if (!taken.has(sub) && !this.deps.records.removed(sub)) return sub;
+    }
   }
 
   /** The credentials a person may read back, newest registration first. */
@@ -247,22 +273,20 @@ export class Auth {
     } satisfies AuthResolveArgs);
   }
 
-  /** Spend a challenge whose issuer nobody stated: here when this instance
-   * issued it, and at the named instance when it did not. */
-  async #spendHereOrAt(challenge: Base64Url, elsewhere: InstanceId): Promise<void> {
-    if (this.#holds(challenge) || elsewhere === this.deps.self) {
+  /** Spend the challenge a registration answered.
+   *
+   * Stated with its issuer, it is spent wherever that is. Left unstated, it can
+   * only be honoured where this instance holds it — a value nobody named an
+   * issuer for is one there is nobody to ask about. */
+  async #spendStated(challenge: Base64Url, stated: AuthChallenge | undefined): Promise<void> {
+    if (stated === undefined) {
       this.spend(challenge);
       return;
     }
-    await this.#atIssuer(elsewhere, "auth_resolve", {
-      kind: "challenge",
-      challenge,
-    } satisfies AuthResolveArgs);
-  }
-
-  #holds(challenge: Base64Url): boolean {
-    this.#forget();
-    return this.#challenges.has(challenge);
+    if (!equalStrings(stated.challenge, challenge)) {
+      throw new OpError("auth_invalid", "答えた challenge と名乗った challenge が違います");
+    }
+    await this.#spendAnywhere(stated);
   }
 
   #atIssuer(iss: InstanceId, op: string, args: Record<string, unknown>): Promise<unknown> {
@@ -284,23 +308,24 @@ export class Auth {
     args: AuthRegisterArgs,
     from: { ip?: string; userAgent?: string } = {},
   ): Promise<AuthSession> {
-    const claims = await this.#claimsOf(args);
+    const claims = this.#claimsOf(args);
     if (this.deps.records.removed(claims.sub)) {
       throw new OpError("forbidden", `${claims.sub} は削除済みです`);
     }
-    // The challenge the page answered is one this cluster issued, spent before
-    // anything is verified against it. It is read out of the client data
-    // because a registration carries no challenge field of its own: what the
-    // authenticator signed is the only value worth spending, and where it was
-    // issued is not stated — so it is spent here when this instance holds it,
-    // and at the registration's issuer otherwise.
+    // What the page answered, verified before anything is spent: a challenge is
+    // good once, so consuming it for a message that then fails to verify would
+    // let a caller burn challenges without ever holding a credential (m9).
     const challenge = challengeIn(args.credential.client_data_json);
-    await this.#spendHereOrAt(challenge, claims.iss);
     const verified = verifyRegistration(args.credential, {
       challenge,
       origins: this.deps.origins(),
       rpId: claims.rp_id,
     });
+    // The challenge is stated beside the credential when the page knows who
+    // issued it. Where it is not, this instance is the only one that can spend
+    // it — and one it does not hold is a challenge from somewhere it cannot
+    // ask about (contract, `AuthRegisterArgs.challenge`).
+    await this.#spendStated(challenge, args.challenge);
     if (this.deps.records.credential(verified.credentialId) !== undefined) {
       throw new OpError("auth_invalid", "この credential は既に登録されています");
     }
@@ -311,6 +336,7 @@ export class Auth {
       credential_id: verified.credentialId,
       public_key: verified.publicKey,
       user_handle: args.credential.raw_id,
+      rp_id: claims.rp_id,
       sign_count: verified.signCount,
       ...(claims.issued_label === undefined ? {} : { issued_label: claims.issued_label }),
       ...(args.device_label === undefined ? {} : { device_label: args.device_label }),
@@ -322,18 +348,22 @@ export class Auth {
     return this.mint(claims.sub);
   }
 
-  /** What a registration URL authorized, from here or from its issuer. */
-  async #claimsOf(args: AuthRegisterArgs): Promise<RegisterClaims> {
+  /** What a registration URL authorized.
+   *
+   * Only its issuer can say, because only the issuer holds the secret that
+   * signed it — and the six digits are held beside that secret, so checking
+   * them anywhere else would put the one defence against a leaked URL where the
+   * URL's holder can reach it. Carrying the code to the issuer is what
+   * `auth_resolve` will do once the contract can express it; until then a
+   * registration that landed at the wrong instance is refused, and the person
+   * is told which instance to go to rather than having a try silently spent. */
+  #claimsOf(args: AuthRegisterArgs): RegisterClaims {
     const stated = claimsOf(args.token);
     if (stated.iss !== this.deps.self) {
-      const answer = (await this.#atIssuer(stated.iss, "auth_resolve", {
-        kind: "register",
-        token: args.token,
-      } satisfies AuthResolveArgs)) as AuthResolveResult;
-      if (answer.kind !== "register") {
-        throw new OpError("auth_invalid", "登録 URL の発行者が別のものを答えました");
-      }
-      return answer.claims;
+      throw new OpError(
+        "auth_unknown_issuer",
+        `この登録 URL を発行したのは ${stated.iss} です。その instance の endpoint で登録してください`,
+      );
     }
     return this.resolveRegistration(args.token, args.code);
   }
@@ -384,16 +414,22 @@ export class Auth {
     if (record === undefined) {
       throw new OpError("auth_invalid", "この credential は登録されていません");
     }
-    await this.#spendAnywhere(args.challenge);
-    const rpId = this.#rpIdFor();
+    // Verified before the challenge is spent, for the reason a registration is
+    // (m9): a good-once value burnt by a message that never verified is a value
+    // a caller can burn at will.
     const { signCount } = await verifyAssertion(
       args.credential,
       {
         publicKey: record.public_key,
         ...(record.sign_count === undefined ? {} : { signCount: record.sign_count }),
       },
-      { challenge: args.challenge.challenge, origins: this.deps.origins(), rpIds: rpId },
+      {
+        challenge: args.challenge.challenge,
+        origins: this.deps.origins(),
+        rpIds: this.#rpIdFor(record),
+      },
     );
+    await this.#spendAnywhere(args.challenge);
     const at = this.#now();
     this.deps.records.write(
       credentialKey(record.sub, record.credential_id),
@@ -409,14 +445,19 @@ export class Auth {
     return this.mint(record.sub);
   }
 
-  /** The relying parties an assertion may name.
+  /** The relying party an assertion is checked against.
    *
-   * A credential record does not carry the `rp_id` it was made for, so what an
-   * assertion is checked against is every name this instance was configured to
-   * be: the hosts of the pages it serves, and the host of its own endpoint.
-   * Nothing is widened to a suffix — a hash matching none of the configured
-   * names is a credential made for somewhere else (§2.3). */
-  #rpIdFor(): string[] {
+   * The one the credential was registered under, which the record carries: a
+   * passkey only ever answers for the domain it was made under, and the
+   * endpoint being reached says nothing about that (§2.3). Only a record
+   * written before the field existed falls back to the names this instance was
+   * configured to be, and nothing is widened to a suffix. */
+  #rpIdFor(record: CredentialRecord): string[] {
+    if (record.rp_id !== undefined) return [record.rp_id];
+    return this.#configuredNames();
+  }
+
+  #configuredNames(): string[] {
     const names = new Set<string>();
     for (const origin of this.deps.origins()) {
       try {

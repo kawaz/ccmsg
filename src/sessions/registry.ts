@@ -252,22 +252,18 @@ export class Sessions implements UpstreamResource {
       protocol_version: PROTOCOL_VERSION,
       instance: this.deps.self,
       ...(this.deps.endpoint === undefined ? {} : { endpoint: this.deps.endpoint }),
-      // Without a mesh the cluster is this instance alone. It appears in the
-      // list only where it has a URL to be named by: an instance serving the
-      // unix socket alone is reached by nothing that could dial an endpoint,
-      // and `instance` above has already said who is answering.
-      instances:
-        this.deps.mesh?.instances() ??
-        (this.deps.endpoint === undefined
-          ? []
-          : [
-              {
-                id: this.deps.self,
-                endpoint: this.deps.endpoint,
-                host: hostname(),
-                reachable: true,
-              },
-            ]),
+      // Without a mesh the cluster is this instance alone, and it says so:
+      // an instance serving the unix socket alone has no URL to be dialed at,
+      // which is a row without an endpoint rather than no row (contract,
+      // `InstanceInfo`).
+      instances: this.deps.mesh?.instances() ?? [
+        {
+          id: this.deps.self,
+          ...(this.deps.endpoint === undefined ? {} : { endpoint: this.deps.endpoint }),
+          host: hostname(),
+          reachable: true,
+        },
+      ],
       capabilities: [...this.deps.capabilities],
       version: this.deps.version,
       started_at: this.deps.startedAt,

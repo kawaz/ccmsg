@@ -535,7 +535,8 @@ hello は、新しく来た側を close する。名乗りを裏付けるもの�
 **config が挙げた peer は handshake 前でも `instances[]` に出る**が、その行の `id` は無い
 (まだ誰も名乗っていないため)。id を持たない行を隠すと、link が落ちている peer — 読み手が
 まさに探している行 — が消えるので、endpoint と `reachable` だけで出す。mesh を持たない
-instance は名乗る URL が無いので `hello` の `endpoint` も `instances[]` の自分の行も無い。
+instance は名乗る URL が無いので `hello` の `endpoint` を返さず、`instances[]` の自分の行も
+endpoint を持たない (行そのものは出る)。
 
 ### 7.2 dial と glare
 
