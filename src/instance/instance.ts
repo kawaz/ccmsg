@@ -389,7 +389,7 @@ export class Instance {
     // 6. `last_live` and the inbox, read as the domains are constructed.
     this.#sessions = new Sessions({
       self: this.self,
-      endpoint: selfEndpoint(paths.key, config),
+      endpoint: selfEndpoint(config),
       configHome: paths.configHome,
       stateDir: paths.stateDir,
       capabilities: [...this.#capabilities],
@@ -823,18 +823,18 @@ export class Instance {
   }
 }
 
-/** Where this instance says it is reached, for a `hello` that has to state one.
+/** Where this instance says it is reached, or nothing when it is reached by
+ * no URL at all.
  *
  * The config's `self` when there is one, which is the answer for anything with
- * a mesh. Without one there is no operator statement to read, so the bound
- * address stands in — and where even that is unknown (the unix socket alone, or
- * a port the kernel has yet to assign) the config home's key does, which is
- * unique per instance and reaches nothing. A client on the unix socket already
- * has the instance it is talking to. */
-export function selfEndpoint(key: string, config: InstanceConfig): Endpoint {
+ * a mesh. Without one the bound address stands in, and an instance serving only
+ * the unix socket has neither — so it states no endpoint rather than a URL that
+ * reaches nothing (DR-0001 §2.1). A client on the unix socket already has the
+ * instance it is talking to. */
+export function selfEndpoint(config: InstanceConfig): Endpoint | undefined {
   if (config.self !== undefined) return config.self;
   const entry = config.entry;
-  if (entry === undefined || entry.port === 0) return `ws://localhost/${key}`;
+  if (entry === undefined || entry.port === 0) return undefined;
   return `ws://${entry.host}:${entry.port}`;
 }
 

@@ -24,6 +24,7 @@ export const REQUEST_ARGS: Record<OpName, Record<string, unknown>> = {
   auth_challenge: {},
   auth_register: {
     token: "a-registration-url-token",
+    code: "123456",
     credential: {
       id: "Y3JlZGVudGlhbA",
       raw_id: "Y3JlZGVudGlhbA",

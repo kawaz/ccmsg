@@ -348,21 +348,24 @@ export class Mesh {
     return this.#links.has(peer);
   }
 
-  /** What `hello` reports: this instance, then every peer this one has learned
-   * the name of, with whether it can be reached right now (§7.5).
+  /** What `hello` reports: this instance, then every configured peer, with
+   * whether it can be reached right now (§7.5).
    *
-   * A configured endpoint that has never completed a handshake is left out: the
-   * field the contract asks for is the instance's id, and an endpoint nobody
-   * has answered at is an address rather than an instance. It appears as soon
-   * as one handshake with it has finished, and stays — unreachable — after. */
+   * A peer no handshake has settled yet is listed without an id. The operator
+   * configured that endpoint, so it is an entry of the cluster whether or not
+   * anything has answered there — and leaving it out would hide exactly the
+   * peer whose link is down, which is the one a reader is looking for. */
   instances(): InstanceInfo[] {
     return [
       { id: this.deps.id, endpoint: this.deps.self, host: hostname(), reachable: true },
-      ...this.peers.flatMap((peer) => {
+      ...this.peers.map((peer) => {
         const id = this.#idOf.get(peer);
-        return id === undefined
-          ? []
-          : [{ id, endpoint: peer, host: new URL(peer).hostname, reachable: this.reachable(peer) }];
+        return {
+          ...(id === undefined ? {} : { id }),
+          endpoint: peer,
+          host: new URL(peer).hostname,
+          reachable: this.reachable(peer),
+        };
       }),
     ];
   }

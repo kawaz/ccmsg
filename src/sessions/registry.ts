@@ -32,8 +32,9 @@ export interface SessionsDeps {
   readonly self: InstanceId;
   /** Where this instance says it is reached, which `hello` states beside the
    * id: the caller got here by some URL of its own — a proxy's, an alias — and
-   * what a peer is to dial is neither that nor derivable from the id. */
-  readonly endpoint: Endpoint;
+   * what a peer is to dial is neither that nor derivable from the id. Absent on
+   * an instance reached by the unix socket alone, which has no URL to state. */
+  readonly endpoint?: Endpoint;
   /** The one config home this instance answers for (§8.2). Its `sessions/` is
    * the only directory read, and no other config home is ever looked for (M6). */
   readonly configHome: string;
@@ -245,15 +246,23 @@ export class Sessions implements UpstreamResource {
     return {
       protocol_version: PROTOCOL_VERSION,
       instance: this.deps.self,
-      endpoint: this.deps.endpoint,
-      instances: this.deps.mesh?.instances() ?? [
-        {
-          id: this.deps.self,
-          endpoint: this.deps.endpoint,
-          host: hostname(),
-          reachable: true,
-        },
-      ],
+      ...(this.deps.endpoint === undefined ? {} : { endpoint: this.deps.endpoint }),
+      // Without a mesh the cluster is this instance alone. It appears in the
+      // list only where it has a URL to be named by: an instance serving the
+      // unix socket alone is reached by nothing that could dial an endpoint,
+      // and `instance` above has already said who is answering.
+      instances:
+        this.deps.mesh?.instances() ??
+        (this.deps.endpoint === undefined
+          ? []
+          : [
+              {
+                id: this.deps.self,
+                endpoint: this.deps.endpoint,
+                host: hostname(),
+                reachable: true,
+              },
+            ]),
       capabilities: [...this.deps.capabilities],
       version: this.deps.version,
       started_at: this.deps.startedAt,

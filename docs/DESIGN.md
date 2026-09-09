@@ -549,6 +549,11 @@ remedy is to take the old endpoint out of every peer's `peers`, not to let the n
 Looking up the link to dial down from `to_instance` (an id) also goes through this table (§7.3).
 An endpoint that has finished one handshake stays in it after a disconnection and appears in
 `instances[]` marked unreachable (§7.5).
+**A peer the config names appears in `instances[]` before any handshake too**, with no `id` on
+its row, because nobody has claimed one yet. Hiding a row without an id would hide the peer
+whose link is down — the very row a reader is looking for — so it is stated with its endpoint
+and `reachable` alone. An instance with no mesh has no URL to be named by, so it states neither
+`hello`'s `endpoint` nor a row of its own in `instances[]`.
 
 ### 7.2 Dial and glare
 

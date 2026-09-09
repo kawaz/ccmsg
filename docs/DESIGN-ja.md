@@ -486,6 +486,10 @@ hello は、新しく来た側を close する。名乗りを裏付けるもの�
 
 `to_instance` (id) から dial 先の link を引くのもこの対応表である (§7.3)。一度 handshake が
 終わった endpoint は切断後も表に残り、`instances[]` に「到達不能」の印付きで現れる (§7.5)。
+**config が挙げた peer は handshake 前でも `instances[]` に出る**が、その行の `id` は無い
+(まだ誰も名乗っていないため)。id を持たない行を隠すと、link が落ちている peer — 読み手が
+まさに探している行 — が消えるので、endpoint と `reachable` だけで出す。mesh を持たない
+instance は名乗る URL が無いので `hello` の `endpoint` も `instances[]` の自分の行も無い。
 
 ### 7.2 dial と glare
 
