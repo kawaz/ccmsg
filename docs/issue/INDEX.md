@@ -8,6 +8,7 @@ active な issue の一覧。close 済みは archive/ にあり、ここには�
 | 2026-09-09 | design | open | [sandbox-grant-delivery-path](./2026-09-09-sandbox-grant-delivery-path.md) | sandbox_grant は capability URL を発行するが、`SandboxGrants.find` の呼び... |
 | 2026-09-09 | design | open | [daemon-invented-limits-contract-promotion](./2026-09-09-daemon-invented-limits-contract-promotion.md) | daemon 実装が独自に決めている上限値 (`TITLE_MAX` / `READ_LIMIT` / `transcri... |
 | 2026-09-09 | bug | open | [remaining-load-flakes](./2026-09-09-remaining-load-flakes.md) | 負荷下でのみ稀に落ちるテストが 2 件ある (2026-09-09 観測、未対応)。timeout ... |
+| 2026-09-09 | bug | open | [cli-peers-greets-as-session-leaves-last-live-row](./2026-09-09-cli-peers-greets-as-session-leaves-last-live-row.md) | `ccmsg peers` は `CLAUDE_CODE_SESSION_ID` (or `--sid`) があると role sess... |
 
 <!--
 INDEX の列構成・canonical 順序・行形式の唯一の正本:
