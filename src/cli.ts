@@ -1,7 +1,8 @@
 #!/usr/bin/env bun
 import { type MessageSendArgs, type NotifySendArgs, PROTOCOL_VERSION } from "@ccmsg/protocol";
 import {
-  add as addInstance,
+  add as addToConfig,
+  ask,
   CommandError,
   configHome,
   connect,
@@ -9,13 +10,11 @@ import {
   idOf,
   labelled,
   list as listInstances,
-  remove as removeInstance,
+  reachable,
   registered,
-  restart as restartInstance,
+  remove as removeFromConfig,
   rowFor,
-  start as startInstance,
-  status as statusOf,
-  stop as stopInstance,
+  type SuperviseOp,
   Supervisor,
   tailOf,
   type Target,
@@ -100,7 +99,7 @@ const ROOT: Command = {
       children: [
         {
           name: "run",
-          summary: "この config home の instance を foreground で起動する",
+          summary: "この config home の instance を foreground で起動する (監督者の管理外)",
           usage: "ccmsg daemon run [dir]",
           bare: true,
           run: (args) => runInstance(args[0]),
@@ -114,15 +113,15 @@ const ROOT: Command = {
         },
         {
           name: "add",
-          summary: "共通 config の instances[] に config home を追加する",
+          summary: "共通 config の instances[] に足し、監督者が居れば起こさせる",
           usage: "ccmsg daemon add <dir>",
-          run: (args) => Promise.resolve(added(args[0])),
+          run: (args) => added(args[0]),
         },
         {
           name: "remove",
-          summary: "instances[] から外す (起動中の instance は止めない)",
+          summary: "instances[] から外す (監督者は以後見ないが、子は止めない)",
           usage: "ccmsg daemon remove <dir>",
-          run: (args) => Promise.resolve(removed(args[0])),
+          run: (args) => removed(args[0]),
         },
         {
           name: "list",
@@ -133,28 +132,28 @@ const ROOT: Command = {
         },
         {
           name: "start",
-          summary: "登録した config home の instance を detached で起動する",
+          summary: "監督者に、この config home の子を起こさせる",
           usage: "ccmsg daemon start <dir> | --all",
-          run: (args) => each(args, (target) => startInstance(process.env, target)),
+          run: (args) => supervised("supervise_start", args),
         },
         {
           name: "stop",
-          summary: "instance に停止を要求する (instance_shutdown)",
+          summary: "監督者に、子を止めさせる (instance_shutdown、以後は上げ直さない)",
           usage: "ccmsg daemon stop <dir> | --all",
-          run: (args) => each(args, (target) => stopInstance(target)),
+          run: (args) => supervised("supervise_stop", args),
         },
         {
           name: "restart",
-          summary: "止めてから起動し直す",
+          summary: "監督者に、止めてから起こし直させる",
           usage: "ccmsg daemon restart <dir> | --all",
-          run: (args) => each(args, (target) => restartInstance(process.env, target)),
+          run: (args) => supervised("supervise_restart", args),
         },
         {
           name: "status",
-          summary: "instance に問い合わせて version・network・peers まで見る",
+          summary: "監督者が各子に instance_ping して version・network・peers を答える",
           usage: "ccmsg daemon status [dir] | --all",
           bare: true,
-          run: (args) => each(args, (target) => statusOf(target), true),
+          run: (args) => supervised("supervise_status", args, true),
         },
         {
           name: "log",
@@ -444,53 +443,58 @@ async function supervise(): Promise<unknown> {
   return { supervised: supervisor.targets.map((target) => target.dir) };
 }
 
-function added(dir: string | undefined): unknown {
+/** `ccmsg daemon add <dir>`: write it down, and have it started.
+ *
+ * The file first and the supervisor second, because the file is what survives:
+ * a host with no supervisor running still gets the config home added, and the
+ * next supervisor starts it. Told rather than left to be discovered, because
+ * the supervisor reads the list once (DV-Q8) and would otherwise not know
+ * until it is restarted. */
+async function added(dir: string | undefined): Promise<unknown> {
   if (dir === undefined) throw new CommandError("invalid_args", "使い方: ccmsg daemon add <dir>");
-  return addInstance(process.env, dir);
+  const row = addToConfig(process.env, dir);
+  if (!(await reachable())) return { ...row, supervised: false };
+  const started = (await ask({ op: "supervise_add", dir: row.dir })) as Record<string, unknown>;
+  return { ...started, supervised: true };
 }
 
-function removed(dir: string | undefined): unknown {
+/** `ccmsg daemon remove <dir>`: take it off the list, and stop looking after it.
+ *
+ * The instance itself is left alone: a list edit is not a shutdown, and a
+ * session already talking to that instance keeps it. `daemon stop` is how one
+ * is stopped, and keeping the two apart is what makes that true. */
+async function removed(dir: string | undefined): Promise<unknown> {
   if (dir === undefined) {
     throw new CommandError("invalid_args", "使い方: ccmsg daemon remove <dir>");
   }
-  return removeInstance(process.env, dir);
+  const row = removeFromConfig(process.env, dir);
+  if (!(await reachable())) return { ...row, supervised: false };
+  await ask({ op: "supervise_remove", dir: row.dir });
+  return { ...row, supervised: false };
 }
 
-/** One config home, or every registered one.
+/** The four commands that are requests to the supervisor rather than things
+ * this process does.
  *
- * `--all` is an option rather than a word in the position a directory would go,
- * because "every instance" is not a config home and a position that accepted
- * both would be a position where a typo names neither.
- *
- * Over `--all`, one config home refusing is reported beside the others rather
- * than in place of them: the answer is a row per instance, and a `stop --all`
- * that failed at the second of five would otherwise leave the caller unable to
- * tell which three it reached. */
-async function each<T>(
+ * They are its business because it is the one that holds the children: a second
+ * route that started an instance behind the supervisor's back would produce an
+ * instance nothing restarts and nothing knows about. With no supervisor there
+ * is nobody to ask, which is what the caller is told. */
+async function supervised(
+  op: SuperviseOp,
   args: readonly string[],
-  op: (target: Target) => Promise<T>,
   hereByDefault = false,
-): Promise<T | (T | { dir: string; error: { code: string; msg: string } })[]> {
-  const all = args.includes("--all");
-  const named = args.find((arg) => !arg.startsWith("--"));
+): Promise<unknown> {
+  const parsed = options(args, [], ["all"]);
+  const all = parsed.flags.has("all");
+  const named = parsed.rest[0];
   if (all && named !== undefined) {
     throw new CommandError("invalid_args", "--all と dir は同時に指定できません");
   }
-  if (all) {
-    const answers: (T | { dir: string; error: { code: string; msg: string } })[] = [];
-    for (const target of registered(process.env)) {
-      try {
-        answers.push(await op(target));
-      } catch (cause) {
-        if (!(cause instanceof CommandError)) throw cause;
-        answers.push({ dir: target.dir, error: { code: cause.code, msg: cause.message } });
-      }
-    }
-    return answers;
-  }
+  if (all) return await ask({ op, all: true });
   const dir = named ?? (hereByDefault ? resolveConfigHome() : undefined);
   if (dir === undefined) throw new CommandError("invalid_args", "dir か --all が要ります");
-  return await op(targetFor(process.env, dir));
+  return await ask({ op, dir });
 }
 
 /** `ccmsg service <what>`: the supervisor's registration with the host. */

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { main } from "../src/cli.ts";
 import {
@@ -13,10 +13,10 @@ import {
   registered,
   remove,
   rowFor,
-  start,
-  status,
+  type StatusRow,
   stop,
   Supervisor,
+  ask,
   tailOf,
   targetFor,
 } from "../src/daemon/index.ts";
@@ -25,6 +25,8 @@ import { resolvePaths } from "../src/instance/paths.ts";
 import { capture, Host, json } from "./harness.ts";
 
 const hosts: Host[] = [];
+const supervisors: Supervisor[] = [];
+const runs: Promise<void>[] = [];
 
 function host(): Host {
   const one = new Host("ccmsg-daemon-");
@@ -37,6 +39,8 @@ afterEach(async () => {
   // Anything a test started is a real process: it is stopped before the
   // directories under it go, so nothing is left writing into a path that is
   // being removed.
+  for (const supervisor of supervisors.splice(0)) await supervisor.stop();
+  await Promise.all(runs.splice(0));
   for (const one of hosts) {
     for (const target of registered(process.env)) {
       if (rowFor(target).running) await stop(target).catch(() => undefined);
@@ -79,8 +83,27 @@ describe("which config homes there are (daemon add / remove / list)", () => {
   });
 });
 
+/** A supervisor of its own, running its control socket, stopped after the
+ * test. Everything `daemon start` / `stop` / `status` does is a request to one,
+ * so a test that is about those needs one running. */
+async function supervising(options: Record<string, unknown> = {}): Promise<Supervisor> {
+  const supervisor = new Supervisor({ startTimeoutMs: 15_000, log: () => undefined, ...options });
+  supervisors.push(supervisor);
+  const ran = supervisor.run();
+  runs.push(ran);
+  // The socket is bound before `run` settles anything else, so a request may go
+  // as soon as the file is there. The children start after it, so a test that
+  // is about them waits for them: `run` answers when the supervisor is asked to
+  // leave, not when everything it looks after is up.
+  await awaitFile(supervisor.socketPath);
+  // Serving, not merely started: the lock is taken before the listener is up,
+  // so a test that asks an instance anything waits for its socket.
+  await waitFor(() => supervisor.targets.every((target) => existsSync(target.paths.socket)));
+  return supervisor;
+}
+
 describe("the round trip against real processes", () => {
-  test("add, start --all, status --all, stop --all", async () => {
+  test("add, start --all, status --all, stop --all, through the supervisor", async () => {
     const at = host();
     const one = at.home("one");
     const two = at.home("two");
@@ -88,20 +111,13 @@ describe("the round trip against real processes", () => {
     add(process.env, two);
     expect(list(process.env).every((row) => !row.running)).toBe(true);
 
-    const targets = registered(process.env);
-    for (const target of targets) {
-      const row = await start(process.env, target);
-      expect(row.running).toBe(true);
-      expect(row.pid).toBeGreaterThan(0);
-    }
-
-    // Each config home has an instance of its own, which is what makes two of
-    // them two instances rather than one answering twice.
-    const rows = [];
-    for (const target of targets) rows.push(await status(target));
-    expect(rows.map((row) => row.dir)).toEqual([one, two]);
-    expect(new Set(rows.map((row) => row.pid)).size).toBe(2);
-    for (const row of rows) {
+    // A supervisor starts what it is looking after, so by the time it is up
+    // both children are serving and `start` is what puts a stopped one back.
+    const supervisor = await supervising();
+    const started = (await ask({ op: "supervise_status", all: true })) as StatusRow[];
+    expect(started.map((row) => row.dir)).toEqual([one, two]);
+    expect(new Set(started.map((row) => row.pid)).size).toBe(2);
+    for (const row of started) {
       expect(row.running).toBe(true);
       expect(row.version).toBeString();
       expect(row.network).toBeString();
@@ -110,54 +126,108 @@ describe("the round trip against real processes", () => {
       expect(row.peers).toEqual([]);
     }
 
-    for (const target of targets) expect(await stop(target)).toMatchObject({ stopped: true });
-    // Stopping is asked for and then happens, so what says it is over is the
-    // lock being let go — the last thing a departing instance does (§8.5).
-    for (const target of targets) {
-      await awaitGone(target.paths, 10_000);
-      expect(rowFor(target).running).toBe(false);
+    const stopped = (await ask({ op: "supervise_stop", all: true })) as { stopped: boolean }[];
+    expect(stopped.every((row) => row.stopped)).toBe(true);
+    // Stopped and left stopped: the restart loop reads a departure it asked for
+    // as one not to recover from.
+    for (const target of registered(process.env)) expect(rowFor(target).running).toBe(false);
+
+    const again = (await ask({ op: "supervise_start", all: true })) as StatusRow[];
+    expect(again.every((row) => row.running)).toBe(true);
+    expect(again.map((row) => row.pid)).not.toEqual(started.map((row) => row.pid));
+    await supervisor.stop();
+  }, 60_000);
+
+  test("with no supervisor there is nobody to ask, and the command says so", async () => {
+    const at = host();
+    add(process.env, at.home("one"));
+    for (const op of ["start", "stop", "restart", "status"]) {
+      const asked = await capture(() => main(["daemon", op, "--all"]));
+      expect(asked.code).toBe(1);
+      expect(json(asked.err)).toEqual({
+        error: {
+          code: "supervisor_not_running",
+          msg: "監督者が動いていません (`ccmsg service start` か `ccmsg daemon supervise` で起動してください)",
+        },
+      });
     }
-  }, 30_000);
+  });
 
   test("starting one that is already running is refused rather than doubled", async () => {
     const at = host();
     const home = at.home("one");
-    const target = targetFor(process.env, home);
     add(process.env, home);
-    const first = await start(process.env, target);
-    expect(start(process.env, target)).rejects.toThrow(CommandError);
-    expect(rowFor(target).pid).toBe(first.pid as number);
-    await stop(target);
-  }, 30_000);
-
-  test("the command that started one ends, rather than waiting on the child", async () => {
-    const at = host();
-    const home = at.home("one");
-    add(process.env, home);
-    // Run as its own process, which is the only place this shows: a live child
-    // handle holds the parent's event loop open, and a test calling `start`
-    // in-process has a runner keeping the loop alive anyway.
-    const started = Bun.spawn(
-      [
-        process.execPath,
-        new URL("../src/cli.ts", import.meta.url).pathname,
-        "daemon",
-        "start",
-        home,
-      ],
-      { stdout: "pipe", stderr: "pipe", env: { ...process.env } as Record<string, string> },
-    );
-    const code = await started.exited;
-    expect(code).toBe(0);
-    expect(json(await new Response(started.stdout).text())).toMatchObject({ running: true });
-    await stop(targetFor(process.env, home));
-  }, 30_000);
+    const supervisor = await supervising();
+    const running = rowFor(targetFor(process.env, home));
+    expect(running.running).toBe(true);
+    expect(supervisor.startOne(home)).rejects.toThrow(CommandError);
+    expect(rowFor(targetFor(process.env, home)).pid).toBe(running.pid as number);
+    await supervisor.stop();
+  }, 60_000);
 
   test("stopping one that is not running says so rather than pretending", async () => {
     const at = host();
     const home = at.home("one");
     add(process.env, home);
-    expect(stop(targetFor(process.env, home))).rejects.toThrow(CommandError);
+    const supervisor = await supervising();
+    await supervisor.stopOne(home);
+    expect(supervisor.stopOne(home)).rejects.toThrow(CommandError);
+    await supervisor.stop();
+  }, 60_000);
+
+  test("a config home nobody registered is not one the supervisor will start", async () => {
+    const at = host();
+    const stranger = at.home("stranger");
+    const supervisor = await supervising();
+    expect(supervisor.startOne(stranger)).rejects.toThrow(CommandError);
+    await supervisor.stop();
+  }, 30_000);
+});
+
+describe("add and remove against a running supervisor", () => {
+  test("add writes the file and has the child started", async () => {
+    const at = host();
+    const supervisor = await supervising();
+    const home = at.home("one");
+
+    const added = await capture(() => main(["daemon", "add", home]));
+    expect(added.code).toBe(0);
+    expect(json(added.out)).toMatchObject({ dir: home, running: true, supervised: true });
+    expect(loadShared(resolvePaths(process.env).configFile).instances).toEqual([
+      { dir: home, settings: {} },
+    ]);
+    expect(supervisor.targets.map((target) => target.dir)).toEqual([home]);
+    await supervisor.stop();
+  }, 60_000);
+
+  test("remove stops it being looked after and leaves the instance running", async () => {
+    const at = host();
+    const home = at.home("one");
+    add(process.env, home);
+    const supervisor = await supervising();
+    const before = rowFor(targetFor(process.env, home));
+    expect(before.running).toBe(true);
+
+    const removed = await capture(() => main(["daemon", "remove", home]));
+    expect(json(removed.out)).toMatchObject({ dir: home, removed: true, supervised: false });
+    expect(supervisor.targets).toEqual([]);
+    // Still there, and still the same process: a list edit is not a shutdown.
+    expect(rowFor(targetFor(process.env, home))).toMatchObject({ running: true, pid: before.pid });
+
+    // And now nothing brings it back, so stopping it by hand is the end of it.
+    await stop(targetFor(process.env, home));
+    await awaitGone(targetFor(process.env, home).paths, 15_000);
+    expect(rowFor(targetFor(process.env, home)).running).toBe(false);
+    await supervisor.stop();
+  }, 60_000);
+
+  test("with no supervisor, add writes the file and says nobody was told", async () => {
+    const at = host();
+    const home = at.home("one");
+    const added = await capture(() => main(["daemon", "add", home]));
+    expect(added.code).toBe(0);
+    expect(json(added.out)).toMatchObject({ dir: home, running: false, supervised: false });
+    expect(loadShared(resolvePaths(process.env).configFile).instances).toBeArrayOfSize(1);
   });
 });
 
@@ -173,7 +243,6 @@ describe("the supervisor", () => {
       pid,
       exited,
       kill: () => end(143),
-      release: () => undefined,
       die: (code) => end(code),
     };
   }
@@ -197,6 +266,7 @@ describe("the supervisor", () => {
       },
     });
     const ran = supervisor.run();
+    await waitFor(() => children.length === 1);
 
     // Each death is followed by a start, and the wait before it doubles up to
     // the cap: a child failing at once cannot spin the supervisor.
@@ -261,14 +331,26 @@ describe("what a command answers with", () => {
 
   test("over --all, one config home refusing is a row rather than the whole answer", async () => {
     const at = host();
-    add(process.env, at.home("one"));
+    const one = at.home("one");
+    add(process.env, one);
     add(process.env, at.home("two"));
+    const supervisor = await supervising();
+    // One of the two is already stopped, so stopping both is one refusal and
+    // one success — and the caller can see which was which.
+    await supervisor.stopOne(one);
+
     const stopped = await capture(() => main(["daemon", "stop", "--all"]));
     expect(stopped.code).toBe(0);
-    const rows = json(stopped.out) as { error?: { code: string } }[];
+    const rows = json(stopped.out) as {
+      dir?: string;
+      stopped?: boolean;
+      error?: { code: string };
+    }[];
     expect(rows).toBeArrayOfSize(2);
-    for (const row of rows) expect(row.error?.code).toBe("instance_unreachable");
-  });
+    expect(rows[0]?.error?.code).toBe("instance_unreachable");
+    expect(rows[1]).toMatchObject({ stopped: true });
+    await supervisor.stop();
+  }, 60_000);
 });
 
 describe("reading a log (daemon log)", () => {
@@ -382,6 +464,12 @@ describe("reading a log (daemon log)", () => {
     }
   });
 });
+
+/** Wait for a path to exist, which is how a test knows a listener it did not
+ * bind itself is up. */
+async function awaitFile(path: string): Promise<void> {
+  await waitFor(() => existsSync(path));
+}
 
 /** Wait for something another task will do, on the event loop rather than on a
  * clock: each turn gives the pending promises a chance to run. */

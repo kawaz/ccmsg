@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, watch } from "node:fs";
 import { basename, isAbsolute, join, resolve } from "node:path";
-import type { ErrorCode, InstanceId, InstancePingResult } from "@ccmsg/protocol";
+import type { InstanceId, InstancePingResult } from "@ccmsg/protocol";
 import {
   type InstanceEntry,
   loadShared,
@@ -14,21 +14,7 @@ import { alive, lockHolder } from "../instance/lock.ts";
 import { type Env, type InstancePaths, resolvePaths } from "../instance/paths.ts";
 import { prepareSocketDir } from "../instance/socket.ts";
 import { connect, greetAsUser } from "./control.ts";
-
-/** A command that cannot do what it was asked, said in the contract's words.
- *
- * The same shape an op's failure has (`ErrorBody`), because a caller reading
- * one of these is the same caller reading the other: the CLI answers in JSON
- * either way, and a code is what it branches on. */
-export class CommandError extends Error {
-  constructor(
-    readonly code: ErrorCode,
-    msg: string,
-  ) {
-    super(msg);
-    this.name = "CommandError";
-  }
-}
+import { CommandError } from "./link.ts";
 
 /** What a config home has to be for an instance to answer for it.
  *
@@ -202,14 +188,6 @@ export interface Child {
   readonly pid: number;
   readonly exited: Promise<number>;
   kill(signal?: NodeJS.Signals): void;
-  /** Stop holding this process open on the child's account.
-   *
-   * A live child handle keeps the parent's event loop running, which is right
-   * for the supervisor — waiting for children is its whole job — and wrong for
-   * a command that started one and is finished: it would sit at an empty loop
-   * instead of exiting. So the hold is released where it stops being wanted
-   * rather than never taken. */
-  release(): void;
 }
 
 /** How a child instance is started. Injected so a test drives the supervisor
@@ -227,72 +205,22 @@ export const spawnInstance: SpawnInstance = (dir, env) => {
     kill: (signal) => {
       proc.kill(signal ?? "SIGTERM");
     },
-    release: () => {
-      proc.unref();
-    },
   };
 };
 
-/** How long `daemon start` waits for the instance it spawned to be reachable
- * before reporting what it saw.
+/** How long a start waits for the instance it spawned to be reachable before
+ * reporting what it saw.
  *
  * A deadline rather than an interval: what is waited on is the socket appearing
  * or the child exiting, both of which are events, and this only bounds how long
- * a start that does neither may hold the command. */
+ * a start that does neither may hold the caller. */
 export const START_TIMEOUT_MS = 10_000;
 
-/** Start one instance in the background, and answer once it is serving.
- *
- * Detached from this command's output but not from the host: keeping a
- * supervised instance up across a logout is what `service` is for, and a
- * `daemon start` that claimed otherwise would be claiming something it does not
- * arrange. */
-export async function start(
-  env: Env,
-  target: Target,
-  spawn: SpawnInstance = spawnInstance,
-): Promise<InstanceRow> {
-  const existing = rowFor(target);
-  if (existing.running) {
-    throw new CommandError(
-      "file_exists",
-      `${target.dir} の instance は既に動いています (pid ${String(existing.pid)})`,
-    );
-  }
-  // The directories the instance will fill are made here, before the child, so
-  // that the watch below has somewhere to attach: a watch cannot report a
-  // change in a directory that does not exist yet.
+/** The directories an instance will fill, made before the child that fills
+ * them: a watch cannot report a change in a directory that does not exist. */
+export function prepareFor(target: Target): void {
   mkdirSync(target.paths.stateDir, { recursive: true });
   prepareSocketDir(target.paths);
-  const child = spawn(configHome(target.dir), env);
-  const gone = child.exited.then(
-    (code) => new CommandError("internal_error", `起動に失敗しました (exit ${code})`),
-  );
-  const appeared = await Promise.race([
-    awaitSocket(target.paths, START_TIMEOUT_MS).then(() => undefined),
-    gone,
-  ]);
-  if (appeared instanceof CommandError) throw appeared;
-  // Started and serving: this command's part is over, and holding the child
-  // would keep it from ending.
-  child.release();
-  const row = rowFor(target);
-  if (!row.running) {
-    throw new CommandError("internal_error", `${target.dir} の instance が起動しませんでした`);
-  }
-  return row;
-}
-
-export async function restart(
-  env: Env,
-  target: Target,
-  spawn: SpawnInstance = spawnInstance,
-): Promise<InstanceRow> {
-  if (rowFor(target).running) {
-    await stop(target);
-    await awaitGone(target.paths, START_TIMEOUT_MS);
-  }
-  return await start(env, target, spawn);
 }
 
 /** Wait for the stable socket to appear, on the directory's own change

@@ -577,7 +577,24 @@ instance を持つか」は個々の instance が自分について答えられ�
 - `ccmsg daemon supervise` — foreground の監督者。共通 config の `instances[]` を起動時に
   1 回読み (DV-Q8)、各 config home の instance を子プロセスとして起動し、落ちたら上げ直す。
   再起動の待ちは指数的に伸びる (根拠は実装のコメント: 起動直後に落ちる config 不備を
-  spin させないため)。SIGTERM を受けたら各子を `instance_shutdown` で §8.5 の順に止める
+  spin させないため)。SIGTERM を受けたら各子を `instance_shutdown` で §8.5 の順に止める。
+
+  **instance を起こす経路は監督者だけである。** `ccmsg daemon start / stop / restart /
+  status` は監督者への要求であり、CLI が自分で子を起こす経路は持たない — 別経路で起きた
+  instance は「誰も上げ直さず、誰も知らない」状態になり、常駐 (DV-Q10) が言っている
+  ことと食い違うからである。監督者が居なければこれらは
+  `{"error":{"code":"supervisor_not_running"}}` で失敗する。要求は state に置く control
+  socket (`<state root>/supervise.sock`、0600) を JSON lines で流れ、op 名は
+  `supervise_*` で契約の op と区別する — **これは契約ではない**。ホスト上のプロセスに
+  ついての内部プロトコルであって、webui も mesh の相手もここには来ない。
+
+  `ccmsg daemon add` / `remove` は共通 config を書いたうえで監督者にも伝える (居なければ
+  書くだけ)。`remove` は見るのをやめるだけで**子は止めない** — 一覧の編集は shutdown では
+  なく、その instance と話しているセッションはそのまま話し続ける。
+
+  例外は 2 つ。`ccmsg daemon run [dir]` は foreground の単発起動で監督者の管理外
+  (`status` にも出ない)。`ccmsg daemon log` はファイルを直接読む — ログは死んだ後に
+  読むものなので、監督者が居ないと読めない設計にはしない
 - `ccmsg service register` — その監督者を launchd (macOS) / systemd --user (Linux) に
   登録する。ログインを跨いで常駐させるのはこの層の責務であり、`ccmsg plugin install` が
   配るのはエージェント側の plugin だけである

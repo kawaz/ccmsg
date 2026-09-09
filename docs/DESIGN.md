@@ -660,7 +660,26 @@ levels of supervision**:
   `instances[]` once at startup (DV-Q8), starts each config home's instance as a child
   process, and starts it again when it dies. The wait before a restart grows exponentially
   (the reason is on the values themselves: a config that fails at startup must not spin the
-  supervisor). On SIGTERM it stops each child with `instance_shutdown`, in the order of §8.5
+  supervisor). On SIGTERM it stops each child with `instance_shutdown`, in the order of §8.5.
+
+  **The supervisor is the only route by which an instance is started.**
+  `ccmsg daemon start / stop / restart / status` are requests to it, and the CLI has no
+  route of its own for starting a child — an instance started another way is one nothing
+  restarts and nothing knows about, which is not what being resident (DV-Q10) says. With no
+  supervisor these fail with `{"error":{"code":"supervisor_not_running"}}`. The requests
+  travel as JSON lines over a control socket kept with the state
+  (`<state root>/supervise.sock`, 0600), and its op names carry a `supervise_` prefix to
+  keep them apart from the contract's — **this is not the contract**. It is an internal
+  protocol about processes on this host; no web UI and no mesh peer reaches it.
+
+  `ccmsg daemon add` / `remove` write the shared config and then tell the supervisor (with
+  none running, they only write). `remove` stops it being looked after and **does not stop
+  the child**: editing a list is not a shutdown, and a session already talking to that
+  instance keeps talking to it.
+
+  There are two exceptions. `ccmsg daemon run [dir]` is a one-off foreground start outside
+  the supervisor's care (and outside `status`). `ccmsg daemon log` reads the files directly
+  — a log is read after something died, so it must not need the supervisor to be up
 - `ccmsg service register` — registers that supervisor with launchd (macOS) or
   systemd --user (Linux). Surviving a logout is this layer's business; what
   `ccmsg plugin install` hands out is the agent-side plugin alone

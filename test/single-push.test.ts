@@ -65,6 +65,9 @@ describe("nothing pushes a topic frame outside the topic mechanism (M5)", () => 
       // the CLI's own JSON output, said where the command lives rather than at
       // the point it is printed.
       "daemon/control.ts",
+      // The supervisor's own protocol, framed the same way the instance's is:
+      // one JSON object per line over a socket, on both sides of it.
+      "daemon/link.ts",
       // A log line shown under a label: the record is reassembled with the
       // instance it came from beside its own fields, which is the CLI's output
       // again rather than anything compared against a previous value.

@@ -1,7 +1,8 @@
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { CommandError, ENTRY } from "../daemon/registry.ts";
+import { CommandError } from "../daemon/link.ts";
+import { ENTRY } from "../daemon/registry.ts";
 import { type Env, resolveStateRoot } from "../instance/paths.ts";
 
 /** What the host's init system was asked, and what it said.

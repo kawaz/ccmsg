@@ -128,6 +128,22 @@ export function resolveStateRoot(env: Env = process.env): string {
   return join(base, "ccmsg");
 }
 
+/** Where the supervisor answers the commands addressed to it.
+ *
+ * One socket for the host rather than one per instance, because the supervisor
+ * is one process for the host: the config homes it looks after are what a
+ * request names, not what it connects to. It sits with the state for the reason
+ * an instance's socket does — a temporary directory sweep must not take the
+ * address out from under a running process — and falls back to the same short
+ * per-uid directory when the state path would not fit in `sun_path`. */
+export function resolveSupervisorSocket(env: Env = process.env): string {
+  const beside = join(resolveStateRoot(env), SUPERVISOR_SOCKET);
+  if (Buffer.byteLength(beside) < MAX_SOCKET_PATH) return beside;
+  return join("/tmp", `ccmsg-${String(process.getuid?.() ?? 0)}`, SUPERVISOR_SOCKET);
+}
+
+export const SUPERVISOR_SOCKET = "supervise.sock";
+
 /** The shared config file, for a caller that has no instance to resolve. */
 export function resolveConfigFile(env: Env = process.env): string {
   return join(resolveConfigDir(env), "config.json");
