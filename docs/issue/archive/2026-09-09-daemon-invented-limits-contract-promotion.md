@@ -1,6 +1,6 @@
 ---
 title: daemon 発明の上限値 (TITLE_MAX / READ_LIMIT 等) を契約に昇格すべきか
-status: open
+status: resolved
 category: design
 created: 2026-09-09T00:19:04+09:00
 last_read:
@@ -9,10 +9,10 @@ wip_entered:
 blocked_entered:
 pending_entered:
 discarded_entered:
-resolved_entered:
+resolved_entered: 2026-09-09T17:14:51+09:00
 discard_reason:
 pending_reason:
-close_reason:
+close_reason: ["done: 契約0.7.0にMAX_FRAME_BYTES/TITLE_MAX_CHARSを昇格、daemonは追従。他の上限値(timeout/poll/readのnarrowing/webhook body)は契約がinstanceの裁量と明記済みか結果から読める値なので実装詳細のまま"]
 blocked_by:
 origin: 2026-09-08 の設計監査 (fable5-high)
 ---
