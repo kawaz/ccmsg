@@ -62,37 +62,48 @@ function handshake(
 }
 
 describe("the handshake (§3.1)", () => {
-  test("a person presents nothing, and is let in on the address alone", async () => {
-    // What the person is will be a passkey (DR-0001); until it is, an instance
-    // bound to loopback takes the connections that can reach it.
+  test("a person presents an access token, and nothing else gets in", async () => {
+    // The address says who could reach the port; the token says who came
+    // (DR-0001 §2.5). A handshake without one is refused rather than let in as
+    // an anonymous person, and so is one presenting a value nobody minted.
     const instance = await serving();
-    expect((await handshake(instance)).status).toBe(101);
-    const client = await connectWs(instance.http[0] ?? "");
+    expect((await handshake(instance)).status).toBe(401);
+    expect((await handshake(instance, { protocols: ["ccmsg.token.nobodys"] })).status).toBe(401);
+    const token = personToken(instance);
+    const accepted = await handshake(instance, { protocols: [`ccmsg.token.${token}`] });
+    expect(accepted.status).toBe(101);
+    // The handshake echoes what it selected: a browser fails a connection whose
+    // reply names none of what it asked for.
+    expect(accepted.headers.get("sec-websocket-protocol")).toBe(`ccmsg.token.${token}`);
+    const client = await connectWs(instance.http[0] ?? "", personToken(instance));
     clients.push(client);
     client.send({ op: "hello", request_id: "1", role: "user", protocol_version: PROTOCOL_VERSION });
     expect(await client.next()).toMatchObject({ ok: true, request_id: "1" });
   });
 
-  test("the reply names one of the subprotocols offered", async () => {
-    // A browser fails a connection whose reply names none of what it asked
-    // for, and one that offered nothing must not be answered with a name.
+  test("the greeting says when the connection's authorization runs out", async () => {
     const instance = await serving();
-    const offered = await handshake(instance, { protocols: ["ccmsg.v1", "ccmsg.v2"] });
-    expect(offered.status).toBe(101);
-    expect(offered.headers.get("sec-websocket-protocol")).toBe("ccmsg.v1");
-    const bare = await handshake(instance);
-    expect(bare.status).toBe(101);
-    expect(bare.headers.get("sec-websocket-protocol")).toBeNull();
+    const client = await connectWs(instance.http[0] ?? "", personToken(instance));
+    clients.push(client);
+    client.send({ op: "hello", request_id: "1", role: "user", protocol_version: PROTOCOL_VERSION });
+    const reply = (await client.next()) as { auth_expires_at?: number };
+    expect(typeof reply.auth_expires_at).toBe("number");
   });
 });
+
+/** An access token for a person, as `/auth/assert` would have answered with. */
+function personToken(instance: Instance): string {
+  return instance.auth.mint("test-person").access.value;
+}
 
 describe("the entry is matched at the end of the path (DR-0001 §2.7)", () => {
   test("a proxy's prefix reaches the same door, and a near miss does not", async () => {
     const instance = await serving();
-    expect((await handshake(instance, { path: "/personal/ws" })).status).toBe(101);
-    expect((await handshake(instance, { path: "/a/b/ws" })).status).toBe(101);
-    expect((await handshake(instance, { path: "/notws" })).status).toBe(404);
-    expect((await handshake(instance, { path: "/ws/more" })).status).toBe(404);
+    const protocols = [`ccmsg.token.${personToken(instance)}`];
+    expect((await handshake(instance, { path: "/personal/ws", protocols })).status).toBe(101);
+    expect((await handshake(instance, { path: "/a/b/ws", protocols })).status).toBe(101);
+    expect((await handshake(instance, { path: "/notws", protocols })).status).toBe(404);
+    expect((await handshake(instance, { path: "/ws/more", protocols })).status).toBe(404);
   });
 
   test("the boundary before the segment has to be a separator", () => {
@@ -111,12 +122,17 @@ describe("the two allowlists (§3.1)", () => {
     // nothing to be compared, so it is judged on the address alone.
     const instance = await serving();
     expect((await handshake(instance, { origin: "http://ui.example" })).status).toBe(403);
-    expect((await handshake(instance)).status).toBe(101);
+    expect(
+      (await handshake(instance, { protocols: [`ccmsg.token.${personToken(instance)}`] })).status,
+    ).toBe(101);
   });
 
   test("a configured origin admits that one and refuses the rest", async () => {
     const instance = await serving({ origins: ["http://ui.example"] });
-    expect((await handshake(instance, { origin: "http://ui.example" })).status).toBe(101);
+    const protocols = [`ccmsg.token.${personToken(instance)}`];
+    expect((await handshake(instance, { origin: "http://ui.example", protocols })).status).toBe(
+      101,
+    );
     expect((await handshake(instance, { origin: "http://elsewhere.example" })).status).toBe(403);
   });
 
@@ -140,6 +156,7 @@ describe("the two allowlists (§3.1)", () => {
 
   test("the address this host connects from is admitted when it is listed", async () => {
     const instance = await serving({ source_ips: ["127.0.0.1"] });
-    expect((await handshake(instance)).status).toBe(101);
+    const protocols = [`ccmsg.token.${personToken(instance)}`];
+    expect((await handshake(instance, { protocols })).status).toBe(101);
   });
 });

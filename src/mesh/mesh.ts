@@ -458,6 +458,35 @@ export class Mesh {
     return await settled.promise;
   }
 
+  /** Ask another instance one op, as this instance rather than for anybody.
+   *
+   * What the person's authentication needs of a peer (`auth_resolve`,
+   * `auth_rotate`) is a fact only its issuer holds, asked for by the instance
+   * that needs it — so the `caller` is this instance's own role, and the
+   * request travels the ordinary forwarding path (§7.3, DR-0001 §2.6).
+   *
+   * The body of the reply is answered, and a refusal is thrown as the error the
+   * far end named, so a caller reads one outcome rather than a result kind. */
+  async ask(
+    to: InstanceId,
+    op: string,
+    args: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const result = await this.forward(
+      to,
+      { op, request_id: `mesh-ask-${randomId()}`, ...args },
+      { role: "instance" },
+    );
+    if (result.kind === "reply") {
+      const { ok: _ok, request_id: _id, ...body } = result.response;
+      return body;
+    }
+    if (result.kind === "error") {
+      throw new OpError(result.response.error.code, result.response.error.msg);
+    }
+    throw new OpError("instance_unreachable", `${to} did not answer ${op}`);
+  }
+
   /** Whether this connection is an established link to a peer. */
   isLink(conn: Requester): boolean {
     return this.#linkOf.has(conn);

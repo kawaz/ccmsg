@@ -60,6 +60,12 @@ describe("nothing pushes a topic frame outside the topic mechanism (M5)", () => 
     // last one would be a second answer to "is this new"; a writer is not one,
     // which is why this list is by file and the case above is by shape.
     expect(serializers.sort()).toEqual([
+      // The person's authentication: the claims a registration URL is signed
+      // over, which the signature is taken of the way a proof's is, and the
+      // replicated records written as their file — persistence again, of the
+      // third thing of §3.6.
+      "auth/auth.ts",
+      "auth/records.ts",
       "cli.ts",
       // What a daemon command answers with and what a supervisor logs: both are
       // the CLI's own JSON output, said where the command lives rather than at

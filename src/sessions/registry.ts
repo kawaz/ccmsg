@@ -35,6 +35,10 @@ export interface SessionsDeps {
    * what a peer is to dial is neither that nor derivable from the id. Absent on
    * an instance reached by the unix socket alone, which has no URL to state. */
   readonly endpoint?: Endpoint;
+  /** When the connection's authorization runs out, on one an access token
+   * opened (DR-0001 §2.5). Absent on the unix socket, where reaching the
+   * instance is itself the permission, and on a mesh link. */
+  readonly authExpiresAt?: (conn: Requester) => Timestamp | undefined;
   /** The one config home this instance answers for (§8.2). Its `sessions/` is
    * the only directory read, and no other config home is ever looked for (M6). */
   readonly configHome: string;
@@ -238,6 +242,7 @@ export class Sessions implements UpstreamResource {
 
   /** What every greeting answers, once whatever had to be settled has been. */
   #greeted(args: HelloArgs, input: HandlerInput): HelloResult {
+    const expiresAt = this.deps.authExpiresAt?.(input.conn);
     const sid = requiredSid(args);
     if (sid !== undefined) {
       this.register(sid, args, this.deps.configHome);
@@ -266,6 +271,7 @@ export class Sessions implements UpstreamResource {
       capabilities: [...this.deps.capabilities],
       version: this.deps.version,
       started_at: this.deps.startedAt,
+      ...(expiresAt === undefined ? {} : { auth_expires_at: expiresAt }),
     };
   }
 

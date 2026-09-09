@@ -31,8 +31,18 @@ export type UpgradeDecision =
        * gets decided by the mesh handshake, so until that finishes it may do
        * only the one thing that can decide it. */
       readonly mesh?: boolean;
+      /** Who the access token on the handshake admitted, and until when
+       * (DR-0001 §2.5). The connection lives to that instant unless it is
+       * extended on itself. */
+      readonly auth?: AuthorizedUpgrade;
     }
   | { readonly ok: false; readonly reason: string };
+
+/** What a person's connection was let in as. */
+export interface AuthorizedUpgrade {
+  readonly sub: string;
+  readonly expiresAt: number;
+}
 
 /** Accepts everything. A listener given no policy is open to whatever can reach
  * the address it is bound to. */

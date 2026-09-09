@@ -2,12 +2,14 @@ import { MAX_FRAME_BYTES } from "@ccmsg/protocol";
 import { BaseConn, type Conn, type ConnRegistry } from "./conn.ts";
 import { createDriver, type FrameHandler } from "./driver.ts";
 import { LineReader, WriteQueue } from "./framing.ts";
-import { type EntryPolicy, OPEN } from "./entry.ts";
+import { type AuthorizedUpgrade, type EntryPolicy, OPEN } from "./entry.ts";
 import type { Listener } from "./listener.ts";
 
 /** What the upgrade hands the socket: whether it was let in as a peer. */
 interface UpgradeData {
   readonly mesh: boolean;
+  /** Who the handshake's access token admitted, on a person's connection. */
+  readonly auth?: AuthorizedUpgrade;
 }
 
 interface WsState {
@@ -27,7 +29,10 @@ export interface WsOptions {
   /** `mesh` is set when the handshake was let in as a peer rather than on the
    * entry token, so whoever holds the connection can keep it to the one
    * exchange that can prove what it is. */
-  readonly onConn?: (conn: Conn, info: { readonly mesh: boolean }) => void;
+  readonly onConn?: (
+    conn: Conn,
+    info: { readonly mesh: boolean; readonly auth?: AuthorizedUpgrade },
+  ) => void;
   /** An HTTP request that is not the upgrade, answered by whoever wants it.
    *
    * It shares this listener rather than opening a second one: a producer that
@@ -71,7 +76,10 @@ export function serveWs(options: WsOptions): Listener {
       const selected = decision.protocol;
       if (
         srv.upgrade(request, {
-          data: { mesh: decision.mesh === true },
+          data: {
+            mesh: decision.mesh === true,
+            ...(decision.auth === undefined ? {} : { auth: decision.auth }),
+          },
           ...(selected === undefined
             ? {}
             : { headers: { "sec-websocket-protocol": selected } satisfies Record<string, string> }),
@@ -108,7 +116,10 @@ export function serveWs(options: WsOptions): Listener {
         states.set(ws, { conn, queue, reader: new LineReader(driver) });
         options.conns.add(conn);
         const data = ws.data as UpgradeData | undefined;
-        options.onConn?.(conn, { mesh: data?.mesh === true });
+        options.onConn?.(conn, {
+          mesh: data?.mesh === true,
+          ...(data?.auth === undefined ? {} : { auth: data.auth }),
+        });
       },
       message(ws, message) {
         const state = states.get(ws);

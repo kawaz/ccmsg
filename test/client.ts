@@ -89,14 +89,18 @@ function concat(a: Uint8Array, b: Uint8Array): Uint8Array {
   return both;
 }
 
-/** A WebSocket client.
+/** A WebSocket client, presenting the access token a person authenticated for.
  *
- * It presents nothing: who may reach the socket is the address and the
- * `Origin`, and who the person is will be a passkey (DR-0001) rather than
- * anything a test client can hold. */
-export async function connectWs(address: string): Promise<LineClient> {
+ * The token rides in a subprotocol because that is the only field a browser
+ * lets a handshake carry (DR-0001 §2.4), so a test mints one from the instance
+ * it is connecting to and offers it the same way. A listener with no entry
+ * policy asks for none, and such a test passes none. */
+export async function connectWs(address: string, token?: string): Promise<LineClient> {
   const lines = new Lines();
-  const ws = new WebSocket(`ws://${address}/ws`);
+  const ws = new WebSocket(
+    `ws://${address}/ws`,
+    token === undefined ? [] : [`ccmsg.token.${token}`],
+  );
   ws.addEventListener("message", (event: MessageEvent) => {
     lines.push(String(event.data));
   });

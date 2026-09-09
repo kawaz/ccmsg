@@ -390,7 +390,9 @@ describe("what the peers topic says about the instances (§7.5)", () => {
     for (const [sender, stated] of views) {
       // Every instance lists itself as reachable and names the other.
       expect(stated.find((one) => one.id === sender)?.reachable).toBe(true);
-      expect(stated.map((one) => one.id).sort()).toEqual([a.self, b.self].sort());
+      // Only the rows a handshake has settled carry an id; both have here.
+      const named = stated.flatMap((one) => (one.id === undefined ? [] : [one.id]));
+      expect(named.sort()).toEqual([a.self, b.self].sort());
     }
   });
 

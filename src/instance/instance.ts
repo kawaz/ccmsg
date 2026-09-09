@@ -52,6 +52,7 @@ import {
 import { topicHandlers, Topics } from "../topics/index.ts";
 import { TranscriptFiles, Transcripts } from "../transcript/index.ts";
 import {
+  type AuthorizedUpgrade,
   ConnRegistry,
   type EntryPolicy,
   type Listener,
@@ -76,6 +77,16 @@ import {
   translateHandlers,
   translateSetup,
 } from "../translate/index.ts";
+import {
+  adminRequestOf,
+  Auth,
+  AuthRecords,
+  AuthTopic,
+  authHandlers,
+  handleAdmin,
+  handleAuth,
+  recordsDir,
+} from "../auth/index.ts";
 import { type EntryConfig, type InstanceConfig, loadConfig } from "./config.ts";
 import { completeHandlers } from "./handlers.ts";
 import { acquireLock, type Held, isHeldByUs, type Lock } from "./lock.ts";
@@ -246,10 +257,11 @@ async function bindForMesh(config: InstanceConfig, mesh: Mesh): Promise<MeshWiri
       instance === undefined
         ? Promise.resolve(failure(undefined, "internal_error", "this instance is still starting"))
         : instance.handle(frame, conn),
-    entry: entryPolicy(config, true),
+    entry: entryPolicy(config, true, () => instance?.auth),
     route: async (request) => (await mesh.route(request)) ?? (await instance?.route(request)),
     onConn: (conn, info) => {
       mesh.accept(conn, info);
+      instance?.accepted(conn, info);
     },
   });
   try {
@@ -292,6 +304,9 @@ export class Instance {
   readonly #direct: DirectRoute;
   readonly #notify: Notify;
   readonly #translate: Translate | undefined;
+  /** The person's authentication: who may open a connection, and the records
+   * that say so (DR-0001). */
+  readonly #auth: Auth;
   readonly #handlers: Handlers;
   readonly #capabilities: ReadonlySet<Capability>;
   /** Set the moment shutdown starts, which is the re-entry guard of §8.5 step
@@ -390,6 +405,7 @@ export class Instance {
     this.#sessions = new Sessions({
       self: this.self,
       endpoint: selfEndpoint(config),
+      authExpiresAt: (conn) => this.#auth.expiresAt(conn),
       configHome: paths.configHome,
       stateDir: paths.stateDir,
       capabilities: [...this.#capabilities],
@@ -474,6 +490,30 @@ export class Instance {
     });
     this.#topics.attach("kv", kv);
 
+    // The credentials, tokens and removals the cluster shares (DR-0001 §2.6).
+    // Written down beside the store and for the same reason: none of it is
+    // derived from anything else this instance holds (§3.6).
+    const records = new AuthRecords({
+      dir: recordsDir(paths.stateDir),
+      publish: (written) => {
+        this.#topics.publish("auth_records", { records: written });
+      },
+    });
+    this.#auth = new Auth({
+      self: this.self,
+      records,
+      origins: () => config.entry?.origins ?? [],
+      endpoint: () => selfEndpoint(config),
+      unit: paths.key,
+      ...(this.#mesh === undefined
+        ? {}
+        : { ask: (to, op, args) => (this.#mesh as Mesh).ask(to, op, args) }),
+      log: (msg, fields) => {
+        this.log.write(msg, fields);
+      },
+    });
+    this.#topics.attach("auth_records", new AuthTopic(this.self, records));
+
     // The upstreams that answer a question rather than hold a value. Each is
     // built only where its config named one, and dispatch has already refused
     // the ops for the capability this instance then does not have.
@@ -532,6 +572,7 @@ export class Instance {
       ...(this.#translate === undefined ? {} : translateHandlers(this.#translate)),
       ...gatewayHandlers(setup),
       ...kvHandlers(kv),
+      ...authHandlers(this.#auth),
       instance_ping: (): InstancePingResult => this.ping(),
       instance_shutdown: () => {
         // The reply goes out when this handler's value reaches the driver, so
@@ -557,7 +598,14 @@ export class Instance {
       listenUds({
         path: this.paths.socketReal,
         conns: this.#conns,
-        handle: (frame, conn) => this.handle(frame, conn),
+        // The one door, plus the administrative frames that may be asked only
+        // here: registering a passkey is local by design, and reaching this
+        // address is what says the caller is local (DR-0001 §2.2).
+        handle: (frame, conn) => {
+          const admin = adminRequestOf(frame);
+          if (admin !== undefined) return Promise.resolve(handleAdmin(this.#auth, admin));
+          return this.handle(frame, conn);
+        },
       }),
     );
     // The address clients use, moved onto this process once it is accepting.
@@ -572,7 +620,10 @@ export class Instance {
           port: this.config.entry.port,
           conns: this.#conns,
           handle: (frame, conn) => this.handle(frame, conn),
-          entry: entryPolicy(this.config, false),
+          entry: entryPolicy(this.config, false, () => this.#auth),
+          onConn: (conn, info) => {
+            this.accepted(conn, info);
+          },
           // The gateway posts to the address this instance already serves,
           // behind the same entry check (§3.1).
           route: (request) => this.route(request),
@@ -596,8 +647,29 @@ export class Instance {
    * gateway's webhook is the one such route this instance answers itself; the
    * mesh's two are answered before this is asked, because they are served
    * before anything is proven and this instance's own routes are not. */
-  route(request: Request): Promise<Response | undefined> {
-    return this.#gateway.route(request);
+  async route(request: Request): Promise<Response | undefined> {
+    // The person's authentication comes first: it is the one route reached
+    // before anything is proven, and the gateway's webhook carries its own
+    // secret and cannot be confused with it (DR-0001 §2.7).
+    const authorized = await handleAuth(
+      request,
+      { auth: this.#auth, self: this.self, origins: () => this.config.entry?.origins ?? [] },
+      {},
+    );
+    if (authorized !== undefined) return authorized;
+    return await this.#gateway.route(request);
+  }
+
+  /** The person's authentication, for the entry policy and for a test. */
+  get auth(): Auth {
+    return this.#auth;
+  }
+
+  /** A connection the listener accepted. One that an access token opened is
+   * held until that token runs out (DR-0001 §2.5); a peer's is the mesh's. */
+  accepted(conn: Requester, info: { readonly auth?: AuthorizedUpgrade }): void {
+    if (info.auth === undefined) return;
+    this.#auth.hold(conn, { sub: info.auth.sub, expiresAt: info.auth.expiresAt });
   }
 
   /** Every bound WebSocket address, as `host:port`. */
@@ -847,11 +919,15 @@ export function selfEndpoint(config: InstanceConfig): Endpoint | undefined {
  * the one that must say so. An empty `source_ips` leaves the addresses to the
  * bind, which for the default loopback host is this machine.
  *
- * These two are the whole of it until the person's own authentication lands
- * (DR-0001): the entry token they replaced only ever restated the uid boundary,
- * which on a tailnet nothing here can cross anyway, and a passkey is what will
- * answer "who came" rather than "could they read a file". */
-function entryPolicy(config: InstanceConfig, mesh: boolean): EntryPolicy {
+ * Neither of them says who came, which is what the access token on the
+ * handshake answers (DR-0001 §2.5): every connection that is not a peer's
+ * presents one, and a handshake without one is refused rather than let in as an
+ * anonymous person. */
+function entryPolicy(
+  config: InstanceConfig,
+  mesh: boolean,
+  auth: () => Auth | undefined,
+): EntryPolicy {
   const entry = config.entry;
   if (entry === undefined) return {};
   return {
@@ -873,13 +949,28 @@ function entryPolicy(config: InstanceConfig, mesh: boolean): EntryPolicy {
       if (mesh && offered.includes(MESH_PROTOCOL)) {
         return { ok: true, protocol: MESH_PROTOCOL, mesh: true };
       }
-      // The handshake echoes a subprotocol only when one was offered: a browser
-      // fails a connection whose reply names none of what it asked for.
-      const selected = offered[0];
-      return selected === undefined ? { ok: true } : { ok: true, protocol: selected };
+      // Everyone else is a person, and a person presents the access token they
+      // were given when they authenticated. It rides in a subprotocol because
+      // that is the only field a browser lets a WebSocket handshake carry.
+      const presented = offered.find((name) => name.startsWith(TOKEN_PROTOCOL));
+      if (presented === undefined) {
+        return { ok: false, reason: "this connection presents no access token" };
+      }
+      const held = auth();
+      const admitted = held?.admits(presented.slice(TOKEN_PROTOCOL.length));
+      if (admitted === undefined) {
+        return { ok: false, reason: "this access token is not accepted" };
+      }
+      // The handshake echoes the subprotocol it selected: a browser fails a
+      // connection whose reply names none of what it asked for.
+      return { ok: true, protocol: presented, auth: admitted };
     },
   };
 }
+
+/** How an access token reaches a WebSocket handshake (DR-0001 §2.4). The proxy
+ * in front of an instance has to pass `Sec-WebSocket-Protocol` through. */
+export const TOKEN_PROTOCOL = "ccmsg.token.";
 
 function protocolsOf(request: Request): string[] {
   const header = request.headers.get("sec-websocket-protocol");
