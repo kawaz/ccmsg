@@ -945,12 +945,21 @@ export class Instance {
     // this process bound, and only that one: the stable address is a symlink
     // nothing here touches, because a successor may have already pointed it at
     // itself (§8.5).
-    await this.#transport.close();
-    // The pid and lock are the observable proof that this process is still
-    // leaving. Release them only after every listener has finished closing, so
-    // a client cannot mistake an unreachable socket for a completed stop.
-    remove(this.paths.pidFile);
-    this.lock.release();
+    try {
+      await this.#transport.close();
+    } catch (cause) {
+      // A listener that could not be closed is worth saying, and is not worth
+      // holding the pid and the lock over: this process is leaving either way,
+      // and keeping them would leave a successor unable to start against a
+      // config home nothing is serving.
+      this.log.write("listener close failed", { instance: this.self, cause: String(cause) });
+    } finally {
+      // The pid and lock are the observable proof that this process is still
+      // leaving. Released only after every listener has finished closing, so a
+      // client cannot mistake an unreachable socket for a completed stop.
+      remove(this.paths.pidFile);
+      this.lock.release();
+    }
   }
 }
 
