@@ -230,13 +230,68 @@ export function saveShared(file: string, shared: SharedConfig): void {
   writeFileSync(file, `${JSON.stringify({ defaults: shared.defaults, instances }, null, 2)}\n`);
 }
 
+/** How one field of the shared file combines an instance's entry with the
+ * defaults.
+ *
+ * `merge` takes the two field by field, so an instance states only what it
+ * differs in; `replace` takes the instance's value whole. */
+export type MergeRule = "merge" | "replace";
+
+/** The rule for every field path that holds an object or an array, which are
+ * the only ones where "combine" could mean more than one thing.
+ *
+ * Declared beside the parsers rather than derived from the values, because
+ * whether a list is a sequence or a set is a fact about what the field means
+ * and every list looks the same without it. A path not named here replaces:
+ * that is what a scalar can do, and it is what an array does until some field
+ * is a set and says so. */
+export const MERGE_RULES: Readonly<Record<string, MergeRule>> = {
+  // The same finished list goes to every instance (§7.1), so an instance that
+  // writes its own means to run with that one and no other.
+  peers: "replace",
+  entry: "merge",
+  "entry.source_ips": "replace",
+  "entry.trusted_proxies": "replace",
+  upstream: "merge",
+  "upstream.launcher": "merge",
+  "upstream.launcher.root_dirs": "replace",
+  "upstream.launcher.templates": "replace",
+  "upstream.launcher.clean_env": "replace",
+  "upstream.launcher.keep_env": "replace",
+};
+
+function ruleFor(path: string): MergeRule {
+  return MERGE_RULES[path] ?? "replace";
+}
+
+function plainObject(raw: unknown): raw is Record<string, unknown> {
+  return typeof raw === "object" && raw !== null && !Array.isArray(raw);
+}
+
+function merged(
+  base: Record<string, unknown>,
+  over: Record<string, unknown>,
+  at: string,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...base };
+  for (const [name, value] of Object.entries(over)) {
+    const path = at === "" ? name : `${at}.${name}`;
+    const under = out[name];
+    out[name] =
+      ruleFor(path) === "merge" && plainObject(under) && plainObject(value)
+        ? merged(under, value, path)
+        : value;
+  }
+  return out;
+}
+
 /** What one config home's instance is configured with: its own entry over the
- * shared defaults, key by key. A config home the file does not list still
- * resolves — `daemon run` on an unregistered directory is the defaults plus
- * the built-ins. */
+ * shared defaults, by the rule each field path declares. A config home the file
+ * does not list still resolves — `daemon run` on an unregistered directory is
+ * the defaults plus the built-ins. */
 export function settingsFor(shared: SharedConfig, dir: string): Record<string, unknown> {
   const entry = shared.instances.find((one) => one.dir === dir);
-  return { ...shared.defaults, ...entry?.settings };
+  return merged(shared.defaults, entry?.settings ?? {}, "");
 }
 
 /** One instance's settings, read at the shape the instance uses them. */

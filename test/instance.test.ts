@@ -23,10 +23,12 @@ import {
   isRunning,
   loadConfig,
   loadShared,
+  MERGE_RULES,
   REAL_SOCKET,
   realSocketName,
   resolvePaths,
   saveShared,
+  settingsFor,
   start,
 } from "../src/instance/index.ts";
 import { connectUds, type LineClient } from "./client.ts";
@@ -219,6 +221,167 @@ describe("config", () => {
     expect(loadConfig(file, "/elsewhere/.claude").fork_origin).toBe(false);
     // A config home the file does not list is the defaults and nothing else.
     expect(loadConfig(file, "/unlisted/.claude").direct_delivery).toBe(false);
+  });
+
+  /** A settings block holding `value` at a dotted field path, and the read back
+   * out of one. Written from the path so a rule can be exercised without the
+   * test naming the nesting each rule happens to sit at. */
+  function at(path: string, value: unknown): Record<string, unknown> {
+    return path
+      .split(".")
+      .reduceRight<unknown>((held, name) => ({ [name]: held }), value) as Record<string, unknown>;
+  }
+
+  function read(settings: Record<string, unknown>, path: string): unknown {
+    return path
+      .split(".")
+      .reduce<unknown>((held, name) => (held as Record<string, unknown>)[name], settings);
+  }
+
+  /** One shared file with both levels written out, read as one config home. */
+  function twoLevel(
+    root: string,
+    defaults: Record<string, unknown>,
+    instances: readonly Record<string, unknown>[],
+  ): string {
+    const file = join(root, "config", "config.json");
+    mkdirSync(join(root, "config"), { recursive: true });
+    writeFileSync(file, JSON.stringify({ defaults, instances }));
+    return file;
+  }
+
+  test("every declared path merges or replaces as the table says", () => {
+    for (const [path, rule] of Object.entries(MERGE_RULES)) {
+      // A value of the shape the rule is about: `merge` is only ever declared
+      // for an object, and the rest of the table is what an array does.
+      const [mine, theirs] =
+        rule === "merge"
+          ? [{ kept: "defaults", beaten: "defaults" }, { beaten: "instance" }]
+          : [["defaults"], ["instance"]];
+      const settings = settingsFor(
+        {
+          defaults: at(path, mine),
+          instances: [{ dir: "/a/.claude", settings: at(path, theirs) }],
+        },
+        "/a/.claude",
+      );
+      expect(read(settings, path)).toEqual(
+        rule === "merge" ? { kept: "defaults", beaten: "instance" } : ["instance"],
+      );
+    }
+  });
+
+  test("a path the table does not name replaces, whatever it holds", () => {
+    const shared = {
+      defaults: { harness: "claude", peers: ["https://a.example/"], upstream: { launcher: {} } },
+      instances: [{ dir: "/a/.claude", settings: { harness: "codex", peers: [] } }],
+    };
+    const settings = settingsFor(shared, "/a/.claude");
+    // A scalar is the plain case; `peers` is the array the table names replace
+    // on purpose, so an instance can run with fewer peers than the defaults
+    // hand out rather than only more.
+    expect(settings["harness"]).toBe("codex");
+    expect(settings["peers"]).toEqual([]);
+  });
+
+  test("no declared path hangs below one that replaces", () => {
+    // A rule under a parent that takes its value whole would never be read:
+    // the child is only reached when the parent is merged field by field.
+    for (const path of Object.keys(MERGE_RULES)) {
+      const cut = path.lastIndexOf(".");
+      if (cut === -1) continue;
+      expect(MERGE_RULES[path.slice(0, cut)]).toBe("merge");
+    }
+  });
+
+  test("what an instance leaves out, an empty value, and a stated one differ", () => {
+    const { root } = disposable();
+    const defaults = {
+      entry: { host: "10.0.0.1", port: 8643, trusted_proxies: ["10.0.0.0/8"] },
+    };
+    const file = twoLevel(root, defaults, [
+      { dir: "/a/.claude", entry: { port: 8644 } },
+      { dir: "/b/.claude", entry: { trusted_proxies: [] } },
+      { dir: "/c/.claude", entry: { trusted_proxies: ["127.0.0.1/32"] } },
+    ]);
+    // Left out: the defaults', down to the fields the instance did not write.
+    const a = loadConfig(file, "/a/.claude").entry;
+    expect(a).toEqual({
+      host: "10.0.0.1",
+      port: 8644,
+      trusted_proxies: ["10.0.0.0/8"],
+      source_ips: [],
+    });
+    // Written empty: empty, which is how an instance trusts nobody while the
+    // defaults trust somebody. No delete sentinel is needed for it.
+    expect(loadConfig(file, "/b/.claude").entry?.trusted_proxies).toEqual([]);
+    // Written: whole, rather than added to what the defaults hold.
+    expect(loadConfig(file, "/c/.claude").entry?.trusted_proxies).toEqual(["127.0.0.1/32"]);
+  });
+
+  test("what every instance shares is written once (§8.2)", () => {
+    const { root } = disposable();
+    // The shape a host with several config homes ends up at: one entry and one
+    // upstream in the defaults, and per instance only what actually differs.
+    const file = twoLevel(
+      root,
+      {
+        peers: ["https://one.example/ccmsg/", "https://two.example/ccmsg/"],
+        entry: { host: "127.0.0.1", source_ips: ["127.0.0.1"], trusted_proxies: ["127.0.0.1/32"] },
+        upstream: { terminal_gateway: "https://terminal.example" },
+      },
+      [
+        {
+          dir: "/a/.claude",
+          entry: { port: 8643 },
+          upstream: { gateway_url: "https://gateway.example", gateway_webhook_source: "gw" },
+        },
+        { dir: "/b/.claude", entry: { port: 8644 } },
+        { dir: "/c/.codex", harness: "codex", entry: { port: 8645 } },
+      ],
+    );
+    const one = loadConfig(file, "/a/.claude");
+    const two = loadConfig(file, "/b/.claude");
+    const three = loadConfig(file, "/c/.codex");
+    // Each instance reaches the same shared values it would have got from an
+    // entry that repeated them, and only the port and the gateway differ.
+    for (const config of [one, two, three]) {
+      expect(config.entry?.host).toBe("127.0.0.1");
+      expect(config.entry?.source_ips).toEqual(["127.0.0.1"]);
+      expect(config.entry?.trusted_proxies).toEqual(["127.0.0.1/32"]);
+      expect(config.upstream.terminal_gateway).toBe("https://terminal.example");
+      expect(config.peers).toHaveLength(2);
+    }
+    expect([one, two, three].map((config) => config.entry?.port)).toEqual([8643, 8644, 8645]);
+    expect(one.upstream.gateway_url).toBe("https://gateway.example");
+    // The one upstream an instance states does not take the shared one with
+    // it: `upstream` is merged field by field.
+    expect(two.upstream.gateway_url).toBeUndefined();
+    expect(three.harness).toBe("codex");
+    expect(one.harness).toBe("claude");
+  });
+
+  test("the launcher is merged down to its own fields", () => {
+    const { root } = disposable();
+    const file = twoLevel(
+      root,
+      {
+        upstream: {
+          launcher: {
+            root_dirs: ["/work"],
+            templates: [{ name: "shell", command: "bash" }],
+            clean_env: ["CLAUDE_*"],
+            depth: 3,
+          },
+        },
+      },
+      [{ dir: "/a/.claude", upstream: { launcher: { root_dirs: ["/elsewhere"] } } }],
+    );
+    const launcher = loadConfig(file, "/a/.claude").upstream.launcher;
+    expect(launcher?.root_dirs).toEqual(["/elsewhere"]);
+    expect(launcher?.templates.map((one) => one.name)).toEqual(["shell"]);
+    expect(launcher?.clean_env).toEqual(["CLAUDE_*"]);
+    expect(launcher?.depth).toBe(3);
   });
 
   test("the shared file survives a round trip through the registry's writer", () => {
