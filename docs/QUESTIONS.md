@@ -31,4 +31,9 @@
 
 ## 確認待ち
 
-(なし)
+### CX-C1 Codex のツール実行環境に thread id の環境変数が来るか
+
+codex ハーネス対応 (v0.3.0 予定) で、Codex セッションから `ccmsg reply` / `post` する時の自 sid は `CODEX_THREAD_ID` / `CODEX_SESSION_ID` (codex バイナリ内に文字列として存在) から読む実装にした。SessionStart hook の環境には来ないことは実測済みだが、ツール (shell) 実行時の環境は mock API では観測できなかった (0.153.4 が tools を送らない)。本物の Codex セッションで `env | grep -E 'CODEX_(THREAD|SESSION)_ID'` を 1 回打って結果を教えてほしい。
+
+- [ ] 来る (値の形も添えて)
+- [ ] 来ない → Codex から送る側は `--sid` 明示のみ (未対応として issue 化)
