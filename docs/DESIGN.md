@@ -1039,16 +1039,34 @@ either," so it sits waiting for connections only.
 2. Stop watching upstream and any child processes
 3. Notify all connections that "it will restart" (**before tearing down transport**)
 4. Finalize what must be persisted (§3.6)
-5. Release resources. **Close UDS last** — clients observe "cannot connect to UDS" as
-   completion of withdrawal, so release every resource that could contend with a successor
-   (HTTP listener / pid / lock) before closing it. Closing removes only the
+5. Close the listeners. **Close UDS last** — clients observe "cannot connect to UDS" as
+   completion of withdrawal, so give up the address that could contend with a successor (the
+   HTTP listener) before closing it. Among the listeners that are not the UDS there is no
+   order, so they close together: each has its own deadline of 250 ms, and closing them one
+   after another would add those up for no reason. Closing removes only the
    `daemon.<pid>.sock` this process bound; the stable path's symlink is left alone (a
    successor may have already pointed it at itself, and a dangling symlink still pointing here
    is exactly the "cannot connect to UDS" that this clause means by completed withdrawal)
+6. Release the pid file and the lock, **after every listener has finished closing** — the pid
+   and the lock are the observable proof that this process is still leaving, and released
+   first they leave an unreachable socket indistinguishable from a completed stop (which is
+   how a process wedged in its own shutdown reads, from outside, as one that has stopped)
 
 That the path a listener bound is unlinked when it stops is Bun's behaviour (measured on
 1.3.13). Separating the real path from the stable one is what keeps a departing instance from
 deleting the address its successor has taken over.
+
+**Deadlines.** A served WebSocket whose `ws.close()` this process called itself — which the
+mesh does, to drop the loser of a glare, a link gone silent, or a peer speaking out of turn —
+never settles its `stop`, while the address is in fact given up within a millisecond and can
+be bound again (measured on 1.3.13). So a WebSocket's close is cut off at **250 ms** and the
+address is trusted over the promise; a UDS `stop` returns synchronously and is not waited on
+at all. The supervisor gives each child **10 seconds** to leave when asked, then escalates to
+SIGTERM, another 10 seconds, and SIGKILL. It closes its own socket only once every child has
+gone, for what 5 and 6 say about an instance: a socket that goes first leaves a supervisor
+still seeing its children out looking, from outside, like one that has left. The init system's
+side (`service stop`) is the same shape — after SIGTERM it waits up to 10 seconds for the
+supervisor's pid to go, escalates to SIGKILL, and answers with what happened.
 
 This order is already established as convention in the old daemon, so it carries over.
 
