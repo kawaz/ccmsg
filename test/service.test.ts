@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { ENTRY } from "../src/daemon/registry.ts";
 import {
   LAUNCHD_LABEL,
@@ -25,6 +25,13 @@ afterEach(() => {
   for (const one of hosts.splice(0)) one.release();
 });
 
+/** The unit file on disk and nothing else done: what a login finds, and what a
+ * `register` interrupted before it reached the init system leaves behind. */
+function laid(service: { unitFile: string; unitText(): string }): void {
+  mkdirSync(dirname(service.unitFile), { recursive: true });
+  writeFileSync(service.unitFile, service.unitText());
+}
+
 /** The init system, recorded rather than run: registering for real would put a
  * supervisor in front of this machine's launchd, which a test has no business
  * doing. */
@@ -42,11 +49,28 @@ function recorder(answer: (command: readonly string[]) => Partial<RunResult> = (
   };
 }
 
+/** A launchd that starts out not knowing this label, and knows it once it has
+ * been bootstrapped — which is what makes the order of the commands mean
+ * something rather than every answer being a bare zero. */
+function fakeLaunchd(): { run: Run; commands: string[][] } {
+  let loaded = false;
+  return recorder((command) => {
+    if (command[1] === "bootstrap") {
+      loaded = true;
+      return {};
+    }
+    if (command[1] === "print") {
+      return loaded ? { stdout: "\tstate = running\n\tpid = 4242\n" } : { code: 113 };
+    }
+    return loaded ? {} : { code: 3, stderr: "No such process" };
+  });
+}
+
 describe("launchd", () => {
   test("register writes the agent and hands it to launchd; unregister takes both back", async () => {
     const at = host();
     const service = serviceFor(at.env, "darwin");
-    const launchctl = recorder();
+    const launchctl = fakeLaunchd();
 
     await service.register(launchctl.run);
     expect(service.unitFile).toEndWith(`LaunchAgents/${LAUNCHD_LABEL}.plist`);
@@ -62,12 +86,79 @@ describe("launchd", () => {
     expect(plist).toContain(
       `<key>XDG_CONFIG_HOME</key><string>${at.env["XDG_CONFIG_HOME"]}</string>`,
     );
-    expect(launchctl.commands[0]?.slice(0, 2)).toEqual(["launchctl", "bootstrap"]);
+    expect(launchctl.commands.map((command) => command[1])).toEqual([
+      "print",
+      "bootstrap",
+      "kickstart",
+      "print",
+    ]);
 
     const gone = await service.unregister(launchctl.run);
     expect(gone).toEqual({ unregistered: true });
     expect(existsSync(service.unitFile)).toBe(false);
     expect(launchctl.commands.at(-1)?.slice(0, 2)).toEqual(["launchctl", "bootout"]);
+  });
+
+  test("start puts a unit launchd has never heard of in front of it before kicking it", async () => {
+    const at = host();
+    const service = serviceFor(at.env, "darwin");
+    // The state a login leaves behind, and the state an `unregister` leaves
+    // behind however quickly a `register` follows it: the file is there and
+    // launchd knows nothing about the label. `kickstart` alone answers
+    // `No such process` and the supervisor never runs.
+    const launchctl = fakeLaunchd();
+    laid(service);
+
+    const state = await service.start(launchctl.run);
+    expect(launchctl.commands.map((command) => command[1])).toEqual([
+      "print",
+      "bootstrap",
+      "kickstart",
+      "print",
+    ]);
+    expect(state).toMatchObject({ registered: true, running: true, pid: 4242 });
+  });
+
+  test("a unit launchd already holds is kicked and not bootstrapped again", async () => {
+    const at = host();
+    const service = serviceFor(at.env, "darwin");
+    const launchctl = recorder(() => ({ stdout: "\tstate = not running\n" }));
+    laid(service);
+
+    await service.start(launchctl.run);
+    expect(launchctl.commands.map((command) => command[1])).toEqual([
+      "print",
+      "kickstart",
+      "print",
+    ]);
+  });
+
+  test("a start launchd refuses is said out loud rather than answered as a state", async () => {
+    const at = host();
+    const service = serviceFor(at.env, "darwin");
+    // A bootstrap that fails is why a `service status` can say the file is
+    // registered while nothing is running: the refusal used to go unread.
+    const refusing = recorder((command) =>
+      command[1] === "bootstrap"
+        ? { code: 5, stderr: "Bootstrap failed: 5: Input/output error" }
+        : { code: 113 },
+    );
+    laid(service);
+    const refused = await service.start(refusing.run).catch((cause: unknown) => String(cause));
+    expect(refused).toContain("Input/output error");
+
+    // Except when the refusal is launchd saying the unit is already there,
+    // which is what this asked for in the first place.
+    let bootstrapped = false;
+    const busy = recorder((command) => {
+      if (command[1] === "bootstrap") {
+        bootstrapped = true;
+        return { code: 37, stderr: "Bootstrap failed: 37: Operation already in progress" };
+      }
+      if (command[1] === "print" && !bootstrapped) return { code: 113 };
+      return { stdout: "\tstate = running\n\tpid = 9\n" };
+    });
+    expect(await service.start(busy.run)).toMatchObject({ running: true, pid: 9 });
   });
 
   test("status reads the pid launchd prints, and says not running when there is none", async () => {
@@ -127,7 +218,7 @@ describe("systemd", () => {
     expect(unit).toContain("Restart=always");
     expect(unit).toContain("WantedBy=default.target");
     expect(unit).toContain(`Environment=XDG_CONFIG_HOME=${at.env["XDG_CONFIG_HOME"]}`);
-    expect(systemctl.commands.slice(0, 2)).toEqual([
+    expect(systemctl.commands.slice(1, 3)).toEqual([
       ["systemctl", "--user", "daemon-reload"],
       ["systemctl", "--user", "enable", "--now", SYSTEMD_UNIT],
     ]);

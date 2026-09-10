@@ -150,16 +150,43 @@ export function serviceFor(env: Env = process.env, platform = process.platform):
   throw new CommandError("capability_unavailable", `${platform} には登録先がありません`);
 }
 
-class LaunchdService implements Service {
+/** Whether launchd's refusal to bootstrap is it saying the unit is already
+ * there. Errno 37 is `EBUSY`, which is what a bootstrap racing the teardown of
+ * the same label gets. */
+function alreadyLoaded(answer: RunResult): boolean {
+  const said = `${answer.stdout} ${answer.stderr}`;
+  return /already (loaded|bootstrapped)|Operation already in progress|: 37:/.test(said);
+}
+
+/** What the init system said when it refused.
+ *
+ * The command and its stderr, unabridged: launchd's refusals are numbered
+ * rather than worded, and a `Bootstrap failed: 5: Input/output error` handed
+ * straight to the person is worth more than anything this could say instead. */
+function refuse(command: readonly string[], answer: RunResult): never {
+  const said = (answer.stderr.trim() || answer.stdout.trim()) ?? "";
+  throw new CommandError(
+    "internal_error",
+    `${command.join(" ")} が失敗しました (exit ${String(answer.code)})${said === "" ? "" : `: ${said}`}`,
+  );
+}
+
+export class LaunchdService implements Service {
   readonly kind = "launchd" as const;
   readonly unitFile: string;
+  readonly #label: string;
   readonly #env: Env;
   readonly #domain: string;
 
-  constructor(env: Env) {
+  /** The label is a parameter for `Run`'s reason: a test that drives this
+   * machine's real launchd has to do it under a name that is not the one the
+   * machine's own supervisor is registered under. Nothing in ccmsg passes it —
+   * `serviceFor` is where the name is settled. */
+  constructor(env: Env, label: string = LAUNCHD_LABEL) {
     this.#env = env;
+    this.#label = label;
     const home = env["HOME"] ?? homedir();
-    this.unitFile = join(home, "Library", "LaunchAgents", `${LAUNCHD_LABEL}.plist`);
+    this.unitFile = join(home, "Library", "LaunchAgents", `${label}.plist`);
     this.#domain = `gui/${String(process.getuid?.() ?? 0)}`;
   }
 
@@ -173,7 +200,7 @@ class LaunchdService implements Service {
       '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
       '<plist version="1.0">',
       "<dict>",
-      `  <key>Label</key><string>${LAUNCHD_LABEL}</string>`,
+      `  <key>Label</key><string>${this.#label}</string>`,
       "  <key>ProgramArguments</key>",
       "  <array>",
       ...supervisorCommand().map((arg) => `    <string>${escapeXml(arg)}</string>`),
@@ -194,26 +221,48 @@ class LaunchdService implements Service {
     ].join("\n");
   }
 
+  /** Registering is writing the unit and starting it: a supervisor nothing is
+   * supervising is not what the person asked for, and `RunAtLoad` means that a
+   * unit put in front of launchd at all is a unit launchd runs. What `start`
+   * adds is the case where the file is already there. */
   async register(run: Run): Promise<ServiceState> {
     write(this.unitFile, this.unitText(), serviceLogFile(this.#env));
-    await run(["launchctl", "bootstrap", this.#domain, this.unitFile]);
-    return await this.state(run);
+    return await this.start(run);
   }
 
   async unregister(run: Run): Promise<{ unregistered: boolean }> {
-    await run(["launchctl", "bootout", `${this.#domain}/${LAUNCHD_LABEL}`]);
+    await run(["launchctl", "bootout", `${this.#domain}/${this.#label}`]);
     const existed = existsSync(this.unitFile);
     rmSync(this.unitFile, { force: true });
     return { unregistered: existed };
   }
 
+  /** Put the unit in front of launchd if it is not already there, then start
+   * the program.
+   *
+   * `kickstart` alone is what a loaded unit needs, and launchd answers a unit
+   * it has never heard of with `No such process` — which is exactly the state
+   * a login leaves behind, and the state `unregister` leaves behind however
+   * quickly a `register` follows it. So what is loaded is read first and the
+   * missing half is done here rather than assumed to have been done by
+   * whoever wrote the file. */
   async start(run: Run): Promise<ServiceState> {
-    await run(["launchctl", "kickstart", `${this.#domain}/${LAUNCHD_LABEL}`]);
+    const before = await this.#report(run);
+    if (before.service?.loaded !== true) {
+      const bootstrap = ["launchctl", "bootstrap", this.#domain, this.unitFile];
+      const answer = await run(bootstrap);
+      // `Operation already in progress` and `Service is already loaded` are
+      // launchd saying the unit is there, which is all this asked for.
+      if (answer.code !== 0 && !alreadyLoaded(answer)) refuse(bootstrap, answer);
+    }
+    const kickstart = ["launchctl", "kickstart", `${this.#domain}/${this.#label}`];
+    const answer = await run(kickstart);
+    if (answer.code !== 0) refuse(kickstart, answer);
     return await this.state(run);
   }
 
   async stop(run: Run): Promise<ServiceState> {
-    await run(["launchctl", "kill", "SIGTERM", `${this.#domain}/${LAUNCHD_LABEL}`]);
+    await run(["launchctl", "kill", "SIGTERM", `${this.#domain}/${this.#label}`]);
     return await this.state(run);
   }
 
@@ -226,7 +275,7 @@ class LaunchdService implements Service {
 
   async #report(run: Run): Promise<Omit<ServiceState, "program">> {
     const registered = existsSync(this.unitFile);
-    const printed = await run(["launchctl", "print", `${this.#domain}/${LAUNCHD_LABEL}`]);
+    const printed = await run(["launchctl", "print", `${this.#domain}/${this.#label}`]);
     // A non-zero exit is launchd saying it has no such service, which is not
     // the same as having nothing to say: the report stays `null` only when the
     // question could not be put, and here it was and the answer was "no".
@@ -294,11 +343,10 @@ class SystemdService implements Service {
     return { kind: "command", show: [...unit, "--no-pager"], follow: [...unit, "-f"] };
   }
 
+  /** `LaunchdService.register`'s reasoning, in systemd's vocabulary. */
   async register(run: Run): Promise<ServiceState> {
     write(this.unitFile, this.unitText(), serviceLogFile(this.#env));
-    await run(["systemctl", "--user", "daemon-reload"]);
-    await run(["systemctl", "--user", "enable", "--now", SYSTEMD_UNIT]);
-    return await this.state(run);
+    return await this.start(run);
   }
 
   async unregister(run: Run): Promise<{ unregistered: boolean }> {
@@ -309,8 +357,20 @@ class SystemdService implements Service {
     return { unregistered: existed };
   }
 
+  /** `LaunchdService.start`'s reasoning: a unit systemd has not read is a unit
+   * `start` answers `not found` for, and a file written since the last reload
+   * is exactly that. `enable --now` starts it and puts it in the target, so a
+   * supervisor registered today is running after the next login. */
   async start(run: Run): Promise<ServiceState> {
-    await run(["systemctl", "--user", "start", SYSTEMD_UNIT]);
+    const before = await this.#report(run);
+    if (before.service?.loaded !== true) {
+      const reload = ["systemctl", "--user", "daemon-reload"];
+      const reloaded = await run(reload);
+      if (reloaded.code !== 0) refuse(reload, reloaded);
+    }
+    const enable = ["systemctl", "--user", "enable", "--now", SYSTEMD_UNIT];
+    const answer = await run(enable);
+    if (answer.code !== 0) refuse(enable, answer);
     return await this.state(run);
   }
 
