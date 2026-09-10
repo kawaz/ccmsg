@@ -37,7 +37,7 @@ WS の入口は entry token (state ディレクトリの 0600 file) で守って
 
 ### 2.3 RP ID は endpoint のホスト
 
-WebAuthn の RP ID は origin ではなく domain で、passkey は「今開いているページの effective domain か、その registrable suffix」でしか作成・利用できない。`rp_id` は登録時の endpoint のホストで、webui はその endpoint と同じホストから配られる (通常形)。`clientDataJSON.origin` の検査は credential の `rp_id` だけで束縛する (origin のホストが `rp_id` と一致するかその配下であること。authenticator が `rpIdHash` に署名し、ブラウザが rp_id をページの domain かその suffix にしか許さないので、別途の origin 許可リストは情報を足さない)。config に origin の一覧は持たない。認証は record の `endpoint` (base URL 全体、パス prefix 込み) に束ねる: `clientDataJSON.origin` が endpoint の origin と一致し、request が届いた URL のパス prefix が endpoint のパスと一致すること。`https://h.example/` と `https://h.example/personal/` は別の endpoint で、それぞれ登録する (mesh-peer-auth の `iss` / `aud` が origin でなく URL 完全一致なのと同じ粒度)。
+WebAuthn の RP ID は origin ではなく domain で、passkey は「今開いているページの effective domain か、その registrable suffix」でしか作成・利用できない。`rp_id` は登録時の endpoint のホストで、webui はその endpoint と同じホストから配られる (通常形)。`clientDataJSON.origin` は record の `endpoint` の origin と**完全一致**で検査する (rp_id の suffix では判定しない)。config に origin の一覧は持たない。認証は record の `endpoint` (base URL 全体、パス prefix 込み) に束ねる: `clientDataJSON.origin` が endpoint の origin と一致し、request が届いた URL のパス prefix が endpoint のパスと一致すること。`https://h.example/` と `https://h.example/personal/` は別の endpoint で、それぞれ登録する (mesh-peer-auth の `iss` / `aud` が origin でなく URL 完全一致なのと同じ粒度)。
 
 ### 2.4 token は record に紐づく opaque 値、family は単一 writer
 
@@ -49,7 +49,7 @@ WebAuthn の RP ID は origin ではなく domain で、passkey は「今開い�
 - アクセストークンは数時間、リフレッシュトークンは数日。rotate は使うたび。family は退役した refresh 値のハッシュを本来の exp まで保持し、**どの世代の値でも再利用を見たら family を失効させる**。直前 1 世代だけは再送の猶予として (猶予時間内に限り) 前回の答えを返す
 - アクセストークンは WS の handshake に subprotocol `ccmsg.token.<値>` で載せる (サーバは選んだ subprotocol を echo する。proxy が `Sec-WebSocket-Protocol` を透過することが要件)。ブラウザはメモリにだけ持つ
 - リフレッシュトークンは **httpOnly cookie**。名前は `__Secure-ccmsg-<sha256(instance id + "\n" + sub) の先頭 16 hex>`、値は opaque、`HttpOnly; Secure; SameSite=Strict; Path=<request のパスから /auth/ までの prefix>`。`Path` は帯域と露出面を絞るためで認可境界ではない (同一 origin の JS は任意パスに fetch できる)
-- 認証と refresh は endpoint の `/auth/` 配下の HTTP (webui と同一ホストなので通常 CORS は発生しない。発生する場合は request の `Origin` のホストが rp_id の配下ならそれを `Access-Control-Allow-Origin` に echo + `Allow-Credentials`)。状態を変える `/auth/*` は `Origin` のホストが rp_id の配下であることを要求し、未認証で叩けるので rate limit を持つ (mesh-peer-auth §6 の鍵取得と同型)
+- 認証と refresh は endpoint の `/auth/` 配下の HTTP (webui は endpoint と同一 origin に配られるので通常 CORS は発生しない。許可する origin は credential record / 未使用の登録 URL / 自分の endpoint の origin との**完全一致**だけで、rp_id の suffix では許可しない = 兄弟サブドメインのページが cookie 付きで `/auth/refresh` を叩き access token を読む穴を開けない。webui を endpoint と別サブドメインに置く構成は非対応)。状態を変える `/auth/*` は `Origin` がその集合に一致することを要求し、未認証で叩けるので rate limit を持つ (mesh-peer-auth §6 の鍵取得と同型)
 - endpoint が `/` と `/personal` に分かれていれば cookie の Path も分かれるので、endpoint ごとに 1 回 passkey 認証が要る (record は共有されているので 2 回目以降は要らない)
 - 期限切れの family は `iss` が消す (単一 writer なので GC も担う)
 - LB で challenge の発行と応答の instance が違う時は、**応答を受けた instance が assertion を検証**し、challenge の消費だけを発行者へ問い合わせる。mint する family の `iss` は応答を受けた instance
