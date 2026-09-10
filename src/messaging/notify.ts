@@ -11,7 +11,7 @@ import type {
   Timestamp,
 } from "@ccmsg/protocol";
 import { type HandlerInput, OpError } from "../dispatch/index.ts";
-import type { TopicValue, UpstreamResource } from "../topics/index.ts";
+import type { PublishOutcome, TopicValue, UpstreamResource } from "../topics/index.ts";
 
 /** The one topic a notification reaches a watcher on. */
 const NOTIFY = "notify";
@@ -23,7 +23,7 @@ export interface NotifyDeps {
   readonly label: (sid: Sid) => string;
   /** The one way a value reaches subscribers (§6.1). No `to`: a notification is
    * for whoever is watching, not for one session. */
-  readonly publish: (topic: string, data: unknown, instance: InstanceId) => void;
+  readonly publish: (topic: string, data: unknown, instance: InstanceId) => PublishOutcome;
 }
 
 /** The `notify` topic and the three ops that speak on it.
@@ -99,7 +99,16 @@ export class Notify implements UpstreamResource {
       text,
       sent_at: now,
     };
-    this.deps.publish(NOTIFY, notification, this.deps.self);
+    // A notification is an occurrence, so nothing folds it away and a watcher
+    // that cannot keep up is what stops it. The caller hears that rather than
+    // the notification going nowhere: it is the one that decides whether to
+    // raise another (§6.4).
+    if (this.deps.publish(NOTIFY, notification, this.deps.self) === "rate_limited") {
+      throw new OpError(
+        "internal_error",
+        "a watcher is behind on this topic; the notification was not taken",
+      );
+    }
     return now;
   }
 

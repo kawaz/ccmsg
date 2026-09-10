@@ -522,18 +522,14 @@ export class Instance {
       ...(this.#mesh === undefined ? {} : { cluster: this.#mesh }),
       inbox,
       direct: this.#direct,
-      publish: (topic, data, instance, to) => {
-        this.#topics.publish(topic, data, instance, to);
-      },
+      publish: (topic, data, instance, to) => this.#topics.publish(topic, data, instance, to),
       listeners: (topic, to) => this.#topics.subscriberCount(topic, to),
     });
 
     this.#notify = new Notify({
       self: this.self,
       label: (sid) => sessionLabel(this.#sessions, sid),
-      publish: (topic, data, instance) => {
-        this.#topics.publish(topic, data, instance);
-      },
+      publish: (topic, data, instance) => this.#topics.publish(topic, data, instance),
     });
 
     this.#topics.attach("peers", this.#sessions);

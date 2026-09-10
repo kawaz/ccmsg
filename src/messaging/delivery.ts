@@ -21,7 +21,7 @@ import {
   OpError,
   type Requester,
 } from "../dispatch/index.ts";
-import type { TopicValue, UpstreamResource } from "../topics/index.ts";
+import type { PublishOutcome, TopicValue, UpstreamResource } from "../topics/index.ts";
 import type { DirectRoute } from "./direct.ts";
 import type { Inbox } from "./inbox.ts";
 
@@ -71,7 +71,7 @@ export interface DeliveryDeps {
   readonly direct: DirectRoute;
   /** The one way a value reaches subscribers (§6.1), narrowed to the session a
    * message is for. */
-  readonly publish: (topic: string, data: unknown, instance: InstanceId, to: Sid) => void;
+  readonly publish: (topic: string, data: unknown, instance: InstanceId, to: Sid) => PublishOutcome;
   /** How many of that session's connections are listening on `inbox`. */
   readonly listeners: (topic: string, to: Sid) => number;
 }
@@ -128,8 +128,14 @@ export class Delivery implements UpstreamResource {
     }
 
     if (this.deps.listeners(INBOX, to) > 0) {
-      this.deps.publish(INBOX, [message], this.deps.self, to);
-      return { delivered: true };
+      if (this.deps.publish(INBOX, [message], this.deps.self, to) === "ok") {
+        return { delivered: true };
+      }
+      // The session is listening but is behind on what it has already been
+      // offered, which is the same standing as route (a) turning the message
+      // away: it waits in the inbox and is offered again (§4.4).
+      this.deps.inbox.hold(to, message);
+      return { delivered: false, reason: "throttled" };
     }
 
     const { evicted } = this.deps.inbox.hold(to, message);
