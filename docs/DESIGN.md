@@ -1009,7 +1009,10 @@ levels of supervision**:
   — a log is read after something died, so it must not need the supervisor to be up
 - `ccmsg service register` — registers that supervisor with launchd (macOS) or
   systemd --user (Linux). Surviving a logout is this layer's business; what
-  `ccmsg plugin install` hands out is the agent-side plugin alone
+  `ccmsg plugin install` hands out is the agent-side plugin alone. `ccmsg service stop` is a
+  **bootout** on launchd (the unit file stays) and a `stop` on systemd; both mean "and stays
+  stopped". A signal would not, because `KeepAlive` and `Restart=always` would start it again
+  — stopping it and taking the unit file away as well is `unregister`
 
 The supervisor belongs to no single config home, so its output is the one exception to §8.1's
 "derived from the config home": it goes to `${XDG_STATE_HOME:-~/.local/state}/ccmsg/service.log`
@@ -1050,7 +1053,9 @@ either," so it sits waiting for connections only.
 6. Release the pid file and the lock, **after every listener has finished closing** — the pid
    and the lock are the observable proof that this process is still leaving, and released
    first they leave an unreachable socket indistinguishable from a completed stop (which is
-   how a process wedged in its own shutdown reads, from outside, as one that has stopped)
+   how a process wedged in its own shutdown reads, from outside, as one that has stopped).
+   They are released even when closing a listener failed: this process is leaving either way,
+   and holding them keeps a successor out of a config home nothing is serving
 
 That the path a listener bound is unlinked when it stops is Bun's behaviour (measured on
 1.3.13). Separating the real path from the stable one is what keeps a departing instance from

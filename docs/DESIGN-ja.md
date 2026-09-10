@@ -885,7 +885,10 @@ instance を持つか」は個々の instance が自分について答えられ�
   読むものなので、監督者が居ないと読めない設計にはしない
 - `ccmsg service register` — その監督者を launchd (macOS) / systemd --user (Linux) に
   登録する。ログインを跨いで常駐させるのはこの層の責務であり、`ccmsg plugin install` が
-  配るのはエージェント側の plugin だけである
+  配るのはエージェント側の plugin だけである。`ccmsg service stop` は launchd では
+  **bootout** (unit file は残す)、systemd では `stop` — どちらも「止まったまま」を意味する。
+  signal では launchd の `KeepAlive` / systemd の `Restart=always` が起こし直してしまい、
+  頼まれたことにならない (止めた上で unit file も消すのが `unregister`)
 
 監督者は特定の config home に属さないので、その出力だけは §8.1 の「config home から導く」の
 例外として `${XDG_STATE_HOME:-~/.local/state}/ccmsg/service.log` に置く (systemd では unit の
@@ -921,8 +924,9 @@ status` は登録済み unit からその path を読み戻して出す (`progra
    「UDS に繋がらない」= 退去完了の観測として本項の意味論どおり)
 6. pid ファイルとロックを手放す。**listener を全部閉じ切ってから** — pid とロックは「まだ退去中」
    であることの観測可能な証拠なので、これが先に消えると、届かない socket が完了した停止と
-   区別できなくなる (= 本 issue の「socket は unlink 済みなのにプロセスが残る」状態が、外からは
-   「停止済み」に見えてしまう)
+   区別できなくなる (= 自分の停止処理で固まったプロセスが、外からは停止済みに見える)。
+   listener の close が失敗しても手放す (どちらにせよこの process は去るので、握ったままだと
+   誰も serve していない config home に後継が入れない)
 
 listen した path が stop で unlink されるのは Bun の挙動 (1.3.13 実測)。実 path と安定 path を
 分けるのは、退去する instance が後継の受け取った address を消さないためである。
