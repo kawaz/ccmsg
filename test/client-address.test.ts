@@ -225,3 +225,31 @@ describe("what the instance keeps (DR-0001 §2.2)", () => {
     expect(() => loadConfig(join(dir, "config.json"), dir)).toThrow(/trusted_proxies/);
   });
 });
+
+describe("upstream.terminal_gateway", () => {
+  function writeUpstream(terminal_gateway: unknown): string {
+    const root = mkdtempSync(join(tmpdir(), "ccmsg-terminal-gateway-config-"));
+    mkdirSync(join(root, "config"), { recursive: true });
+    writeFileSync(
+      join(root, "config", "config.json"),
+      JSON.stringify({ defaults: { upstream: { terminal_gateway } } }),
+    );
+    return join(root, "config");
+  }
+
+  test("a value in the contract's shape is kept", () => {
+    const dir = writeUpstream("https://terminals.example/gw");
+    const config = loadConfig(join(dir, "config.json"), dir);
+    expect(config.upstream.terminal_gateway).toBe("https://terminals.example/gw");
+  });
+
+  test("a trailing slash is refused where it is written", () => {
+    const dir = writeUpstream("https://terminals.example/gw/");
+    expect(() => loadConfig(join(dir, "config.json"), dir)).toThrow(/terminal_gateway/);
+  });
+
+  test("a scheme the contract does not accept is refused", () => {
+    const dir = writeUpstream("ftp://terminals.example/gw");
+    expect(() => loadConfig(join(dir, "config.json"), dir)).toThrow(/terminal_gateway/);
+  });
+});

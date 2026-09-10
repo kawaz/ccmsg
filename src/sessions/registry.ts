@@ -98,6 +98,12 @@ export interface SessionsDeps {
    * domain cannot judge: a peer's, whose claim is settled by an exchange of its
    * own rather than by anything a session says (§7.2). */
   readonly mesh?: MeshSource;
+  /** Where a person opens the terminal a session runs in, which `hello` states
+   * as `terminal_gateway`. The same value that gates the `terminal` capability
+   * (`sessionCapabilities`), so a client told the capability is on is told
+   * where to reach it in the same greeting. Absent on an instance with no
+   * gateway configured. */
+  readonly terminalGateway?: string;
 }
 
 /** What `hello` needs of the mesh: verify the greeting of a peer, and say which
@@ -291,6 +297,9 @@ export class Sessions implements UpstreamResource {
       capabilities: [...this.deps.capabilities],
       version: this.deps.version,
       started_at: this.deps.startedAt,
+      ...(this.deps.terminalGateway === undefined
+        ? {}
+        : { terminal_gateway: this.deps.terminalGateway }),
       ...(expiresAt === undefined ? {} : { auth_expires_at: expiresAt }),
     };
   }

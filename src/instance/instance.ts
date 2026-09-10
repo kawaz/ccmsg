@@ -469,6 +469,9 @@ export class Instance {
       transcript: this.#transcripts,
       gateway: this.#gateway,
       terminals: hostTerminalReader(),
+      ...(config.upstream.terminal_gateway === undefined
+        ? {}
+        : { terminalGateway: config.upstream.terminal_gateway }),
       log: (msg, fields) => {
         this.log.write(msg, fields);
       },

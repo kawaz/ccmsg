@@ -155,6 +155,8 @@ cannot be answered until the mesh-peer-auth verification has run, and since noth
 settles an identity, the connection stays anonymous until the verification is done (§7.2). An
 instance with no mesh refuses an `instance` greeting with `capability_unavailable`.
 
+The `hello` reply names `terminal_gateway` only on an instance configured with `upstream.terminal_gateway`. A session's terminal is named by `terminal_id` on the `agents` topic, so a person opens that terminal at `<terminal_gateway>/sessions/<terminal_id>`.
+
 We will not repeat the asymmetry in the old daemon where only the UDS listener was buried
 inside the startup function. UDS and WS are **two implementations that return the same
 `Conn`**, and layers above do not distinguish between them. The difference in backpressure
@@ -910,6 +912,8 @@ home.** A CLI within a session looks up its own instance from `CLAUDE_CONFIG_DIR
 | peers | A list of mesh endpoints (each the instance's public base URL, trailing slash included). **The same list, this instance's own URL included, can be distributed to every instance** (which entry is this one is settled by the startup probe, and the reader takes itself out, §7.1). **It is the only list of URLs config carries** |
 | Entry-point permission | bind, source IP |
 | upstream | gateway's URL and webhook source, terminal gateway, launcher (roots and recipes), translation helper, sandbox origin |
+
+`upstream.terminal_gateway` is both the rename route and the value `hello` names as where a person opens a terminal (§3.1).
 
 **config is read only once, at startup. There is no hot reload** (DV-Q8). Because
 per-instance config is small and restart is cheap (most state is volatile; the only things

@@ -286,6 +286,21 @@ function endpointOf(file: string, at: string, raw: unknown): Endpoint {
   return raw as Endpoint;
 }
 
+/** `terminal_gateway`'s shape, matched to the contract's `HelloResult` so a
+ * value this instance would refuse to report is refused here instead, at
+ * startup, rather than on the first `hello`. */
+const TERMINAL_GATEWAY = /^https?:\/\/[^/?#\s]+(\/[^?#\s]*[^/?#\s])?$/;
+
+function terminalGatewayOf(file: string, raw: string): string {
+  if (!TERMINAL_GATEWAY.test(raw)) {
+    throw new ConfigError(
+      file,
+      `upstream.terminal_gateway must be an http:// or https:// base URL with no trailing slash, got ${raw}`,
+    );
+  }
+  return raw;
+}
+
 function peersOf(file: string, raw: unknown): readonly Endpoint[] {
   if (raw === undefined) return [];
   if (!Array.isArray(raw)) throw new ConfigError(file, "peers must be an array of endpoint URLs");
@@ -333,6 +348,9 @@ function upstreamOf(file: string, raw: unknown): UpstreamConfig {
       throw new ConfigError(file, `upstream.${name} must be a string`);
     }
     config[name] = value;
+  }
+  if (config["terminal_gateway"] !== undefined) {
+    config["terminal_gateway"] = terminalGatewayOf(file, config["terminal_gateway"]);
   }
   const launcher = fields["launcher"];
   return {

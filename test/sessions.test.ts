@@ -194,6 +194,7 @@ function sessions(
     gateway?: GatewaySource;
     terminals?: TerminalReader;
     transcript?: { facts: (sid: Sid) => TranscriptFacts };
+    terminalGateway?: string;
   } = {},
 ) {
   const dirs = home();
@@ -220,6 +221,9 @@ function sessions(
     ...(overrides.gateway === undefined ? {} : { gateway: overrides.gateway }),
     ...(overrides.terminals === undefined ? {} : { terminals: overrides.terminals }),
     ...(overrides.transcript === undefined ? {} : { transcript: overrides.transcript }),
+    ...(overrides.terminalGateway === undefined
+      ? {}
+      : { terminalGateway: overrides.terminalGateway }),
   });
   running.push(domain);
   /** Resolves when a publish satisfying `want` has happened, waiting for the
@@ -307,6 +311,18 @@ describe("hello", () => {
     ).toEqual([]);
     expect(result.instances.map((instance) => instance.id)).toEqual([SELF]);
     expect(result.instance).toBe(SELF);
+  });
+
+  test("names the terminal gateway when this instance is configured with one", () => {
+    const { domain } = sessions({ terminalGateway: "https://terminals.example/gw" });
+    const result = helloFrom(domain, greeting());
+    expect(result.terminal_gateway).toBe("https://terminals.example/gw");
+  });
+
+  test("leaves the terminal gateway out when this instance has none configured", () => {
+    const { domain } = sessions();
+    const result = helloFrom(domain, greeting());
+    expect(result.terminal_gateway).toBeUndefined();
   });
 
   test("a person's greeting registers nothing", () => {

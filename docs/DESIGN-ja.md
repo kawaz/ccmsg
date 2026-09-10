@@ -141,6 +141,8 @@ instance に届く URL が増えるたびに operator が同期させ続ける�
 匿名のままになる (§7.2)。mesh を持たない instance は `instance` の greeting を
 `capability_unavailable` で断る。
 
+`hello` の応答は `upstream.terminal_gateway` が設定されている instance に限り `terminal_gateway` を名乗る。セッションの terminal 自体は `agents` topic の `terminal_id` が指すので、人がその terminal を開く先は `<terminal_gateway>/sessions/<terminal_id>` になる。
+
 旧 daemon で UDS listener だけが起動関数の内部に埋まっていた非対称を作らない。UDS と WS は
 **同じ `Conn` を返す 2 実装**であり、上の層はどちらか区別しない。backpressure の扱い
 (UDS の `write` は short count を返しうる / WS は再送される) の差はこの層で吸収する。
@@ -799,6 +801,8 @@ socket path / HTTP の bind / state dir / data dir / ログ。**すべて config
 | peers | mesh の endpoint (instance の公開 base URL、末尾 `/`) の一覧。**自分の分を含めた同じものを全 instance に配れる** (どれが自分かは起動時の probe で確定し、読む側が自分を除く、§7.1)。**config に載る URL の一覧はこれだけ**である |
 | 入口の許可 | bind、source IP |
 | upstream | gateway の URL と webhook source、terminal gateway、launcher (root と テンプレ)、translate helper、sandbox origin |
+
+`upstream.terminal_gateway` は rename の経路であると同時に、人が terminal を開く先として `hello` で名乗る値でもある (§3.1)。
 
 **config は起動時に 1 回だけ読む。無再起動での反映は持たない** (DV-Q8)。instance ごとの
 config は小さく、再起動が安い (状態のほとんどが揮発で、永続化するのは §3.6 の 5 種だけ) ので、
