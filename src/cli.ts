@@ -506,7 +506,11 @@ function section(lines: string[], title: string, docs: readonly Doc[] | undefine
 async function runInstance(dir: string | undefined): Promise<unknown> {
   const named = dir ?? resolveConfigHome();
   const home = configHome(named, harnessFor(process.env, named));
-  const outcome = await start({ env: { ...process.env, CLAUDE_CONFIG_DIR: home } });
+  // The directory is handed over rather than put in the environment: the
+  // instance would otherwise read it back through the question "which session
+  // is this process inside", and a `daemon run` issued from a session of
+  // another harness would answer for that session's config home (§3.8).
+  const outcome = await start({ configHome: home });
   if (!isRunning(outcome)) {
     throw new CommandError(
       "file_exists",

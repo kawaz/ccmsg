@@ -95,11 +95,21 @@ import { acquireLock, type Held, isHeldByUs, type Lock } from "./lock.ts";
 import { Log } from "./log.ts";
 import { prepareSocketDir, publishSocket, sweepOrphanSockets } from "./socket.ts";
 import { instanceIdentity } from "./identity.ts";
-import { type Env, type InstancePaths, resolvePaths } from "./paths.ts";
+import { type Env, type InstancePaths, resolvePaths, resolvePathsFor } from "./paths.ts";
 import { VERSION } from "../version.ts";
 
 export interface StartOptions {
   readonly env?: Env;
+  /** The config home this instance answers for (M6).
+   *
+   * Passed by value rather than through the environment, because the
+   * environment is read for a different question: which session the process
+   * runs inside, and therefore which config home *that* means (§3.8). A
+   * `daemon run <dir>` started from inside a session of another harness would
+   * otherwise answer for the config home of whoever started it. Absent means
+   * the environment decides, which is what a process nobody named a directory
+   * to is asking for. */
+  readonly configHome?: string;
   /** Mirror the log to stderr. A foreground run wants it; a test does not. */
   readonly echoLog?: boolean;
   /** Overrides the confirmation poll of the sessions watch, for tests. */
@@ -151,7 +161,8 @@ export function isRunning(outcome: StartOutcome): outcome is Instance {
 export async function start(options: StartOptions = {}): Promise<StartOutcome> {
   // 1. paths, and the directory the rest of them live in
   const env = options.env ?? process.env;
-  const paths = resolvePaths(env);
+  const paths =
+    options.configHome === undefined ? resolvePaths(env) : resolvePathsFor(options.configHome, env);
   mkdirSync(paths.stateDir, { recursive: true });
 
   // 2. the single instance. A previous run's file with nobody behind it is

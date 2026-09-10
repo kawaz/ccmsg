@@ -226,9 +226,13 @@ export interface Child {
 export type SpawnInstance = (dir: string, env: Env) => Child;
 
 export const spawnInstance: SpawnInstance = (dir, env) => {
+  // The directory is an argument and not an environment variable: `daemon run`
+  // takes it from there and hands it to the instance by value, so which config
+  // home the child answers for cannot depend on which session the supervisor
+  // was started from (§3.8).
   const proc = Bun.spawn([process.execPath, ENTRY, "daemon", "run", dir], {
     stdio: ["ignore", "ignore", "ignore"],
-    env: { ...env, CLAUDE_CONFIG_DIR: dir } as Record<string, string>,
+    env: { ...env } as Record<string, string>,
   });
   return {
     pid: proc.pid,
