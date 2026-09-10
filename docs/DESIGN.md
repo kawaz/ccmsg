@@ -255,10 +255,45 @@ acknowledgement (mesh-peer-auth §7), and they exist only in memory. Putting one
 directory would create a place to keep it and a way to recover it — two things to manage,
 against §1.1.
 
-The state directory holds one more thing: `dumps/`. `session_dump_write` writes the records it
-cut out of a transcript to `<state dir>/dumps/<sid>-<generated_at>.json` and answers with that
+The state directory holds one more thing: `dumps/`. `session_dump_write` reads a transcript and
+writes `<state dir>/dumps/<sid>[-agent-<agent id>]-<generated_at>.json`, answering with that
 path. This is none of the 5 kinds above, and it is not persistence in this section's sense: the
-instance never reads the file back, and nothing breaks if it is gone. What the op adds over
+instance never reads the file back, and nothing breaks if it is gone.
+
+**A dump holds items, not lines.** A transcript is the harness's own file format and changes
+without asking us. What the contract holds is **the vocabulary of type names and the shape of an
+item**; the code that reads the file — the classifying — is the daemon's (`src/transcript/items/`).
+A type name is a `:`-separated hierarchy (`message:user:in` / `thinking` / `tool:Bash` /
+`notice:slash` / `system:compact` / `system:attachment:<kind>` / `hook:<Event>`), so a prefix
+selects everything below it. Items are **finer than lines**: one assistant record becomes its
+thinking, its words and each call it held, and a call and its result stay the two items the file
+holds, linked by uuid through `result_item` / `parent_item` — some results arrive many turns
+later, so whether to fold them is left to whoever draws them. **Nothing unrecognised is dropped**:
+an unknown tool arrives in the generic `{input}` / `{result}` shape, an unknown attachment under
+its own `kind`, and a record that fits nothing as `system:unknown`. Only the interface and
+bookkeeping records are out of scope (`mode` / `queue-operation` / `progress` / `*-title` /
+`file-history-*` and the like), which measured 1,317 of one session's 3,429 lines.
+
+**The subject is the session, or one agent below it** (`agent_id` makes
+`<sid>/subagents/agent-<id>.jsonl` the subject). The type definitions do not change; `in` and
+`out` are read from where the subject stands, so for an agent `message:user:in` is the brief its
+parent gave it — the record nothing else in that file is a reply to — and `message:user:out` is
+what it answered. That is what lets one preset be carried unchanged down a chain: an `agent_id`
+from the `ids` ledger at the end becomes the subject of the next dump.
+
+**What is kept is decided by `types`, read left to right.** An element is a type name (a prefix
+will do), an exclusion beginning with `-`, or `@<preset>` expanding a configured selection in
+place (recursively). Absent keeps everything but `system:attachment`. Presets live in the config's
+`dump.presets` rather than in the contract, because what a preset names is an interest and not a
+property of the wire. A cycle, or a preset name nobody configured, is **refused when the config is
+read** — finding it per request would be finding it far too late. `daemon add` writes five
+examples into the shared file's `defaults` as a starting point to edit, and `dump_presets_read`
+lists them. The older `no_thinking` / `no_agent` mean `["-thinking"]` and
+`["-message:sub", "-tool:Agent"]`, and are applied last.
+
+There are **no text components per type yet**: a dump file is typed JSON. Where the classifying
+belongs is still open (DS-Q3); should it move to the contract package, `src/transcript/items/` is
+the unit that moves. What the op adds over
 reading the transcript is a durable artifact whose path can be handed to a successor session
 (instead of a body that travels out through a client and back in again), and since the caller
 never supplies a path, there is nothing for containment to judge. It lives under the state

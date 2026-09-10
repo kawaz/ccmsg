@@ -230,10 +230,37 @@ id が state と一緒に動くことがそれらを無効にしない唯一の�
 (mesh-peer-auth §7)、メモリ上にしか存在しない。state dir に置くと保存場所と復旧手順という
 管理対象が生まれ、§1.1 に反する。
 
-state dir にはもう 1 つ、`dumps/` がある。`session_dump_write` が transcript から切り出した記録を
-`<state dir>/dumps/<sid>-<generated_at>.json` に書き、応答としてその path を返す。これは上の
+state dir にはもう 1 つ、`dumps/` がある。`session_dump_write` が transcript を読んで
+`<state dir>/dumps/<sid>[-agent-<agent id>]-<generated_at>.json` に書き、応答としてその path を返す。これは上の
 5 種のどれでもなく、本節の意味での永続化でもない: instance はこの file を読み返さず、消えても
-何も壊れない。op が transcript の読み出しに足しているのは「path を後継セッションに渡せる
+何も壊れない。
+
+**dump が書くのは行ではなくアイテムである。** transcript はハーネス自身の file 形式で、こちらの合意なく変わる。
+契約が持つのは**型の語彙とアイテムの形だけ**で、file を読むコード (= 分類) は daemon にある
+(`src/transcript/items/`)。型名は `:` 区切りの階層 (`message:user:in` / `thinking` / `tool:Bash` /
+`notice:slash` / `system:compact` / `system:attachment:<kind>` / `hook:<Event>`) で、prefix でその配下を
+まとめて選べる。アイテムは**行より細かい**: assistant 1 行は thinking と本文と各 tool 呼び出しに分かれ、
+呼び出しと結果は行の実体どおり 2 アイテムのまま `result_item` / `parent_item` の uuid で結ぶ
+(結果が何 turn も後に来るものがあるので、畳むかどうかは表示側の判断にする)。**知らない形も必ず出る**:
+未知のツールは `{input}` / `{result}` の汎用形、未知の添付はその `kind` のまま、どれでもない行は
+`system:unknown` になる。UI と状態の記録 (`mode` / `queue-operation` / `progress` / `*-title` /
+`file-history-*` 等) だけが対象外で、実測では 1 セッション 3,429 行のうち 1,317 行がこれである。
+
+**主語はセッション、または配下の worker 1 体である** (`agent_id` を指定すると
+`<sid>/subagents/agent-<id>.jsonl` が対象になる)。型の定義は変えず、`in` / `out` を主語から見る:
+worker を主語にすると `message:user:in` は親が渡した指示書 (= その file で誰の返信でもない先頭行) に、
+`message:user:out` は worker の回答になる。同じ preset がどの階層でもそのまま通るのはこのためで、
+末尾の `ids` 台帳に出た `agent_id` を次の dump の主語にすることで掘り下げられる。
+
+**何を残すかは `types` で左から順に決める。** 要素は型 (prefix 可)・`-` 始まりの除外・
+`@<preset 名>` (config の preset をその位置に展開、再帰可) で、無指定は `system:attachment` を除く全部。
+preset は契約に焼かず config の `dump.presets` に置く (名前が指すのは「関心の切り方」であって wire の性質ではない)。
+循環参照と未定義の preset 名は **config 読み込み時に拒否**する (dump のたびに落ちるのでは遅い)。
+`daemon add` は編集の出発点として 5 つの例を shared file の `defaults` に書く。一覧は `dump_presets_read` で引く。
+既存の `no_thinking` / `no_agent` は `["-thinking"]` / `["-message:sub", "-tool:Agent"]` と同義で、最後に適用される。
+
+型ごとのテキスト表示コンポーネントは**まだ無い** (dump file は型付き JSON まで)。分類の置き場は
+DS-Q3 が未裁定で、契約 package 側へ移す判断になれば `src/transcript/items/` がそのまま移送単位になる。op が transcript の読み出しに足しているのは「path を後継セッションに渡せる
 耐久性のある成果物」であって (本文を client 経由で外に出してまた入れ直す代わりに)、path は
 呼び出し側が渡さないので封じ込めの判定対象も無い。state dir の下に置くのは、instance ごとの
 path をすべて config home から導く §8.1 に従うためである。
