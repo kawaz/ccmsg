@@ -1,6 +1,8 @@
 import {
+  type AgentInfo,
   type InstanceId,
   LAST_LIVE_RETENTION_MS,
+  type LastLiveSession,
   type PeerInfo,
   PLAIN_TOPICS,
   type Sid,
@@ -116,17 +118,31 @@ export class Relay {
     return values;
   }
 
-  /** Which instance a session belongs to, read from the `peers` values the
-   * cluster stated (§7.3).
+  /** Which instance a session belongs to, read from the cluster values the
+   * peers stated (§7.3).
    *
-   * The row names its own instance rather than the one that relayed it, so a
-   * value that travelled through a third instance still points at the session's
-   * own. */
+   * `peers` names every session an instance currently holds — connected or in
+   * `last_live` — and is checked first. A session hello has not reached yet
+   * has no row there but the harness may already know of it, so `agents` is
+   * checked next; `last_live` is the last resort for one whose instance has
+   * not stated `agents` at all. Every row names its own instance rather than
+   * the one that relayed it, so a value that travelled through a third
+   * instance still points at the session's own. */
   owner(sid: Sid): InstanceId | undefined {
     this.#sweep();
     for (const held of this.#held.values()) {
       const value = held.get("peers") as { peers?: PeerInfo[] } | undefined;
       const row = value?.peers?.find((peer) => peer.sid === sid);
+      if (row !== undefined) return row.instance;
+    }
+    for (const held of this.#held.values()) {
+      const value = held.get("agents") as { agents?: AgentInfo[] } | undefined;
+      const row = value?.agents?.find((agent) => agent.sid === sid);
+      if (row !== undefined) return row.instance;
+    }
+    for (const held of this.#held.values()) {
+      const value = held.get("peers") as { last_live?: LastLiveSession[] } | undefined;
+      const row = value?.last_live?.find((session) => session.sid === sid);
       if (row !== undefined) return row.instance;
     }
     return undefined;

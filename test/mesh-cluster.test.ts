@@ -591,6 +591,30 @@ describe("what a disconnected instance leaves behind (§7.5, DV-Q12)", () => {
     expect(relay.retained).toEqual({ instances: 0, marked: 0 });
   });
 
+  test("a session the peer only knows through its harness scan is still found (§7.3)", () => {
+    // A session that has not greeted yet has no row in `peers`, but the
+    // instance holding it already reports it on `agents`.
+    const relay = new Relay({ publish: () => undefined });
+    const peer = "ws://127.0.0.1:9" as InstanceId;
+    relay.accept(peer, "peers", { peers: [], last_live: [] });
+    relay.accept(peer, "agents", {
+      agents: [
+        { sid: SID_ON_B, instance: peer, pid: 1, cwd: "/", kind: "interactive", started_at: 0 },
+      ],
+    });
+    expect(relay.owner(SID_ON_B)).toBe(peer);
+  });
+
+  test("a session the peer has only in `last_live` is still found (§7.3)", () => {
+    const relay = new Relay({ publish: () => undefined });
+    const peer = "ws://127.0.0.1:9" as InstanceId;
+    relay.accept(peer, "peers", {
+      peers: [],
+      last_live: [{ sid: SID_ON_B, instance: peer, last_seen_at: 0 }],
+    });
+    expect(relay.owner(SID_ON_B)).toBe(peer);
+  });
+
   test("a topic of any other granularity is not relayed", () => {
     const relay = new Relay({ publish: () => undefined });
     // `inbox` names one instance's topic while its value belongs to a session,

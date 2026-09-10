@@ -614,9 +614,11 @@ webui ──▶ instance A ──(封筒: to_instance=B, from_instance=A, hops=[
   しない。A が侵害された場合に B の認可が消えるため
 - やり直す相手は封筒の `caller` (認証済み link が名乗った呼び出し元) であって、転送元の判断ではない
 
-「対象の担当 instance」の決め方: sid → 担当 instance の対応は `peers` topic が持っている。
-知らない sid は「cluster のどこにもない」= `session_not_found`。ただし到達不能な instance が
-ある間は判定を保留する (§4.2)。
+「対象の担当 instance」の決め方: sid → 担当 instance の対応は `peers` topic の `peers[]`
+（接続中）→ `agents` topic の `agents[]`（ハーネスが把握している全セッション、`peers` に
+まだ現れていないものを含む）→ `peers` topic の `last_live[]`（切断済みだが保持期間内）の
+順で探す。知らない sid は「cluster のどこにもない」= `session_not_found`。ただし到達不能な
+instance がある間は判定を保留する (§4.2)。
 
 ### 7.4 event の relay
 

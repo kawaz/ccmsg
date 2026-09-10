@@ -701,9 +701,12 @@ webui ──▶ instance A ──(envelope: to_instance=B, from_instance=A, hops
 - What they are run against is the envelope's `caller`, the identity an authenticated link
   named, rather than the forwarding instance's outcome
 
-How "the owning instance of the target" is decided: the sid-to-owning-instance mapping is held
-by the `peers` topic. An unknown sid means "nowhere in the cluster" = `session_not_found`.
-However, while an unreachable instance exists, the judgment is deferred (§4.2).
+How "the owning instance of the target" is decided: the sid-to-owning-instance mapping is
+looked for, in order, in the `peers` topic's `peers[]` (connected), then the `agents` topic's
+`agents[]` (every session the harness knows of, including one that has not yet appeared in
+`peers`), then the `peers` topic's `last_live[]` (disconnected but still within the retention
+window). An unknown sid means "nowhere in the cluster" = `session_not_found`. However, while an
+unreachable instance exists, the judgment is deferred (§4.2).
 
 ### 7.4 Event relay
 
