@@ -12,7 +12,7 @@ dump は transcript の行をそのまま並べるのではなく、**アイテ�
 
 | 型 | 意味 | jsonl 上の抽出 | webui の単位 | csa |
 |---|---|---|---|---|
-| `message:user:in` | 人 → main の発言 | `type:"user"` かつ下記 notice のどれでもない行。`content` が string、または text / image ブロックのみの配列 | `UserMessageKind` = `user-prompt` / `slash-command-prompt` | `U` |
+| `message:user:in` | 人 → main の発言 | `type:"user"` かつ下記 `notice` / `system` のどれでもない行。`content` が string、または text / image ブロックのみの配列 | `UserMessageKind` = `user-prompt` / `slash-command-prompt` | `U` |
 | `message:user:out` | main → 人 への応答 | `type:"assistant"` の `content[].type=="text"` | `Segment` = `text` (role: assistant) | `R` |
 | `message:sub:out` | main → subagent の指示 | `content[].type=="tool_use"` かつ `name=="Agent"` の `input.prompt` (`description` / `subagent_type` / `name` を添える)、および `name=="SendMessage"` で宛先が subagent のもの | `agent-spawn` / `agent-send` | `A` |
 | `message:sub:in` | subagent → main の答え | `origin.kind=="task-notification"` の user 行のうち `<subagent>` と `<result>` を持つもの。全文が要るときは `<sid>/subagents/agent-<agentId>.jsonl` の末尾 assistant text | `task-notification` | `I` |
@@ -48,22 +48,60 @@ dump は transcript の行をそのまま並べるのではなく、**アイテ�
 
 `tool:Bash` に **exit code は無い**。実 transcript の `toolUseResult` は `{interrupted, isImage, noOutputExpected, stderr, stdout}` で、終了コードは記録されていない (稀に `returnCodeInterpretation` が付く)。表示は `interrupted` と `stderr` の有無で代替する。
 
-未知のツールは `tool:<Name>` として汎用形で必ず出る。型を足すのは表示を良くするためで、拾うかどうかの条件ではない。
+未知のツールも「専用表示が無い型も必ず出る」の原則どおり汎用形で出る (後述)。
 
-### notice — harness が差し込んだもの
+### notice — 人が harness を操作した
 
-会話でもツールでもない、セッションを動かした事実。csa が `I` に押し込んでいたものの行き先。
+会話でもツールでもない、**人が harness を操作した**事実。csa が `I` に押し込んでいたもののうち、人に由来する分の行き先。
 
 | 型 | 意味 | jsonl 上の抽出 | webui の単位 |
 |---|---|---|---|
 | `notice:slash` | slash command の起動と出力 | `<command-name>` / `<command-message>` / `<local-command-stdout>`、`type:"system"` の `subtype:"local_command"` | `slash-command-invocation` / `-stdout` |
 | `notice:interrupt` | 人による中断 | `[Request interrupted` で始まる user 行 | `user-interrupt-marker` |
-| `notice:compact` | 文脈圧縮 | `isCompactSummary:true` の user 行 | (要約行) |
-| `notice:api-error` | 応答が返らず打ち切られた | `type:"assistant"` かつ `isApiErrorMessage:true` | `AssistantMessageKind` = `api-error` |
-| `notice:hook` | hook が差し込んだ文脈 | `type:"attachment"` の `attachment.type` が `hook_additional_context` / `hook_success` | (fold) |
-| `notice:task` | 背景タスク・Monitor のイベント通知 | `origin.kind=="task-notification"` かつ `<event>` を持つもの (`<subagent>` を持つものは `message:sub:in`) | `task-notification` |
-| `notice:attachment` | 添付・環境注入 | 上記以外の `type:"attachment"` (`environment` / `date` / `model` / `skill_listing` / `queued_command` …) | (fold) |
-| `notice:meta` | 上記に当てはまらない harness 注入 | `isMeta:true` の残り、`system-caveat`、`workflow-resume` | `unknown-meta` |
+
+`notice` を `system` に吸収せず残すのは、**dump の読み手が最初に知りたいのが「なぜここで話が途切れたか」**だから。中断と slash 起動は人がキーボードを叩いた事実で、会話の断絶を説明する。harness が自分の都合で差し込んだもの (下記 `system:*`) とは、読み飛ばしてよいかどうかが逆になる。
+
+### system — user 行の形をした harness 自身のメッセージ
+
+wire 上は `type:"user"` / `type:"assistant"` / `type:"attachment"` に化けているが、誰の発言でもない harness の報告。
+
+| 型 | 意味 | jsonl 上の抽出 | webui の単位 |
+|---|---|---|---|
+| `system:compact` | 文脈圧縮の要約 | `isCompactSummary:true` の user 行 | (要約行) |
+| `system:api-error` | 応答が返らず打ち切られた | `type:"assistant"` かつ `isApiErrorMessage:true` | `AssistantMessageKind` = `api-error` |
+| `system:task` | 背景タスク・Monitor のイベント通知 | `origin.kind=="task-notification"` かつ `<event>` を持つもの (`<subagent>` を持つものは `message:sub:in`) | `task-notification` |
+| `system:caveat` | slash command に付く定型注意書き | `<local-command-caveat>` | `system-caveat` |
+| `system:resume` | workflow の再開命令 | `Resume the paused workflow by calling: Workflow({` で始まる user 行 | `workflow-resume` |
+| `system:attachment:<kind>` | 添付・環境注入 | `type:"attachment"` の `attachment.type` (`environment` / `date` / `model` / `skill_listing` / `queued_command` / `prompt_snapshot` …) をそのまま `<kind>` に採る | (fold) |
+| `system:unknown` | 上記に当てはまらない `isMeta:true` の残り | `isMeta:true` | `unknown-meta` |
+
+`system:attachment:<kind>` だけ 3 段なのは、`attachment.type` が harness の追加で増え続ける開いた集合だから。列挙して固定すると、知らない `kind` が来たときに `system:unknown` に落ちて何が来たか分からなくなる。wire の値をそのまま型名の末尾に採れば、未知の添付も名前を保ったまま出る。
+
+### hook — operator が仕込んだコードの出力
+
+`type:"attachment"` のうち `attachment.type` が `hook_additional_context` / `hook_success` のもの。`system:*` と分けるのは、hook が **harness の報告ではなく operator 自身が書いたコードの出力**だから。dump の読み手にとって、自分が仕込んだものが効いているかは harness の内部事情とは別の関心になる。
+
+型は `hook:<hookEvent>` (`hook:SessionStart` / `hook:PreToolUse` / `hook:UserPromptSubmit` …)。フィールドは次のとおり。
+
+| フィールド | 由来 |
+|---|---|
+| `hook_name` | `hookName`。matcher 付きの完全名 (`PreToolUse:Bash` / `SessionStart:clear`) |
+| `outcome` | `additionalContext` (文脈注入) / `output` (stdout をそのまま) / `block` (実行を止めた) |
+| `content` | `content`。注入された本文 |
+| `command` / `exit_code` / `stderr` / `duration_ms` | `hook_success` のみ持つ |
+| `tool_use_id` | `toolUseID`。`PreToolUse` / `PostToolUse` では対象のツール呼び出しを指す |
+
+`hookName` をそのまま型名にしないのは、実際の値が `PreToolUse:Bash` のように **`:` を含む**ため。型名の階層区切りと衝突して `hook:PreToolUse:Bash` が 3 段に見えるが、`Bash` は階層の一段ではなく matcher なので、prefix 選択の意味が壊れる。イベント名までを型にし、matcher はフィールドに置く。
+
+### 専用表示が無い型も必ず出る
+
+型に専用の表示コンポーネントが無い場合、**汎用形で出す**。落とさない。
+
+- `tool:<未知>` → `{input, result}`
+- `system:attachment:<未知>` / `system:unknown` → 見出し 1 行 + `attachment` オブジェクトの JSON 要約 (深さ 2、長い値は長さに畳む)
+- `hook:<未知のイベント>` → 上記のフィールド表で出せる分だけ
+
+型を足すのは表示を良くするためであって、**拾うかどうかの条件ではない**。分類が知らない形の行が来ても、型名と生の要約は必ず出力に現れる。知らないものが黙って消えるのが、dump にとって最も困る壊れ方になる。
 
 `type` が `mode` / `permission-mode` / `atis-latch` / `ai-title` / `last-prompt` / `queue-operation` / `cost-state` / `file-history-snapshot` / `file-history-delta` / `bridge-session` の行は UI と状態の記録で、どの型にも落とさない (dump の対象外)。実測では 1 セッション 3,429 行のうち 1,300 行以上がこれで、拾うと本文が埋まる。
 
@@ -76,7 +114,7 @@ dump は transcript の行をそのまま並べるのではなく、**アイテ�
 | id | 持つ型 | 由来 |
 |---|---|---|
 | `agent_id` | `message:sub:*`, `tool:Agent` | `toolUseResult.agentId` / `input.name` |
-| `task_id` | `notice:task`, `tool:Monitor`, `tool:TaskStop` | `<task-id>` / `toolUseResult.taskId` |
+| `task_id` | `system:task`, `tool:Monitor`, `tool:TaskStop` | `<task-id>` / `toolUseResult.taskId` |
 | `tool_use_id` | `tool:*` | `tool_use.id` |
 | `msg_id` | `message:session:*`, `tool:SendMessage` | `toolUseResult.msg_id` / 封筒の `mid` |
 | `sid` | `message:session:*` | 封筒の `from` / `to` |
@@ -155,16 +193,28 @@ Agent 呼び出しの往復を 1 かたまりにし、答えを 1 段インデ�
   todo     preset の例を書く
 ```
 
-### `notice:*`
+### `notice:*` / `system:*`
 
-1 行に畳む。本文が要るのは `notice:compact` だけ。
+1 行に畳む。本文が要るのは `system:compact` だけ。
 
 ```
 [4d1e8f90] notice:slash  /pre-compact
 [5e2a90b1] notice:interrupt  10:41:02
-[6f3ba1c2] notice:api-error  応答が打ち切られた
-[70c4b2d3] notice:compact  10:44:19
+[6f3ba1c2] system:api-error  応答が打ち切られた
+[70c4b2d3] system:compact  10:44:19
   (要約本文)
+[81d5c3e4] system:attachment:queued_command  /pre-clear
+```
+
+### `hook:*`
+
+見出しに完全名と結果の種類、注入された本文を 1 段下げる。
+
+```
+[92e6d4f5] hook:PreToolUse  PreToolUse:Bash  additionalContext  tool=toolu_01Ne9BDS
+  docs/issue/ の issue を Bash 経由で直接読もうとしている。read コマンドを使うこと。
+[a3f7e506] hook:SessionStart  SessionStart:clear  output  exit=0  12ms
+  日本語で応答する設定を再確認してください。
 ```
 
 ### ids 台帳
@@ -177,7 +227,27 @@ task   b6mmcr0ax  just watch          running
 peer   9f2c1ab4   ccmsg-webui/main
 ```
 
-## 3. 選択と範囲
+## 3. 分類の置き場
+
+分類 (jsonl の 1 行 → 型 + フィールド) は **契約 package の subpath に 1 つ置く**。想定は `@ccmsg/protocol/transcript-items`。daemon の dump と webui の Timeline は同じものを import し、**型に専用コンポーネントを当てる**ところだけをそれぞれ持つ。dump はテキストの表示コンポーネント、webui は React コンポーネント。型が増えたら両方に描き方を足す (足すまでは汎用形で出る)。
+
+契約 package に置くのは、型名が `types` 引数と `dump.presets` の config に現れる **wire の語彙**だから。分類の実装と、その結果を選択する引数の schema が離れると、片方だけ増えて名前がずれる。
+
+### webui の現状と移行
+
+webui は今 3 系統を並べていて、階層を持たない。
+
+| 現状 | 何を分類するか | 移行先 |
+|---|---|---|
+| `UserMessageKind` | `type:"user"` 行 | `message:user:in` / `message:session:in` / `notice:*` / `system:*` |
+| `AssistantMessageKind` | `type:"assistant"` 行 | `message:user:out` / `system:api-error` |
+| `Segment` | 1 行の中の content ブロック | `thinking` / `tool:*` |
+
+行を分類する 2 つとブロックを分類する 1 つが同じ平面に並んでいるのが、階層を持てない理由になっている。共通の分類はアイテムを **行より細かくブロック単位**で出し (assistant 1 行が `thinking` + `tool:Bash` + `message:user:out` の 3 アイテムになる)、webui 側は今の `ParsedLine` の下にそれを敷く。`UserMessageKind` / `AssistantMessageKind` は共通分類からの導出に置き換わり、`Segment` は「共通アイテム + webui だけの表示都合」の和になる。
+
+webui が `bash-use` と `bash-result` を別 Segment に持つのは残せる。共通分類が返すのは畳んだ 1 アイテム (`tool:Bash`) で、webui はそれを描くときに use と result の 2 ブロックに開く。逆向き (webui の 2 分割を共通分類に持ち上げる) にしないのは、開いた形から畳むには対応付けをもう一度やる必要があり、分類の責務が呼び出し側に漏れるため。**畳んだものを開くのは表示の自由、開いたものを畳むのは分類のやり直し**になる。
+
+## 4. 選択と範囲
 
 ### 型の選択
 
@@ -191,7 +261,7 @@ peer   9f2c1ab4   ccmsg-webui/main
 
 除外を持つのは、prefix でまとめて取ってから 1 つ落とす形が実際に要るため (`tool` を取ると `tool:Read` が支配的になる)。除外なしだと `tool` を諦めて 10 個以上を列挙することになる。
 
-無指定は既定 = 平坦な全部入り (`notice:attachment` を除く全型)。
+無指定は既定 = 平坦な全部入り (`system:attachment` を除く全型)。
 
 ### 範囲
 
@@ -199,7 +269,7 @@ peer   9f2c1ab4   ccmsg-webui/main
 
 csa の turn 番号 / marker は **採らない**。turn 番号はファイルを読み直すたびに振り直される派生値で、`until_uuid` が同じ役割を安定した名前で果たしている。ただし turn は各アイテムの属性としては出す (見出しの `10:14:02` の隣に置ける)。webui の Timeline も位置は offset と uuid で指す。
 
-## 4. 主語の指定
+## 5. 主語の指定
 
 やり方を盗みたい相手が worker のことがある。親の dump に出るのは Agent 呼び出しの指示と返ってきた答えだけで、その worker が実際に何を叩いて何を読んだかは worker 自身の transcript にしかない。dump の対象はセッションだけでなく **worker 1 体**も指せる。
 
@@ -237,7 +307,7 @@ worker の transcript は 1 ファイルで完結し、全行が `isSidechain: t
 
 同じ preset がそのまま使えるのは、型が主語相対に定義されているため。「親の指示を読んで、思考と Bash とファイル操作を追う」という関心の切り方が、どの階層でも同じ名前で通る。
 
-## 5. preset
+## 6. preset
 
 契約には焼かず config の `dump.presets` で operator が定義する。
 
@@ -263,7 +333,7 @@ worker の transcript は 1 ファイルで完結し、全行が `isSidechain: t
       {
         "name": "handoff",
         "description": "後継セッションへの引き継ぎ。直近の会話と、走っているものの台帳",
-        "opts": { "types": ["message", "notice:task", "ids"] }
+        "opts": { "types": ["message", "system:task", "ids"] }
       },
       {
         "name": "audit",
@@ -290,10 +360,10 @@ worker の transcript は 1 ファイルで完結し、全行が `isSidechain: t
 ```
 ["@howto"]                    調査のノウハウ一式
 ["@file", "-tool:Grep"]       ファイル操作から探索を落とす
-["@journal", "notice:task"]   日記に背景タスクの通知を足す
+["@journal", "system:task"]   日記に背景タスクの通知を足す
 ```
 
-## 6. 契約に足す候補
+## 7. 契約に足す候補
 
 `SessionDumpWriteArgs`:
 
@@ -306,7 +376,7 @@ worker の transcript は 1 ファイルで完結し、全行が `isSidechain: t
 
 新規 op `dump_presets_read`: config が持つ preset の `{name, description, opts}` の配列を返す。
 
-## 7. kawaz に決めてもらうこと
+## 8. kawaz に決めてもらうこと
 
 1. **型一覧の確認** — `message` / `thinking` / `tool` / `notice` の 4 群と、その配下の型名。特に `notice:*` は csa の `I` を分解したもので、この粒度でいいか (もっと粗く `notice` 1 つに畳む案もある)。
 2. **`message:sub:in` の本文をどこから取るか** — task-notification の `<result>` (main の jsonl だけで完結、要約済み) か、`subagents/*.jsonl` の末尾 assistant text (全文、別ファイルを読む) か。両方出す選択肢もある。
