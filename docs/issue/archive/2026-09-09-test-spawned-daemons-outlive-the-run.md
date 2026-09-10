@@ -1,6 +1,6 @@
 ---
 title: テストが spawn した daemon プロセスが実行終了後も孤児で残存する
-status: open
+status: resolved
 category: bug
 created: 2026-09-09T18:35:28+09:00
 last_read:
@@ -9,10 +9,10 @@ wip_entered:
 blocked_entered:
 pending_entered:
 discarded_entered:
-resolved_entered:
+resolved_entered: 2026-09-10T13:06:03+09:00
 discard_reason:
 pending_reason:
-close_reason:
+close_reason: ["done: test/harness.ts の reapOrphans() で回収 + fail 化 (実機確認済み)", "discarded: daemon 側の自己終了は §8.4 (監督者だけが instance を起こす / daemon run は意図的に管理外) と両立しないため不採用"]
 blocked_by:
 origin: 自リポ TODO
 ---
