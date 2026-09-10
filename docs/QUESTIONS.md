@@ -31,4 +31,8 @@
 
 ## 確認待ち
 
-(なし)
+### HY-C1 hyoui-webui の端末 URL の形
+
+端末リンク (issue `terminal-link-to-hyoui-webui`) の飛び先テンプレを instance config `upstream.terminal_webui` に入れる。`{terminal_id}` / `{namespace}` を置換する形で、本番 personal に入れる値を教えてほしい (例: `https://hyoui.<host>/s/{terminal_id}`)。
+
+- [ ] URL テンプレ: (自由記述)
