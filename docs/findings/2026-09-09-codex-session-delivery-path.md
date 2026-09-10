@@ -206,6 +206,18 @@ upstream (`codex-rs/thread-store/src/local/writer_lock.rs`) では lock は floc
 
 **ツール実行の環境には入る**。本物の Codex セッションでコマンドを走らせると `CODEX_THREAD_ID` と `CODEX_SESSION_ID` の**両方が立ち、値は同一の thread UUID** だった (`SessionStart.session_id` と同じ形、UUIDv7。3 番目のブロックが `7` で始まる)。名前がバイナリ内に在ることではなく、この観測が両変数を読む根拠である。
 
+## 承認待ちを外から知る手段 (2026-09-10 追記)
+
+**`CODEX_HOME` 配下に「入力待ち」の記録は残らない。**
+
+rollout の永続化方針 (`codex-rs/rollout/src/policy.rs`) は、承認・入力要求の event を "Transient, non-durable events" として明示的に落とす: `ExecApprovalRequest`、`ApplyPatchApprovalRequest`、`RequestPermissions`、`RequestUserInput`、`ElicitationRequest` はいずれも非永続である。rollout に残る turn の marker は `TurnStarted` / `TurnComplete` / `TurnAborted` で、いずれも「走っているか終わったか」しか言わない。
+
+thread history の sqlite (`thread_history_1.sqlite`) は turn ごとに status を持つが、値は `TurnStatus` = `completed` / `interrupted` / `failed` / `inProgress` の 4 つで、**待ちと実行中を区別しない**。実際に完了した thread を読むと `status = "completed"` だった。
+
+待ちを知っているのは app-server で、`thread/status/changed` の `ThreadStatus::Active { active_flags }` が `WaitingOnApproval` / `WaitingOnUserInput` を名乗る。これは JSON-RPC の通知であってファイルではないので、外から読むには app-server への購読が要る。
+
+副産物として、「turn が走っているか」は `thread_turns.status = inProgress` と rollout の `TurnStarted` / `TurnComplete` から読める。
+
 ## 対話プロンプトと非対話の `codex queue` (2026-09-10 追記、0.154.0)
 
 対話で起動した Codex は、条件により起動時に 2 つの選択を求める (kawaz 観測): 更新案内 (`Update available … 1. Update now 2. Skip 3. Skip until next version`) と、そのディレクトリを初めて開く時の信頼確認 (`Do you trust the contents of this directory? 1. Yes, continue 2. No, quit`)。どちらも hook 発火より前である。
@@ -228,6 +240,8 @@ upstream (`codex-rs/thread-store/src/local/writer_lock.rs`) では lock は floc
 - [`SessionStart` implementation](https://github.com/openai/codex/blob/rust-v0.153.0/codex-rs/hooks/src/events/session_start.rs)
 - [`SessionEnd` implementation](https://github.com/openai/codex/blob/rust-v0.153.0/codex-rs/hooks/src/events/session_end.rs)
 - [legacy `notify` payload and argv invocation](https://github.com/openai/codex/blob/rust-v0.153.0/codex-rs/hooks/src/legacy_notify.rs)
+- [rollout persistence policy: which events are durable](https://github.com/openai/codex/blob/rust-v0.153.0/codex-rs/rollout/src/policy.rs)
+- [`ThreadStatus` / `ThreadActiveFlag`, and `TurnStatus`](https://github.com/openai/codex/blob/rust-v0.153.0/codex-rs/app-server-protocol/src/protocol/v2/thread.rs)
 - [thread writer lock: flock, and the stale sweep on acquire](https://github.com/openai/codex/blob/rust-v0.153.0/codex-rs/thread-store/src/local/writer_lock.rs)
 - [rollout recorder and JSONL layout](https://github.com/openai/codex/blob/rust-v0.153.0/codex-rs/rollout/src/recorder.rs)
 - [rollout filename parser / renderer](https://github.com/openai/codex/blob/rust-v0.153.0/codex-rs/rollout/src/rollout_file_name.rs)

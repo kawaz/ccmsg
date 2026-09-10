@@ -341,6 +341,7 @@ instance の属性であり、**契約には出さない**。`ccmsg daemon add -
 | セッションを名乗る環境変数 | `CLAUDE_CODE_SESSION_ID` | `CODEX_THREAD_ID` / `CODEX_SESSION_ID` |
 | config home だと言う file | `settings.json` | `config.toml` |
 | セッションが在ることの証拠 | `sessions/<pid>.json` (pid・cwd・status を持つ) | `thread-writer-locks/<thread-id>.lock` (thread id しか持たない) |
+| 入力待ちの検出 | 同 file の `status: waiting` | **無い** (下記) |
 | transcript の置き場と名前 | `projects/<cwd を潰した名前>/<sid>.jsonl` | `sessions/<年>/<月>/<日>/rollout-<開始時刻>-<thread-id>.jsonl` |
 | 直送 (経路 (a)) | messaging socket へ書く (§4.1) | `codex queue --thread <sid> --message <本文>` |
 | plugin の置き場 | agent の CLI に登録させる | config home の `hooks.json` と `skills/` へ直接置く |
@@ -398,6 +399,19 @@ flock を試せば stale 判定は可能だが、Node 標準に flock が無い�
 ディレクトリ・標準入力を閉じた状態でも待たずに答えた (0.154.0 実測)。それでも子プロセスには
 標準入力を渡さず時間制限を掛ける — 答えない子は `message_send` をその寿命だけ止めてしまい、
 経路 (b) は「来なかった経路が message に何も損させない」ためにある (§4.1)。
+
+**Codex の入力待ちは検出しない。** 承認や質問で止まっている thread は、`CODEX_HOME` の下に
+そう書かない: 承認・入力要求の event は rollout の永続化方針が "transient" として明示的に
+落とし、thread history が turn ごとに持つ status は `completed` / `interrupted` / `failed` /
+`inProgress` の 4 つで待ちと実行中を区別しない。知っているのは app-server で、
+`thread/status/changed` の `WaitingOnApproval` / `WaitingOnUserInput` がそれを名乗るが、
+これはファイルではなく購読の要る JSON-RPC 通知であり、§5.1 の入力 (自 config home のファイルと
+自分への接続) に無い種類の上流である。**足すかどうかは「何を増やしたくないか」の判断**なので、
+ここでは足さない。
+
+したがって Codex の thread は、承認待ちで止まっていても**生存 (管理外) のまま**であり、
+待ちに気づく口は ccmsg の外 (hyoui) にある。Claude Code だけが `waiting` を出す — 一覧の
+「待ち」欄が harness によって埋まったり埋まらなかったりするのは、この差がそのまま出たものである。
 
 **hooks の trust**: Codex は一度人が確認した hook しか実行しない。`plugin install codex` は
 file を置き、trust が要ることを `needs` として答えるだけで、trust 自体は書かない
@@ -539,6 +553,8 @@ webui が生の値を組み合わせて分類すると、instance ごとに解�
 その場でディレクトリを読む。監視と poll は「変化を購読者へ push する」ための資源であって、
 答えの取得経路ではない。混同すると、誰も購読していない間は生きているセッションが
 `session_not_found` になり、生きたままのセッションが last_live へ「消えた」と書かれる。
+
+**codex の入力待ちは分類の入力に無い** (§3.8)。承認で止まっている thread は生存のまま読まれる。
 
 **codex のセッションは端末を名乗らない。** 分類の「管理外」は「生きているが、こちらから
 打ち込む手がかりが無い」の意味で (§5.2)、Codex の thread に端末として打ち込む道は無い。

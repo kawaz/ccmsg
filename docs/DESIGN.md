@@ -381,6 +381,7 @@ The differences are these six and nothing else reads the harness.
 | Environment variable naming the session | `CLAUDE_CODE_SESSION_ID` | `CODEX_THREAD_ID` / `CODEX_SESSION_ID` |
 | The file that says "this is a config home" | `settings.json` | `config.toml` |
 | Evidence that a session is there | `sessions/<pid>.json` (carries pid, cwd, status) | `thread-writer-locks/<thread-id>.lock` (carries only the thread id) |
+| Detecting that it waits on input | `status: waiting` in that same file | **None** (below) |
 | Where transcripts live, and their names | `projects/<flattened cwd>/<sid>.jsonl` | `sessions/<year>/<month>/<day>/rollout-<start>-<thread-id>.jsonl` |
 | Direct delivery (route (a)) | Write to the messaging socket (§4.1) | `codex queue --thread <sid> --message <text>` |
 | Where the plugin goes | Registered through the agent's own CLI | Written straight into the config home's `hooks.json` and `skills/` |
@@ -444,6 +445,20 @@ never trusted, with standard input closed (measured, 0.154.0). The child is stil
 standard input and a deadline: a child that never answers would hold `message_send` open for as
 long as it lived, and route (b) is there so a route that does not come through costs a message
 nothing (§4.1).
+
+**A Codex session waiting on input is not detected.** A thread stopped on an approval or a
+question does not say so anywhere under `CODEX_HOME`: the rollout's persistence policy drops the
+approval and input-request events explicitly as transient, and the per-turn status the thread
+history keeps is `completed` / `interrupted` / `failed` / `inProgress`, which does not tell
+waiting from running. What knows is the app-server, whose `thread/status/changed` names
+`WaitingOnApproval` and `WaitingOnUserInput` — but that is a JSON-RPC notification requiring a
+subscription, not a file, and so a kind of upstream §5.1's inputs (this config home's files, and
+connections to us) do not have. **Whether to add one is a question of what we do not want to
+grow**, and it is not added here.
+
+A Codex thread therefore stays **live (unmanaged)** while it waits, and noticing the wait is
+done outside ccmsg. Only Claude Code reports `waiting`; a list whose "waiting" column is filled
+for one harness and not the other is showing exactly this difference.
 
 **Hook trust**: Codex will not run a command hook a person has not reviewed. `plugin install
 codex` lays the files down and answers that trust is required in `needs`; it does not write the
@@ -608,6 +623,9 @@ where a judgement needs it: `message_send` deciding on an addressee, the recompu
 to subscribers, not the route by which an answer is obtained. Confusing the two makes a live
 session `session_not_found` while nobody is subscribed, and writes a session that is still
 running into `last_live` as gone.
+
+**A Codex session waiting on input is not an input here** (§3.8): a thread stopped on an
+approval reads as live.
 
 **A Codex session names no terminal.** "Unmanaged" in the classification means "alive, but with
 no handle to type into" (§5.2), and there is no way to type into a Codex thread the way a
