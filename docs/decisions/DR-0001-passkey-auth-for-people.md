@@ -25,7 +25,7 @@ WS の入口は entry token (state ディレクトリの 0600 file) で守って
 - URL は `<endpoint の origin に配られている webui>/#register=<jwt>`。claims は `{ iss (instance id), sub, unit, endpoint, rp_id, exp (10 分), jti }`。`sub` は利用者の識別子で既定は `<unit>-<連番>`
 - 署名は **登録ごとの乱数 secret による HMAC** (検証者 = 発行者なので公開鍵は要らない)。secret は発行 instance のメモリにだけ置き `exp` で破棄する。永続鍵は持たない
 - webui は `/auth/challenge` で challenge を取り、`navigator.credentials.create()` (`residentKey: "preferred"`、`userVerification: "required"`、`user.id` = jwt の `user_id` (発行 instance が sub ごとに決める乱数 16 byte。record に保存し、認証の `userHandle` と照合する)、`rp.id` = jwt の `rp_id`) を行い、credential と jwt を jwt の `endpoint` の `/auth/register` に POST する
-- 受けた instance は `iss` が自分なら HMAC で jwt を検証する (`jti` と challenge の消費は WebAuthn 検証が通った後。ブラウザ側の一時的な失敗 1 回で URL が焼けないように)。WebAuthn 登録の検証 (L2 §7.1): `clientDataJSON.type` = `webauthn.create`、`challenge` = 発行した値、`origin` ∈ `entry.origins`、`crossOrigin` が `true` でないこと (Chrome 系は常に `false` を送る) と `topOrigin` が無いこと、`authData.rpIdHash` = sha256(`rp_id`)、UP と UV の flag、`fmt` = `none` で `attStmt` が空、credential id が既存 record と重複しないこと。通ったら `{ sub, unit, credential id, COSE 公開鍵, user.id, 登録時刻 }` を **credential record** として保存する。`iss` が自分でなければ `iss` へ転送する (§2.6)
+- 受けた instance は `iss` が自分なら HMAC で jwt を検証する (`jti` と challenge の消費は WebAuthn 検証が通った後。ブラウザ側の一時的な失敗 1 回で URL が焼けないように)。WebAuthn 登録の検証 (L2 §7.1): `clientDataJSON.type` = `webauthn.create`、`challenge` = 発行した値、`origin` のホストが `rp_id` かその配下、`crossOrigin` が `true` でないこと (Chrome 系は常に `false` を送る) と `topOrigin` が無いこと、`authData.rpIdHash` = sha256(`rp_id`)、UP と UV の flag、`fmt` = `none` で `attStmt` が空、credential id が既存 record と重複しないこと。通ったら `{ sub, unit, credential id, COSE 公開鍵, user.id, 登録時刻 }` を **credential record** として保存する。`iss` が自分でなければ `iss` へ転送する (§2.6)
 - `iss` が再起動していれば secret が消えて失敗する。登録に fallback は無く、CLI で URL を発行し直す (エラー文言は「登録 URL を再発行してください」)
 - リモートからの登録経路は無い。復旧も CLI だけ。`passkey list` / `passkey remove <sub>`
 - **保守情報**: 名前は 2 つあり意味が違う。`passkey add --name <ラベル>` は管理者が「誰宛に発行した URL か」を記す管理ラベル (jwt に載せる)、登録ページの名前入力は利用者が「どの端末の passkey か」を記す端末ラベル (複数端末を持つ利用者が自分の一覧から保守するためのもの)。credential record は `issued_label` / `device_label` / `user_agent` / `registered_at` / `registered_from` (IP) / `last_used_at` を持ち、`passkey list` はこれを並べる
@@ -37,7 +37,7 @@ WS の入口は entry token (state ディレクトリの 0600 file) で守って
 
 ### 2.3 RP ID は domain、既定は endpoint のホスト
 
-WebAuthn の RP ID は origin ではなく domain で、passkey は「今開いているページの effective domain か、その registrable suffix」でしか作成・利用できない。既定の `rp_id` は endpoint のホストで、これは **webui が endpoint と同じホストから配られている**構成 (通常形) を意味する。webui を別サブドメインに置くなら `--rp-id` に共通の registrable domain を渡し、instance は「`rp_id` が endpoint のホストと一致するか、その registrable suffix である」ことだけを検証する。`clientDataJSON.origin` の期待値は endpoint の origin ではなく **webui の origin 集合 = `entry.origins`**。同じ RP ID の endpoint が複数あっても (`https://h.example/` と `https://h.example/personal`) credential は 1 つで足りる (record は cluster で 1 つ、複製される)。
+WebAuthn の RP ID は origin ではなく domain で、passkey は「今開いているページの effective domain か、その registrable suffix」でしか作成・利用できない。既定の `rp_id` は endpoint のホストで、これは **webui が endpoint と同じホストから配られている**構成 (通常形) を意味する。webui を別サブドメインに置くなら `--rp-id` に共通の registrable domain を渡し、instance は「`rp_id` が endpoint のホストと一致するか、その registrable suffix である」ことだけを検証する。`clientDataJSON.origin` の検査は **credential の `rp_id` だけで束縛する** (origin のホストが `rp_id` と一致するかその配下であること。authenticator が `rpIdHash` に署名し、ブラウザが rp_id をページの domain かその suffix にしか許さないので、別途の origin 許可リストは情報を足さない)。config に origin の一覧は持たない。同じ RP ID の endpoint が複数あっても (`https://h.example/` と `https://h.example/personal`) credential は 1 つで足りる (record は cluster で 1 つ、複製される)。
 
 ### 2.4 token は record に紐づく opaque 値、family は単一 writer
 
@@ -49,7 +49,7 @@ WebAuthn の RP ID は origin ではなく domain で、passkey は「今開い�
 - アクセストークンは数時間、リフレッシュトークンは数日。rotate は使うたび。family は退役した refresh 値のハッシュを本来の exp まで保持し、**どの世代の値でも再利用を見たら family を失効させる**。直前 1 世代だけは再送の猶予として (猶予時間内に限り) 前回の答えを返す
 - アクセストークンは WS の handshake に subprotocol `ccmsg.token.<値>` で載せる (サーバは選んだ subprotocol を echo する。proxy が `Sec-WebSocket-Protocol` を透過することが要件)。ブラウザはメモリにだけ持つ
 - リフレッシュトークンは **httpOnly cookie**。名前は `__Secure-ccmsg-<sha256(instance id + "\n" + sub) の先頭 16 hex>`、値は opaque、`HttpOnly; Secure; SameSite=Strict; Path=<request のパスから /auth/ までの prefix>`。`Path` は帯域と露出面を絞るためで認可境界ではない (同一 origin の JS は任意パスに fetch できる)
-- 認証と refresh は endpoint の `/auth/` 配下の HTTP。webui が別サブドメイン (§2.3 の `--rp-id` 構成) の時だけ、fetch は `credentials: "include"`、応答は `Access-Control-Allow-Origin: <その origin>` + `Allow-Credentials`。状態を変える `/auth/*` は cross-origin でなくても `Origin` を `entry.origins` と照合し、未認証で叩けるので rate limit を持つ (mesh-peer-auth §6 の鍵取得と同型)
+- 認証と refresh は endpoint の `/auth/` 配下の HTTP。webui が別サブドメイン (§2.3 の `--rp-id` 構成) の時だけ、fetch は `credentials: "include"`、応答は request の `Origin` が rp_id の配下ならそれを `Access-Control-Allow-Origin` に echo + `Allow-Credentials`。状態を変える `/auth/*` は `Origin` のホストが rp_id の配下であることを要求し、未認証で叩けるので rate limit を持つ (mesh-peer-auth §6 の鍵取得と同型)
 - endpoint が `/` と `/personal` に分かれていれば cookie の Path も分かれるので、endpoint ごとに 1 回 passkey 認証が要る (record は共有されているので 2 回目以降は要らない)
 - 期限切れの family は `iss` が消す (単一 writer なので GC も担う)
 - LB で challenge の発行と応答の instance が違う時は、**応答を受けた instance が assertion を検証**し、challenge の消費だけを発行者へ問い合わせる。mint する family の `iss` は応答を受けた instance
@@ -58,7 +58,7 @@ WebAuthn の RP ID は origin ではなく domain で、passkey は「今開い�
 
 認証済みの WS はアクセストークンの `exp` までが期限 (`hello` の応答の `auth_expires_at`。UDS の user 接続には付かない)。クライアントは `exp` 前に `/auth/refresh` で新しいアクセストークンを得て、同じ接続上の `auth_refresh` op で期限を延ばす (切断しない)。怠った接続は instance が `exp` で切る。切られたら refresh → 再接続、refresh が無効なら passkey 認証 (`/auth/challenge` → `navigator.credentials.get()` → `/auth/assert`、record は `rawId` で引き `sub` は任意) → 新しい family → 再接続。`passkey remove` は該当 sub の family を全部失効させ、その sub で認証済みの WS を切る。
 
-認証 (L2 §7.2) の検証: `type` = `webauthn.get`、`challenge`、`origin` ∈ `entry.origins`、`crossOrigin` が `true` でないこと、`topOrigin` 無し、`rpIdHash`、UP と UV、`userHandle` が record の `user_id` と一致、署名 (`authData || sha256(clientDataJSON)`) を ES256 (+ RS256 / Ed25519)。signCount は record の値が非 0 なら提示値 > record を要求し (提示 0 も退行として拒否)、record が 0 なら提示値をそのまま保存する (同期 passkey は常に 0)。counter は credential record の一部で、認証を受けた instance が書く (record は LWW で複製され、退行検知は最終的に整合すればよい)。
+認証 (L2 §7.2) の検証: `type` = `webauthn.get`、`challenge`、`origin` のホストが record の `rp_id` かその配下、`crossOrigin` が `true` でないこと、`topOrigin` 無し、`rpIdHash`、UP と UV、`userHandle` が record の `user_id` と一致、署名 (`authData || sha256(clientDataJSON)`) を ES256 (+ RS256 / Ed25519)。signCount は record の値が非 0 なら提示値 > record を要求し (提示 0 も退行として拒否)、record が 0 なら提示値をそのまま保存する (同期 passkey は常に 0)。counter は credential record の一部で、認証を受けた instance が書く (record は LWW で複製され、退行検知は最終的に整合すればよい)。
 
 ### 2.6 record の複製と `iss` への問い合わせ
 
@@ -84,7 +84,7 @@ tombstone: `passkey remove` は sub 単位の tombstone を credential と全 fa
 
 ### 2.8 entry token の廃止
 
-state ディレクトリの `entry.token` と subprotocol / `?token=` による照合は削除する。`entry.origins` は `clientDataJSON.origin` と CORS の期待値として残る。UDS (到達 = 権限) / mesh (TLS + `iss`/`aud` + proof) / webhook (Bearer) は変わらない。
+state ディレクトリの `entry.token` と subprotocol / `?token=` による照合は削除する。`entry.origins` も削除する (WS は access token で認可するので `Origin` を見る理由が無く、WebAuthn と CORS は `rp_id` で束縛できる)。`entry` に残るのは bind (host / port) と `source_ips` だけ。UDS (到達 = 権限) / mesh (TLS + `iss`/`aud` + proof) / webhook (Bearer) は変わらない。
 
 ### 2.9 契約の変更 (世代 3)
 
