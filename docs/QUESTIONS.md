@@ -42,21 +42,6 @@
 - [ ] a: 契約 package (`@ccmsg/protocol/transcript-items`) に分類コードを置き、daemon と webui が import (webui は生 jsonl を手元で分類。移行が小さいが、jsonl 形式の追従が契約 release に結びつく)
 - [ ] b: 分類は daemon だけ、契約は型の enum + item の形の語彙のみ、daemon が型付き item を wire に流し webui は生 jsonl を読まない (推し。責務が切れ、codex の rollout 形式も daemon で吸収。代償: `transcript:<sid>` topic の意味論変更 = 契約 minor + webui Timeline モデルの作り直し)
 
-### CW-Q1 Codex の「入力待ち」を app-server 購読で拾うか
-
-Codex は承認待ち / 入力待ちをファイルに残さない (rollout の永続化方針が transient として落とす、sqlite の turn status は `inProgress` のみ)。知っているのは app-server の `thread/status/changed` (`WaitingOnApproval` / `WaitingOnUserInput`) で、JSON-RPC 購読が要る = §5.1 の入力 (自 config home のファイル + 自分への接続) に無い種類の上流。v0.3.0 では「Codex の waiting は検出しない (生存 (管理外) のまま、hyoui で見る)」と DESIGN に明記。
-
-- [ ] a: 検出しないまま (増やさない。待ちは hyoui の端末リンクで見る)
-- [x] b: instance が Codex の app-server を購読して waiting を拾う (上流の種類が 1 つ増える。Claude の gateway と同じ「push で来る証拠」の扱いにする)
-
-### CM-Q1 config のマージ規則をどこに書くか
-
-調査: [research/2026-09-10-config-merge-policy.md](research/2026-09-10-config-merge-policy.md)。現行 `settingsFor()` は **トップレベルの浅いマージ** (`{...defaults, ...instance}`): `entry` / `upstream` / `peers` は instance 側にあればフィールド丸ごと置換、入れ子の不足分は defaults から継承しない。DESIGN §8.2 はこの粒度を明記していない。先行事例 (Kubernetes strategic merge / RFC 7396 / Helm / systemd drop-in / Nix modules / .gitattributes 等) の比較表は research にある。
-
-- [ ] a: **schema 側にフィールドパス別の規則を持つ** (推し。object は field merge、scalar / array は replace を既定、set 的な配列だけ `merge: set` のように宣言。規則は `daemon config --help` 等で利用者に見える。`peers` は「完成済み一覧」の意味から replace のまま)
-- [ ] b: 値側で操作を書く (`{"$replace": [...]}` / `null` で削除、RFC 7396 系)
-- [ ] c: 現行の浅いマージのまま、DESIGN §8.2 に「トップレベル置換」と明記するだけ
-
 ## 確認待ち
 
 (なし)
