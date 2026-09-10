@@ -182,28 +182,31 @@ export const STOP_DEADLINE_MS = 10_000;
 /** How often the init system is asked again while waiting for a departure. */
 const DEPARTURE_POLL_MS = 100;
 
-/** Whether the supervisor that held `pid` is gone, waited for up to the
- * deadline.
+/** Whether `gone` holds, waited for up to the deadline.
  *
  * Asked again rather than awaited: the supervisor belongs to the init system
- * and not to this process, so there is no exit to wait on — the only account of
- * whether it is still there is the one `report` fetches. A pid the report no
- * longer names, or names differently, is a departure either way: the second is
- * the init system having already restarted the unit, which it can only do once
- * the process being waited for has gone. */
-async function departed(
-  pid: number | null,
-  report: () => Promise<ServiceReport | null>,
-  deadlineMs: number,
-): Promise<boolean> {
-  if (pid === null) return true;
+ * and not to this process, so there is no exit to wait on and the only account
+ * of whether it is still there is one that has to be fetched. */
+async function departed(gone: () => Promise<boolean>, deadlineMs: number): Promise<boolean> {
   const end = Date.now() + deadlineMs;
   for (;;) {
-    if ((await report())?.pid !== pid) return true;
+    if (await gone()) return true;
     const left = end - Date.now();
     if (left <= 0) return false;
     await Bun.sleep(Math.min(DEPARTURE_POLL_MS, left));
   }
+}
+
+/** Whether the process that held `pid` is still there, asked of the kernel
+ * rather than of the init system.
+ *
+ * `kill -0` and not a report, because a unit that has been booted out is one
+ * launchd no longer says anything about — including whether the process it was
+ * running has actually gone. It goes through `Run` for the reason everything
+ * else here does: a test drives it without a process on this machine being
+ * signalled. */
+async function alive(pid: number, run: Run): Promise<boolean> {
+  return (await run(["kill", "-0", String(pid)])).code === 0;
 }
 
 export class LaunchdService implements Service {
@@ -300,24 +303,32 @@ export class LaunchdService implements Service {
     return await this.state(run);
   }
 
-  /** Ask launchd to signal the supervisor, and stay until it has gone.
+  /** Take the unit out of launchd, and stay until the supervisor has gone.
    *
-   * The state used to be read the moment the signal was sent, which is the
-   * moment the supervisor starts leaving rather than the one it finishes at: a
-   * supervisor wedged in its own shutdown answered as `running` and looked, to
-   * the person who asked for it to stop, exactly like one that had ignored
-   * them. So the answer is delayed until the pid is gone, and a supervisor that
-   * will not go within the deadline is killed rather than reported on. */
+   * `bootout` rather than a signal, because `KeepAlive` means a supervisor that
+   * is signalled is one launchd starts again: what the person asked for is a
+   * supervisor that stays stopped, which is systemd's `stop` and launchd's
+   * `bootout`. The file stays where it is — a unit launchd is not holding is
+   * what `start` already knows how to bootstrap, and taking the file away as
+   * well is `unregister`.
+   *
+   * The answer waits for the pid rather than being read off the command,
+   * because the moment the command returns is the moment the supervisor starts
+   * leaving and not the one it finishes at: a supervisor wedged in its own
+   * shutdown would otherwise be reported as gone by a `service stop` that had
+   * only asked. One that will not go inside the deadline is killed. */
   async stop(run: Run): Promise<ServiceState> {
     const before = await this.#report(run);
-    const signal = (name: string) =>
-      run(["launchctl", "kill", name, `${this.#domain}/${this.#label}`]);
+    // A refusal is launchd saying it is not holding this label, which is the
+    // state being asked for; `state` below is what reports otherwise.
+    await run(["launchctl", "bootout", `${this.#domain}/${this.#label}`]);
     const held = before.service?.pid ?? null;
-    const report = async () => (await this.#report(run)).service;
-    await signal("SIGTERM");
-    if (!(await departed(held, report, this.#stopDeadlineMs))) {
-      await signal("SIGKILL");
-      await departed(held, report, this.#stopDeadlineMs);
+    if (held !== null) {
+      const gone = async () => !(await alive(held, run));
+      if (!(await departed(gone, this.#stopDeadlineMs))) {
+        await run(["kill", "-KILL", String(held)]);
+        await departed(gone, this.#stopDeadlineMs);
+      }
     }
     return await this.state(run);
   }
@@ -443,10 +454,14 @@ class SystemdService implements Service {
     const before = await this.#report(run);
     await run(["systemctl", "--user", "stop", SYSTEMD_UNIT]);
     const held = before.service?.pid ?? null;
-    const report = async () => (await this.#report(run)).service;
-    if (!(await departed(held, report, this.#stopDeadlineMs))) {
-      await run(["systemctl", "--user", "kill", "--signal=SIGKILL", SYSTEMD_UNIT]);
-      await departed(held, report, this.#stopDeadlineMs);
+    if (held !== null) {
+      // The unit is still loaded here, so systemd is still the one that knows
+      // what became of the process it started.
+      const gone = async () => (await this.#report(run)).service?.pid !== held;
+      if (!(await departed(gone, this.#stopDeadlineMs))) {
+        await run(["systemctl", "--user", "kill", "--signal=SIGKILL", SYSTEMD_UNIT]);
+        await departed(gone, this.#stopDeadlineMs);
+      }
     }
     return await this.state(run);
   }

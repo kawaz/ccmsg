@@ -205,48 +205,76 @@ describe("launchd", () => {
     });
   });
 
-  test("stop stays until the supervisor is gone, and kills one that will not go", async () => {
-    const at = host();
-    // A supervisor that leaves when it is signalled: the answer is the state
-    // after it left, and nothing beyond the one signal was needed.
-    const leaving = new LaunchdService(at.env, LAUNCHD_LABEL, 200);
-    laid(leaving);
+  /** A launchd holding the label, until it is booted out of it.
+   *
+   * `KeepAlive` is the thing being tested around, so this answers the way one
+   * does: a label it still holds has a process, and a process that goes while
+   * the label is held comes back with a new pid. */
+  function keepingAlive(pid = 4242): {
+    run: Run;
+    commands: string[][];
+    /** Whether the process is there, which `kill -0` is asked about. */
+    running: () => boolean;
+  } {
+    let held = true;
     let alive = true;
-    const cooperative = recorder((command) => {
-      if (command[1] === "kill") {
+    const one = recorder((command) => {
+      if (command[1] === "bootout") {
+        held = false;
         alive = false;
         return {};
       }
-      return { stdout: alive ? "\tstate = running\n\tpid = 4242\n" : "\tstate = not running\n" };
+      if (command[0] === "kill") {
+        if (command[1] === "-KILL") alive = false;
+        return { code: alive ? 0 : 1 };
+      }
+      if (command[1] === "print") {
+        // Held and not running is launchd about to start it again, which is
+        // what a `stop` that only signalled would have left behind.
+        if (!held) return { code: 113 };
+        if (!alive) alive = true;
+        return { stdout: `\tstate = running\n\tpid = ${String(pid)}\n` };
+      }
+      return {};
     });
-    expect(await leaving.stop(cooperative.run)).toMatchObject({ running: false });
-    expect(cooperative.commands.filter((command) => command[1] === "kill")).toEqual([
-      ["launchctl", "kill", "SIGTERM", expect.any(String)],
-    ]);
+    return { ...one, running: () => alive };
+  }
 
-    // One wedged in its own shutdown: the deadline passes, SIGKILL follows, and
-    // the answer is what the pid did rather than what the signal asked for.
+  test("stop boots the unit out, stays until the pid is gone, and kills one that will not go", async () => {
+    const at = host();
+    // Booted out and not signalled: a signalled supervisor is one `KeepAlive`
+    // starts again, and what was asked for is one that stays stopped. The file
+    // stays where it is — taking that away as well is `unregister`.
+    const leaving = new LaunchdService(at.env, LAUNCHD_LABEL, 200);
+    laid(leaving);
+    const launchd = keepingAlive();
+    const state = await leaving.stop(launchd.run);
+    expect(state).toMatchObject({ registered: true, running: false });
+    expect(state.pid).toBeUndefined();
+    expect(existsSync(leaving.unitFile)).toBe(true);
+    expect(launchd.commands.map((command) => command[1])).toContain("bootout");
+    expect(launchd.commands.some((command) => command[1] === "kill")).toBe(false);
+    expect(launchd.running()).toBe(false);
+
+    // One wedged in its own shutdown: launchd has let the label go and says
+    // nothing more about the process, so what is waited on is the pid itself,
+    // and the deadline is followed by a kill of that pid and not of a label.
     const wedged = new LaunchdService(at.env, LAUNCHD_LABEL, 200);
     laid(wedged);
-    let held: number | null = 4242;
+    let alive = true;
     const stuck = recorder((command) => {
-      if (command[2] === "SIGKILL") {
-        held = null;
-        return {};
+      if (command[0] === "kill") {
+        if (command[1] === "-KILL") alive = false;
+        return { code: alive ? 0 : 1 };
       }
-      return {
-        stdout:
-          held === null
-            ? "\tstate = not running\n"
-            : `\tstate = running\n\tpid = ${String(held)}\n`,
-      };
+      if (command[1] === "print") return alive ? { stdout: "\tpid = 4242\n" } : { code: 113 };
+      return {};
     });
     const started = Date.now();
     expect(await wedged.stop(stuck.run)).toMatchObject({ running: false });
     expect(Date.now() - started).toBeGreaterThanOrEqual(200);
-    expect(
-      stuck.commands.filter((command) => command[1] === "kill").map((command) => command[2]),
-    ).toEqual(["SIGTERM", "SIGKILL"]);
+    expect(stuck.commands).toContainEqual(["kill", "-KILL", "4242"]);
+    expect(alive).toBe(false);
   });
 });
 
