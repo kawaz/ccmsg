@@ -1,6 +1,6 @@
 ---
 title: ccmsg peers が session として名乗ると、切断後に last_live へ行が残りうる
-status: open
+status: resolved
 category: bug
 created: 2026-09-09T16:28:05+09:00
 last_read:
@@ -9,10 +9,10 @@ wip_entered:
 blocked_entered:
 pending_entered:
 discarded_entered:
-resolved_entered:
+resolved_entered: 2026-09-10T13:49:10+09:00
 discard_reason:
 pending_reason:
-close_reason:
+close_reason: ["done: 設計どおりで修正不要。peers topic は roles [session,user] で CLI が session で名乗るのは send_message 列を問い手基準で出すため (src/cli.ts の peers コメント)。DESIGN-ja §5.1 で last_live 記録時は sessions/ をその場で読むので実在 sid は CLI 切断後も live のまま (2026-09-10 実測: 自セッション 12824c5d が peers 実行後も state live)。disappeared に残る行は手動テストの偽 sid (00000000-…c0de) と /clear で sid が変わった旧 sid で、§5.2 の Disappeared 定義 (接続が生存の証拠、stopped 印なし) の忠実な記録。daemon は非 claude ハーネスの sid を検証できないので偽 sid を弾く手段は無く、偽 sid で名乗らないことが対処。7 日で自然に消える"]
 blocked_by:
 origin: 自リポ TODO
 ---
