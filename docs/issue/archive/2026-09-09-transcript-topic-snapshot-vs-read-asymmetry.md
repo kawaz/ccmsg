@@ -1,6 +1,6 @@
 ---
 title: transcript:<sid> topic の snapshot と transcript_read の解決経路が非対称
-status: open
+status: resolved
 category: design
 created: 2026-09-09T17:30:59+09:00
 last_read:
@@ -9,10 +9,10 @@ wip_entered:
 blocked_entered:
 pending_entered:
 discarded_entered:
-resolved_entered:
+resolved_entered: 2026-09-10T13:57:53+09:00
 discard_reason:
 pending_reason:
-close_reason:
+close_reason: ["implemented","design:DESIGN.md §5.4","design:DESIGN.md §6.2 (ja/en)"]
 blocked_by:
 origin: 自リポ TODO
 ---

@@ -21,8 +21,6 @@ wire の契約は [kawaz/ccmsg-protocol](https://github.com/kawaz/ccmsg-protocol
 
 このリポに正本があり、閉じるのに契約側の判断が要るもの (下の表にも載っている):
 
-- [transcript-topic-snapshot-vs-read-asymmetry](./2026-09-09-transcript-topic-snapshot-vs-read-asymmetry.md) — snapshot と `transcript_read` の解決経路の非対称は契約 (DESIGN) 側の意味論として書くかを決める
-- [hello-drops-transcript-path-silently](./2026-09-09-hello-drops-transcript-path-silently.md) — 受理しなかったフィールドの理由を hello 応答に載せる契約拡張が論点の 1 つ
 - [codex-plugin-delivery-via-thread-queue](./2026-09-09-codex-plugin-delivery-via-thread-queue.md) — hello (SessionMeta) にハーネス種別 or 配送能力を載せる部分は契約側の変更
 
 ## このリポの active issue
@@ -32,7 +30,6 @@ wire の契約は [kawaz/ccmsg-protocol](https://github.com/kawaz/ccmsg-protocol
 | 2026-09-09 | design | open | [codex-plugin-delivery-via-thread-queue](./2026-09-09-codex-plugin-delivery-via-thread-queue.md) | codex plugin: 配送は `codex queue --thread <sid>`、hello でハーネス種別を名乗る |
 | 2026-09-09 | design | open | [mesh-tls-trust-root](./2026-09-09-mesh-tls-trust-root.md) | mesh-peer-auth の信頼の根は TLS サーバ証明書 (2 層) だが、daemon の listener... |
 | 2026-09-09 | design | open | [sandbox-grant-delivery-path](./2026-09-09-sandbox-grant-delivery-path.md) | sandbox_grant は capability URL を発行するが、`SandboxGrants.find` の呼び... |
-| 2026-09-09 | design | open | [transcript-topic-snapshot-vs-read-asymmetry](./2026-09-09-transcript-topic-snapshot-vs-read-asymmetry.md) | `transcript:<sid>` topic と `transcript_read` の見つけ方が非対称。`Transcript... |
 | 2026-09-09 | bug | open | [hello-drops-transcript-path-silently](./2026-09-09-hello-drops-transcript-path-silently.md) | hello で境界外の transcript_path が黙って捨てられ、送り手に理由が返らない。... |
 
 <!--
