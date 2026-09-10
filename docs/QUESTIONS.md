@@ -20,12 +20,12 @@
 
 ## 裁定待ち
 
-### DS-Q3 アイテム分類の置き場
+### CM-Q2 TS config のファイル構成
 
-[design/dump-kinds.md](design/dump-kinds.md) §3。dump と webui が同じ仕分けを使うのは前提で、分類コードをどこに置くか。
+裁定済み (2026-09-10 r298m35): config は JSON + マージ規則でなく **TS** で書く。defaults は `({builtin, config: builtin のコピー}) => config`、instance は `({builtin, default, config: default のコピー}) => config` を export し、`builtin` / `default` は immutable で渡す (= 深い / 浅いの問題が消える。v0.3.5 の `MERGE_RULES` は撤去)。残る問い:
 
-- [ ] a: 契約 package (`@ccmsg/protocol/transcript-items`) に分類コードを置き、daemon と webui が import (webui は生 jsonl を手元で分類。移行が小さいが、jsonl 形式の追従が契約 release に結びつく)
-- [ ] b: 分類は daemon だけ、契約は型の enum + item の形の語彙のみ、daemon が型付き item を wire に流し webui は生 jsonl を読まない (推し。責務が切れ、codex の rollout 形式も daemon で吸収。代償: `transcript:<sid>` topic の意味論変更 = 契約 minor + webui Timeline モデルの作り直し)
+- [ ] a: `~/.config/ccmsg/config.ts` (defaults) + `~/.config/ccmsg/instances/<name>.ts` (instance ごと 1 ファイル、自動発見。`daemon add` はテンプレを 1 ファイル生成、`remove` は削除) (推し)
+- [ ] b: `config.ts` 1 ファイルで defaults と instances 配列の両方を返す (`daemon add` は使えなくなり、人が編集)
 
 ## 確認待ち
 
