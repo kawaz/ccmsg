@@ -357,7 +357,7 @@ describe("ccmsg dump", () => {
     // for is somebody reading it.
     expect(drawn.out).toContain(`# dump ${SID}`);
     expect(drawn.out).toContain(`- instance: \`${at.self}\``);
-    expect(drawn.out).toContain("[u1] message:user:in");
+    expect(drawn.out).toContain("[u1:0] message:user:in");
     expect(drawn.out).toContain("$ wc -l < f");
     expect(drawn.out).toContain("## ids");
   });

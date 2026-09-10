@@ -109,6 +109,10 @@ describe("nothing pushes a topic frame outside the topic mechanism (M5)", () => 
       // read back, so it neither survives a restart for the instance's sake
       // nor is a value compared against a previous one.
       "sessions/dump.ts",
+      // How much of a range one answer carries. A size, not an answer to "is
+      // this new": what it decides is where a page ends, and the page is sent
+      // either way.
+      "sessions/items.ts",
       "sessions/last-live.ts",
       "topics/topics.ts",
       // Framing once more, towards an upstream rather than a client: the

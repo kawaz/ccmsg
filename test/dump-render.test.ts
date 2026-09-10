@@ -14,7 +14,14 @@ const SID = "11111111-2222-3333-4444-555555555555";
 const AT = Date.UTC(2026, 8, 1, 0, 1, 2);
 
 function item(uuid: string, type: string, fields: Record<string, unknown> = {}): Item {
-  return { uuid, type, at: AT, ...fields } as Item;
+  return {
+    id: `${uuid}:0`,
+    uuid,
+    source: { offset: 0, bytes: 1 },
+    type,
+    at: AT,
+    ...fields,
+  } as unknown as Item;
 }
 
 function file(items: readonly Item[], ids: readonly DumpIdEntry[] = []): SessionDumpFile {
@@ -39,14 +46,14 @@ describe("drawing one item of each type", () => {
   test("what was said is the body, kept as it was written", () => {
     expect(
       drawn(item("3f9a21c4", "message:user:in", { text: "型を整理して。\n二行目。", turn: 1 })),
-    ).toBe(`[3f9a21c4] message:user:in  00:01:02 turn 1
+    ).toBe(`[3f9a21c4:0] message:user:in  00:01:02 turn 1
   型を整理して。
   二行目。`);
   });
 
   test("a person operating the harness is one line, naming what happened", () => {
     expect(drawn(item("4d1e8f90", "notice:slash", { command: "pre-compact" }))).toBe(
-      "[4d1e8f90] notice:slash  /pre-compact  00:01:02",
+      "[4d1e8f90:0] notice:slash  /pre-compact  00:01:02",
     );
   });
 
@@ -61,7 +68,7 @@ describe("drawing one item of each type", () => {
         }),
       ),
     )
-      .toBe(`[92e6d4f5] hook:PreToolUse  PreToolUse:Bash  additionalContext  tool=toolu_01Ne9BDS  00:01:02
+      .toBe(`[92e6d4f5:0] hook:PreToolUse  PreToolUse:Bash  additionalContext  tool=toolu_01Ne9BDS  00:01:02
   read コマンドを使うこと。`);
   });
 
@@ -77,7 +84,7 @@ describe("drawing one item of each type", () => {
           ],
         }),
       ),
-    ).toBe(`[3c9f5db6] tool:TodoWrite  2 items  (未着)  00:01:02
+    ).toBe(`[3c9f5db6:0] tool:TodoWrite  2 items  (未着)  00:01:02
   done   型の体系を決める
   doing  表示を書く`);
   });
@@ -92,7 +99,7 @@ describe("drawing one item of each type", () => {
           input: { where: "somewhere", how: { deep: 1 } },
         }),
       ),
-    ).toBe(`[aa11bb22] tool:Newcomer  (未着)  00:01:02
+    ).toBe(`[aa11bb22:0] tool:Newcomer  (未着)  00:01:02
   where  somewhere
   how.deep  1`);
   });
@@ -102,7 +109,7 @@ describe("drawing one item of each type", () => {
       drawn(
         item("81d5c3e4", "system:attachment:queued_command", { attachment: { command: "/x" } }),
       ),
-    ).toBe(`[81d5c3e4] system:attachment:queued_command  00:01:02
+    ).toBe(`[81d5c3e4:0] system:attachment:queued_command  00:01:02
   command  /x`);
   });
 });
@@ -113,19 +120,19 @@ describe("a call and what came back", () => {
     tool_use_id: "t1",
     command: "wc -l < f",
     description: "行を数える",
-    result_item: "18d6f2c9",
+    result_item: "18d6f2c9:0",
   });
   const answered = {
     ...item("18d6f2c9", "tool:Bash", {
       role: "result",
       tool_use_id: "t1",
-      parent_item: "07c5e1b8",
+      parent_item: "07c5e1b8:0",
       stdout: "3",
     }),
   } as Item;
 
   test("touching each other, they are drawn as one thing", () => {
-    expect(drawn(bash, answered)).toBe(`[07c5e1b8] tool:Bash  行を数える  → 18d6f2c9  00:01:02
+    expect(drawn(bash, answered)).toBe(`[07c5e1b8:0] tool:Bash  行を数える  → 18d6f2c9:0  00:01:02
   $ wc -l < f
   stdout  3`);
   });
@@ -133,20 +140,20 @@ describe("a call and what came back", () => {
   test("apart, the answer is drawn where it arrived and names the call", () => {
     const between = item("ffffffff", "thinking", { text: "待つ" });
     expect(drawn(bash, between, answered))
-      .toBe(`[07c5e1b8] tool:Bash  行を数える  → 18d6f2c9  00:01:02
+      .toBe(`[07c5e1b8:0] tool:Bash  行を数える  → 18d6f2c9:0  00:01:02
   $ wc -l < f
 
-[ffffffff] thinking  00:01:02
+[ffffffff:0] thinking  00:01:02
   待つ
 
-[18d6f2c9] tool:Bash  ← 07c5e1b8  00:01:02
+[18d6f2c9:0] tool:Bash  ← 07c5e1b8:0  00:01:02
   stdout  3`);
   });
 
   test("a call with nothing back yet says so rather than looking answered", () => {
     const { result_item: _absent, ...waiting } = bash as Record<string, unknown>;
     expect(drawn(waiting as unknown as Item))
-      .toBe(`[07c5e1b8] tool:Bash  行を数える  (未着)  00:01:02
+      .toBe(`[07c5e1b8:0] tool:Bash  行を数える  (未着)  00:01:02
   $ wc -l < f`);
   });
 
@@ -156,24 +163,24 @@ describe("a call and what came back", () => {
       agent_id: "a471372f2",
       subagent_type: "opus5-worker-high",
       prompt: "docs を書き直す。",
-      result_item: "c2d80f16",
+      result_item: "c2d80f16:0",
     });
     const between = item("ffffffff", "thinking", { text: "待つ" });
     const back = item("c2d80f16", "message:sub:in", {
       role: "result",
-      parent_item: "b7e41d09",
+      parent_item: "b7e41d09:0",
       agent_id: "a471372f2",
       status: "ok",
       duration_ms: 252_000,
       text: "4 群に整理しました。",
     });
     expect(drawn(brief, between, back))
-      .toBe(`[b7e41d09] message:sub:out  agent=a471372f2  type=opus5-worker-high  → c2d80f16  00:01:02
+      .toBe(`[b7e41d09:0] message:sub:out  agent=a471372f2  type=opus5-worker-high  → c2d80f16:0  00:01:02
   docs を書き直す。
-  [c2d80f16] message:sub:in  agent=a471372f2  status=ok  4m12s  00:01:02
+  [c2d80f16:0] message:sub:in  agent=a471372f2  status=ok  4m12s  00:01:02
     4 群に整理しました。
 
-[ffffffff] thinking  00:01:02
+[ffffffff:0] thinking  00:01:02
   待つ`);
   });
 
@@ -182,23 +189,23 @@ describe("a call and what came back", () => {
       role: "use",
       tool_use_id: "t1",
       file_path: "a.ts",
-      result_item: "r2",
+      result_item: "r2:0",
     });
     const second = item("r1", "tool:Read", {
       role: "use",
       tool_use_id: "t2",
       file_path: "b.ts",
-      result_item: "r3",
+      result_item: "r3:0",
     });
     const back = item("r3", "tool:Read", {
       role: "result",
       tool_use_id: "t2",
-      parent_item: "r1",
+      parent_item: "r1:0",
       lines: 12,
     });
     // The answer carries the id the harness pairs calls with, so it lands on
     // the second call rather than on whichever one came first.
-    expect(drawn(first, second, back)).toContain("[r1] tool:Read  b.ts  → r3  12 行");
+    expect(drawn(first, second, back)).toContain("[r1:0] tool:Read  b.ts  → r3:0  12 行");
   });
 });
 

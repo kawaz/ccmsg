@@ -831,8 +831,8 @@ describe("session_dump_write", () => {
     const items = dumpAt(written["path"] as string).items;
     const call = items.find((item) => item["role"] === "use");
     const answer = items.find((item) => item["role"] === "result");
-    expect(call?.["result_item"]).toBe(answer?.uuid);
-    expect(answer?.["parent_item"]).toBe(call?.uuid);
+    expect(call?.["result_item"]).toBe(answer?.id);
+    expect(answer?.["parent_item"]).toBe(call?.id);
     expect(answer?.["stdout"]).toBe("3\n");
   });
 
@@ -848,7 +848,7 @@ describe("session_dump_write", () => {
     const answered = items.find((item) => item.type === "message:sub:in");
     expect(asked?.["prompt"]).toBe("count the lines");
     expect(asked?.["agent_id"]).toBe("acounter-9f");
-    expect(answered?.["parent_item"]).toBe(asked?.uuid);
+    expect(answered?.["parent_item"]).toBe(asked?.id);
     expect(answered?.["text"]).toBe("there were three");
     // The ledger is what a reader descends by: the agent named here is the
     // subject of the next dump.

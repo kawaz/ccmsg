@@ -1,13 +1,37 @@
 import { describe, expect, test } from "bun:test";
 import { TranscriptItem, validationErrors } from "@ccmsg/protocol";
 import { ConfigError, MERGE_RULES, parseConfig, settingsFor } from "../src/instance/config.ts";
-import { classify, type Item, ledger, select, selection } from "../src/transcript/items/index.ts";
+import {
+  classify,
+  fields,
+  type Item,
+  ledger,
+  located,
+  select,
+  selection,
+} from "../src/transcript/items/index.ts";
 
 /** Lines in the harness's own spelling. Every structure here was read off a
  * real transcript; every word in it was made up, because what is being tested
  * is the shape of the file and never what was said in one. */
-function lines(...rows: Record<string, unknown>[]): string[] {
-  return rows.map((row) => JSON.stringify(row));
+function lines(...rows: Record<string, unknown>[]) {
+  return located(rows.map((row) => `${JSON.stringify(row)}\n`).join(""));
+}
+
+/** An item as a case that is not about classification needs one: what the case
+ * states, over the base fields a classification would have filled in. The one
+ * place a value is called an item without having been read out of a file. */
+function stub(over: Record<string, unknown>): Item {
+  return {
+    id: `${String(over["uuid"])}:0`,
+    source: { offset: 0, bytes: 1 },
+    ...over,
+  } as unknown as Item;
+}
+
+/** An item's fields, read past the end of an array. */
+function of(item: Item | undefined): Record<string, unknown> {
+  return item === undefined ? {} : fields(item);
 }
 
 function said(uuid: string, content: unknown, over: Record<string, unknown> = {}) {
@@ -84,13 +108,13 @@ describe("classifying a transcript", () => {
     );
     const call = items[0];
     const answer = items[2];
-    expect(call?.["role"]).toBe("use");
-    expect(answer?.["role"]).toBe("result");
+    expect(of(call)["role"]).toBe("use");
+    expect(of(answer)["role"]).toBe("result");
     // Turns stood between them and each kept its own instant, which is the
     // whole reason they are not folded into one item.
-    expect(call?.["result_item"]).toBe(answer?.uuid ?? "");
-    expect(answer?.["parent_item"]).toBe(call?.uuid ?? "");
-    expect(answer?.["stdout"]).toBe("3\n");
+    expect(of(call)["result_item"]).toBe(answer?.id ?? "");
+    expect(of(answer)["parent_item"]).toBe(call?.id ?? "");
+    expect(of(answer)["stdout"]).toBe("3\n");
   });
 
   test("a call that has not come back names no result", () => {
@@ -101,7 +125,7 @@ describe("classifying a transcript", () => {
         ]),
       ),
     );
-    expect(items[0]?.["result_item"]).toBeUndefined();
+    expect(of(items[0])["result_item"]).toBeUndefined();
   });
 
   test("an agent that was waited on answers in the call's own result", () => {
@@ -134,10 +158,10 @@ describe("classifying a transcript", () => {
     ]);
     const brief = only(items, "message:sub:out");
     const reply = only(items, "message:sub:in");
-    expect(reply?.["text"]).toBe("there were three");
-    expect(reply?.["duration_ms"]).toBe(4000);
-    expect(reply?.["parent_item"]).toBe(brief?.uuid ?? "");
-    expect(brief?.["result_item"]).toBe(reply?.uuid ?? "");
+    expect(of(reply)["text"]).toBe("there were three");
+    expect(of(reply)["duration_ms"]).toBe(4000);
+    expect(of(reply)["parent_item"]).toBe(brief?.id ?? "");
+    expect(of(brief)["result_item"]).toBe(reply?.id ?? "");
   });
 
   test("an agent started in the background answers much later, and the launch is not an answer", () => {
@@ -158,7 +182,7 @@ describe("classifying a transcript", () => {
     ];
     const waiting = classify(lines(...launch));
     expect(typesOf(waiting)).toEqual(["tool:Agent", "message:sub:out", "tool:Agent"]);
-    expect(only(waiting, "message:sub:out")?.["result_item"]).toBeUndefined();
+    expect(of(only(waiting, "message:sub:out"))["result_item"]).toBeUndefined();
 
     const items = classify(
       lines(
@@ -174,10 +198,10 @@ describe("classifying a transcript", () => {
     const brief = only(items, "message:sub:out");
     const reply = only(items, "message:sub:in");
     // Turns fell between them, and the brief still names what came back.
-    expect(brief?.["result_item"]).toBe(reply?.uuid ?? "");
-    expect(reply?.["parent_item"]).toBe(brief?.uuid ?? "");
-    expect(reply?.["text"]).toBe("there were three");
-    expect(reply?.["agent_id"]).toBe("acounter-9f");
+    expect(of(brief)["result_item"]).toBe(reply?.id ?? "");
+    expect(of(reply)["parent_item"]).toBe(brief?.id ?? "");
+    expect(of(reply)["text"]).toBe("there were three");
+    expect(of(reply)["agent_id"]).toBe("acounter-9f");
   });
 
   test("Task is the older name for the tool that starts an agent, and reads the same", () => {
@@ -198,8 +222,8 @@ describe("classifying a transcript", () => {
     // The type keeps whichever name the record used: a reader matches what it
     // sees against what it ran.
     expect(typesOf(items)).toEqual(["tool:Task", "message:sub:out", "tool:Task", "message:sub:in"]);
-    expect(only(items, "message:sub:out")?.["prompt"]).toBe("count the lines");
-    expect(only(items, "message:sub:in")?.["text"]).toBe("there were three");
+    expect(of(only(items, "message:sub:out"))["prompt"]).toBe("count the lines");
+    expect(of(only(items, "message:sub:in"))["text"]).toBe("there were three");
   });
 
   test("an agent is both a call and a message, and the answer arrives as a notification", () => {
@@ -233,10 +257,10 @@ describe("classifying a transcript", () => {
     const reply = only(items, "message:sub:in");
     // The id is not known until the agent has started, so the message that
     // asked for it learns its own id from the answer.
-    expect(brief?.["agent_id"]).toBe("acounter-9f");
-    expect(brief?.["result_item"]).toBe(reply?.uuid ?? "");
-    expect(reply?.["parent_item"]).toBe(brief?.uuid ?? "");
-    expect(reply?.["text"]).toBe("there were three");
+    expect(of(brief)["agent_id"]).toBe("acounter-9f");
+    expect(of(brief)["result_item"]).toBe(reply?.id ?? "");
+    expect(of(reply)["parent_item"]).toBe(brief?.id ?? "");
+    expect(of(reply)["text"]).toBe("there were three");
   });
 
   test("a notification with no answer in it is the harness reporting a task", () => {
@@ -250,8 +274,8 @@ describe("classifying a transcript", () => {
       ),
     );
     expect(typesOf(items)).toEqual(["system:task"]);
-    expect(items[0]?.["task_id"]).toBe("b6mm");
-    expect(items[0]?.["event"]).toBe("a line appeared");
+    expect(of(items[0])["task_id"]).toBe("b6mm");
+    expect(of(items[0])["event"]).toBe("a line appeared");
   });
 
   test("another session's message is told from a person's by the envelope it arrives in", () => {
@@ -262,7 +286,7 @@ describe("classifying a transcript", () => {
       ),
     );
     expect(typesOf(items)).toEqual(["message:user:in", "message:session:in"]);
-    expect(items[1]?.["from"]).toBe("a-worker");
+    expect(of(items[1])["from"]).toBe("a-worker");
   });
 
   test("what a person did to the harness is kept apart from what the harness did on its own", () => {
@@ -293,11 +317,11 @@ describe("classifying a transcript", () => {
       "system:compact",
       "system:api-error",
     ]);
-    expect(items[0]?.["args"]).toBe("and continue");
+    expect(of(items[0])["args"]).toBe("and continue");
     // The output of a slash command is filed on its own line, which says what
     // came out and not what was run.
-    expect(items[1]?.["command"]).toBe("/clear");
-    expect(items[1]?.["stdout"]).toBe("done");
+    expect(of(items[1])["command"]).toBe("/clear");
+    expect(of(items[1])["stdout"]).toBe("done");
   });
 
   test("a hook is typed by its event, and the matcher stays a field", () => {
@@ -317,9 +341,9 @@ describe("classifying a transcript", () => {
     // `hook:PreToolUse:Bash` would read as three levels of hierarchy and leave
     // `hook:PreToolUse` selecting nothing.
     expect(items[0]?.type).toBe("hook:PreToolUse");
-    expect(items[0]?.["hook_name"]).toBe("PreToolUse:Bash");
-    expect(items[0]?.["outcome"]).toBe("additionalContext");
-    expect(items[0]?.["tool_use_id"]).toBe("t1");
+    expect(of(items[0])["hook_name"]).toBe("PreToolUse:Bash");
+    expect(of(items[0])["outcome"]).toBe("additionalContext");
+    expect(of(items[0])["tool_use_id"]).toBe("t1");
   });
 
   test("a hook that ran a command carries what it cost", () => {
@@ -341,9 +365,9 @@ describe("classifying a transcript", () => {
       }),
     );
     expect(items[0]?.type).toBe("hook:SessionStart");
-    expect(items[0]?.["outcome"]).toBe("output");
-    expect(items[0]?.["exit_code"]).toBe(0);
-    expect(items[0]?.["duration_ms"]).toBe(12);
+    expect(of(items[0])["outcome"]).toBe("output");
+    expect(of(items[0])["exit_code"]).toBe(0);
+    expect(of(items[0])["duration_ms"]).toBe(12);
   });
 
   test("an attachment nobody has seen arrives under its own name", () => {
@@ -356,7 +380,7 @@ describe("classifying a transcript", () => {
       }),
     );
     expect(items[0]?.type).toBe("system:attachment:something_new");
-    expect(items[0]?.["attachment"]).toEqual({
+    expect(of(items[0])["attachment"]).toEqual({
       type: "something_new",
       detail: "whatever it holds",
     });
@@ -370,8 +394,8 @@ describe("classifying a transcript", () => {
       ),
     );
     expect(typesOf(items)).toEqual(["tool:Whatsit", "tool:Whatsit"]);
-    expect(items[0]?.["input"]).toEqual({ dial: 3 });
-    expect(items[1]?.["result"]).toEqual({ text: "it turned" });
+    expect(of(items[0])["input"]).toEqual({ dial: 3 });
+    expect(of(items[1])["result"]).toEqual({ text: "it turned" });
   });
 
   test("a record that fits nothing is still an item", () => {
@@ -395,7 +419,9 @@ describe("classifying a transcript", () => {
   });
 
   test("a line that is not JSON at all is read around", () => {
-    expect(classify(["{ half a rec", "", ...lines(said("u1", "hello"))])).toHaveLength(1);
+    expect(
+      classify(located(`{ half a rec\n\n${JSON.stringify(said("u1", "hello"))}\n`)),
+    ).toHaveLength(1);
   });
 
   test("the subject is whoever the file belongs to, so an agent's brief is what it was told", () => {
@@ -464,13 +490,13 @@ describe("classifying a transcript", () => {
 
 describe("selecting which items a dump keeps", () => {
   const ITEMS: Item[] = [
-    { uuid: "1", type: "message:user:in", at: 1 },
-    { uuid: "2", type: "message:user:out", at: 2 },
-    { uuid: "3", type: "thinking", at: 3 },
-    { uuid: "4", type: "tool:Bash", at: 4 },
-    { uuid: "5", type: "tool:Read", at: 5 },
-    { uuid: "6", type: "system:attachment:date", at: 6 },
-    { uuid: "7", type: "hook:PreToolUse", at: 7 },
+    stub({ uuid: "1", type: "message:user:in", at: 1 }),
+    stub({ uuid: "2", type: "message:user:out", at: 2 }),
+    stub({ uuid: "3", type: "thinking", at: 3 }),
+    stub({ uuid: "4", type: "tool:Bash", at: 4 }),
+    stub({ uuid: "5", type: "tool:Read", at: 5 }),
+    stub({ uuid: "6", type: "system:attachment:date", at: 6 }),
+    stub({ uuid: "7", type: "hook:PreToolUse", at: 7 }),
   ];
 
   function kept(types: string[] | undefined, presets: Parameters<typeof selection>[1] = []) {
@@ -523,9 +549,9 @@ describe("selecting which items a dump keeps", () => {
       "thinking",
     );
     const machinery: Item[] = [
-      { uuid: "1", type: "message:sub:out", at: 1 },
-      { uuid: "2", type: "tool:Agent", at: 2 },
-      { uuid: "3", type: "tool:Bash", at: 3 },
+      stub({ uuid: "1", type: "message:sub:out", at: 1 }),
+      stub({ uuid: "2", type: "tool:Agent", at: 2 }),
+      stub({ uuid: "3", type: "tool:Bash", at: 3 }),
     ];
     expect(typesOf(select(machinery, selection({ no_agent: true }, [])).items)).toEqual([
       "tool:Bash",
@@ -564,9 +590,16 @@ describe("selecting which items a dump keeps", () => {
 describe("the ledger of ids", () => {
   test("a later sighting of the same id is a later state of it", () => {
     const found = ledger([
-      { uuid: "1", type: "message:sub:out", at: 1, agent_id: "a9", name: "counter" },
-      { uuid: "2", type: "tool:Agent", at: 2, agent_id: "a9", status: "running" },
-      { uuid: "3", type: "message:sub:in", at: 3, agent_id: "a9", status: "done", duration_ms: 40 },
+      stub({ uuid: "1", type: "message:sub:out", at: 1, agent_id: "a9", name: "counter" }),
+      stub({ uuid: "2", type: "tool:Agent", at: 2, agent_id: "a9", status: "running" }),
+      stub({
+        uuid: "3",
+        type: "message:sub:in",
+        at: 3,
+        agent_id: "a9",
+        status: "done",
+        duration_ms: 40,
+      }),
     ]);
     expect(found).toEqual([
       { kind: "agent", id: "a9", label: "counter", status: "done", duration_ms: 40 },
@@ -575,16 +608,16 @@ describe("the ledger of ids", () => {
 
   test("each kind of id is gathered under what it names", () => {
     const found = ledger([
-      {
+      stub({
         uuid: "1",
         type: "tool:Monitor",
         at: 1,
         tool_use_id: "t1",
         task_id: "b6",
         description: "watch ci",
-      },
-      { uuid: "2", type: "message:session:in", at: 2, from: "9f2c1ab4", msg_id: "m-7781" },
-      { uuid: "3", type: "tool:CronCreate", at: 3, tool_use_id: "t2", cron_id: "c1" },
+      }),
+      stub({ uuid: "2", type: "message:session:in", at: 2, from: "9f2c1ab4", msg_id: "m-7781" }),
+      stub({ uuid: "3", type: "tool:CronCreate", at: 3, tool_use_id: "t2", cron_id: "c1" }),
     ]);
     expect(found.map((entry) => entry.kind)).toEqual([
       "task",
