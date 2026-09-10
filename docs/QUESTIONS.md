@@ -35,6 +35,13 @@
 - [ ] a: この型体系で契約 → daemon に進んでよい
 - [ ] b: 直したい型がある → 自由記述で
 
+### DS-Q3 アイテム分類の置き場
+
+[design/dump-kinds.md](design/dump-kinds.md) §3。dump と webui が同じ仕分けを使うのは前提で、分類コードをどこに置くか。
+
+- [ ] a: 契約 package (`@ccmsg/protocol/transcript-items`) に分類コードを置き、daemon と webui が import (webui は生 jsonl を手元で分類。移行が小さいが、jsonl 形式の追従が契約 release に結びつく)
+- [ ] b: 分類は daemon だけ、契約は型の enum + item の形の語彙のみ、daemon が型付き item を wire に流し webui は生 jsonl を読まない (推し。責務が切れ、codex の rollout 形式も daemon で吸収。代償: `transcript:<sid>` topic の意味論変更 = 契約 minor + webui Timeline モデルの作り直し)
+
 ### CW-Q1 Codex の「入力待ち」を app-server 購読で拾うか
 
 Codex は承認待ち / 入力待ちをファイルに残さない (rollout の永続化方針が transient として落とす、sqlite の turn status は `inProgress` のみ)。知っているのは app-server の `thread/status/changed` (`WaitingOnApproval` / `WaitingOnUserInput`) で、JSON-RPC 購読が要る = §5.1 の入力 (自 config home のファイル + 自分への接続) に無い種類の上流。v0.3.0 では「Codex の waiting は検出しない (生存 (管理外) のまま、hyoui で見る)」と DESIGN に明記。
