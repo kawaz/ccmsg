@@ -39,3 +39,7 @@ origin: 自リポ TODO
 ## 追加観測 (2026-09-10 18:10, v0.3.1 → v0.3.2 の `daemon restart --all`)
 
 instance 単体の stop でも再現した。emrd instance (pid 90012) の daemon.log は `mesh peer lost` ×2 → `stopping` を記録した後に終了せず、`daemon status --all` は `running: false` (socket は unlink 済み) を返し、`daemon restart --all` は 600 秒経っても返らなかった。pid 指定の SIGTERM で即終了し、監督者が新しい instance を起動して復旧。personal と bare は同じ操作で正常に止まった (mesh link の閉じ方 = 自分が dial した側か accept した側かで差がある可能性)。停止順序 §8.5 で `stopping` の後に待っているものを特定する。
+
+## 手当て (v0.3.3、2026-09-10 21:28 本番反映)
+
+listener close (entry + mesh 並行、UDS 最後、250 ms 上限) → pid/lock 解放の順序、監督者の graceful 10 s → SIGTERM 10 s → SIGKILL の escalation と各段の log、`service stop` = `launchctl bootout` (KeepAlive の再 spawn を止める) + pid 消失を 10 s 待って SIGKILL、テスト (fake child の escalation、3 subprocess mesh の e2e)。findings: [2026-09-10-stop-wedge](../findings/2026-09-10-stop-wedge.md)。**固まり自体は隔離環境 36 回で未再現** (原因未特定)。本番の載せ替え (v0.3.2 → v0.3.3、旧監督者を bootout) は 0.4 秒で完了した。次に固まった時は監督者 log の `stopping` 段階 (`asked` / `sigterm` / `sigkill` / `exited`、`in_ms`) を証拠にする。受け入れ条件の「どこで止まるかの特定」だけが残る。
