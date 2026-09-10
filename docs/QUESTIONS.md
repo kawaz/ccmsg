@@ -29,6 +29,13 @@
 - [ ] c: preset 無指定の既定は 日記 (推し。現状の平坦な全部入りを既定に残す、も可)
 - [ ] d: subagent 配置の既定は「Agent 呼び出しの子として 1 段インデント、response のみ」(推し)
 
+### CW-Q1 Codex の「入力待ち」を app-server 購読で拾うか
+
+Codex は承認待ち / 入力待ちをファイルに残さない (rollout の永続化方針が transient として落とす、sqlite の turn status は `inProgress` のみ)。知っているのは app-server の `thread/status/changed` (`WaitingOnApproval` / `WaitingOnUserInput`) で、JSON-RPC 購読が要る = §5.1 の入力 (自 config home のファイル + 自分への接続) に無い種類の上流。v0.3.0 では「Codex の waiting は検出しない (生存 (管理外) のまま、hyoui で見る)」と DESIGN に明記。
+
+- [ ] a: 検出しないまま (増やさない。待ちは hyoui の端末リンクで見る)
+- [ ] b: instance が Codex の app-server を購読して waiting を拾う (上流の種類が 1 つ増える。Claude の gateway と同じ「push で来る証拠」の扱いにする)
+
 ## 確認待ち
 
 (なし)
