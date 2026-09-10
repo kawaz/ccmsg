@@ -13,9 +13,9 @@ import { OP_NAMES, opAttributes } from "@ccmsg/protocol";
  * announces about itself rather than a judgement about somebody else's, and
  * route (a) is left out because the only such word in it is the harness's own
  * frame type — a foreign protocol's spelling, on a path that authorizes
- * nothing. The fold is left out for the same reason: `"user"` there is the
- * harness's own name for a kind of transcript record, read from a file that
- * grants nobody anything. The gateway's reader is left out because `"instance"`
+ * nothing. The fold and the classifier are left out for the same
+ * reason: `"user"` there is the harness's own name for a kind of transcript
+ * record, read from a file that grants nobody anything. The gateway's reader is left out because `"instance"`
  * there names a field of the contract's own request type — the one the
  * publisher stamps and the parser therefore omits — on a path that reads a
  * posted document and authorizes nobody. The mesh is left out for the same
@@ -35,6 +35,7 @@ const FOREIGN = new Set([
   "messaging/direct.ts",
   "service/service.ts",
   "transcript/fold.ts",
+  "transcript/items/classify.ts",
   "upstream/events.ts",
 ]);
 /** Where a role is read on purpose: the implementations of the ops the
