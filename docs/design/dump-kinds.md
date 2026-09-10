@@ -181,7 +181,7 @@ peer   9f2c1ab4   ccmsg-webui/main
 
 ### 型の選択
 
-`types` は型名の配列。左から順に適用し、`-` 始まりは除外。
+`types` の要素は **型** (prefix 可、`-` 始まりは除外) か **`@<preset 名>`** (合成、後述)。左から順に適用する。
 
 ```
 ["message", "thinking", "tool:Bash"]        message:* 全部 + thinking + Bash だけ
@@ -208,6 +208,16 @@ csa の turn 番号 / marker は **採らない**。turn 番号はファイル�
   "dump": {
     "presets": [
       {
+        "name": "file",
+        "description": "ファイル操作。読み書きと探索をひとまとめに",
+        "opts": { "types": ["tool:Read", "tool:Write", "tool:Edit", "tool:Glob", "tool:Grep"] }
+      },
+      {
+        "name": "howto",
+        "description": "調査のノウハウだけ。何を考えて何を叩いて何を読み書きしたか",
+        "opts": { "types": ["thinking", "message:user", "message:sub", "tool:Bash", "@file"] }
+      },
+      {
         "name": "journal",
         "description": "日記用。人との往復と worker の答え、思考は要点だけ",
         "opts": { "types": ["message:user", "message:sub:in", "thinking"] }
@@ -219,21 +229,37 @@ csa の turn 番号 / marker は **採らない**。turn 番号はファイル�
       },
       {
         "name": "audit",
-        "description": "何をしたかの追跡。会話は落としてツールと通知だけ",
-        "opts": { "types": ["tool", "notice", "ids"] }
+        "description": "何をしたかの追跡。会話は落として操作と通知だけ",
+        "opts": { "types": ["@file", "tool:Bash", "notice", "ids"] }
       }
     ]
   }
 }
 ```
 
-一覧は `dump_presets_read` で引く。`daemon add` の初期 config にこの 3 つを例として入れる。
+一覧は `dump_presets_read` で引く。`daemon add` の初期 config にこの 5 つを例として入れる。
+
+### preset の合成
+
+`types` の要素として `@<preset 名>` を書くと、その preset の `types` がその位置に展開される。ファイル操作のように「複数の型をいつも一緒に選ぶ」まとまりは、型名の側で `tool:file` のような中間階層を作るのではなく、preset の参照で表す。
+
+型名は行の実体に 1 対 1 で対応させる (`tool:Read` は Read ツールの呼び出しそのもの)。`Read` / `Write` / `Edit` を「ファイル操作」として束ねるのは **その時の関心の切り方** であって行の実体ではないので、束ね方が増えるたびに型名が増えるのは筋が悪い。関心の切り方は operator が config で名付けて足せる側 (preset) に置く。
+
+- 展開は再帰する (`@howto` が `@file` を含み、`@file` がさらに別の preset を参照してよい)
+- 循環参照は **config の検証で拒否**する (dump のたびに展開して落ちるのでは遅い)。存在しない preset 名も同様
+- 展開後に左から順に適用するので、除外は展開結果にも効く (`["@file", "-tool:Grep"]` はファイル操作から Grep だけを落とす)
+
+```
+["@howto"]                    調査のノウハウ一式
+["@file", "-tool:Grep"]       ファイル操作から探索を落とす
+["@journal", "notice:task"]   日記に背景タスクの通知を足す
+```
 
 ## 5. 契約に足す候補
 
 `SessionDumpWriteArgs`:
 
-- `types: string[]` — 型の選択。無指定は既定。`no_thinking` / `no_agent` は `["-thinking"]` / `["-message:sub", "-tool:Agent"]` で表せるので、この 2 つは `types` に吸収する
+- `types: string[]` — 型の選択。要素は型 (prefix 可、`-` で除外) か `@<preset 名>` (config の preset をその位置に展開、再帰可、循環は config 検証で拒否)。無指定は既定。`no_thinking` / `no_agent` は `["-thinking"]` / `["-message:sub", "-tool:Agent"]` で表せるので、この 2 つは `types` に吸収する
 - `preset: string` — config の preset 名。`types` と併用したら preset を土台に `types` を後から適用する
 - `since_at` / `since_uuid` / `until_at` / `until_uuid` — 既存のまま
 
