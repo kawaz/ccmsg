@@ -268,7 +268,9 @@ A type name is a `:`-separated hierarchy (`message:user:in` / `thinking` / `tool
 selects everything below it. Items are **finer than lines**: one assistant record becomes its
 thinking, its words and each call it held, and a call and its result stay the two items the file
 holds, linked through `result_item` / `parent_item` — some results arrive many turns
-later, so whether to fold them is left to whoever draws them.
+later, so whether to fold them is left to whoever draws them. Both halves also carry the key the
+harness paired them by — `tool_use_id` on the call, `parent_tool_use_id` on the result — which is
+what ties an exchange together for a reader holding only one side of it.
 
 **An item is identified by `id` = `<uuid>:<index>`**: the record it was read from, and where in
 that record it stood. Links are written with it, because a record's id alone would name every
@@ -356,8 +358,10 @@ answer the same request with a number of items that varied with what was said.
 (`since_at` / `since_uuid` / `since_id`) reads from the range's start, and `next` names where it
 stopped, to be given back as `since_id`. An upper bound alone (`until_at` / `until_uuid` /
 `until_id`) reads the range's **end**, and `prev` names the first item answered, to be given back
-as `until_id` — which is exclusive, so nothing already held is answered twice. With no bound at
-all the range is the whole file and is read from its start. A client that draws the newest first
+as `until_id` — which is exclusive, so nothing already held is answered twice. Asking with no
+bound at all is the ordinary first read and answers the tail the same way, as the raw read with
+no `before` does; a client that wants the transcript from its beginning says so with
+`since_at: 0`. A client that draws the newest first
 (the web UI's Timeline) has no coordinate on an item to page back from, so paging back is the
 range's work: what `before` does for `transcript_read` on the byte side, an upper-bounded read
 does on the item side. Either direction answers oldest first, because that is the order a
@@ -949,9 +953,9 @@ out on the spot**, so a lone change is never delayed.
 Going over the limit is **refused back to the producer rather than dropped quietly**
 (`publish` answers `rate_limited`):
 
-- `notify_send` / `say_post`: the op answers with an error. **The contract has no
-  `rate_limited`, so this uses `internal_error` plus `msg`** for now (whether to add the code
-  to the contract is decided separately)
+- `notify_send` / `say_post`: the op answers `rate_limited`. The arguments were right and
+  nothing failed, so there is nothing for the sender to re-read: the same call sent again once
+  the reader has caught up is the one that goes through
 - `message_send` on the inbox route: treated as the existing `throttled` — held in the inbox
   and offered again later (§4.4). No message is lost
 - `transcript:<sid>` appends: the frames carry `start` / `size`, so a subscriber sees the gap

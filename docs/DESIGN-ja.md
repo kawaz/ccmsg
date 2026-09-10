@@ -241,7 +241,9 @@ state dir にはもう 1 つ、`dumps/` がある。`session_dump_write` が tra
 `notice:slash` / `system:compact` / `system:attachment:<kind>` / `hook:<Event>`) で、prefix でその配下を
 まとめて選べる。アイテムは**行より細かい**: assistant 1 行は thinking と本文と各 tool 呼び出しに分かれ、
 呼び出しと結果は行の実体どおり 2 アイテムのまま `result_item` / `parent_item` で結ぶ
-(結果が何 turn も後に来るものがあるので、畳むかどうかは表示側の判断にする)。
+(結果が何 turn も後に来るものがあるので、畳むかどうかは表示側の判断にする)。両側はハーネスが対にした
+キーも持つ (呼び出し側 `tool_use_id` / 結果側 `parent_tool_use_id`)。片側しか手元に無い読み手は
+これで往復を結び直す。
 
 **アイテムの identity は `id` = `<uuid>:<index>`** (元 record の id と、その record の中で何番目に立っていたか) で、
 リンクはこの `id` で張る。record の id だけでは 1 行が become した複数アイテムを同時に指してしまい、リンクにならない。
@@ -309,8 +311,9 @@ bytes だけでは同じ要求が中身次第で違う件数を返すことに�
 **どちら端を 1 ページとして残すかは、与えられた境界で決まる。** 下限 (`since_at` / `since_uuid` / `since_id`)
 があれば範囲の先頭から返し、切れた位置を `next` が名乗る (次は `since_id` に渡す)。上限 (`until_at` /
 `until_uuid` / `until_id`) だけなら範囲の**末尾**から返し、返した先頭のアイテム id を `prev` が名乗る
-(次は `until_id` に渡す。`until_id` は排他で、既に手元にあるアイテムを二度返さない)。境界が無ければ
-範囲は file 全体なので先頭から返す。末尾から描く client (webui の Timeline) はアイテム側に「そこから遡る」
+(次は `until_id` に渡す。`until_id` は排他で、既に手元にあるアイテムを二度返さない)。境界を何も置かない
+読みは最初の 1 回であり、`before` を置かない生読みと同じく**末尾**を返す (先頭から読みたい側は `since_at: 0` と言う)。
+末尾から描く client (webui の Timeline) はアイテム側に「そこから遡る」
 座標を持たないので、遡りは範囲指定の側が担う — byte 側で `transcript_read` が `before` で遡るのと同じ役割を、
 アイテム側では上限指定の読みが果たす。返りの並びはどちら向きでも古い順である (transcript の並びがそれであるため)。
 
@@ -821,8 +824,8 @@ seed を待たずに答えると snapshot が空になり、末尾から描く c
 
 上限超過は **黙って捨てずに投入側へ返す** (`publish` が `rate_limited` を返す):
 
-- `notify_send` / `say_post`: op が error を返す。**契約に `rate_limited` が無いので現状は
-  `internal_error` + msg** を使う (契約に code を足すかは別途判断)
+- `notify_send` / `say_post`: op が `rate_limited` を返す。引数は正しく失敗も起きていないので、
+  送り手が読み直すべきものは無く、読み手が追いついてから同じ呼び出しを送れば通る
 - `message_send` の inbox 経路: 既存の `throttled` と同じ扱い = inbox に保持して後で offer し直す
   (§4.4)。メッセージは落ちない
 - `transcript:<sid>` の追記: frame は `start` / `size` を持つので、購読側は欠けを検出して
