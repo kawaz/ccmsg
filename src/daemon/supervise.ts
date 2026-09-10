@@ -7,6 +7,7 @@ import {
   awaitSocket,
   type Child,
   configHome,
+  harnessFor,
   prepareFor,
   registered,
   rowFor,
@@ -304,7 +305,7 @@ export class Supervisor {
    * behind it is the state `add` exists to leave behind only when there is no
    * supervisor to tell. */
   async addOne(dir: string): Promise<StatusRow> {
-    const home = configHome(dir);
+    const home = configHome(dir, harnessFor(this.#env, dir));
     if (this.#units.has(home)) {
       throw new CommandError("file_exists", `${home} は既に見ています`);
     }

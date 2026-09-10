@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { basename, isAbsolute, join } from "node:path";
+import { HARNESS } from "../harness/index.ts";
 
 /** Every path one instance uses, decided in one place (daemon-v2 §8.1).
  *
@@ -64,12 +65,21 @@ export type Env = Record<string, string | undefined>;
 
 /** The config home this process belongs to.
  *
- * `CLAUDE_CONFIG_DIR` is what the harness itself reads, so a session and the
- * instance it talks to agree on which one they mean without ccmsg naming it
- * separately. Nothing searches for another one (M6). */
+ * Each harness's own variable is read, in the order they are listed: they are
+ * what the harness itself reads, so a session and the instance it talks to
+ * agree on which config home they mean without ccmsg naming it separately.
+ * Nothing searches for another one (M6).
+ *
+ * A process inside a session of one harness has that harness's variable set
+ * and not the other's, so the order only decides a shell that has set both —
+ * where Claude Code's wins because it is what an existing setup has exported
+ * for every process, ccmsg's own commands included. The default is Claude
+ * Code's home for the same reason (§3.7). */
 export function resolveConfigHome(env: Env = process.env): string {
-  const named = env["CLAUDE_CONFIG_DIR"];
-  if (named !== undefined && named !== "" && isAbsolute(named)) return named;
+  for (const facts of Object.values(HARNESS)) {
+    const named = env[facts.homeEnv];
+    if (named !== undefined && named !== "" && isAbsolute(named)) return named;
+  }
   return join(home(env), ".claude");
 }
 

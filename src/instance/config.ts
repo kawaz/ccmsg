@@ -1,6 +1,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute } from "node:path";
 import type { Endpoint } from "@ccmsg/protocol";
+import { DEFAULT_HARNESS, type Harness, HARNESSES, isHarness } from "../harness/index.ts";
 import { parseCidr } from "./client.ts";
 
 /** Where the instance accepts WebSocket connections, and from whom.
@@ -91,6 +92,13 @@ export interface UpstreamConfig {
 }
 
 export interface InstanceConfig {
+  /** Which harness this config home runs (§3.7).
+   *
+   * A setting rather than something discovered, because it decides where the
+   * instance looks before there is anything there to look at: an empty config
+   * home says nothing about the program it belongs to, and an instance that
+   * guessed would walk the wrong tree for the whole of its first session. */
+  readonly harness: Harness;
   /** Every mesh endpoint, this instance's own among them (§7.1). The same list
    * goes to every instance and names none of them in particular: which entry is
    * this one is settled at startup by the probe, so one file can be copied to
@@ -133,6 +141,7 @@ export class ConfigError extends Error {
  * one that is there and unreadable states something wrong — only the second is
  * the fail-fast case. */
 export const DEFAULT_CONFIG: InstanceConfig = {
+  harness: DEFAULT_HARNESS,
   peers: [],
   upstream: {},
   direct_delivery: true,
@@ -233,6 +242,7 @@ export function settingsFor(shared: SharedConfig, dir: string): Record<string, u
 /** One instance's settings, read at the shape the instance uses them. */
 export function parseConfig(file: string, fields: Record<string, unknown>): InstanceConfig {
   return {
+    harness: harnessOf(file, fields["harness"]),
     peers: peersOf(file, fields["peers"]),
     ...(fields["entry"] === undefined ? {} : { entry: entryOf(file, fields["entry"]) }),
     upstream: upstreamOf(file, fields["upstream"]),
@@ -244,6 +254,14 @@ export function parseConfig(file: string, fields: Record<string, unknown>): Inst
     ),
     fork_origin: flagOf(file, "fork_origin", fields["fork_origin"], DEFAULT_CONFIG.fork_origin),
   };
+}
+
+function harnessOf(file: string, raw: unknown): Harness {
+  if (raw === undefined) return DEFAULT_HARNESS;
+  if (!isHarness(raw)) {
+    throw new ConfigError(file, `harness must be one of ${HARNESSES.join(", ")}`);
+  }
+  return raw;
 }
 
 function flagOf(file: string, at: string, raw: unknown, fallback: boolean): boolean {

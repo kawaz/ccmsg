@@ -1,10 +1,12 @@
 import { existsSync, mkdirSync, watch } from "node:fs";
 import { basename, isAbsolute, join, resolve } from "node:path";
 import type { Endpoint, InstanceId, InstancePingResult } from "@ccmsg/protocol";
+import { DEFAULT_HARNESS, type Harness, HARNESS, isHarness } from "../harness/index.ts";
 import {
   type InstanceEntry,
   loadShared,
   saveShared,
+  settingsFor,
   type SharedConfig,
 } from "../instance/config.ts";
 import { instanceIdentity } from "../instance/identity.ts";
@@ -16,19 +18,35 @@ import { CommandError } from "./link.ts";
 
 /** What a config home has to be for an instance to answer for it.
  *
- * `settings.json` is the harness's own file, so its presence is what says the
- * directory is a config home rather than any directory somebody typed. Checked
- * where a directory is named — `add` and `run` — rather than at every use, so
- * the mistake is caught when it is made. */
-export function configHome(dir: string): string {
+ * The harness's own settings file is what says the directory is a config home
+ * rather than any directory somebody typed, so which file is looked for
+ * follows which harness the directory runs (§3.7). Checked where a directory
+ * is named — `add` and `run` — rather than at every use, so the mistake is
+ * caught when it is made. */
+export function configHome(dir: string, harness: Harness = DEFAULT_HARNESS): string {
   const path = isAbsolute(dir) ? dir : resolve(dir);
-  if (!existsSync(join(path, "settings.json"))) {
+  const marker = HARNESS[harness].marker;
+  if (!existsSync(join(path, marker))) {
     throw new CommandError(
       "not_found",
-      `${path} は Claude Code の config home ではありません (settings.json がありません)`,
+      `${path} は ${harness} の config home ではありません (${marker} がありません)`,
     );
   }
   return path;
+}
+
+/** Which harness a registered config home runs, as the shared file records it.
+ *
+ * Read from the same entry the instance itself will read (§8.2), so a command
+ * that has to know before anything is running — `run`, and the supervisor's
+ * own start — reaches the same answer the instance does. A directory the file
+ * does not list runs the default, which is what an unregistered `daemon run`
+ * is. */
+export function harnessFor(env: Env, dir: string): Harness {
+  const path = isAbsolute(dir) ? dir : resolve(dir);
+  const settings = settingsFor(loadShared(resolvePaths(env).configFile), path);
+  const named = settings["harness"];
+  return isHarness(named) ? named : DEFAULT_HARNESS;
 }
 
 /** One row of `daemon list`: which config home, and whether anything answers
@@ -68,15 +86,20 @@ export function registered(env: Env): Target[] {
 }
 
 /** Add a config home to the shared file. The settings it will run with are the
- * defaults until somebody edits its entry, so the entry starts empty. */
-export function add(env: Env, dir: string): InstanceRow {
-  const home = configHome(dir);
+ * defaults until somebody edits its entry, so the entry starts empty — save
+ * for the harness, which is written down when it is not the default because it
+ * is the one setting the directory itself cannot be asked for (§3.7). */
+export function add(env: Env, dir: string, harness: Harness = DEFAULT_HARNESS): InstanceRow {
+  const home = configHome(dir, harness);
   const file = resolvePaths(env).configFile;
   const shared = loadShared(file);
   if (shared.instances.some((entry) => entry.dir === home)) {
     throw new CommandError("file_exists", `${home} は既に登録されています`);
   }
-  const entry: InstanceEntry = { dir: home, settings: {} };
+  const entry: InstanceEntry = {
+    dir: home,
+    settings: harness === DEFAULT_HARNESS ? {} : { harness },
+  };
   saveShared(file, { ...shared, instances: [...shared.instances, entry] });
   const target = targetFor(env, home);
   // The id is made here rather than at the first start, so that what `add`

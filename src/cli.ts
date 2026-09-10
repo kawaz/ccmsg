@@ -9,6 +9,7 @@ import {
   connect,
   expectedInstances,
   follow,
+  harnessFor,
   idOf,
   labelled,
   list as listInstances,
@@ -24,6 +25,7 @@ import {
   targetFor,
 } from "./daemon/index.ts";
 import { join } from "node:path";
+import { DEFAULT_HARNESS, HARNESSES, isHarness } from "./harness/index.ts";
 import { hookEvent, type StatedMeta, statedMeta } from "./greeting/index.ts";
 import { isRunning, resolveConfigHome, resolvePaths, start } from "./instance/index.ts";
 import {
@@ -117,8 +119,14 @@ const ROOT: Command = {
         {
           name: "add",
           summary: "共通 config の instances[] に足し、監督者が居れば起こさせる",
-          usage: "ccmsg daemon add <dir>",
-          run: (args) => added(args[0]),
+          usage: "ccmsg daemon add <dir> [--harness <種別>]",
+          options: [
+            [
+              "--harness <種別>",
+              `config home が動かすもの: ${HARNESSES.join(" | ")} (既定 ${DEFAULT_HARNESS})`,
+            ],
+          ],
+          run: (args) => added(args),
         },
         {
           name: "remove",
@@ -471,7 +479,8 @@ function section(lines: string[], title: string, docs: readonly Doc[] | undefine
 
 /** `ccmsg daemon run [dir]`: this config home's instance, in the foreground. */
 async function runInstance(dir: string | undefined): Promise<unknown> {
-  const home = configHome(dir ?? resolveConfigHome());
+  const named = dir ?? resolveConfigHome();
+  const home = configHome(named, harnessFor(process.env, named));
   const outcome = await start({ env: { ...process.env, CLAUDE_CONFIG_DIR: home } });
   if (!isRunning(outcome)) {
     throw new CommandError(
@@ -515,9 +524,17 @@ async function supervise(): Promise<unknown> {
  * next supervisor starts it. Told rather than left to be discovered, because
  * the supervisor reads the list once (DV-Q8) and would otherwise not know
  * until it is restarted. */
-async function added(dir: string | undefined): Promise<unknown> {
-  if (dir === undefined) throw new CommandError("invalid_args", "使い方: ccmsg daemon add <dir>");
-  const row = addToConfig(process.env, dir);
+async function added(args: readonly string[]): Promise<unknown> {
+  const { named, rest } = options(args, ["harness"]);
+  const dir = rest[0];
+  const stated = named.get("harness");
+  if (dir === undefined) {
+    throw new CommandError("invalid_args", "使い方: ccmsg daemon add <dir> [--harness <種別>]");
+  }
+  if (stated !== undefined && !isHarness(stated)) {
+    throw new CommandError("invalid_args", `--harness は ${HARNESSES.join(" | ")} のどれかです`);
+  }
+  const row = addToConfig(process.env, dir, stated ?? DEFAULT_HARNESS);
   if (!(await reachable())) return { ...row, supervised: false };
   const started = (await ask({ op: "supervise_add", dir: row.dir })) as Record<string, unknown>;
   return { ...started, supervised: true };
@@ -946,10 +963,10 @@ async function plugin(
   what: "install" | "status" | "uninstall",
   agent: string | undefined,
 ): Promise<unknown> {
-  if (agent !== undefined && agent !== "claude") {
+  if (agent !== undefined && !isHarness(agent)) {
     throw new CommandError(
       "invalid_args",
-      `${agent} 用のプラグインはまだありません (今あるのは ${AGENTS.join(", ")})`,
+      `${agent} 用のプラグインはありません (今あるのは ${AGENTS.join(", ")})`,
     );
   }
   if (what !== "status" && agent === undefined) {
@@ -959,12 +976,15 @@ async function plugin(
     );
   }
   const paths = resolvePaths();
+  // `status` with no agent named is the one that answers for the config home
+  // this process belongs to, which is what the instance there runs.
+  const which = agent ?? harnessFor(process.env, resolvePaths().configHome);
   const outcome: Outcome =
     what === "install"
-      ? await install(paths, VERSION)
+      ? await install(paths, which, VERSION)
       : what === "status"
-        ? await pluginStatus(paths)
-        : await uninstall(paths);
+        ? await pluginStatus(paths, which)
+        : await uninstall(paths, which);
   // A refused step is an error rather than an answer, so the command's exit
   // code says what happened without the report having to be read. The report
   // itself travels with it: what was done before the refusal is what the next
