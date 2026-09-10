@@ -415,11 +415,36 @@ export class Supervisor {
       }
     };
 
-    if (await within(askToStop(unit.target).then(() => child.exited))) return;
+    // Each stage is said out loud with how long the one before it took. A child
+    // that will not leave is a thing that happens on a machine nobody is
+    // watching, and what stage it was at is the whole of what can be known
+    // about it afterwards.
+    const startedAt = Date.now();
+    const say = (stage: string) => {
+      this.#log({
+        event: "stopping",
+        dir: unit.target.dir,
+        pid: child.pid,
+        stage,
+        in_ms: Date.now() - startedAt,
+      });
+    };
+
+    say("asked");
+    if (await within(askToStop(unit.target).then(() => child.exited))) {
+      say("exited");
+      return;
+    }
+    say("sigterm");
     child.kill("SIGTERM");
-    if (await within(child.exited)) return;
+    if (await within(child.exited)) {
+      say("exited");
+      return;
+    }
+    say("sigkill");
     child.kill("SIGKILL");
     await child.exited;
+    say("exited");
   }
 
   /** Stop every child, stop restarting them, and give up the socket. */

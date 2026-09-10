@@ -351,9 +351,8 @@ describe("the supervisor", () => {
     const at = host();
     add(process.env, at.home("one"));
 
-    // Deaf to everything but SIGKILL: what a child wedged in its own shutdown
-    // looks like from here, and the case a supervisor used to wait out forever
-    // because it had nothing after `await child.exited`.
+    // Deaf to everything but SIGKILL, and unreachable besides: the supervisor
+    // gets no further than asking, and every stage after that is a signal.
     const signals: string[] = [];
     let end: (code: number) => void = () => undefined;
     const exited = new Promise<number>((resolve) => {
@@ -381,6 +380,63 @@ describe("the supervisor", () => {
     await supervisor.stop();
     await ran;
     expect(signals).toEqual(["SIGTERM", "SIGKILL"]);
+  }, 15_000);
+
+  test("a child that takes the shutdown and then stays is signalled anyway", async () => {
+    const at = host();
+    const home = at.home("one");
+    add(process.env, home);
+
+    // The shape the wedge takes in the field: the instance answers `hello` and
+    // `instance_shutdown`, writes `stopping`, and never exits. The graceful
+    // stage succeeds and settles nothing, so it is the deadline after it that
+    // has to move the shutdown along.
+    const signals: string[] = [];
+    let end: (code: number) => void = () => undefined;
+    const exited = new Promise<number>((resolve) => {
+      end = resolve;
+    });
+    let answering: ReturnType<typeof Bun.listen> | undefined;
+    const asked: string[] = [];
+    const stages: string[] = [];
+    const supervisor = new Supervisor({
+      stopTimeoutMs: 50,
+      log: (line) => {
+        if (line["event"] === "stopping") stages.push(line["stage"] as string);
+      },
+      spawn: (dir) => {
+        answering = Bun.listen({
+          unix: targetFor(process.env, dir).paths.socket,
+          socket: {
+            data: (socket, chunk) => {
+              for (const line of new TextDecoder().decode(chunk).split("\n")) {
+                if (line.trim() === "") continue;
+                asked.push((JSON.parse(line) as { op?: string }).op ?? "");
+                socket.write(`${JSON.stringify({ ok: true })}\n`);
+              }
+            },
+          },
+        });
+        return {
+          pid: 4243,
+          exited,
+          kill: (signal) => {
+            signals.push(String(signal));
+            if (signal === "SIGKILL") end(137);
+          },
+        };
+      },
+    });
+    const ran = supervisor.run();
+    await waitFor(() => answering !== undefined);
+    await supervisor.stop();
+    await ran;
+    answering?.stop(true);
+    // The graceful stage got its answer, so what followed was the deadline on a
+    // child that had agreed to leave and had not.
+    expect(asked).toEqual(["hello", "instance_shutdown"]);
+    expect(signals).toEqual(["SIGTERM", "SIGKILL"]);
+    expect(stages).toEqual(["asked", "sigterm", "sigkill", "exited"]);
   }, 15_000);
 
   test("it supervises exactly the config homes the shared file lists", () => {
