@@ -240,8 +240,26 @@ state dir にはもう 1 つ、`dumps/` がある。`session_dump_write` が tra
 (`src/transcript/items/`)。型名は `:` 区切りの階層 (`message:user:in` / `thinking` / `tool:Bash` /
 `notice:slash` / `system:compact` / `system:attachment:<kind>` / `hook:<Event>`) で、prefix でその配下を
 まとめて選べる。アイテムは**行より細かい**: assistant 1 行は thinking と本文と各 tool 呼び出しに分かれ、
-呼び出しと結果は行の実体どおり 2 アイテムのまま `result_item` / `parent_item` の uuid で結ぶ
-(結果が何 turn も後に来るものがあるので、畳むかどうかは表示側の判断にする)。**知らない形も必ず出る**:
+呼び出しと結果は行の実体どおり 2 アイテムのまま `result_item` / `parent_item` で結ぶ
+(結果が何 turn も後に来るものがあるので、畳むかどうかは表示側の判断にする)。
+
+**アイテムの identity は `id` = `<uuid>:<index>`** (元 record の id と、その record の中で何番目に立っていたか) で、
+リンクはこの `id` で張る。record の id だけでは 1 行が become した複数アイテムを同時に指してしまい、リンクにならない。
+`uuid` は元 record への参照として残るので、record 単位で 1 turn を束ねる用途 (範囲を record で切る等) はそのまま効く。
+併せて各アイテムは `source` (`offset` / `bytes` = transcript 内での元 record の位置) を持つ。
+**分類は誤りうるので、生 record を見る道を必ず残す**という要求がこれで、`transcript_read` に
+`before = offset + bytes` / `max_bytes = bytes` を渡せば元 record が 1 行返る。`bytes` は行末の改行までを含むので、
+返るのは record の切れ端ではなく record そのものになる。1 record が複数アイテムになる場合、
+その全部が同じ `source` を共有する (= 取り寄せは record 単位)。
+
+**リンクを張れない結果は、指し先を捏造せず record をそのまま出す。** 結果アイテムは必ず呼び出しを名指すので、
+呼び出しを見ていない読み方 (= file の途中から読み始めた場合) には名指す id が無い。この行は `system:unknown` として
+record ごと出す。dump は範囲を切る前に file 全体を分類し、topic は分類を開いたまま追記を読むので、
+どちらの経路でも呼び出しは分類器の中にある。
+
+**返事の来ようが無い呼び出しは、まだ来ていない呼び出しと区別する。** `SendMessage` で配下の agent に書くのは
+往復の片道であって、返事は agent 側の都合で別の message として届き、この呼び出しを名指すものは何も無い。
+分類はこれに「対を持たない」印を付け、表示は `(未着)` ではなく `(片道)` と描く。**知らない形も必ず出る**:
 未知のツールは `{input}` / `{result}` の汎用形、未知の添付はその `kind` のまま、どれでもない行は
 `system:unknown` になる。UI と状態の記録 (`mode` / `queue-operation` / `progress` / `*-title` /
 `file-history-*` 等) だけが対象外で、実測では 1 セッション 3,429 行のうち 1,317 行がこれである。
@@ -263,13 +281,33 @@ preset は契約に焼かず config の `dump.presets` に置く (名前が指�
 既存の `no_thinking` / `no_agent` は `["-thinking"]` / `["-message:sub", "-tool:Agent"]` と同義で、最後に適用される。
 
 **型を読める文字に落とすのは表示層の責務である** (`src/transcript/items/render.ts` と `document.ts`、CLI の `ccmsg dump`)。
-型ごとに 1 つの関数が「見出しの語」と「その下の行」を返し、文書は `[uuid8] <型> <見出し> <時刻> turn` の 1 行と
+型ごとに 1 つの関数が「見出しの語」と「その下の行」を返し、文書は `[<uuid8>:<index>] <型> <見出し> <時刻> turn` の 1 行と
 インデントした本文の並びに、対象・instance・選択・範囲の前置きと末尾の `ids` 台帳を付けたものになる。
 **専用の描き方が無い型も必ず出る**: 未知のツールも未知の添付も、型名と持っていた field が汎用形で並ぶ
 (描き方を足すのは読みやすさのためであって、出すかどうかの条件ではない)。呼び出しと結果を 1 かたまりに
 寄せるかは**この層が決める** (隣り合っていれば寄せて `→`、離れていれば結果を自分の位置に置いて `←`、
-worker の答えだけは何 turn 離れていても指示書の下に付ける)。分類の置き場は
-DS-Q3 が未裁定で、契約 package 側へ移す判断になれば `src/transcript/items/` がそのまま移送単位になる。op が transcript の読み出しに足しているのは「path を後継セッションに渡せる
+worker の答えだけは何 turn 離れていても指示書の下に付ける)。見出しに出す id が `id` の短縮形なのは、
+リンクの矢印が指す先と見出しが同じものを言うためである (record の id だけを出すと、矢印の指すアイテムが見出しから引けない)。
+
+**型付きアイテムは dump file 専用ではなく、op と topic でも運ぶ。**
+
+| 用途 | op / topic | 中身 |
+|---|---|---|
+| 範囲を指定して読む | `transcript_items_read` | dump と同じ範囲指定 (`since_at` / `since_uuid` / `until_*`) + `since_id` (前回の続きから) + `types` 選択 + `limit`。返りは `items` と、切れた時の続き位置 `next` |
+| 追記を受け取る | `transcript_items:<sid>` topic | snapshot は末尾側のアイテム一定数、以降の frame は新しく分類されたアイテムの配列 (§6.2 の `append`) |
+| 生 record の取り寄せ | `transcript_read` / `transcript:<sid>` | 変更なし。アイテムの `source` で 1 record を引く経路になる |
+
+`transcript_items_read` の解決は `transcript_read` と同じ (announce か walk、`agent_id` で worker の file)、
+可視範囲も同じ `scope: "role"` である。範囲は **file 全体を分類してから**切るので、範囲外を指すリンクが残るのは
+正常な状態であって壊れたポインタではない (読み手はその id で取りに行ける)。1 ページの上限は件数と bytes の両方で、
+先に達した方で切る: 件数だけではアイテム 1 個の大きさが桁で違うため 1 接続あたりの payload を抑えられず、
+bytes だけでは同じ要求が中身次第で違う件数を返すことになる。
+
+**client は生 jsonl を読まない。** 契約が語彙だけを持ち daemon が分類を持つのは、jsonl がハーネスの内部形式で
+こちらの合意なく変わるためで、その追従を契約に同居させると形式変更のたびに契約 release が要る。
+codex の rollout 形式 (§3.8) も daemon 側の分類で吸収されるので、ハーネスが増えても client は無変更で済む。
+
+op が transcript の読み出しに足しているのは「path を後継セッションに渡せる
 耐久性のある成果物」であって (本文を client 経由で外に出してまた入れ直す代わりに)、path は
 呼び出し側が渡さないので封じ込めの判定対象も無い。state dir の下に置くのは、instance ごとの
 path をすべて config home から導く §8.1 に従うためである。
@@ -690,12 +728,27 @@ topic の仕組みに内蔵するので「この topic には抑制がない」�
 | 全量置換 | `session_status:<sid>` |
 | 要素の追加・更新 | `inbox` / `kv:<ns>` |
 | 追記 (byte offset) | `transcript:<sid>` |
+| 追記 (型付きアイテム) | `transcript_items:<sid>` |
 | event (値を保持しない) | `notify` |
 
 `transcript:<sid>` の snapshot は **ファイルの現在の末尾 (`size`) だけ**で、追記はその後から
 流れる。§5.4 の 2 経路で引けるファイルには常に返るので、**追記が二度と起きない過去セッション
 でも「どこから遡るか」は snapshot から分かる**。購読者は size を起点に `transcript_read` で
 遡り、追記が来ればそのまま繋がる。
+
+`transcript_items:<sid>` は同じ追記をアイテムで運ぶ (§3.6)。snapshot は**末尾側のアイテム一定数**で、
+byte 側の snapshot が「どこから遡るか」を答えるのに対し、こちらは購読者が即描ける末尾そのものを答える
+(アイテムには「そこから遡る」ための座標が無く、遡るのは範囲指定の `transcript_items_read` の仕事である)。
+件数で切るのは、tail の読み出し (`FOLD_TAIL_BYTES` = 1 MiB) が bytes で切られているためで、
+小さい record が並ぶ file では最初の frame がその読み出しと同じ大きさになってしまう。
+
+**追記された結果が既存の呼び出しを埋めても、その呼び出しは送り直さない。** 購読者は追記しかしない列を持つので、
+一度渡したアイテムの差し替えは粒度の意味を壊す。結果の側が `parent_item` で呼び出しを名指すので、
+読み手は手元の列の中でそれを結べる (webui が bash の use と result を別に描いているのと同じ形)。
+
+1 本の tail が両方の topic を養う。分類は**購読の有無に関わらず**進める: 分類は file 全体を読み続けている
+状態そのもので、今返ってきた結果の呼び出しは遠い過去の bytes にあり、購読された時点で開いた分類はそれを知らない。
+保持するものは有界である (未応答の呼び出しと、最初の frame に載せる分のアイテム)。
 
 **抑制がかかるのは全量置換の 2 粒度だけ** (`whole` / `per_instance_whole`)。同じ全量を
 もう一度送っても購読側は既に持っている値を持ち続けるので、送る意味が無い。

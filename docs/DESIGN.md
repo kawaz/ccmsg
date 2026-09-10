@@ -267,8 +267,31 @@ A type name is a `:`-separated hierarchy (`message:user:in` / `thinking` / `tool
 `notice:slash` / `system:compact` / `system:attachment:<kind>` / `hook:<Event>`), so a prefix
 selects everything below it. Items are **finer than lines**: one assistant record becomes its
 thinking, its words and each call it held, and a call and its result stay the two items the file
-holds, linked by uuid through `result_item` / `parent_item` — some results arrive many turns
-later, so whether to fold them is left to whoever draws them. **Nothing unrecognised is dropped**:
+holds, linked through `result_item` / `parent_item` — some results arrive many turns
+later, so whether to fold them is left to whoever draws them.
+
+**An item is identified by `id` = `<uuid>:<index>`**: the record it was read from, and where in
+that record it stood. Links are written with it, because a record's id alone would name every
+item that record became at once. The `uuid` stays beside it as the reference to the record, so
+anything that groups a turn by its record — cutting a range at one, for instance — keeps working.
+Each item also carries `source` (`offset` / `bytes`, where the record sits in the transcript).
+This is what answers the requirement that **classifying is fallible and the raw record must stay
+reachable**: `transcript_read` with `before = offset + bytes` and `max_bytes = bytes` answers with
+that one record. `bytes` runs to the newline that ends the record, so what comes back is the
+record and not a slice of it. Several items read out of one record share the address, which makes
+fetching a record-sized operation.
+
+**A result that cannot name its call states the record instead of inventing a pointer.** A result
+item always names the call it answers, and a reading that began part-way down a file has no id to
+name; such a line is emitted as `system:unknown`, carrying the record. Both routes that produce
+items keep the call in hand — a dump classifies the whole file before it cuts a range, and the
+topic carries one classification forward as the file grows.
+
+**A call that has no way of coming back is drawn apart from one still waiting.** Writing to an
+agent with `SendMessage` is one direction of a correspondence: the reply arrives whenever that
+agent chooses to send one, as its own message, under nothing that names this call. The
+classification marks it as having no counterpart, and the drawing reads `(片道)` rather than
+`(未着)`. **Nothing unrecognised is dropped**:
 an unknown tool arrives in the generic `{input}` / `{result}` shape, an unknown attachment under
 its own `kind`, and a record that fits nothing as `system:unknown`. Only the interface and
 bookkeeping records are out of scope (`mode` / `queue-operation` / `progress` / `*-title` /
@@ -299,16 +322,39 @@ left out. The `ids` ledger is not a type and is never selected away. The older `
 **Turning types into readable words is the drawing layer's work** (`src/transcript/items/render.ts`
 and `document.ts`, and the CLI's `ccmsg dump`). One function per type answers with the words of a
 heading and the lines under it; the document is those, each headed
-`[uuid8] <type> <heading> <time> turn` with its body indented, behind a preamble naming the
+`[<uuid8>:<index>] <type> <heading> <time> turn` with its body indented, behind a preamble naming the
 subject, the instance, the selection and the bounds, and followed by the `ids` ledger.
 **A type nobody drew is drawn anyway**: an unknown tool and an unknown attachment lay out their
 type name and whatever fields they carried, since a drawing sharpens how a type reads and never
 decides whether it is kept. Whether a call and its answer are folded into one is **decided
 here** — touching, they are folded under `→`; apart, the answer is drawn where it arrived under
 `←`; an agent's answer alone is drawn under the brief however many turns separate them.
-Where the classifying
-belongs is still open (DS-Q3); should it move to the contract package, `src/transcript/items/` is
-the unit that moves. What the op adds over
+The id on a heading is the short form of `id` rather than of the record, so a heading names the
+same thing an arrow points at.
+
+**Typed items are not the dump file's alone: an op and a topic carry them too.**
+
+| Purpose | op / topic | What it carries |
+|---|---|---|
+| Read a range | `transcript_items_read` | The bounds a dump takes (`since_at` / `since_uuid` / `until_*`), plus `since_id` to resume, the `types` selection and a `limit`. It answers with `items` and, where a limit cut it short, the `next` item |
+| Receive what is appended | `transcript_items:<sid>` topic | The opening frame is the tail of what has been read, a fixed number of items; every frame after carries what has since been classified (the `append` granularity of §6.2) |
+| Fetch a raw record | `transcript_read` / `transcript:<sid>` | Unchanged. An item's `source` is what addresses one record on it |
+
+`transcript_items_read` resolves a file the way `transcript_read` does (what was announced or the
+walk, and `agent_id` for an agent's own file) and narrows by the same `scope: "role"`. The range
+is cut **after the whole file has been classified**, so a link naming something outside the range
+is the ordinary case rather than a broken pointer — the reader has the id and can ask for it. A
+page is bounded by a count and by bytes, whichever is reached first: a count alone cannot hold one
+connection's payload down when items differ in size by orders of magnitude, and bytes alone would
+answer the same request with a number of items that varied with what was said.
+
+**A client never reads raw jsonl.** The contract holds the vocabulary and the daemon holds the
+classifying because jsonl is the harness's internal format and changes without our agreement;
+housing that inside the contract would mean a contract release per format change. Codex's rollout
+format (§3.8) is absorbed by the same classification, so another harness leaves a client
+unchanged.
+
+What the op adds over
 reading the transcript is a durable artifact whose path can be handed to a successor session
 (instead of a body that travels out through a client and back in again), and since the caller
 never supplies a path, there is nothing for containment to judge. It lives under the state
@@ -787,6 +833,7 @@ suppression" can never happen.
 | Full replacement | `session_status:<sid>` |
 | Element add / update | `inbox` / `kv:<ns>` |
 | Append (byte offset) | `transcript:<sid>` |
+| Append (typed items) | `transcript_items:<sid>` |
 | Event (no value held) | `notify` |
 
 The snapshot of `transcript:<sid>` is **the file's current end (`size`) and nothing else**;
@@ -794,6 +841,24 @@ what is appended flows after it. It is stated for any file the two routes of §5
 **even a past session that will never be appended to again says where to page back from**. The
 subscriber reads back from that size with `transcript_read`, and anything appended stitches
 onto the same offsets.
+
+`transcript_items:<sid>` carries the same appending in items (§3.6). Its snapshot is **the tail of
+what has been read, a fixed number of items**: where the byte snapshot answers "where do I page
+back from", this one answers with the end a subscriber can draw immediately — an item has no
+coordinate to page back from, and paging back is `transcript_items_read`'s work. The bound is a
+count because the read that feeds it is bounded in bytes (`FOLD_TAIL_BYTES`, 1 MiB), which would
+otherwise make the opening frame as large as that read for a file of many small records.
+
+**A result that fills in a call already sent does not cause the call to be sent again.** A
+subscriber holds a list it only appends to, and replacing an item it was handed would break what
+the granularity means. The result names the call through `parent_item`, so a reader ties the two
+together in the list it already has — the same shape the web UI draws a bash use and its result
+in.
+
+One tail feeds both topics, and the classification runs **whether or not either is subscribed
+to**: it is the state of having read the file all along, and a call answered now was made in bytes
+that went past long ago, which a classification opened at subscribe time would not know. What it
+holds is bounded — the calls still outstanding, and the items of the opening frame.
 
 **Suppression applies to the two full-replacement granularities only** (`whole` /
 `per_instance_whole`). Sending the same full value again leaves the subscriber holding what it

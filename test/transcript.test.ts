@@ -1151,13 +1151,12 @@ describe("the transcript_items topic (§3.6)", () => {
     const { transcripts } = domain(file.path);
     transcripts.hold(SID);
     await settled(() => transcripts.following(SID));
-    await settled(
-      () => (transcripts.snapshot(ITEMS_TOPIC)[0]?.data as { items: [] }).items.length > 0,
-    );
-    const opened = transcripts.snapshot(ITEMS_TOPIC)[0]?.data as {
-      items: Record<string, unknown>[];
-    };
-    expect(opened.items.map((item) => item["type"])).toEqual([
+    const opened = () =>
+      transcripts.snapshot(ITEMS_TOPIC)[0]?.data as
+        | { items: Record<string, unknown>[] }
+        | undefined;
+    await settled(() => (opened()?.items.length ?? 0) > 0);
+    expect(opened()?.items.map((item) => item["type"])).toEqual([
       "message:user:in",
       "thinking",
       "message:user:out",
