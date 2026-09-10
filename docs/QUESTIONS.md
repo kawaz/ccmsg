@@ -20,21 +20,19 @@
 
 ## 裁定待ち
 
-### DS-Q1 dump のタイプ大分類
+### DS-Q2 dump の軸 (opts) の名前を固定してよいか
 
-起草: [design/dump-kinds.md](design/dump-kinds.md)。用途 = 5 軸 (発話者 / 種別 / 範囲 / 付随物 (id 台帳) / subagent 配置) の既定値セット (preset) として整理。id 台帳は agent / background Bash / Monitor / TODO / cron / session が transcript の構造化 field から取れ、ccmsg の room / sid は Bash 文字列にしか無いので取れない。
+裁定済み (2026-09-10 r298m26): preset は契約に焼き込まず、config `dump.presets: [{name, opts, description}]` で operator が定義する (session_launcher のテンプレと同じ位置づけ)。契約が持つのは軸だけ、一覧は `dump_presets_read` op、無指定時は軸の既定 (今の平坦な全部入り)、`daemon add` の初期 config に `journal` / `handoff` の例を入れる、subagent 配置の既定は「子として 1 段インデント、response のみ」。残る問いは軸名の固定 ([design/dump-kinds.md](design/dump-kinds.md) §2 の 5 軸: `speakers` / `include` / `range` / `ids` / `agent_placement`)。preset が opts 名に結びつくので、改名は config を壊す。
 
-- [ ] a: 大分類は 日記 / 引き継ぎ / 監査 / 抜粋 の 4 種でよい (監査・抜粋は構造から導いたもので実需未確認。不要なら「日記 / 引き継ぎ の 2 種」と返して)
-- [ ] b: preset 名は `journal` / `handoff` / `audit` / `excerpt` (推し。preset を持たず軸だけ、も可)
-- [ ] c: preset 無指定の既定は 日記 (推し。現状の平坦な全部入りを既定に残す、も可)
-- [ ] d: subagent 配置の既定は「Agent 呼び出しの子として 1 段インデント、response のみ」(推し)
+- [ ] a: 5 軸この名前で固定してよい (推し)
+- [ ] b: 名前を変える → 自由記述で
 
 ### CW-Q1 Codex の「入力待ち」を app-server 購読で拾うか
 
 Codex は承認待ち / 入力待ちをファイルに残さない (rollout の永続化方針が transient として落とす、sqlite の turn status は `inProgress` のみ)。知っているのは app-server の `thread/status/changed` (`WaitingOnApproval` / `WaitingOnUserInput`) で、JSON-RPC 購読が要る = §5.1 の入力 (自 config home のファイル + 自分への接続) に無い種類の上流。v0.3.0 では「Codex の waiting は検出しない (生存 (管理外) のまま、hyoui で見る)」と DESIGN に明記。
 
 - [ ] a: 検出しないまま (増やさない。待ちは hyoui の端末リンクで見る)
-- [ ] b: instance が Codex の app-server を購読して waiting を拾う (上流の種類が 1 つ増える。Claude の gateway と同じ「push で来る証拠」の扱いにする)
+- [x] b: instance が Codex の app-server を購読して waiting を拾う (上流の種類が 1 つ増える。Claude の gateway と同じ「push で来る証拠」の扱いにする)
 
 ### CM-Q1 config のマージ規則をどこに書くか
 
