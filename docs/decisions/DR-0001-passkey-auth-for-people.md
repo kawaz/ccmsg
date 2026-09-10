@@ -46,6 +46,7 @@ WebAuthn の RP ID は origin ではなく domain で、passkey は「今開い�
 - family = `{ id, sub, iss (mint した instance id), access: { value, exp }, refresh: { value, exp }, 直前世代の refresh }`。**family を書けるのはその `iss` だけ** (単一 writer)。refresh の rotate は必ず `iss` へ転送し、`iss` が落ちていれば passkey 認証で別 instance が新しい family を mint する。これで LWW 複製との衝突 (別 instance で並行 rotate → 合流で片方が消えて誤失効) が起きない
 - family の失効 (再利用検知) は family tombstone (7 日) として複製し、分断中の peer が持つ stale copy も復帰後に失効させる。退役 refresh 値の提示を `iss` でない instance が受けた時は `iss` へ転送して検知する (単一 writer のまま)
 - credential record は登録後 `iss` を要らなくする (複製済みなので問い合わせ不要)。`iss` を持つのは challenge と family (短命) だけで、instance id は固定なので引っ越しでも変わらない
+- **アクセストークンは family に 1 本で、その人が開いている複数のページ (タブ) が共有する。** rotate は refresh cookie を毎回回すが、アクセストークンは残り寿命が TTL の半分を切るまで据え置き、それ以降だけ mint し直す。毎回差し替えると、あるタブの読み込みが他のタブの持つトークンを無効にしてしまう (残り半分は、新しい値に気づくための猶予として最大に取れる閾値)
 - アクセストークンは数時間、リフレッシュトークンは数日。rotate は使うたび。family は退役した refresh 値のハッシュを本来の exp まで保持し、**どの世代の値でも再利用を見たら family を失効させる**。直前 1 世代だけは再送の猶予として (猶予時間内に限り) 前回の答えを返す
 - アクセストークンは WS の handshake に subprotocol `ccmsg.token.<値>` で載せる (サーバは選んだ subprotocol を echo する。proxy が `Sec-WebSocket-Protocol` を透過することが要件)。ブラウザはメモリにだけ持つ
 - リフレッシュトークンは **httpOnly cookie**。名前は `__Secure-ccmsg-<sha256(instance id + "\n" + sub) の先頭 16 hex>`、値は opaque、`HttpOnly; Secure; SameSite=Strict; Path=<request のパスから /auth/ までの prefix>`。`Path` は帯域と露出面を絞るためで認可境界ではない (同一 origin の JS は任意パスに fetch できる)

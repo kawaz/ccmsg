@@ -59,6 +59,19 @@ export const REFRESH_TTL_MS = 7 * 24 * 60 * 60 * 1000;
  * short to be a second usable token. */
 export const PREVIOUS_GRACE_MS = 60_000;
 
+/** How much of an access token's life must be left for a rotation to keep it.
+ *
+ * A family has one access token and every page a person has open presents it,
+ * so minting a new one on each rotation would take the token out from under the
+ * pages that are already holding it. Rotation therefore keeps the standing
+ * access token while it has this much life left, and mints only when it is
+ * running out — the pages share one token and renew it together.
+ *
+ * Half, because it is the largest share that still leaves a full half of the
+ * token's life to notice the new value in: the window is what bounds how long a
+ * page may go on holding a token whose family has already moved on. */
+export const ACCESS_KEEP_MS = ACCESS_TTL_MS / 2;
+
 /** How many times a six-digit code may be got wrong before the registration URL
  * is spent.
  *
@@ -706,11 +719,18 @@ export class Auth {
       return { sub: held.body.sub, access: held.body.access, refresh: held.body.refresh };
     }
     const at = this.#now();
+    // The refresh token rotates every time; the access token is the family's
+    // one token and is shared by every page the person has open, so it is kept
+    // until it is close enough to running out to be worth replacing.
+    const access =
+      held.body.access.expires_at - at >= ACCESS_KEEP_MS
+        ? held.body.access
+        : { value: token(), expires_at: at + ACCESS_TTL_MS };
     const rotated: TokenFamily = {
       kind: "token_family",
       sub: held.body.sub,
       iss: this.deps.self,
-      access: { value: token(), expires_at: at + ACCESS_TTL_MS },
+      access,
       refresh: { value: token(), expires_at: at + REFRESH_TTL_MS },
       previous_refresh: { value: held.body.refresh.value, expires_at: at + PREVIOUS_GRACE_MS },
       // The value going out of service is remembered as a digest for as long as

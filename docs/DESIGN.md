@@ -289,7 +289,12 @@ person has been admitted to. **The RP ID is fixed to the endpoint's host** and t
 state another: naming a registrable suffix would make the credential usable at every host under
 it.
 
-**Tokens are unsigned opaque values**, verified by looking a record up. The access token is in
+**Tokens are unsigned opaque values**, verified by looking a record up. **A family has one access
+token, shared by every page (tab) the person has open**: a rotation turns the refresh cookie over
+every time, but leaves the access token standing until less than half its TTL is left and mints a
+new one only then. Minting on every rotation would take the token out from under the other tabs —
+one tab's load would break the rest. Half is the largest threshold that still leaves a full half of
+the token's life for a page to notice the new value. The access token is in
 the response body; the refresh token is an httpOnly cookie
 (`__Secure-ccmsg-<first 16 hex of sha256(instance id + newline + sub)>`,
 `HttpOnly; Secure; SameSite=Strict; Path=<the request path up to its /auth/>`). A family is

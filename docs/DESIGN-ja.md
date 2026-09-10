@@ -260,7 +260,11 @@ endpoint のパス**である。`https://h/` と `https://h/personal/` は別 en
 「どの instance に通すか」より粗い)。**rp_id は登録時の endpoint のホストに固定**で、指定する口は
 持たない — registrable suffix を名乗れると、その配下の全ホストでその credential が使えてしまう。
 
-**token は署名しない opaque 値**で、検証は record の lookup である。access は応答の body、
+**token は署名しない opaque 値**で、検証は record の lookup である。**access token は family に
+1 本で、その人が開いている複数のページ (タブ) が共有する**: rotate は cookie の refresh を毎回
+回すが、access は残り寿命が TTL の半分を切るまで据え置き、それ以降だけ mint し直す。毎回
+差し替えると、あるタブの読み込みが他のタブの持つ token を無効にしてしまう (半分は、ページが
+新しい値に気づくための猶予を寿命の半分残せる、最大の閾値)。access は応答の body、
 refresh は httpOnly cookie (`__Secure-ccmsg-<sha256(instance id + 改行 + sub) の先頭 16 hex>`、
 `HttpOnly; Secure; SameSite=Strict; Path=<request のパスの /auth/ までの prefix>`)。
 family を書けるのは mint した instance (`iss`) だけで、別の instance に届いた rotate は

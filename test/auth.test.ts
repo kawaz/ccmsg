@@ -12,6 +12,8 @@ import {
   cookiePath,
   originOf,
   PREVIOUS_GRACE_MS,
+  ACCESS_KEEP_MS,
+  ACCESS_TTL_MS,
   servesPath,
 } from "../src/auth/index.ts";
 import { SoftAuthenticator } from "./authenticator.ts";
@@ -235,8 +237,11 @@ describe("authenticating and the tokens that follow (§2.4, §2.5)", () => {
     const one = await post(at, "refresh", {}, { cookie: zero });
     expect(one.status).toBe(200);
     const next = (await one.json()) as { access: { value: string } };
-    expect(next.access.value).not.toBe(first.session.access.value);
+    // The cookie turned over; the access token is the family's one token and is
+    // answered as it stands, because the person's other pages are holding it.
+    expect(next.access.value).toBe(first.session.access.value);
     const first_rotation = mintedCookie(one, name);
+    expect(first_rotation).not.toBe(zero);
 
     // The generation before the standing one is answered rather than refused: a
     // reply lost on the way is a retry, not a replay, and it is answered with
@@ -352,6 +357,41 @@ describe("removing a person (§2.6)", () => {
     // tombstone refuses every later write under that subject.
     const record = at.instance.auth.records.credentials();
     expect(record).toEqual([]);
+  });
+});
+
+describe("the access token is the family's, shared by the person's pages (§2.4)", () => {
+  test("rotation keeps the standing access token until it is half spent", () => {
+    // A clock rather than a wait: what decides this is hours of TTL.
+    let now = 1_000_000;
+    const dir = mkdtempSync(join(tmpdir(), "ccmsg-auth-share-"));
+    const self = "0".repeat(32);
+    const auth = new Auth({
+      self,
+      records: new AuthRecords({ dir, self, publish: () => {}, now: () => now }),
+      endpoint: () => undefined,
+      unit: "unit",
+      now: () => now,
+    });
+    const minted = auth.mint("someone");
+
+    // Two loads in a row, as two tabs would do: the refresh cookie turns over
+    // each time, the token the open pages hold does not.
+    now += PREVIOUS_GRACE_MS + 1;
+    const one = auth.rotate(minted.refresh.value);
+    now += PREVIOUS_GRACE_MS + 1;
+    const two = auth.rotate(one.refresh.value);
+    expect(one.access.value).toBe(minted.session.access.value);
+    expect(two.access.value).toBe(minted.session.access.value);
+    expect(two.refresh.value).not.toBe(one.refresh.value);
+    expect(auth.admits(minted.session.access.value)?.sub).toBe("someone");
+
+    // Past the threshold the family mints, and the pages renew together.
+    now += ACCESS_TTL_MS - ACCESS_KEEP_MS;
+    const three = auth.rotate(two.refresh.value);
+    expect(three.access.value).not.toBe(minted.session.access.value);
+    expect(three.access.expires_at).toBe(now + ACCESS_TTL_MS);
+    expect(auth.admits(minted.session.access.value)).toBeUndefined();
   });
 });
 
