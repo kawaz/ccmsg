@@ -8,7 +8,15 @@ import type {
   SessionDumpWriteResult,
 } from "@ccmsg/protocol";
 import { OpError } from "../dispatch/index.ts";
-import { classify, type Item, ledger, select, selection } from "../transcript/items/index.ts";
+import {
+  bounded,
+  classify,
+  ledger,
+  located,
+  select,
+  selection,
+  within,
+} from "../transcript/items/index.ts";
 import type { TranscriptFiles } from "../transcript/index.ts";
 
 /** Where dumps land: one directory under this instance's own state, named
@@ -43,12 +51,7 @@ export interface DumpDeps {
  * unchanged down a chain of agents, which is what makes the ledger's agent ids
  * a way to descend rather than just a list. */
 export function dumpWrite(args: SessionDumpWriteArgs, deps: DumpDeps): SessionDumpWriteResult {
-  if (args.since_at !== undefined && args.since_uuid !== undefined) {
-    throw new OpError("invalid_args", "a lower bound is a time or a record, not both");
-  }
-  if (args.until_at !== undefined && args.until_uuid !== undefined) {
-    throw new OpError("invalid_args", "an upper bound is a time or a record, not both");
-  }
+  bounded(args);
   const preset = presetFor(args.preset, deps.presets);
   const file = deps.files.locate(
     args.sid,
@@ -72,7 +75,7 @@ export function dumpWrite(args: SessionDumpWriteArgs, deps: DumpDeps): SessionDu
     },
     deps.presets,
   );
-  const { items, entries } = select(within(classify(text.split("\n")), args), keep);
+  const { items, entries } = select(within(classify(located(text)), args), keep);
   const ids = ledger(items);
   const written_at = Date.now();
   // The file repeats what it was asked for. A dump outlives the request that
@@ -109,35 +112,4 @@ function presetFor(
   const found = presets.find((one) => one.name === name);
   if (found === undefined) throw new OpError("invalid_args", `no preset is configured as ${name}`);
   return found;
-}
-
-/** The items within the bounds, in the order the transcript holds them.
- *
- * A record bound cuts at that record's position rather than at its clock, so
- * records sharing an instant stay on their own side of the cut — which is the
- * whole reason the contract offers both kinds of bound. Every item a record
- * became carries that record's id, so a bound by record keeps a turn's
- * thinking, words and calls together. */
-function within(items: readonly Item[], args: SessionDumpWriteArgs): Item[] {
-  const kept: Item[] = [];
-  // A lower bound by record starts closed: it opens at the record it names,
-  // which is included.
-  let open = args.since_uuid === undefined;
-  for (let at = 0; at < items.length; at += 1) {
-    const item = items[at];
-    if (item === undefined) continue;
-    if (!open) {
-      if (item.uuid !== args.since_uuid) continue;
-      open = true;
-    }
-    if (args.since_at !== undefined && item.at < args.since_at) continue;
-    if (args.until_at !== undefined && item.at > args.until_at) break;
-    kept.push(item);
-    // An upper bound by record is inclusive and cuts after the last item that
-    // record became, so the rest of the same record is still let through.
-    if (args.until_uuid !== undefined && item.uuid === args.until_uuid) {
-      if (items[at + 1]?.uuid !== item.uuid) break;
-    }
-  }
-  return kept;
 }

@@ -1,4 +1,4 @@
-import type { Item } from "./item.ts";
+import { fields, type Item } from "./item.ts";
 
 /** One item as the words a person reads.
  *
@@ -40,17 +40,18 @@ export function fragment(item: Item): Fragment {
     if (draw !== undefined) return draw(item);
     // A tool nothing knows the shape of arrives carrying what it was called
     // with and what it answered, which is what the generic shape lays out.
-    return { head: "", body: summary(item[result ? "result" : "input"]) };
+    return { head: "", body: summary(fields(item)[result ? "result" : "input"]) };
   }
   const draw = ITEMS[type];
   if (draw !== undefined) return draw(item);
   if (type.startsWith("hook:")) return hook(item);
-  if (type.startsWith("system:attachment:")) return { head: "", body: summary(item["attachment"]) };
+  if (type.startsWith("system:attachment:"))
+    return { head: "", body: summary(fields(item)["attachment"]) };
   return { head: "", body: summary(own(item)) };
 }
 
 function isResult(item: Item): boolean {
-  return item["role"] === "result";
+  return fields(item)["role"] === "result";
 }
 
 // --- message, thinking and the harness's own voice ---
@@ -117,7 +118,7 @@ const ITEMS: Record<string, Draw> = {
     ),
     body: EMPTY,
   }),
-  "system:unknown": (item) => ({ head: "", body: summary(item["record"]) }),
+  "system:unknown": (item) => ({ head: "", body: summary(fields(item)["record"]) }),
 };
 
 function said(item: Item): Fragment {
@@ -192,14 +193,14 @@ const USES: Record<string, Draw> = {
   Monitor: (item) => ({
     head: words(
       str(item, "description"),
-      item["persistent"] === true ? "persistent" : undefined,
+      fields(item)["persistent"] === true ? "persistent" : undefined,
       until(num(item, "timeout_ms")),
     ),
     body: lines(str(item, "command")).map((line) => `$ ${line}`),
   }),
   Skill: (item) => ({ head: words(str(item, "skill"), str(item, "args")), body: EMPTY }),
   TodoWrite: (item) => {
-    const todos = list(item["todos"]);
+    const todos = list(fields(item)["todos"]);
     const width = Math.max(0, ...todos.map((todo) => todo.status.length));
     return {
       head: `${String(todos.length)} items`,
@@ -220,7 +221,7 @@ const USES: Record<string, Draw> = {
  * read is a body. */
 const RESULTS: Record<string, Draw> = {
   Bash: (item) => ({
-    head: item["interrupted"] === true ? "中断" : "",
+    head: fields(item)["interrupted"] === true ? "中断" : "",
     body: [...stream("stdout", str(item, "stdout")), ...stream("stderr", str(item, "stderr"))],
   }),
   Read: (item) => ({
@@ -248,7 +249,7 @@ const RESULTS: Record<string, Draw> = {
   Skill: (item) => ({
     head: words(
       field(item, "agent_id", "agent="),
-      item["background"] === true ? "background" : undefined,
+      fields(item)["background"] === true ? "background" : undefined,
       field(item, "status", "status="),
     ),
     body: EMPTY,
@@ -268,7 +269,7 @@ function pattern(item: Item): Fragment {
 /** A tool that says nothing but whether it worked. Success is the silent case:
  * a heading crowded with `ok` is a heading nobody reads. */
 function ok(item: Item): Fragment {
-  return { head: item["ok"] === false ? "失敗" : "", body: EMPTY };
+  return { head: fields(item)["ok"] === false ? "失敗" : "", body: EMPTY };
 }
 
 function hits(item: Item): Fragment {
@@ -315,12 +316,12 @@ function until(ms: number | undefined): string | undefined {
 // --- the pieces every drawing is made of ---
 
 function str(item: Item, name: string): string | undefined {
-  const value = item[name];
+  const value = fields(item)[name];
   return typeof value === "string" && value !== "" ? value : undefined;
 }
 
 function num(item: Item, name: string): number | undefined {
-  const value = item[name];
+  const value = fields(item)[name];
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
@@ -377,10 +378,20 @@ function list(value: unknown): Todo[] {
 
 /** The base fields every item has, which the heading already said. What is
  * left is the type's own, and that is what a generic drawing lays out. */
-const BASE = new Set(["uuid", "type", "at", "turn", "role", "result_item", "parent_item"]);
+const BASE = new Set([
+  "id",
+  "uuid",
+  "source",
+  "type",
+  "at",
+  "turn",
+  "role",
+  "result_item",
+  "parent_item",
+]);
 
 function own(item: Item): Record<string, unknown> {
-  return Object.fromEntries(Object.entries(item).filter(([name]) => !BASE.has(name)));
+  return Object.fromEntries(Object.entries(fields(item)).filter(([name]) => !BASE.has(name)));
 }
 
 /** How deep a value nobody wrote a drawing for is laid out. Two levels is what

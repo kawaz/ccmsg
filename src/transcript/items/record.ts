@@ -8,6 +8,45 @@
 
 export type Row = Record<string, unknown>;
 
+/** One record of a transcript and where it begins in the file.
+ *
+ * Classification carries the position through to the items, because an item is
+ * what a reader made of a record and a reader is fallible: the position is how
+ * whoever holds the item asks the transcript what the record actually said. */
+export interface Located {
+  readonly line: string;
+  readonly offset: number;
+}
+
+/** A chunk of a transcript as its records, each with its position, where
+ * `start` is the offset the chunk itself begins at.
+ *
+ * A record's span runs to the start of the next one — the newline that ends it
+ * included — so a read bounded to `offset + bytes` carrying `bytes` returns the
+ * record whole rather than everything but its terminator. Every record a
+ * transcript hands out is one the writer finished and terminated; a trailing
+ * fragment is not a record and is not offered here. */
+export function located(chunk: string, start = 0): Located[] {
+  return positioned(chunk.split("\n"), start);
+}
+
+/** Records already split out of a chunk, placed from where the chunk begins.
+ * The one a tail hands over, which has done the splitting on the bytes. */
+export function positioned(lines: readonly string[], start: number): Located[] {
+  const found: Located[] = [];
+  let offset = start;
+  for (const line of lines) {
+    if (line !== "") found.push({ line, offset });
+    offset += span(line);
+  }
+  return found;
+}
+
+/** How far a record runs from where it begins, its terminator included. */
+export function span(line: string): number {
+  return Buffer.byteLength(line, "utf8") + 1;
+}
+
 export function isRow(raw: unknown): raw is Row {
   return typeof raw === "object" && raw !== null && !Array.isArray(raw);
 }

@@ -1,5 +1,18 @@
 import type { Item } from "./item.ts";
-import { count, instant, isRow, list, optional, type Row, row, str, tagged } from "./record.ts";
+import {
+  count,
+  instant,
+  isRow,
+  list,
+  type Located,
+  located,
+  optional,
+  type Row,
+  row,
+  span,
+  str,
+  tagged,
+} from "./record.ts";
 import { genericResult, resultFields, useFields } from "./tools.ts";
 
 /** Turning a harness's transcript into the items the contract names.
@@ -48,10 +61,21 @@ const NOT_ITEMS = new Set([
  * what comes back is also an answer. */
 const SPAWNS = new Set(["Agent", "Task"]);
 
+/** How many calls awaiting an answer one reading holds. Reached only by calls
+ * that are never answered, since an answered one is let go where it is
+ * answered. */
+const OUTSTANDING_CALLS = 4096;
+
 /** What an item is under construction: the contract's shape, before it is
  * settled. A call learns the id of what answered it only when the answer
  * arrives, which is why these are written to after they are made. */
-type Draft = Record<string, unknown> & { uuid: string; type: string; at: number };
+type Draft = Record<string, unknown> & {
+  id: string;
+  uuid: string;
+  source: { offset: number; bytes: number };
+  type: string;
+  at: number;
+};
 
 /** A whole transcript read as items, in the order the file holds them.
  *
@@ -60,23 +84,19 @@ type Draft = Record<string, unknown> & { uuid: string; type: string; at: number 
  * apart the harness wrote them. Reading the whole file before any range is
  * applied is what makes `parent_item` answerable: a result inside the range
  * whose call fell before it still names the call. */
-export function classify(lines: Iterable<string>): Item[] {
+export function classify(records: Iterable<Located>): Item[] {
   const state = new Classification();
-  for (const line of lines) {
-    if (line === "") continue;
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(line);
-    } catch {
-      continue;
-    }
-    if (isRow(parsed)) state.read(parsed);
-  }
-  return state.items;
+  return state.readAll(records);
 }
 
-class Classification {
-  readonly items: Draft[] = [];
+/** A transcript read as items while it is still being written.
+ *
+ * The same reading as `classify`, kept open: a tail hands it what has just
+ * been appended and takes back the items those bytes were, with the calls made
+ * before them still known — which is what lets a result arriving now name the
+ * call it answers. */
+export class Classification {
+  #items: Draft[] = [];
   /** The call each tool result belongs to, by the id the harness pairs them
    * with. Holds the `tool:*` item and, for an `Agent` call, the
    * `message:sub:out` beside it — the same exchange seen from the two sides
@@ -86,15 +106,54 @@ class Classification {
   /** The last slash command invoked, which is what its output belongs to. */
   #slash: string | undefined;
 
-  read(record: Row): void {
+  /** The records of one chunk as the items they were read as, oldest first.
+   *
+   * What comes back is this chunk's items alone. A call the chunk before it
+   * held is still known and can still be pointed at, but it has already been
+   * handed over and is not handed over twice: whoever is reading a transcript
+   * as it grows holds a list it only appends to. */
+  readAll(records: Iterable<Located>): Item[] {
+    for (const { line, offset } of records) {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (isRow(parsed)) this.read(parsed, { offset, bytes: span(line) });
+    }
+    const made = this.#items;
+    this.#items = [];
+    return made as unknown as Item[];
+  }
+
+  /** A whole chunk of text as items, where the chunk begins at `start`. */
+  readChunk(chunk: string, start = 0): Item[] {
+    return this.readAll(located(chunk, start));
+  }
+
+  read(record: Row, source: { offset: number; bytes: number }): void {
     const type = str(record["type"]);
     if (type === undefined || NOT_ITEMS.has(type)) return;
     const uuid = str(record["uuid"]) ?? "";
     if (uuid === "") return;
     const at = instant(record["timestamp"]);
+    // Where in its record an item stood. One record becomes the thinking, the
+    // words and each call of a turn, and a link that named only the record
+    // would name all of them at once.
+    let index = 0;
     const make = (kind: string, fields: Record<string, unknown> = {}): Draft => {
-      const draft: Draft = { uuid, type: kind, at, turn: this.#turn, ...fields };
-      this.items.push(draft);
+      const draft: Draft = {
+        id: `${uuid}:${String(index)}`,
+        uuid,
+        source,
+        type: kind,
+        at,
+        turn: this.#turn,
+        ...fields,
+      };
+      index += 1;
+      this.#items.push(draft);
       return draft;
     };
     if (type === "attachment") return this.#attachment(record, make);
@@ -205,12 +264,26 @@ class Classification {
         ...(addressed(to) ? {} : { role: "use" }),
         ...(addressed(to)
           ? { text: text(input["message"]) ?? "", to }
-          : { prompt: text(input["message"]) ?? "", name: to }),
+          : // Writing to an agent is one direction of a correspondence, not a
+            // call that returns: what the agent says back arrives as its own
+            // message whenever it chooses to send one, under nothing that
+            // names this. So the brief says it is waiting for nothing, and a
+            // reader is not left watching for an answer that has no way in.
+            { prompt: text(input["message"]) ?? "", name: to, one_way: true }),
       });
     } else if (name === "Bash" && isCcmsgSend(str(input["command"]))) {
       make("message:session:out", { text: str(input["command"]) ?? "" });
     }
-    if (id !== "") this.#calls.set(id, { tool, name, ...optional("message", message) });
+    if (id === "") return;
+    // A call is dropped from the pairing once it has been answered, so what is
+    // held here is the calls still outstanding. The bound is for the one that
+    // never will be — a transcript ends mid-call, an agent is killed — which
+    // otherwise accumulates for as long as the file is followed.
+    if (this.#calls.size >= OUTSTANDING_CALLS) {
+      const oldest = this.#calls.keys().next();
+      if (oldest.done !== true) this.#calls.delete(oldest.value);
+    }
+    this.#calls.set(id, { tool, name, ...optional("message", message) });
   }
 
   #user(record: Row, make: Make): void {
@@ -239,22 +312,37 @@ class Classification {
   #answer(record: Row, block: Row, make: Make): void {
     const id = str(block["tool_use_id"]) ?? "";
     const call = this.#calls.get(id);
+    if (call === undefined) {
+      // An answer to a call this reading never saw. A result item names the
+      // call it answers and there is no id to name, so what is stated is the
+      // record itself rather than a pointer to something that does not exist.
+      // It happens where a reading starts part-way down a file: the whole file
+      // is read before a dump's range is applied, so the call is there.
+      make("system:unknown", { record });
+      return;
+    }
     const failed = block["is_error"] === true;
     const answer = record["toolUseResult"];
-    const fields = resultFields(call?.name, answer, failed);
-    const item = make(`tool:${segment(call?.name ?? "unknown")}`, {
+    const fields = resultFields(call.name, answer, failed);
+    const item = make(`tool:${segment(call.name)}`, {
       role: "result",
-      parent_item: call?.tool.uuid ?? id,
+      parent_item: call.tool.id,
       tool_use_id: id,
       ...(fields ?? { result: genericResult(answer) }),
     });
-    if (call === undefined) return;
-    call.tool["result_item"] = item.uuid;
+    call.tool["result_item"] = item.id;
     // An agent's id is known only once it has started, so the message that
     // asked for it learns its own id from the answer.
     const result = row(answer) ?? {};
     const agent = str(result["agentId"]) ?? str(result["agent_id"]);
-    if (call.message === undefined) return;
+    if (call.message === undefined) {
+      // The exchange is closed: nothing else in the file points back at this
+      // call, so what was held for the pairing is let go. A transcript
+      // followed while it grows is read by one long-lived reading, and a call
+      // kept after it was answered would be kept for the session's life.
+      this.#calls.delete(id);
+      return;
+    }
     if (agent !== undefined) call.message["agent_id"] = agent;
     // An agent that was waited on answers here, in the call's own result. One
     // started in the background answers much later in a notification of its
@@ -264,13 +352,14 @@ class Classification {
     if (said === undefined) return;
     const reply = make("message:sub:in", {
       role: "result",
-      parent_item: call.message.uuid,
+      parent_item: call.message.id,
       text: said,
       ...optional("agent_id", agent),
       ...optional("status", str(result["status"])),
       ...optional("duration_ms", count(result["totalDurationMs"])),
     });
-    call.message["result_item"] = reply.uuid;
+    call.message["result_item"] = reply.id;
+    this.#calls.delete(id);
   }
 
   /** A `type: "user"` line whose content is words rather than a tool's answer.
@@ -352,18 +441,20 @@ class Classification {
    * itself. Either way it is an agent answering and reads as one. */
   #notification(said: string, make: Make): void {
     const answer = tagged(said, "result");
-    const call = this.#calls.get(tagged(said, "tool-use-id") ?? "");
+    const key = tagged(said, "tool-use-id") ?? "";
+    const call = this.#calls.get(key);
     if (answer !== undefined && call !== undefined) {
       const asked = call.message ?? call.tool;
       const item = make("message:sub:in", {
         role: "result",
-        parent_item: asked.uuid,
+        parent_item: asked.id,
         text: answer,
         ...optional("agent_id", str(asked["agent_id"]) ?? tagged(said, "task-id")),
         ...optional("status", tagged(said, "status")),
         ...optional("duration_ms", count(Number(tagged(said, "duration_ms")))),
       });
-      if (call.message !== undefined) call.message["result_item"] = item.uuid;
+      if (call.message !== undefined) call.message["result_item"] = item.id;
+      this.#calls.delete(key);
       return;
     }
     make("system:task", {

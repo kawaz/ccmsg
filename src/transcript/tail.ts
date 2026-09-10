@@ -32,9 +32,10 @@ export interface Appended {
 export interface TailDeps {
   /** Complete lines only; a record still being written waits for its end. */
   readonly onAppended: (appended: Appended) => void;
-  /** The end of the file as it stood when the tail opened, oldest first. The
-   * seed of the fold, not something a subscriber is sent. */
-  readonly onSeed: (lines: readonly string[]) => void;
+  /** The end of the file as it stood when the tail opened, oldest first, with
+   * the offsets that place it. The seed of what is folded and of what is
+   * classified, not something a subscriber is sent. */
+  readonly onSeed: (seeded: Appended) => void;
   /** The file is not the one the tail was reading: it shrank, so what was
    * folded out of the old contents no longer describes it. */
   readonly onTruncated: () => void;
@@ -119,14 +120,12 @@ export class TranscriptTail {
     const size = this.#size;
     if (size === 0) return;
     const from = Math.max(0, size - FOLD_TAIL_BYTES);
-    const text = await this.#slice(from, size);
-    const complete = whole(text);
-    this.#offset = from + byteLength(complete);
-    const lines = split(complete);
+    const complete = whole(await this.#slice(from, size));
+    this.#offset = from + complete.byteLength;
     // The first line is half a record whenever the read began mid-file, so it
-    // is dropped: what the fold reads are whole records or nothing.
-    if (from > 0) lines.shift();
-    this.deps.onSeed(lines);
+    // is dropped: what is read are whole records or nothing.
+    const at = from === 0 ? 0 : complete.indexOf(NEWLINE) + 1;
+    this.deps.onSeed({ lines: split(complete, at), start: from + at, end: this.#offset, size });
   }
 
   async #read(): Promise<void> {
@@ -141,11 +140,11 @@ export class TranscriptTail {
     this.#size = size;
     if (size === this.#offset) return;
     const complete = whole(await this.#slice(this.#offset, size));
-    if (complete.length === 0) return;
+    if (complete.byteLength === 0) return;
     const start = this.#offset;
-    const end = start + byteLength(complete);
+    const end = start + complete.byteLength;
     this.#offset = end;
-    this.deps.onAppended({ lines: split(complete), start, end, size });
+    this.deps.onAppended({ lines: split(complete, 0), start, end, size });
   }
 
   async #stat(): Promise<number> {
@@ -157,35 +156,47 @@ export class TranscriptTail {
     }
   }
 
-  /** The bytes in a range, as text. A range that reads short — the file was
-   * truncated between the stat and the read — yields what was actually there. */
-  async #slice(from: number, to: number): Promise<string> {
+  /** The bytes in a range. A range that reads short — the file was truncated
+   * between the stat and the read — yields what was actually there.
+   *
+   * Bytes rather than text, because the offsets that place what is read are
+   * found in them: a slice that begins part-way into a file lands wherever the
+   * arithmetic puts it, inside a character as readily as before one, and
+   * decoding first would turn those bytes into a replacement character of a
+   * different length and move every offset derived from it. */
+  async #slice(from: number, to: number): Promise<Buffer> {
+    if (to <= from) return Buffer.alloc(0);
     const handle = await open(this.path, "r").catch(() => undefined);
-    if (handle === undefined) return "";
+    if (handle === undefined) return Buffer.alloc(0);
     try {
       const buffer = Buffer.alloc(to - from);
       const { bytesRead } = await handle.read(buffer, 0, buffer.length, from);
-      return buffer.subarray(0, bytesRead).toString("utf8");
+      return buffer.subarray(0, bytesRead);
     } finally {
       await handle.close();
     }
   }
 }
 
+const NEWLINE = 0x0a;
+
 /** What of a read is whole records: everything up to and including the last
  * newline. A transcript ends every record with one, so what follows the last
  * is a record the writer has not finished. */
-function whole(text: string): string {
-  const last = text.lastIndexOf("\n");
-  return last < 0 ? "" : text.slice(0, last + 1);
+function whole(bytes: Buffer): Buffer {
+  const last = bytes.lastIndexOf(NEWLINE);
+  return last < 0 ? Buffer.alloc(0) : bytes.subarray(0, last + 1);
 }
 
-function split(complete: string): string[] {
-  return complete.split("\n").slice(0, -1);
-}
-
-function byteLength(text: string): number {
-  return Buffer.byteLength(text, "utf8");
+/** The records in what was read, from a byte that begins one. */
+function split(complete: Buffer, at: number): string[] {
+  const lines: string[] = [];
+  for (let from = at; from < complete.byteLength;) {
+    const newline = complete.indexOf(NEWLINE, from);
+    lines.push(complete.toString("utf8", from, newline));
+    from = newline + 1;
+  }
+  return lines;
 }
 
 /** How large the file is right now, or zero for one that is not there yet.

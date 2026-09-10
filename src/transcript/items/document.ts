@@ -1,5 +1,5 @@
 import type { DumpIdEntry, SessionDumpFile } from "@ccmsg/protocol";
-import type { Item } from "./item.ts";
+import { fields, type Item } from "./item.ts";
 import { elapsed, fragment, words } from "./render.ts";
 
 /** A whole dump as one document.
@@ -77,8 +77,8 @@ function draw(item: Item, child: Item | undefined, view: DumpView): string[] {
   const answer = child === undefined ? undefined : fragment(child);
   const nested = child !== undefined && child.type.startsWith("message:sub");
   const link = isResult(item)
-    ? arrow("←", item["parent_item"])
-    : (arrow("→", item["result_item"]) ?? (item["role"] === "use" ? "(未着)" : undefined));
+    ? arrow("←", fields(item)["parent_item"])
+    : (arrow("→", fields(item)["result_item"]) ?? waiting(item));
   const head = isResult(item)
     ? words(prefix(item), link, own.head, clock(item))
     : words(
@@ -102,10 +102,28 @@ function draw(item: Item, child: Item | undefined, view: DumpView): string[] {
   return lines;
 }
 
-/** `[uuid8] type`, which is how an item is pointed at: the id is what a reader
- * goes back to the transcript with, and the type is what it was read as. */
+/** `[id] type`, which is how an item is pointed at: the id is what the links
+ * name, and the type is what the item was read as. The record's id is shown at
+ * the length a person compares by eye, with the place in the record kept whole
+ * — an item is one of several a record became, and a heading that dropped
+ * which one would not answer the arrow pointing at it. */
 function prefix(item: Item): string {
-  return `[${item.uuid.slice(0, 8)}] ${item.type}`;
+  return `[${short(item.id)}] ${item.type}`;
+}
+
+function short(id: string): string {
+  const cut = id.lastIndexOf(":");
+  return cut < 0 ? id.slice(0, 8) : `${id.slice(0, Math.min(8, cut))}${id.slice(cut)}`;
+}
+
+/** A call with nothing pointing back at it. Waiting and having nothing to wait
+ * for read differently: an agent answers the brief that started it, and a
+ * message written to one is answered wherever that agent chooses, under
+ * nothing that names this. */
+function waiting(item: Item): string | undefined {
+  const own = fields(item);
+  if (own["role"] !== "use") return undefined;
+  return own["one_way"] === true ? "(片道)" : "(未着)";
 }
 
 function clock(item: Item): string {
@@ -119,11 +137,11 @@ function two(value: number): string {
 }
 
 function arrow(mark: string, id: unknown): string | undefined {
-  return typeof id === "string" && id !== "" ? `${mark} ${id.slice(0, 8)}` : undefined;
+  return typeof id === "string" && id !== "" ? `${mark} ${short(id)}` : undefined;
 }
 
 function isResult(item: Item): boolean {
-  return item["role"] === "result";
+  return fields(item)["role"] === "result";
 }
 
 /** The lines under a heading, cut only where a reader asked for a cut. */
@@ -169,31 +187,25 @@ function cell(text: string): string {
 
 /** Which answer belongs to which call, and which of those are drawn together.
  *
- * A tool's two halves are matched on the id the harness pairs them with, so
- * two calls in the same record are never confused for one another. An agent's
- * are matched on the record the brief was written in and the agent that
- * answered, which is what the classification filled in once the agent had
- * started. */
+ * An answer names the call it answers, so the matching is a lookup: no two
+ * calls in one record are confused for one another, and a tool and an agent
+ * are paired by the same rule rather than by the ids each of them happens to
+ * carry. */
 function pair(items: readonly Item[]): {
   child: Map<number, number>;
   folded: Set<number>;
 } {
   const child = new Map<number, number>();
   const folded = new Set<number>();
-  const waiting = new Map<string, number[]>();
+  const where = new Map<string, number>();
+  for (let at = 0; at < items.length; at += 1) where.set((items[at] as Item).id, at);
   for (let at = 0; at < items.length; at += 1) {
     const item = items[at] as Item;
     // Which half of an exchange this is, which the contract calls an item's
     // role and nothing here confuses with who is allowed to ask for one.
-    const half = item["role"];
-    if (half === "use") {
-      const queue = waiting.get(key(item, false));
-      if (queue === undefined) waiting.set(key(item, false), [at]);
-      else queue.push(at);
-      continue;
-    }
-    if (half !== "result") continue;
-    const call = waiting.get(key(item, true))?.shift();
+    if (fields(item)["role"] !== "result") continue;
+    const parent = fields(item)["parent_item"];
+    const call = typeof parent === "string" ? where.get(parent) : undefined;
     if (call === undefined) continue;
     // A pair the reader would have to scroll between is left where each half
     // happened, unless it is an agent's: what an agent was asked and what it
@@ -203,12 +215,4 @@ function pair(items: readonly Item[]): {
     folded.add(at);
   }
   return { child, folded };
-}
-
-function key(item: Item, result: boolean): string {
-  const call = item["tool_use_id"];
-  if (typeof call === "string" && call !== "") return `${item.type} ${call}`;
-  const record = result ? item["parent_item"] : item.uuid;
-  const agent = item["agent_id"];
-  return `sub ${String(record)} ${typeof agent === "string" ? agent : ""}`;
 }

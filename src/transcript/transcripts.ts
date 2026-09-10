@@ -1,7 +1,24 @@
 import type { InstanceId, Sid } from "@ccmsg/protocol";
 import { topicParam, type TopicValue, type UpstreamResource } from "../topics/index.ts";
 import { NO_FACTS, type TranscriptFacts, TranscriptFold } from "./fold.ts";
+import { Classification, type Item, positioned } from "./items/index.ts";
 import { type Appended, TranscriptTail } from "./tail.ts";
+
+/** How many items a subscription to `transcript_items:<sid>` opens with.
+ *
+ * The tail of the same megabyte the fold is seeded from, bounded by a count
+ * because that read is bounded by bytes: a file of many small records would
+ * otherwise make the opening frame as large as the read that produced it. Two
+ * hundred items is several turns at the sizes the harness writes, which is
+ * more than a live view shows at once — and a client that wants further back
+ * asks for it by range rather than waiting for a snapshot to grow. */
+export const ITEMS_SNAPSHOT = 200;
+
+/** Which of the two topics a name is. Both are fed by one tail, so the
+ * resource is entered by either name and answers each in its own vocabulary. */
+function isItems(topic: string): boolean {
+  return topic.startsWith("transcript_items:");
+}
 
 export interface TranscriptsDeps {
   readonly self: InstanceId;
@@ -58,7 +75,12 @@ export class Transcripts implements UpstreamResource {
     const sid = topicParam(topic);
     const followed = sid === undefined ? undefined : this.#followed.get(sid);
     if (sid === undefined || followed === undefined) return [];
-    return [{ instance: this.deps.self, data: { sid, size: followed.tail.size } }];
+    // The items topic holds a list that is only appended to, so its snapshot
+    // is the end of that list rather than a place to start from.
+    const data = isItems(topic)
+      ? { sid, items: [...followed.recent] }
+      : { sid, size: followed.tail.size };
+    return [{ instance: this.deps.self, data }];
   }
 
   /** What the fold currently says about a session. Empty for one not being
@@ -117,15 +139,20 @@ export class Transcripts implements UpstreamResource {
     const followed: Followed = {
       holds: 1,
       fold,
+      reading: new Classification(),
+      recent: [],
       tail: new TranscriptTail(path, {
-        onSeed: (lines) => {
+        onSeed: (seeded) => {
           // The end of the file as it already stood: it settles what the fold
-          // says, and it is not an append, so nothing is published for it.
-          if (foldAll(fold, lines)) this.deps.onFacts(sid);
+          // says and opens the reading that classifies what comes next, and it
+          // is not an append, so nothing is published for it.
+          this.#keep(sid, seeded);
+          if (foldAll(fold, seeded.lines)) this.deps.onFacts(sid);
         },
         onAppended: (appended) => this.#appended(sid, fold, appended),
         onTruncated: () => {
           fold.reset();
+          this.#reset(sid);
           this.deps.onFacts(sid);
         },
         ...(this.deps.pollMs === undefined ? {} : { pollMs: this.deps.pollMs }),
@@ -134,8 +161,15 @@ export class Transcripts implements UpstreamResource {
     return followed;
   }
 
-  /** The one pass over what was appended: the lines go to the fold and to the
-   * topic, in that order, and are not read a second time for either (M5). */
+  /** The one pass over what was appended: the lines go to the fold, to the
+   * classification and to the two topics, and are not read again for any of
+   * them (M5).
+   *
+   * Both topics are fed whether or not either is subscribed to, because the
+   * classification is a reading of the whole file kept open: a call answered
+   * now was made in bytes that went past long ago, and a reading started when
+   * somebody subscribed would not know it. What the memory holds is bounded —
+   * the calls still outstanding, and the items of the opening frame. */
   #appended(sid: Sid, fold: TranscriptFold, appended: Appended): void {
     const changed = foldAll(fold, appended.lines);
     this.deps.publish(`transcript:${sid}`, {
@@ -145,13 +179,46 @@ export class Transcripts implements UpstreamResource {
       end: appended.end,
       size: appended.size,
     });
+    const items = this.#keep(sid, appended);
+    // A record still being written was not read, so there is nothing to say
+    // about it yet; a chunk whose records were all the interface's own
+    // bookkeeping says nothing either.
+    if (items.length > 0) this.deps.publish(`transcript_items:${sid}`, { sid, items });
     if (changed) this.deps.onFacts(sid);
+  }
+
+  /** What a chunk was read as, with the end of it held for the next
+   * subscription to open on. A result that fills in a call already handed over
+   * is not sent again: the call named nothing to wait for and the result names
+   * the call, so a reader ties the two together from what it already has. */
+  #keep(sid: Sid, chunk: Appended): readonly Item[] {
+    const followed = this.#followed.get(sid);
+    if (followed === undefined) return [];
+    const items = followed.reading.readAll(positioned(chunk.lines, chunk.start));
+    followed.recent.push(...items);
+    if (followed.recent.length > ITEMS_SNAPSHOT) {
+      followed.recent.splice(0, followed.recent.length - ITEMS_SNAPSHOT);
+    }
+    return items;
+  }
+
+  /** The file is not the one that was being read, so neither the reading nor
+   * what it produced describes it. */
+  #reset(sid: Sid): void {
+    const followed = this.#followed.get(sid);
+    if (followed === undefined) return;
+    followed.reading = new Classification();
+    followed.recent.length = 0;
   }
 }
 
 interface Followed {
   holds: number;
   readonly fold: TranscriptFold;
+  /** The transcript read as items, kept open while the tail runs. */
+  reading: Classification;
+  /** The end of what has been read, which is what a subscription opens on. */
+  readonly recent: Item[];
   readonly tail: TranscriptTail;
 }
 

@@ -1,4 +1,5 @@
 import type { DumpPreset } from "@ccmsg/protocol";
+import { OpError } from "../../dispatch/index.ts";
 import type { Item } from "./item.ts";
 
 /** Which of a transcript's items a dump keeps.
@@ -141,4 +142,70 @@ export function select(
     entries[item.type] = (entries[item.type] ?? 0) + 1;
   }
   return { items: kept, entries };
+}
+
+/** Where a range of a transcript begins and ends.
+ *
+ * A record bound cuts at that record's position rather than at its clock, so
+ * records sharing an instant stay on their own side of the cut — which is the
+ * whole reason there are two kinds. An item bound is finer than either: it
+ * resumes inside a record whose earlier items were already answered for. */
+export interface Bounds {
+  readonly since_at?: number;
+  readonly since_uuid?: string;
+  readonly since_id?: string;
+  readonly until_at?: number;
+  readonly until_uuid?: string;
+}
+
+/** The bounds as stated, refused where they say two things at once.
+ *
+ * A range with two lower bounds has no reading that is not a guess at which
+ * one was meant, and a guess that answers the wrong slice is worse than a
+ * refusal the caller can act on. */
+export function bounded(bounds: Bounds): void {
+  const lower = [bounds.since_at, bounds.since_uuid, bounds.since_id].filter(
+    (one) => one !== undefined,
+  ).length;
+  if (lower > 1) {
+    throw new OpError("invalid_args", "a lower bound is a time, a record or an item, not several");
+  }
+  if (bounds.until_at !== undefined && bounds.until_uuid !== undefined) {
+    throw new OpError("invalid_args", "an upper bound is a time or a record, not both");
+  }
+}
+
+/** The items within the bounds, in the order the transcript holds them.
+ *
+ * Every item a record became carries that record's id, so a bound by record
+ * keeps a turn's thinking, words and calls together, while a bound by item
+ * cuts inside one. */
+export function within(items: readonly Item[], bounds: Bounds): Item[] {
+  const kept: Item[] = [];
+  // A lower bound by record or by item starts closed: it opens at what it
+  // names, which is included.
+  let open = bounds.since_uuid === undefined && bounds.since_id === undefined;
+  for (let at = 0; at < items.length; at += 1) {
+    const item = items[at];
+    if (item === undefined) continue;
+    if (!open) {
+      if (
+        bounds.since_id !== undefined
+          ? item.id !== bounds.since_id
+          : item.uuid !== bounds.since_uuid
+      ) {
+        continue;
+      }
+      open = true;
+    }
+    if (bounds.since_at !== undefined && item.at < bounds.since_at) continue;
+    if (bounds.until_at !== undefined && item.at > bounds.until_at) break;
+    kept.push(item);
+    // An upper bound by record is inclusive and cuts after the last item that
+    // record became, so the rest of the same record is still let through.
+    if (bounds.until_uuid !== undefined && item.uuid === bounds.until_uuid) {
+      if (items[at + 1]?.uuid !== item.uuid) break;
+    }
+  }
+  return kept;
 }
