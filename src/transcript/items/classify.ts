@@ -135,8 +135,12 @@ export class Classification {
   read(record: Row, source: { offset: number; bytes: number }): void {
     const type = str(record["type"]);
     if (type === undefined || NOT_ITEMS.has(type)) return;
-    const uuid = str(record["uuid"]) ?? "";
-    if (uuid === "") return;
+    // A record the harness wrote without an id of its own still happened, and
+    // an item is pointed at by the record it came from — so where the record
+    // stands in the file stands in for the id it lacks. The `@` says which of
+    // the two it is, since a reader that groups by record must not take an
+    // address for something the harness will write again.
+    const uuid = str(record["uuid"]) ?? `@${String(source.offset)}`;
     const at = instant(record["timestamp"]);
     // Where in its record an item stood. One record becomes the thinking, the
     // words and each call of a turn, and a link that named only the record

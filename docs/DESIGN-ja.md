@@ -246,6 +246,9 @@ state dir にはもう 1 つ、`dumps/` がある。`session_dump_write` が tra
 **アイテムの identity は `id` = `<uuid>:<index>`** (元 record の id と、その record の中で何番目に立っていたか) で、
 リンクはこの `id` で張る。record の id だけでは 1 行が become した複数アイテムを同時に指してしまい、リンクにならない。
 `uuid` は元 record への参照として残るので、record 単位で 1 turn を束ねる用途 (範囲を record で切る等) はそのまま効く。
+ハーネスが `uuid` を書かなかった record では、その位置 (`@<offset>`) が record の identity を代行する
+(**静かに消える行を作らない**方が優先で、id が無いことは record を落とす理由にならない。`@` 付きなのは、
+record 単位で束ねる読み手がこれをハーネスの uuid と取り違えないため)。
 併せて各アイテムは `source` (`offset` / `bytes` = transcript 内での元 record の位置) を持つ。
 **分類は誤りうるので、生 record を見る道を必ず残す**という要求がこれで、`transcript_read` に
 `before = offset + bytes` / `max_bytes = bytes` を渡せば元 record が 1 行返る。`bytes` は行末の改行までを含むので、
@@ -748,7 +751,9 @@ topic の仕組みに内蔵するので「この topic には抑制がない」�
 byte 側の snapshot が「どこから遡るか」を答えるのに対し、こちらは購読者が即描ける末尾そのものを答える
 (アイテムには「そこから遡る」ための座標が無く、遡るのは範囲指定の `transcript_items_read` の仕事である。
 snapshot の先頭アイテムを `until_id` に渡せばその手前が返り、以降は `prev` を渡し続けて遡れる)。
-件数で切るのは、tail の読み出し (`FOLD_TAIL_BYTES` = 1 MiB) が bytes で切られているためで、
+この末尾は **tail を起動したターンの内側で読む** (byte 側の snapshot が size をそうしているのと同じ理由)。
+seed を待たずに答えると snapshot が空になり、末尾から描く client は「アイテムがまだ無い」と「これが末尾だ」を
+区別できないまま transcript の先頭を出してしまう。件数で切るのは、tail の読み出し (`FOLD_TAIL_BYTES` = 1 MiB) が bytes で切られているためで、
 小さい record が並ぶ file では最初の frame がその読み出しと同じ大きさになってしまう。
 
 **追記された結果が既存の呼び出しを埋めても、その呼び出しは送り直さない。** 購読者は追記しかしない列を持つので、

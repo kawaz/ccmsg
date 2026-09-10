@@ -405,6 +405,25 @@ describe("classifying a transcript", () => {
     expect(items[0]?.type).toBe("system:unknown");
   });
 
+  test("a record the harness left without an id is read from where it stands", () => {
+    const items = classify(
+      lines(
+        { type: "who-knows", timestamp: "2026-09-01T00:00:00.000Z" },
+        said("u1", "and then this"),
+      ),
+    );
+    // A line that vanished quietly is the one failure a dump cannot be read
+    // around, so the missing id is stood in for rather than being a reason to
+    // drop the record.
+    expect(typesOf(items)).toEqual(["system:unknown", "message:user:in"]);
+    expect(items[0]?.uuid).toBe("@0");
+    expect(items[0]?.id).toBe("@0:0");
+    // Stood in for by the address, which is the item's own too, so the two
+    // never say different things about where the record is.
+    expect(items[0]?.source.offset).toBe(0);
+    expect(validationErrors(TranscriptItem, items[0])).toEqual([]);
+  });
+
   test("the interface and the session's own bookkeeping are not events", () => {
     const items = classify(
       lines(

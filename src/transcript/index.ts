@@ -13,4 +13,4 @@ export {
 } from "./fold.ts";
 export { READ_LIMIT, readSlice } from "./read.ts";
 export { type Appended, FOLD_TAIL_BYTES, TranscriptTail } from "./tail.ts";
-export { Transcripts, type TranscriptsDeps } from "./transcripts.ts";
+export { ITEMS_SNAPSHOT, Transcripts, type TranscriptsDeps } from "./transcripts.ts";

@@ -1,4 +1,4 @@
-import { type FSWatcher, statSync, watch } from "node:fs";
+import { closeSync, type FSWatcher, openSync, readSync, statSync, watch } from "node:fs";
 import { open, stat } from "node:fs/promises";
 import { CONFIRM_POLL_MS } from "../sessions/harness.ts";
 
@@ -86,11 +86,16 @@ export class TranscriptTail {
   }
 
   /** Begin following, seeding the fold from the end of what is already there.
-   * Resolves once the seed has been read, so a snapshot taken after it states
-   * a size the fold has caught up with. */
+   *
+   * The seed is read before this returns rather than awaited, for the reason
+   * the size is read in the constructor: a subscription's snapshot is answered
+   * in the same turn the tail is started, and what the seed settles — the
+   * fold's values, and the items a subscriber opens on — would otherwise be
+   * stated as empty and the whole existing end of the file would arrive later
+   * as though it had just been appended. */
   async start(): Promise<void> {
     if (this.running) return;
-    await this.#seed();
+    this.#seed();
     try {
       this.#watcher = watch(this.path, () => void this.refresh());
     } catch {
@@ -116,11 +121,11 @@ export class TranscriptTail {
     return this.#reading;
   }
 
-  async #seed(): Promise<void> {
+  #seed(): void {
     const size = this.#size;
     if (size === 0) return;
     const from = Math.max(0, size - FOLD_TAIL_BYTES);
-    const complete = whole(await this.#slice(from, size));
+    const complete = whole(this.#sliceSync(from, size));
     this.#offset = from + complete.byteLength;
     // The first line is half a record whenever the read began mid-file, so it
     // is dropped: what is read are whole records or nothing.
@@ -164,6 +169,26 @@ export class TranscriptTail {
    * arithmetic puts it, inside a character as readily as before one, and
    * decoding first would turn those bytes into a replacement character of a
    * different length and move every offset derived from it. */
+  /** The same range, read without yielding, which is what the seed is read
+   * through: the turn that starts a tail is the turn that answers a
+   * subscription, and it has to hold the end of the file by then. Bounded by
+   * `FOLD_TAIL_BYTES` however large the transcript is. */
+  #sliceSync(from: number, to: number): Buffer {
+    if (to <= from) return Buffer.alloc(0);
+    let handle: number;
+    try {
+      handle = openSync(this.path, "r");
+    } catch {
+      return Buffer.alloc(0);
+    }
+    try {
+      const buffer = Buffer.alloc(to - from);
+      return buffer.subarray(0, readSync(handle, buffer, 0, buffer.length, from));
+    } finally {
+      closeSync(handle);
+    }
+  }
+
   async #slice(from: number, to: number): Promise<Buffer> {
     if (to <= from) return Buffer.alloc(0);
     const handle = await open(this.path, "r").catch(() => undefined);

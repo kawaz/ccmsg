@@ -15,6 +15,7 @@ import { classify, Sessions, sessionStatusOf } from "../src/sessions/index.ts";
 import { Topics } from "../src/topics/index.ts";
 import {
   FOLD_TAIL_BYTES,
+  ITEMS_SNAPSHOT,
   NO_FACTS,
   type TranscriptFacts,
   TranscriptFiles,
@@ -1162,6 +1163,26 @@ describe("the transcript_items topic (§3.6)", () => {
       "message:user:out",
       "tool:Bash",
     ]);
+  });
+
+  test("a subscription in the turn the tail starts opens on the end, not on nothing", () => {
+    // The items a subscriber opens on are read in the same turn the tail is
+    // started, for the reason the raw topic's size is: an empty snapshot would
+    // send a client that draws the newest items looking for them at the
+    // beginning of the transcript instead.
+    const rows = Array.from({ length: ITEMS_SNAPSHOT + 40 }, (_, at) =>
+      spoke(`u${String(at)}`, "hi", at),
+    );
+    const file = transcript(rows);
+    const { transcripts } = domain(file.path);
+    transcripts.hold(SID);
+    const opened = transcripts.snapshot(ITEMS_TOPIC)[0]?.data as {
+      items: Record<string, unknown>[];
+    };
+    // One item per record here, so the tail of the file is the tail of the
+    // snapshot, cut to the count it is bounded by.
+    expect(opened.items).toHaveLength(ITEMS_SNAPSHOT);
+    expect(opened.items.at(-1)?.["uuid"]).toBe(`u${String(rows.length - 1)}`);
   });
 
   test("the frames pass the contract", async () => {

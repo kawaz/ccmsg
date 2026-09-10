@@ -274,6 +274,10 @@ later, so whether to fold them is left to whoever draws them.
 that record it stood. Links are written with it, because a record's id alone would name every
 item that record became at once. The `uuid` stays beside it as the reference to the record, so
 anything that groups a turn by its record — cutting a range at one, for instance — keeps working.
+Where the harness wrote a record without a `uuid` of its own, its position (`@<offset>`) stands in
+as the record's identity: **not making a line vanish quietly** comes first, and a missing id is no
+reason to drop a record. The `@` is there so a reader grouping by record cannot mistake an address
+for something the harness wrote.
 Each item also carries `source` (`offset` / `bytes`, where the record sits in the transcript).
 This is what answers the requirement that **classifying is fallible and the raw record must stay
 reachable**: `transcript_read` with `before = offset + bytes` and `max_bytes = bytes` answers with
@@ -858,7 +862,10 @@ what has been read, a fixed number of items**: where the byte snapshot answers "
 back from", this one answers with the end a subscriber can draw immediately — an item has no
 coordinate to page back from, and paging back is `transcript_items_read`'s work: hand its first
 item to `until_id` and what precedes it comes back, then keep handing back the `prev` it names.
-The bound is a
+That tail is read **inside the turn the tail is started**, for the reason the byte snapshot states
+its size there: answered before the seed, the snapshot would be empty, and a client that draws
+from the end cannot tell "no items yet" from "this is the end" — so it draws the beginning of the
+transcript instead. The bound is a
 count because the read that feeds it is bounded in bytes (`FOLD_TAIL_BYTES`, 1 MiB), which would
 otherwise make the opening frame as large as that read for a file of many small records.
 
