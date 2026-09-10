@@ -2,7 +2,7 @@ import { chmodSync } from "node:fs";
 import { BaseConn, type Conn, type ConnRegistry } from "./conn.ts";
 import { createDriver, type FrameHandler } from "./driver.ts";
 import { LineReader, WriteQueue } from "./framing.ts";
-import type { Listener } from "./listener.ts";
+import { type Listener, STOP_DEADLINE_MS } from "./listener.ts";
 
 interface UdsState {
   conn: BaseConn;
@@ -82,7 +82,7 @@ export function listenUds(options: UdsOptions): Listener {
     kind: "uds",
     address: options.path,
     async close() {
-      server.stop(true);
+      await Promise.race([server.stop(true), Bun.sleep(STOP_DEADLINE_MS)]);
     },
   };
 }

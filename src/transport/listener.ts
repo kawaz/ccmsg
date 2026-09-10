@@ -4,6 +4,9 @@
  * everything else, because a client reads "the unix socket refuses" as the
  * instance having finished leaving, and a successor may take the resources it
  * sees freed before that. */
+/** A Bun listener gets this long to settle after releasing its address. */
+export const STOP_DEADLINE_MS = 250;
+
 export interface Listener {
   readonly kind: "uds" | "ws";
   /** The socket path, or the bound `host:port` — resolved, so an ephemeral

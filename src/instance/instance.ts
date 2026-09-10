@@ -941,15 +941,16 @@ export class Instance {
     // they change rather than at exit, so there is nothing held back to flush;
     // the log's writer is synchronous for the same reason (§3.6).
     this.log.write("stopping", { instance: this.self });
-    // 5. let the resources go, the unix socket last. The pid and the lock go
-    // before it, because a client reads a refusing socket as this instance
-    // having finished leaving and a successor may claim what it sees free.
+    // 5. let the resources go, the unix socket last. Closing takes the path
+    // this process bound, and only that one: the stable address is a symlink
+    // nothing here touches, because a successor may have already pointed it at
+    // itself (§8.5).
+    await this.#transport.close();
+    // The pid and lock are the observable proof that this process is still
+    // leaving. Release them only after every listener has finished closing, so
+    // a client cannot mistake an unreachable socket for a completed stop.
     remove(this.paths.pidFile);
     this.lock.release();
-    // Closing takes the path this process bound, and only that one: the stable
-    // address is a symlink nothing here touches, because a successor may have
-    // already pointed it at itself (§8.5).
-    await this.#transport.close();
   }
 }
 

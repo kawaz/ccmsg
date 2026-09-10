@@ -3,7 +3,7 @@ import { BaseConn, type Conn, type ConnRegistry } from "./conn.ts";
 import { createDriver, type FrameHandler } from "./driver.ts";
 import { LineReader, WriteQueue } from "./framing.ts";
 import { type AuthorizedUpgrade, type EntryPolicy, OPEN } from "./entry.ts";
-import type { Listener } from "./listener.ts";
+import { type Listener, STOP_DEADLINE_MS } from "./listener.ts";
 
 /** What the upgrade hands the socket: whether it was let in as a peer. */
 interface UpgradeData {
@@ -185,9 +185,5 @@ export const ENTRY_PATH = "/ws";
 export function entryPath(pathname: string, path: string): boolean {
   return pathname === path || pathname.endsWith(`/${path.replace(/^\//, "")}`);
 }
-
-/** How long the stop above waits before trusting the address over the promise.
- * Two orders of magnitude above the millisecond the release was measured at. */
-const STOP_DEADLINE_MS = 250;
 
 const NEWLINE = new Uint8Array([0x0a]);
