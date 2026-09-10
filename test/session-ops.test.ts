@@ -176,6 +176,7 @@ const AGENT_TRANSCRIPT =
 /** One item as it was written to the dump file, read back with only the two
  * fields every item has spelled out — the rest belong to its type. */
 interface DumpedItem {
+  readonly id: string;
   readonly uuid: string;
   readonly type: string;
   readonly [field: string]: unknown;
@@ -1029,5 +1030,152 @@ describe("how long a process has been running, as `ps` states it", () => {
     // alone rather than on a number read out of the wrong shape.
     expect(elapsedSeconds("")).toBeUndefined();
     expect(elapsedSeconds("Wed Sep  9 02:45:31 2026")).toBeUndefined();
+  });
+});
+
+describe("transcript_items_read", () => {
+  /** The whole range, so a case can say what a page is a page of. */
+  async function all(
+    handlers: ReturnType<typeof ops>["handlers"],
+    over: Record<string, unknown> = {},
+  ) {
+    const answer = await run("transcript_items_read", handlers.transcript_items_read, {
+      sid: SID,
+      ...over,
+    });
+    return answer as { items: DumpedItem[]; next?: string; ids?: Record<string, unknown>[] };
+  }
+
+  test("a range is answered as the items the records were read into", async () => {
+    const { configHome, handlers } = ops();
+    writeTranscript(configHome, SID, BUSY_TRANSCRIPT);
+    const { items, next } = await all(handlers);
+    expect(next).toBeUndefined();
+    expect(items.map((item) => item.type)).toContain("tool:Bash");
+    // Items are finer than records: one assistant line became the thinking and
+    // each call it held, and the ids say which of them is which.
+    expect(items.filter((item) => item.uuid === "a1").map((item) => item.id)).toEqual([
+      "a1:0",
+      "a1:1",
+      "a1:2",
+      "a1:3",
+    ]);
+  });
+
+  test("a limit cuts the page and names the item it stopped before", async () => {
+    const { configHome, handlers } = ops();
+    writeTranscript(configHome, SID, BUSY_TRANSCRIPT);
+    const whole = (await all(handlers)).items;
+    const page = await all(handlers, { limit: 3 });
+    expect(page.items).toHaveLength(3);
+    expect(page.next).toBe(whole[3]?.id);
+
+    // Resuming at what was named answers the rest exactly, with nothing read
+    // twice and nothing skipped.
+    const rest = await all(handlers, { since_id: page.next });
+    expect([...page.items, ...rest.items].map((item) => item.id)).toEqual(
+      whole.map((item) => item.id),
+    );
+  });
+
+  test("a selection is applied to the whole file before the page is cut", async () => {
+    const { configHome, handlers } = ops();
+    writeTranscript(configHome, SID, BUSY_TRANSCRIPT);
+    const { items } = await all(handlers, { types: ["tool", "-tool:Read"] });
+    expect([...new Set(items.map((item) => item.type))].sort()).toEqual([
+      "tool:Agent",
+      "tool:Bash",
+    ]);
+  });
+
+  test("a link may name an item the range left out, which is not a broken pointer", async () => {
+    const { configHome, handlers } = ops();
+    writeTranscript(configHome, SID, BUSY_TRANSCRIPT);
+    const { items } = await all(handlers, { types: ["tool:Bash"], since_uuid: "r1" });
+    const answer = items[0];
+    expect(answer?.["role"]).toBe("result");
+    // The call fell before the range; the reader knows its id and can ask.
+    expect(answer?.["parent_item"]).toBe("a1:1");
+  });
+
+  test("the record behind an item is fetched by the address the item carries", async () => {
+    const { configHome, handlers } = ops();
+    const path = writeTranscript(configHome, SID, BUSY_TRANSCRIPT);
+    const { items } = await all(handlers);
+    for (const item of items) {
+      const source = item["source"] as { offset: number; bytes: number };
+      const read = await run("transcript_read", handlers.transcript_read, {
+        sid: SID,
+        before: source.offset + source.bytes,
+        max_bytes: source.bytes,
+      });
+      const lines = read["lines"] as string[];
+      expect(lines).toHaveLength(1);
+      expect(JSON.parse(lines[0] ?? "")).toMatchObject({ uuid: item.uuid });
+    }
+    expect(path).toContain(SID);
+  });
+
+  test("an agent below the session is read from its own file", async () => {
+    const { configHome, handlers } = ops();
+    const file = writeTranscript(configHome, SID, BUSY_TRANSCRIPT);
+    mkdirSync(join(dirname(file), SID, "subagents"), { recursive: true });
+    writeFileSync(
+      join(dirname(file), SID, "subagents", "agent-acounter-9f.jsonl"),
+      AGENT_TRANSCRIPT,
+    );
+    const { items } = await all(handlers, { agent_id: "acounter-9f" });
+    // Every type is read from where the subject stands, so the brief its
+    // parent gave it is what a person's words are for a session.
+    expect(items.map((item) => item.type)).toEqual(["message:user:in", "message:user:out"]);
+  });
+
+  test("the ledger is answered when the selection asks for it, and not otherwise", async () => {
+    const { configHome, handlers } = ops();
+    writeTranscript(configHome, SID, BUSY_TRANSCRIPT);
+    expect((await all(handlers)).ids).toBeUndefined();
+    const asked = await all(handlers, { types: ["message:sub", "ids"] });
+    expect(asked.ids).toContainEqual({
+      kind: "agent",
+      id: "acounter-9f",
+      label: "count-lines",
+      status: "completed",
+    });
+  });
+
+  test("a range with two lower bounds is refused rather than guessed at", async () => {
+    const { configHome, handlers } = ops();
+    writeTranscript(configHome, SID, BUSY_TRANSCRIPT);
+    expect(
+      await refusalOf(() =>
+        run("transcript_items_read", handlers.transcript_items_read, {
+          sid: SID,
+          since_uuid: "a1",
+          since_id: "a1:0",
+        }),
+      ),
+    ).toBe("invalid_args");
+  });
+
+  test("a session sees its own transcript and no other", async () => {
+    const { configHome, handlers } = ops();
+    writeTranscript(configHome, SID, BUSY_TRANSCRIPT);
+    const own = await run(
+      "transcript_items_read",
+      handlers.transcript_items_read,
+      { sid: SID },
+      as("session", SID),
+    );
+    expect((own["items"] as DumpedItem[]).length).toBeGreaterThan(0);
+    expect(
+      await refusalOf(() =>
+        run(
+          "transcript_items_read",
+          handlers.transcript_items_read,
+          { sid: SID },
+          as("session", OTHER_SID),
+        ),
+      ),
+    ).toBe("not_found");
   });
 });

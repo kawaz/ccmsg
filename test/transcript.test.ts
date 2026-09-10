@@ -1050,3 +1050,151 @@ describe("where a sid's transcript is (§5.1)", () => {
     expect(files.path(SID)).toBeUndefined();
   });
 });
+
+describe("the transcript_items topic (§3.6)", () => {
+  const ITEMS_TOPIC = `transcript_items:${SID}`;
+
+  /** One assistant record holding a turn's thinking, its words and a call —
+   * three items out of one line, which is what makes an item's own id
+   * necessary. */
+  const turn = (uuid: string, offsetMs = 0) => ({
+    type: "assistant",
+    uuid,
+    timestamp: at(offsetMs),
+    message: {
+      model: "claude-fable-5",
+      content: [
+        { type: "thinking", thinking: "wc will do" },
+        { type: "text", text: "counting now" },
+        { type: "tool_use", id: `t-${uuid}`, name: "Bash", input: { command: "wc -l < f" } },
+      ],
+    },
+  });
+
+  const spoke = (uuid: string, text: string, offsetMs = 0) => ({
+    ...prompt(text, offsetMs),
+    uuid,
+    parentUuid: null,
+  });
+
+  function itemsOf(published: Published[]): Record<string, unknown>[] {
+    return published
+      .filter((frame) => frame.topic === ITEMS_TOPIC)
+      .flatMap((frame) => frame.data["items"] as Record<string, unknown>[]);
+  }
+
+  test("what is appended arrives as the items those bytes were read as", async () => {
+    const file = transcript([spoke("u1", "count the lines")]);
+    const { transcripts, published } = domain(file.path);
+    transcripts.hold(SID);
+    await settled(() => transcripts.following(SID));
+
+    file.append(turn("a1", 1));
+    await settled(() => itemsOf(published).length >= 3);
+    const items = itemsOf(published);
+    expect(items.map((item) => item["type"])).toEqual([
+      "thinking",
+      "message:user:out",
+      "tool:Bash",
+    ]);
+    // One record, three items: the record's id is what they share and the
+    // place in it is what tells them apart.
+    expect(items.map((item) => item["id"])).toEqual(["a1:0", "a1:1", "a1:2"]);
+    expect(items.every((item) => item["uuid"] === "a1")).toBe(true);
+  });
+
+  test("the record behind an item is what its source addresses", async () => {
+    const file = transcript([spoke("u1", "count the lines")]);
+    const { transcripts, published } = domain(file.path);
+    transcripts.hold(SID);
+    await settled(() => transcripts.following(SID));
+
+    file.append(turn("a1", 1));
+    await settled(() => itemsOf(published).length >= 3);
+    for (const item of itemsOf(published)) {
+      const source = item["source"] as { offset: number; bytes: number };
+      const read = readSlice(SID, file.path, source.offset + source.bytes, source.bytes);
+      // The address is the record's, not the item's: several items out of one
+      // record share it, and what comes back is the record whole.
+      expect(read.lines).toHaveLength(1);
+      expect(JSON.parse(read.lines[0] ?? "")).toMatchObject({ uuid: item["uuid"] });
+    }
+  });
+
+  test("a result names the call it answers, whatever chunk the call arrived in", async () => {
+    const file = transcript([spoke("u1", "count the lines")]);
+    const { transcripts, published } = domain(file.path);
+    transcripts.hold(SID);
+    await settled(() => transcripts.following(SID));
+
+    file.append(turn("a1", 1));
+    await settled(() => itemsOf(published).length >= 3);
+    file.append({
+      type: "user",
+      uuid: "u2",
+      timestamp: at(2),
+      message: { role: "user", content: [{ type: "tool_result", tool_use_id: "t-a1" }] },
+      toolUseResult: { stdout: "3\n", interrupted: false },
+    });
+    await settled(() => itemsOf(published).length >= 4);
+    const items = itemsOf(published);
+    const answer = items[items.length - 1];
+    // The call was handed over in an earlier frame and is not sent again: a
+    // subscriber appends, and ties the two together by the id the result
+    // carries.
+    expect(answer?.["parent_item"]).toBe("a1:2");
+    expect(items.filter((item) => item["id"] === "a1:2")).toHaveLength(1);
+  });
+
+  test("a subscription opens on the end of what has been read", async () => {
+    const file = transcript([spoke("u1", "count the lines"), turn("a1", 1)]);
+    const { transcripts } = domain(file.path);
+    transcripts.hold(SID);
+    await settled(() => transcripts.following(SID));
+    await settled(
+      () => (transcripts.snapshot(ITEMS_TOPIC)[0]?.data as { items: [] }).items.length > 0,
+    );
+    const opened = transcripts.snapshot(ITEMS_TOPIC)[0]?.data as {
+      items: Record<string, unknown>[];
+    };
+    expect(opened.items.map((item) => item["type"])).toEqual([
+      "message:user:in",
+      "thinking",
+      "message:user:out",
+      "tool:Bash",
+    ]);
+  });
+
+  test("the frames pass the contract", async () => {
+    const file = transcript([spoke("u1", "count the lines")]);
+    const { transcripts, published } = domain(file.path);
+    transcripts.hold(SID);
+    await settled(() => transcripts.following(SID));
+    const snapshot = transcripts.snapshot(ITEMS_TOPIC)[0]?.data;
+    file.append(turn("a1", 1));
+    await settled(() => itemsOf(published).length >= 3);
+
+    const schema = TOPIC_SCHEMAS.transcript_items;
+    const frame = published.find((one) => one.topic === ITEMS_TOPIC)?.data;
+    for (const data of [snapshot, frame]) {
+      expect(
+        validationErrors(schema, { ev: "topic", topic: ITEMS_TOPIC, instance: SELF, data }),
+      ).toEqual([]);
+    }
+  });
+
+  test("a file replaced under the tail is read as items from its beginning", async () => {
+    const file = transcript([spoke("u1", "count the lines"), turn("a1", 1)]);
+    const { transcripts, published } = domain(file.path);
+    transcripts.hold(SID);
+    await settled(() => transcripts.following(SID));
+
+    writeFileSync(file.path, jsonl([spoke("u9", "a fresh start", 2)]));
+    await settled(() => itemsOf(published).length > 0);
+    expect(itemsOf(published).map((item) => item["id"])).toEqual(["u9:0"]);
+    const opened = transcripts.snapshot(ITEMS_TOPIC)[0]?.data as {
+      items: Record<string, unknown>[];
+    };
+    expect(opened.items.map((item) => item["uuid"])).toEqual(["u9"]);
+  });
+});

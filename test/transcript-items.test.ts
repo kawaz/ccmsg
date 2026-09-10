@@ -451,6 +451,63 @@ describe("classifying a transcript", () => {
     expect(items.map((item) => item.turn)).toEqual([0, 1, 1, 2]);
   });
 
+  test("writing to an agent is one direction, not a call waiting to come back", () => {
+    const items = classify(
+      lines(
+        answered("a1", [
+          {
+            type: "tool_use",
+            id: "t1",
+            name: "SendMessage",
+            input: { to: "counter", message: "carry on" },
+          },
+        ]),
+      ),
+    );
+    const brief = only(items, "message:sub:out");
+    expect(of(brief)["prompt"]).toBe("carry on");
+    // What the agent says back arrives under nothing that names this, so the
+    // brief says it is waiting for nothing rather than looking unanswered.
+    expect(of(brief)["one_way"]).toBe(true);
+    expect(of(brief)["result_item"]).toBeUndefined();
+    // The mark is the reader's own note about an item the contract already
+    // names; it travels beside the fields the contract states, not instead of
+    // them.
+    expect(validationErrors(TranscriptItem, brief)).toEqual([]);
+  });
+
+  test("addressing a session by its id is a message to that session, not to an agent", () => {
+    const items = classify(
+      lines(
+        answered("a1", [
+          {
+            type: "tool_use",
+            id: "t1",
+            name: "SendMessage",
+            input: { to: "11111111-2222-3333-4444-555555555555", message: "over to you" },
+          },
+        ]),
+      ),
+    );
+    expect(typesOf(items)).toEqual(["tool:SendMessage", "message:session:out"]);
+    expect(of(only(items, "message:session:out"))["one_way"]).toBeUndefined();
+  });
+
+  test("an answer to a call this reading never saw states the record rather than a pointer", () => {
+    // What a reading that starts part-way down a file meets. A dump reads the
+    // whole file before it cuts, so the call is there; a tail carries the
+    // reading forward, so it is there too.
+    const items = classify(
+      lines(
+        said("u1", [{ type: "tool_result", tool_use_id: "t-elsewhere" }], {
+          toolUseResult: { stdout: "3\n" },
+        }),
+      ),
+    );
+    expect(typesOf(items)).toEqual(["system:unknown"]);
+    expect(validationErrors(TranscriptItem, items[0])).toEqual([]);
+  });
+
   test("everything classified passes the contract's own shape", () => {
     const items = classify(
       lines(
