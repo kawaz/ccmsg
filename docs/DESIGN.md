@@ -79,6 +79,8 @@ something again — and the latter is what M3 exists to prevent.
 | A3 | The runtime is Bun. UDS, child processes, and file watching use Bun's APIs | The premise of startup and distribution (single binary) changes |
 | A4 | daemon, sessions, and webui users are a single uid. No privilege separation | The UDS 0600 and the config home's 0600 key stop being the boundary, requiring authorization to be rebuilt |
 | A5 | mesh peers are only instances that have passed the §7 authentication, and never cross the authentication boundary (uid / config home) | The basis for executing an op that came over mesh under one's own instance's privileges disappears |
+| A6 | TLS termination and the public FQDN belong to what sits in front (a reverse proxy). The daemon takes plain HTTP / WS on loopback | Certificates, their renewal and a public name to be reached by become the daemon's to manage — three of the things §1.1 puts outside it — and binding to loopback stops being what keeps it off the network |
+| A7 | Instances are peers: whichever one is connected to, the same set is visible. Conversation between sessions is not peer-like, and how a received message is to be taken is stated by the plugin's skill, not by the wire | A caller has to know which instance is the right one to ask; and manners that differ per harness would have to become contract |
 
 A4 is not a declaration that we do not protect against others — it is a declaration that
 **the boundary is delegated to the OS's uid and file permissions**. This is the basis for the
@@ -907,25 +909,25 @@ what they may do afterwards is still the uid and the file permissions.
 
 ## 10. Rejected
 
-| Option | Reason for rejection |
-|---|---|
-| Check role / capability per op handler | This is M1 itself. It creates two representations — the attribute table and the branching — where only one might change |
-| Keep a one-shot fetch op for observation (to cut the CLI's round trips) | M2. A second route for the same value is costlier than the increase from 1 to 3 round trips |
-| Rescue non-delivery with a time-window rewind | This is closing a hole in delivery guarantees with time. inbox holds "whether it arrived" as state, so no window is needed |
-| Delivery via (b) only | The gap before the receiving side subscribes remains, bringing back the time window |
-| Delivery via (a) only | A generation change in the unofficial protocol wipes out delivery entirely |
-| Mark something dropped by (a) as delivered | The body is lost. A drop means "cannot receive right now," not "arrived" (§4.4) |
-| Make inbox volatile | The undelivered body cannot be reconstructed from anywhere. It would vanish on a daemon restart (§3.6) |
-| Determine Busy / Idle from raw status | Only the gateway knows whether inference actually ran (§5.1) |
-| Keep the `claude agents` subprocess | Watching `sessions/` yields the same set. Launching a child process every 5 seconds falls under M3 |
-| Write push suppression per topic | M5. It would create topics with suppression and topics without |
-| Introduce a new op for mesh forwarding | The 3-field envelope suffices. An op duplicated per surface would be a double definition |
-| Trust a forwarded op under the forwarding origin's authorization | A compromised instance could invalidate the whole cluster's authorization (§7.3) |
-| Start an instance lazily | Mesh cannot distinguish a sleeping instance from a down one, and a mesh peer has no way to wake it (§8.4) |
-| Reflect config changes without a restart | It adds watching / reload / rewiring for the reflection. Restarting is cheap (§8.2) |
-| Continue starting up with a feature disabled on a broken config | The misconfiguration would carry through to runtime (§8.3) |
-| Scan for `~/.claude*` to discover config homes | M6. The instance boundary would waver depending on the execution environment |
-| Cache derived values to disk | M4. Persisting something reconstructable creates a consistency procedure |
+| Option | Reason for rejection | What would make it worth revisiting |
+|---|---|---|
+| Check role / capability per op handler | This is M1 itself. It creates two representations — the attribute table and the branching — where only one might change | An op whose authorization cannot be stated in the table at all — one whose answer turns on the contents of its arguments |
+| Keep a one-shot fetch op for observation (to cut the CLI's round trips) | M2. A second route for the same value is costlier than the increase from 1 to 3 round trips | Round trips becoming measurable rather than countable: a listing large enough that 3 of them are felt |
+| Rescue non-delivery with a time-window rewind | This is closing a hole in delivery guarantees with time. inbox holds "whether it arrived" as state, so no window is needed | A delivery surface that cannot hold an inbox, because the receiving side keeps no state of its own |
+| Delivery via (b) only | The gap before the receiving side subscribes remains, bringing back the time window | Route (a) disappearing from the harness side, leaving nothing to be the first route |
+| Delivery via (a) only | A generation change in the unofficial protocol wipes out delivery entirely | The unofficial protocol becoming official, so that a generation change stops being a thing that can happen unannounced |
+| Mark something dropped by (a) as delivered | The body is lost. A drop means "cannot receive right now," not "arrived" (§4.4) | A drop that carries the body with it, so what was dropped could be reconstructed afterwards |
+| Make inbox volatile | The undelivered body cannot be reconstructed from anywhere. It would vanish on a daemon restart (§3.6) | The undelivered body being held somewhere outside the daemon, so a restart no longer loses it |
+| Determine Busy / Idle from raw status | Only the gateway knows whether inference actually ran (§5.1) | Sessions that never pass through a gateway — another harness whose inference the daemon can only see from the outside |
+| Keep the `claude agents` subprocess | Watching `sessions/` yields the same set. Launching a child process every 5 seconds falls under M3 | State the harness keeps out of `sessions/` becoming necessary, so watching files no longer yields the same set |
+| Write push suppression per topic | M5. It would create topics with suppression and topics without | One topic carrying a flow an order of magnitude above the rest, which a shared suppression cannot keep up with |
+| Introduce a new op for mesh forwarding | The 3-field envelope suffices. An op duplicated per surface would be a double definition | A forward the 3-field envelope cannot carry — relaying through more than one hop, which needs the route stated |
+| Trust a forwarded op under the forwarding origin's authorization | A compromised instance could invalidate the whole cluster's authorization (§7.3) | Trust between instances being established cluster-wide (mutual attestation), so the forwarding origin's authorization means something here |
+| Start an instance lazily | Mesh cannot distinguish a sleeping instance from a down one, and a mesh peer has no way to wake it (§8.4) | A way to wake an instance from the mesh side, so a sleeping one and a down one stop being the same thing to a peer |
+| Reflect config changes without a restart | It adds watching / reload / rewiring for the reflection. Restarting is cheap (§8.2) | Restarting stopping being cheap: in-memory state worth keeping across a config change |
+| Continue starting up with a feature disabled on a broken config | The misconfiguration would carry through to runtime (§8.3) | Availability outweighing the carry-over, when one broken corner of a config makes the whole instance unstartable |
+| Scan for `~/.claude*` to discover config homes | M6. The instance boundary would waver depending on the execution environment | An environment where the person has no way to state the config home, because somebody else prepared it for them |
+| Cache derived values to disk | M4. Persisting something reconstructable creates a consistency procedure | Reconstruction showing up in startup time — session counts an order of magnitude higher |
 
 ## 11. Test policy
 
