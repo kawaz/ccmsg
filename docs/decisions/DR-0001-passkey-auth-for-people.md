@@ -20,7 +20,7 @@ WS の入口は entry token (state ディレクトリの 0600 file) で守って
 
 ### 2.2 登録はローカルからしかできない
 
-`ccmsg daemon passkey add <unit> [endpoint] [--rp-id <domain>]` で登録用の一意 URL を 1 つ発行する。`unit` は instance (= config home) の名前。`endpoint` は省略で `self`、指定すれば利用者が proxy で用意した任意の URL (別名の追加登録用)。
+`ccmsg daemon passkey add <unit> [endpoint]` で登録用の一意 URL を 1 つ発行する。認証の単位は **登録時の endpoint URL** で、別のホスト (alias / LB 名) から入りたければその endpoint で登録し直す (passkey を複数ホストで使い回す構成は持たない)。`unit` は instance (= config home) の名前。`endpoint` は省略で `self`、指定すれば利用者が proxy で用意した任意の URL (別名の追加登録用)。
 
 - URL は `<endpoint の origin に配られている webui>/#register=<jwt>`。claims は `{ iss (instance id), sub, unit, endpoint, rp_id, exp (10 分), jti }`。`sub` は利用者の識別子で既定は `<unit>-<連番>`
 - 署名は **登録ごとの乱数 secret による HMAC** (検証者 = 発行者なので公開鍵は要らない)。secret は発行 instance のメモリにだけ置き `exp` で破棄する。永続鍵は持たない
@@ -35,9 +35,9 @@ WS の入口は entry token (state ディレクトリの 0600 file) で守って
 
 - **ホスト PC の FIDO 承認**: 発行 instance は `/auth/register` を受けても完了せず保留し、`passkey add` を実行中の CLI に登録内容 (名前 / 端末 / コード / 時刻) を提示して OS の生体認証 (macOS は LocalAuthentication) を要求、CLI からの承認で完了する。離席中の第三者による登録を防ぐ。承認の起点を CLI に置くのは、登録がローカルに閉じている §2.2 の性質をそのまま延ばすため
 
-### 2.3 RP ID は domain、既定は endpoint のホスト
+### 2.3 RP ID は endpoint のホスト
 
-WebAuthn の RP ID は origin ではなく domain で、passkey は「今開いているページの effective domain か、その registrable suffix」でしか作成・利用できない。既定の `rp_id` は endpoint のホストで、これは **webui が endpoint と同じホストから配られている**構成 (通常形) を意味する。webui を別サブドメインに置くなら `--rp-id` に共通の registrable domain を渡し、instance は「`rp_id` が endpoint のホストと一致するか、その registrable suffix である」ことだけを検証する。`clientDataJSON.origin` の検査は **credential の `rp_id` だけで束縛する** (origin のホストが `rp_id` と一致するかその配下であること。authenticator が `rpIdHash` に署名し、ブラウザが rp_id をページの domain かその suffix にしか許さないので、別途の origin 許可リストは情報を足さない)。config に origin の一覧は持たない。同じ RP ID の endpoint が複数あっても (`https://h.example/` と `https://h.example/personal`) credential は 1 つで足りる (record は cluster で 1 つ、複製される)。
+WebAuthn の RP ID は origin ではなく domain で、passkey は「今開いているページの effective domain か、その registrable suffix」でしか作成・利用できない。`rp_id` は登録時の endpoint のホストで、webui はその endpoint と同じホストから配られる (通常形)。`clientDataJSON.origin` の検査は credential の `rp_id` だけで束縛する (origin のホストが `rp_id` と一致するかその配下であること。authenticator が `rpIdHash` に署名し、ブラウザが rp_id をページの domain かその suffix にしか許さないので、別途の origin 許可リストは情報を足さない)。config に origin の一覧は持たない。同じ endpoint の下にパスが複数あっても (`https://h.example/` と `https://h.example/personal`) credential は 1 つで足りる。
 
 ### 2.4 token は record に紐づく opaque 値、family は単一 writer
 
@@ -49,7 +49,7 @@ WebAuthn の RP ID は origin ではなく domain で、passkey は「今開い�
 - アクセストークンは数時間、リフレッシュトークンは数日。rotate は使うたび。family は退役した refresh 値のハッシュを本来の exp まで保持し、**どの世代の値でも再利用を見たら family を失効させる**。直前 1 世代だけは再送の猶予として (猶予時間内に限り) 前回の答えを返す
 - アクセストークンは WS の handshake に subprotocol `ccmsg.token.<値>` で載せる (サーバは選んだ subprotocol を echo する。proxy が `Sec-WebSocket-Protocol` を透過することが要件)。ブラウザはメモリにだけ持つ
 - リフレッシュトークンは **httpOnly cookie**。名前は `__Secure-ccmsg-<sha256(instance id + "\n" + sub) の先頭 16 hex>`、値は opaque、`HttpOnly; Secure; SameSite=Strict; Path=<request のパスから /auth/ までの prefix>`。`Path` は帯域と露出面を絞るためで認可境界ではない (同一 origin の JS は任意パスに fetch できる)
-- 認証と refresh は endpoint の `/auth/` 配下の HTTP。webui が別サブドメイン (§2.3 の `--rp-id` 構成) の時だけ、fetch は `credentials: "include"`、応答は request の `Origin` が rp_id の配下ならそれを `Access-Control-Allow-Origin` に echo + `Allow-Credentials`。状態を変える `/auth/*` は `Origin` のホストが rp_id の配下であることを要求し、未認証で叩けるので rate limit を持つ (mesh-peer-auth §6 の鍵取得と同型)
+- 認証と refresh は endpoint の `/auth/` 配下の HTTP (webui と同一ホストなので通常 CORS は発生しない。発生する場合は request の `Origin` のホストが rp_id の配下ならそれを `Access-Control-Allow-Origin` に echo + `Allow-Credentials`)。状態を変える `/auth/*` は `Origin` のホストが rp_id の配下であることを要求し、未認証で叩けるので rate limit を持つ (mesh-peer-auth §6 の鍵取得と同型)
 - endpoint が `/` と `/personal` に分かれていれば cookie の Path も分かれるので、endpoint ごとに 1 回 passkey 認証が要る (record は共有されているので 2 回目以降は要らない)
 - 期限切れの family は `iss` が消す (単一 writer なので GC も担う)
 - LB で challenge の発行と応答の instance が違う時は、**応答を受けた instance が assertion を検証**し、challenge の消費だけを発行者へ問い合わせる。mint する family の `iss` は応答を受けた instance
