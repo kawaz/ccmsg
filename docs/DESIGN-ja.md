@@ -690,6 +690,41 @@ topic の仕組みに内蔵するので「この topic には抑制がない」�
 - cluster 全体の topic を購読された instance は、mesh の各 peer にも同じ topic を購読させ、
   受けた frame をそのまま (発生元 `instance` を保ったまま) 購読者へ流す (§7.4)
 
+### 6.4 送出側の上限
+
+抑制 (§6.1) は「前と同じ値」しか止められない。**値が毎回変わりながら高頻度で更新される**場合は
+全部が frame になり、購読者は読めない量を渡される。そこで **終端 1 つにつき出力 queue を 1 つ**
+持ち、topic frame は必ずそこを通す。終端は人の接続・mesh peer・CLI の購読者のいずれでも同じ層で、
+経路では分けない。relay が受けた frame も §7.4 の publish を通るので同じ層に乗る。
+
+扱いは契約の粒度 (`TOPIC_ATTRIBUTES`) が決める。抑制と同じ表を 1 箇所で読む (M5)。
+
+| topic 種別 (粒度) | 例 | 扱い |
+|---|---|---|
+| 全量置換 (`whole` / `per_instance_whole`) | `peers` / `agents` / `session_status:<sid>` / `llm_status` | **畳む**。`topic × instance` を key に、待っている frame を最新の値で置き換える |
+| delta・event (`element` / `append` / `event`) | `inbox` / `kv:<ns>` / `transcript:<sid>` / `notify` | **畳まない**。発生順に並べ、queue の上限を超えたら投入側に返す |
+
+畳んだ値と並んだ出来事は **同じ flush で、queue に入った順に** 出る。畳んだ値は最初に入った位置を
+保ったまま中身だけが最新になるので、出来事との前後関係が入れ替わらない。
+
+| 値 | 種類 | 何を決めるか | 根拠 |
+|---|---|---|---|
+| flush 周期 100ms (`FLUSH_PERIOD_MS`) | 上限 | 1 つの終端へ frame を出す頻度の上限 | 読み手側: 表示の更新より細かい frame は誰にも見えない一方、遅延として読まれ始めるのは 1/4 秒あたり。cluster 側: relay は hop ごとに 1 回待つので、体感遅延は 100ms × hop 数。2 hop でも「即時」の範囲に収まる |
+| 畳めない frame の上限 256 (`QUEUE_LIMIT`) | 上限 | 1 終端が同時に抱える「畳めない frame」の数 | 畳める frame は何度 publish されても 1 件なので上限が要らない。256 は 100ms ごとに捌ける量なので、到達するのは 1 秒あたり 2500 件超を出し続けた場合だけ = 人・セッション・peer のいずれの産出量でもなく、この層が備える storm |
+
+**周期タイマーではない** (M3 の対象外)。timer は「待たされる frame が出た時」だけ armed され、
+静かな終端は何も持たない。直前の flush から周期が経っていれば **その場で送る**ので、単発の変化は
+待たされない。
+
+上限超過は **黙って捨てずに投入側へ返す** (`publish` が `rate_limited` を返す):
+
+- `notify_send` / `say_post`: op が error を返す。**契約に `rate_limited` が無いので現状は
+  `internal_error` + msg** を使う (契約に code を足すかは別途判断)
+- `message_send` の inbox 経路: 既存の `throttled` と同じ扱い = inbox に保持して後で offer し直す
+  (§4.4)。メッセージは落ちない
+- `transcript:<sid>` の追記: frame は `start` / `size` を持つので、購読側は欠けを検出して
+  `transcript_read` で読み直せる
+
 ## 7. mesh
 
 ### 7.1 endpoint と id

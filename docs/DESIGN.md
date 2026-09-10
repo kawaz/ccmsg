@@ -781,6 +781,47 @@ same topic name.
   topic on each mesh peer, and streams the received frames straight through to its own
   subscribers (keeping the originating `instance` intact) (§7.4)
 
+### 6.4 The limit on the send side
+
+Suppression (§6.1) can only stop "the same value as last time". When a value **changes every
+time and is restated at a high rate**, all of it becomes frames and the subscriber is handed
+more than it can read. So **each terminal holds one outgoing queue**, and every topic frame
+goes through it. A terminal is a person's connection, a mesh peer or a CLI subscriber — one
+layer for all of them, never split by route. A frame the relay accepted goes through the
+publish of §7.4, so it rides the same layer.
+
+What happens to a frame is decided by the contract's granularity (`TOPIC_ATTRIBUTES`), read in
+the same one place suppression reads it (M5).
+
+| Topic kind (granularity) | Examples | Treatment |
+|---|---|---|
+| Whole-value replacement (`whole` / `per_instance_whole`) | `peers` / `agents` / `session_status:<sid>` / `llm_status` | **Folded.** Keyed by `topic × instance`, the waiting frame is replaced with the latest value |
+| Delta and event (`element` / `append` / `event`) | `inbox` / `kv:<ns>` / `transcript:<sid>` / `notify` | **Not folded.** Queued in the order raised; past the queue limit the frame is refused back to whoever raised it |
+
+Folded values and the occurrences beside them leave **on the same flush, in the order they
+entered the queue**. A folded value keeps the position its first statement took and only its
+content moves forward, so it never overtakes or falls behind the occurrences around it.
+
+| Value | Kind | What it decides | Reason |
+|---|---|---|---|
+| Flush period 100ms (`FLUSH_PERIOD_MS`) | Limit | The upper bound on how often frames go out to one terminal | For the reader: frames closer together than the display redraws are seen by nobody, while a wait starts reading as lag around a quarter of a second. For the cluster: a relayed frame waits once per hop, so the delay is 100ms times the hops — two hops still land inside what a person reads as immediate |
+| 256 unfoldable frames (`QUEUE_LIMIT`) | Limit | How many frames that cannot be folded one terminal holds at once | Foldable frames need no bound: however often stated, they are one entry. 256 is what a terminal drains every 100ms, so reaching it means over 2500 frames a second sustained — past anything a person, a session or a peer produces, and into the storm this layer exists for |
+
+**It is not a periodic timer** (outside M3). The timer is armed only when a frame has to wait,
+and an idle terminal holds none. If a period has passed since the last flush the frame **goes
+out on the spot**, so a lone change is never delayed.
+
+Going over the limit is **refused back to the producer rather than dropped quietly**
+(`publish` answers `rate_limited`):
+
+- `notify_send` / `say_post`: the op answers with an error. **The contract has no
+  `rate_limited`, so this uses `internal_error` plus `msg`** for now (whether to add the code
+  to the contract is decided separately)
+- `message_send` on the inbox route: treated as the existing `throttled` — held in the inbox
+  and offered again later (§4.4). No message is lost
+- `transcript:<sid>` appends: the frames carry `start` / `size`, so a subscriber sees the gap
+  and reads it back with `transcript_read`
+
 ## 7. mesh
 
 ### 7.1 Endpoint and id
