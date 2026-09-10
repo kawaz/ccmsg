@@ -20,9 +20,20 @@
 
 ## 裁定待ち
 
-### DS-Q2 dump のアイテム型の体系 (起草中)
+### DS-Q2 dump のアイテム型の体系の確認
 
-kawaz 指示 (2026-09-10 r298m27): 分類は csa timeline の型 (T/U/R…) と同じ「TL アイテムの型」で、階層名 (`message:user:in` / `tool:Bash` …) を enum 的に列挙して出し分け、型ごとにテキスト表示コンポーネントを持つ。範囲は since / until。主語は main。preset は config 定義 (裁定済み)。`docs/design/dump-kinds.md` を型の体系で書き直し中。上がったら型一覧の確認を本節に差し替える。
+起草: [design/dump-kinds.md](design/dump-kinds.md)。主語は main、`:` 区切りで prefix 選択可 (`tool` = `tool:*`)。4 群:
+
+- `message:user:{in,out}` (人との会話)、`message:sub:{out,in}` (Agent への指示 / worker の答え)、`message:session:{out,in}` (ccmsg の他セッション)
+- `thinking` (空白のみ除外)
+- `tool:<ToolName>` (use と result を `tool_use.id` で対にして 1 アイテム。Bash / Read / Edit / Grep / Agent / SendMessage / Monitor / Skill / TodoWrite … は個別フィールド、未知は `{input, result}`)
+- `notice:{slash,interrupt,compact,api-error,hook,task,attachment,meta}` (csa の `I` の分解先)
+- `ids` は型でなく台帳 (各アイテムが `uuid` + 型に応じた `agent_id` / `task_id` / `tool_use_id` / `msg_id` / `sid` / `cron_id` を持ち、末尾で集約)
+
+範囲は契約既存の `since_at` / `since_uuid` / `until_at` / `until_uuid` (csa の turn 番号は派生値なので採らず、turn はアイテムの属性で出す)。opts は `types: string[]` (prefix 可、`-thinking` で除外)、`preset`。実測の注意: `tool:Bash` に exit code は記録されていない (`interrupted` / `stderr` の有無で代替)。
+
+- [ ] a: この型体系で契約 → daemon に進んでよい
+- [ ] b: 直したい型がある → 自由記述で
 
 ### CW-Q1 Codex の「入力待ち」を app-server 購読で拾うか
 
