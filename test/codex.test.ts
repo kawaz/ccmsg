@@ -13,8 +13,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { InboxMessage, InstanceId, Sid } from "@ccmsg/protocol";
 import { add, harnessFor } from "../src/daemon/index.ts";
+import { currentSession } from "../src/harness/index.ts";
 import { DEFAULT_CONFIG, loadShared, parseConfig } from "../src/instance/config.ts";
-import { resolvePaths } from "../src/instance/index.ts";
+import { resolveConfigHome, resolvePaths } from "../src/instance/index.ts";
 import { CodexQueueRoute } from "../src/messaging/index.ts";
 import { HOOKS_FILE, install, status, uninstall } from "../src/plugin/index.ts";
 import { Sessions } from "../src/sessions/index.ts";
@@ -391,6 +392,22 @@ describe("the fold", () => {
       },
     },
     {
+      // Codex opens a thread by stating the environment as a `user` row. It is
+      // not a person, and the fold turns it away for opening with a tag.
+      timestamp: "2026-09-10T06:33:07.100Z",
+      type: "response_item",
+      payload: {
+        type: "message",
+        role: "user",
+        content: [
+          {
+            type: "input_text",
+            text: "<environment_context>\n  <cwd>/tmp/work</cwd>\n</environment_context>",
+          },
+        ],
+      },
+    },
+    {
       timestamp: "2026-09-10T06:33:07.544Z",
       type: "response_item",
       payload: {
@@ -410,10 +427,16 @@ describe("the fold", () => {
     },
   ].map((row) => JSON.stringify(row));
 
-  test("a rollout says when a person last spoke", () => {
+  test("a rollout says when a person last spoke, and the environment Codex states is not a person", () => {
     const fold = new TranscriptFold();
     for (const line of ROLLOUT) fold.line(line);
     expect(fold.facts.last_user_input_at).toBe(Date.parse("2026-09-10T06:33:07.544Z"));
+
+    // Without the row a person typed, the environment row does not stand in
+    // for one: a thread nobody has spoken into has no last human input.
+    const quiet = new TranscriptFold();
+    for (const line of ROLLOUT.filter((line) => !line.includes("動いてる"))) quiet.line(line);
+    expect(quiet.facts.last_user_input_at).toBeUndefined();
   });
 
   test("what a rollout does not record stays unsaid rather than guessed at", () => {
@@ -432,9 +455,87 @@ describe("the fold", () => {
       undefined,
       undefined,
       "user",
+      "user",
       "agent",
     ]);
     expect(records[0]?.cwd).toBe("/tmp/work");
-    expect(records[4]?.text).toBe("ok");
+    expect(records[5]?.text).toBe("ok");
+  });
+});
+
+describe("which session a process is inside", () => {
+  test("a session of one harness started from a session of the other reads as the inner one", () => {
+    // Measured: a Codex session started from a Claude Code session inherits
+    // that session's whole environment, so both homes and both session ids are
+    // named at once. Claude Code exports its id into everything it starts;
+    // Codex names its thread to its own turn's commands, so that claim wins.
+    const nested = {
+      CLAUDE_CONFIG_DIR: "/homes/claude",
+      CLAUDE_CODE_SESSION_ID: "6f1a2b3c-4d5e-4f60-8a91-b2c3d4e5f607",
+      CODEX_HOME: "/homes/codex",
+      CODEX_THREAD_ID: "01a089f0-5415-7b91-8400-39f3f40b408d",
+    };
+    expect(currentSession(nested)).toEqual({
+      harness: "codex",
+      sid: "01a089f0-5415-7b91-8400-39f3f40b408d",
+    });
+    expect(resolveConfigHome(nested)).toBe("/homes/codex");
+  });
+
+  test("a Claude Code session with no Codex around it is unchanged", () => {
+    const plain = {
+      CLAUDE_CONFIG_DIR: "/homes/claude",
+      CLAUDE_CODE_SESSION_ID: "6f1a2b3c-4d5e-4f60-8a91-b2c3d4e5f607",
+    };
+    expect(currentSession(plain)?.harness).toBe("claude");
+    expect(resolveConfigHome(plain)).toBe("/homes/claude");
+  });
+
+  test("a config home named with no session around it still resolves", () => {
+    expect(resolveConfigHome({ CODEX_HOME: "/homes/codex" })).toBe("/homes/codex");
+    expect(currentSession({ CODEX_HOME: "/homes/codex" })).toBeUndefined();
+  });
+
+  test("the hook Codex runs speaks for the session it fired for, and for no other", async () => {
+    const home = codexHome();
+    const at = resolvePaths({ ...env(), CODEX_HOME: home });
+    await install(at, "codex", "9.9.9", () =>
+      Promise.resolve({ code: 0, stdout: "hooks stable true\n", stderr: "" }),
+    );
+    const script = await Bun.file(join(at.pluginsDir, "codex", "hooks", "session-start")).text();
+    // The other harness's home and session id are dropped rather than left to
+    // be inherited from whoever started the Codex session.
+    expect(script).toContain("-u CLAUDE_CONFIG_DIR");
+    expect(script).toContain("-u CLAUDE_CODE_SESSION_ID");
+    expect(script).toContain(`CODEX_HOME='${home}'`);
+  });
+
+  test("the hook script runs, names this config home and drops the other harness's", async () => {
+    // A path holding a quote is still one path to the shell, and what the hook
+    // hands ccmsg is what the install decided rather than what it inherited.
+    const home = temp("ccmsg-codex-quote'-");
+    writeFileSync(join(home, "config.toml"), "");
+    const at = resolvePaths({ ...env(), CODEX_HOME: home });
+    await install(at, "codex", "9.9.9", () =>
+      Promise.resolve({ code: 0, stdout: "hooks stable true\n", stderr: "" }),
+    );
+    const bin = temp("ccmsg-codex-bin-");
+    writeFileSync(
+      join(bin, "ccmsg"),
+      '#!/bin/sh\necho "$CODEX_HOME"\necho "${CLAUDE_CONFIG_DIR-unset}"\n',
+      {
+        mode: 0o755,
+      },
+    );
+    const ran = Bun.spawn({
+      cmd: [join(at.pluginsDir, "codex", "hooks", "session-start")],
+      env: { PATH: bin, CLAUDE_CONFIG_DIR: "/homes/claude" },
+      stdout: "pipe",
+      stdin: "ignore",
+    });
+    const said = (await new Response(ran.stdout).text()).trim().split("\n");
+    expect(await ran.exited).toBe(0);
+    expect(said[0]).toBe(home);
+    expect(said[1]).toBe("unset");
   });
 });

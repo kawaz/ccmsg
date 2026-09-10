@@ -792,13 +792,14 @@ export function readRecord(line: string): TranscriptRecord | undefined {
  * a session's todos, its teammates, the files it named — are Claude Code's own
  * records, and a Codex session simply declares none of them.
  *
- * `developer` is not a person. Codex writes the instructions a turn runs under
- * as messages of that role, and one of the `user` rows is the environment
- * Codex states rather than anything typed — which is why the text of a row
- * decides nothing here and only the role does. The environment row is the cost
- * of that: it counts as input the person did not give, once, at the start of a
- * thread (flagged, not solved — the row carries no mark saying it is Codex's
- * own). */
+ * `developer` is not a person: Codex writes the instructions a turn runs under
+ * as messages of that role, so only `user` and `assistant` are read as somebody
+ * speaking. One of the `user` rows is not a person either — Codex opens a
+ * thread by stating the environment as `<environment_context>` — and it is the
+ * fold that turns that away, by the same rule that turns away every injected
+ * opening a Claude Code transcript carries: a row that opens with a tag is the
+ * harness talking. So the role decides who is read here, and what is read
+ * decides whether a person said it. */
 function rolloutRecord(
   row: Record<string, unknown>,
   type: string | undefined,
