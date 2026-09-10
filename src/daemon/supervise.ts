@@ -45,6 +45,9 @@ export interface Backoff {
 
 export const BACKOFF: Backoff = { minMs: 500, maxMs: 30_000, steadyMs: 60_000 };
 
+/** The time each cooperative stop stage gets before the supervisor escalates. */
+export const STOP_TIMEOUT_MS = 10_000;
+
 export interface SuperviseOptions {
   readonly env?: Env;
   readonly spawn?: SpawnInstance;
@@ -54,6 +57,8 @@ export interface SuperviseOptions {
   /** How long a start waits for the child to be serving before it is reported
    * as having failed. */
   readonly startTimeoutMs?: number;
+  /** How long each graceful and SIGTERM stop stage may hold shutdown. */
+  readonly stopTimeoutMs?: number;
 }
 
 /** One config home the supervisor looks after, and how it is doing.
@@ -98,6 +103,7 @@ export class Supervisor {
   readonly #backoff: Backoff;
   readonly #log: (line: Record<string, unknown>) => void;
   readonly #startTimeoutMs: number;
+  readonly #stopTimeoutMs: number;
   readonly #units = new Map<string, Supervised>();
   readonly #waits = new Set<() => void>();
   #listener: ReturnType<typeof Bun.listen> | undefined;
@@ -110,6 +116,7 @@ export class Supervisor {
     this.#spawn = options.spawn ?? spawnInstance;
     this.#backoff = options.backoff ?? BACKOFF;
     this.#startTimeoutMs = options.startTimeoutMs ?? START_TIMEOUT_MS;
+    this.#stopTimeoutMs = options.stopTimeoutMs ?? STOP_TIMEOUT_MS;
     this.#log = options.log ?? ((line) => process.stderr.write(`${JSON.stringify(line)}\n`));
     for (const target of registered(this.#env)) this.#units.set(target.dir, new Supervised(target));
   }
@@ -278,12 +285,7 @@ export class Supervisor {
     // asked for rather than one to recover from.
     unit.wanted = false;
     for (const cancel of new Set(this.#waits)) cancel();
-    try {
-      await askToStop(unit.target);
-    } catch {
-      child.kill("SIGTERM");
-    }
-    await child.exited;
+    await this.#stopChild(unit, child);
     await unit.loop;
     return { dir, stopped: true };
   }
@@ -394,27 +396,39 @@ export class Supervisor {
     });
   }
 
-  /** Stop every child, stop restarting them, and give up the socket.
-   *
-   * The socket goes first, so a command arriving mid-shutdown is told there is
-   * no supervisor rather than being answered by one that is leaving. */
+  async #stopChild(unit: Supervised, child: Child): Promise<void> {
+    const within = async (work: Promise<unknown>): Promise<boolean> => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const deadline = new Promise<false>((resolve) => {
+        timer = setTimeout(() => resolve(false), this.#stopTimeoutMs);
+      });
+      try {
+        return await Promise.race([work.then(() => true, () => false), deadline]);
+      } finally {
+        clearTimeout(timer);
+      }
+    };
+
+    if (await within(askToStop(unit.target).then(() => child.exited))) return;
+    child.kill("SIGTERM");
+    if (await within(child.exited)) return;
+    child.kill("SIGKILL");
+    await child.exited;
+  }
+
+  /** Stop every child, stop restarting them, and give up the socket. */
   async stop(): Promise<void> {
     this.#leaving = true;
-    this.#listener?.stop(true);
-    this.#listener = undefined;
     for (const cancel of new Set(this.#waits)) cancel();
     await Promise.all(
       [...this.#units.values()].map(async (unit) => {
         const child = unit.child;
         if (child === undefined) return;
-        try {
-          await askToStop(unit.target);
-        } catch {
-          child.kill("SIGTERM");
-        }
-        await child.exited;
+        await this.#stopChild(unit, child);
       }),
     );
+    await this.#listener?.stop(true);
+    this.#listener = undefined;
     this.#left?.();
     await this.#ran;
   }
