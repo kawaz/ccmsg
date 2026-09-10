@@ -133,6 +133,11 @@ export class TranscriptFold {
       return false;
     }
     if (!isRecord(row)) return false;
+    // A Codex rollout line settles one of these facts and none of the others,
+    // so it is folded on its own rather than run past readers of records it
+    // does not have (§3.7).
+    const rollout = rolloutRecord(row, str(row["type"]));
+    if (rollout !== undefined) return this.#foldRollout(rollout);
     // Every value this fold derives, derived from the one parse (M5).
     let changed = this.#foldApiError(row);
     if (this.#foldAnswered(row)) changed = true;
@@ -223,6 +228,20 @@ export class TranscriptFold {
    *
    * A sidechain user row is a subagent being prompted by its parent, which is
    * a session speaking to itself rather than a person speaking to it. */
+  /** What a Codex rollout says: when a person last spoke.
+   *
+   * The rest of what this fold holds — the api error, the model of the latest
+   * turn, todos, teammates, background work — are records Claude Code writes
+   * and a rollout does not, so they stay as they are for a Codex session
+   * rather than being guessed at from something that resembles them. */
+  #foldRollout(record: TranscriptRecord): boolean {
+    if (record.said_by !== "user" || record.said_at === undefined) return false;
+    if (record.text === undefined || !isHuman(record.text)) return false;
+    if ((this.#lastUserInputAt ?? 0) >= record.said_at) return false;
+    this.#lastUserInputAt = record.said_at;
+    return true;
+  }
+
   #foldUserInput(row: Record<string, unknown>): boolean {
     if (row["type"] !== "user" || row["isSidechain"] === true) return false;
     if (row["isMeta"] === true || row["promptSource"] === "system") return false;
@@ -744,6 +763,8 @@ export function readRecord(line: string): TranscriptRecord | undefined {
   }
   if (!isRecord(row)) return undefined;
   const type = str(row["type"]);
+  const rollout = rolloutRecord(row, type);
+  if (rollout !== undefined) return rollout;
   const message = isRecord(row["message"]) ? row["message"] : undefined;
   const model = message === undefined ? undefined : str(message["model"]);
   return {
@@ -760,6 +781,51 @@ export function readRecord(line: string): TranscriptRecord | undefined {
   };
 }
 
+/** One line of a Codex rollout, or nothing where the line is not one.
+ *
+ * A rollout says what kind of line it is in its own `type`, and the words it
+ * uses appear in no Claude Code transcript — so the two formats are told apart
+ * by the line rather than by anything the reader was told beforehand.
+ *
+ * What is read is what §5 asks a transcript for and a rollout answers: when a
+ * person last spoke, and where the session runs. The rest of the fold's facts —
+ * a session's todos, its teammates, the files it named — are Claude Code's own
+ * records, and a Codex session simply declares none of them.
+ *
+ * `developer` is not a person. Codex writes the instructions a turn runs under
+ * as messages of that role, and one of the `user` rows is the environment
+ * Codex states rather than anything typed — which is why the text of a row
+ * decides nothing here and only the role does. The environment row is the cost
+ * of that: it counts as input the person did not give, once, at the start of a
+ * thread (flagged, not solved — the row carries no mark saying it is Codex's
+ * own). */
+function rolloutRecord(
+  row: Record<string, unknown>,
+  type: string | undefined,
+): TranscriptRecord | undefined {
+  if (type === "session_meta") {
+    const payload = isRecord(row["payload"]) ? row["payload"] : undefined;
+    return {
+      sidechain: false,
+      ...optional("said_at", instant(row["timestamp"])),
+      ...optional("cwd", payload === undefined ? undefined : str(payload["cwd"])),
+    };
+  }
+  if (type !== "response_item") return undefined;
+  const payload = isRecord(row["payload"]) ? row["payload"] : undefined;
+  if (payload === undefined || str(payload["type"]) !== "message") return { sidechain: false };
+  const role = str(payload["role"]);
+  return {
+    sidechain: false,
+    ...optional("said_at", instant(row["timestamp"])),
+    ...optional<"said_by", "user" | "agent">(
+      "said_by",
+      role === "user" ? "user" : role === "assistant" ? "agent" : undefined,
+    ),
+    ...optional("text", blockText(payload["content"])),
+  };
+}
+
 /** The harness's record types, in the contract's two words. Its `assistant` is
  * the contract's `agent`; every other type is a record neither side spoke. */
 function saidBy(type: string | undefined): "user" | "agent" | undefined {
@@ -771,6 +837,8 @@ function optional<K extends string, V>(key: K, value: V | undefined): Record<K, 
   return value === undefined ? {} : { [key]: value };
 }
 
+const TEXT_BLOCK = new Set(["text", "input_text", "output_text"]);
+
 /** The text a message states, whoever wrote it. A plain prompt is a string; a
  * prompt with an attachment, and every row the harness writes, is a block
  * array whose text blocks carry the words. An array holding only tool results
@@ -781,7 +849,9 @@ function blockText(content: unknown): string | undefined {
   if (!Array.isArray(content)) return undefined;
   const parts: string[] = [];
   for (const block of content) {
-    if (!isRecord(block) || block["type"] !== "text") continue;
+    // `text` is what Claude Code writes; `input_text` and `output_text` are
+    // what a Codex rollout writes for the same thing, one per direction.
+    if (!isRecord(block) || !TEXT_BLOCK.has(block["type"] as string)) continue;
     const text = str(block["text"]);
     if (text !== undefined) parts.push(text);
   }

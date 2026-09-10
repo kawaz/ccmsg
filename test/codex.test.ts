@@ -18,7 +18,7 @@ import { resolvePaths } from "../src/instance/index.ts";
 import { CodexQueueRoute } from "../src/messaging/index.ts";
 import { HOOKS_FILE, install, status, uninstall } from "../src/plugin/index.ts";
 import { Sessions } from "../src/sessions/index.ts";
-import { TranscriptFiles } from "../src/transcript/index.ts";
+import { readRecord, TranscriptFiles, TranscriptFold } from "../src/transcript/index.ts";
 
 const dirs: string[] = [];
 const running: Sessions[] = [];
@@ -368,5 +368,73 @@ describe("what says a session is there", () => {
     const domain = domainFor(home);
     lock(home, THREAD);
     expect(domain.agents().agents).toEqual([]);
+  });
+});
+
+describe("the fold", () => {
+  /** Lines as the Codex recorder writes them (measured against codex-cli
+   * 0.153.4 with an isolated CODEX_HOME). */
+  const ROLLOUT = [
+    {
+      timestamp: "2026-09-10T06:33:06.852Z",
+      type: "session_meta",
+      payload: { id: "01a08a05-1fc9-7272-ac75-035f3e181f74", cwd: "/tmp/work" },
+    },
+    { timestamp: "2026-09-10T06:33:06.860Z", type: "event_msg", payload: { type: "task_started" } },
+    {
+      timestamp: "2026-09-10T06:33:06.895Z",
+      type: "response_item",
+      payload: {
+        type: "message",
+        role: "developer",
+        content: [{ type: "input_text", text: "instructions nobody typed" }],
+      },
+    },
+    {
+      timestamp: "2026-09-10T06:33:07.544Z",
+      type: "response_item",
+      payload: {
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: "動いてる?" }],
+      },
+    },
+    {
+      timestamp: "2026-09-10T06:33:08.839Z",
+      type: "response_item",
+      payload: {
+        type: "message",
+        role: "assistant",
+        content: [{ type: "output_text", text: "ok" }],
+      },
+    },
+  ].map((row) => JSON.stringify(row));
+
+  test("a rollout says when a person last spoke", () => {
+    const fold = new TranscriptFold();
+    for (const line of ROLLOUT) fold.line(line);
+    expect(fold.facts.last_user_input_at).toBe(Date.parse("2026-09-10T06:33:07.544Z"));
+  });
+
+  test("what a rollout does not record stays unsaid rather than guessed at", () => {
+    const fold = new TranscriptFold();
+    for (const line of ROLLOUT) fold.line(line);
+    expect(fold.facts.api_error).toBeUndefined();
+    expect(fold.facts.model).toBeUndefined();
+    expect(fold.facts.todos).toEqual([]);
+    expect(fold.facts.teammates).toEqual([]);
+  });
+
+  test("both directions of a rollout are read, and its instructions are not a person", () => {
+    const records = ROLLOUT.map((line) => readRecord(line));
+    expect(records.map((record) => record?.said_by)).toEqual([
+      undefined,
+      undefined,
+      undefined,
+      "user",
+      "agent",
+    ]);
+    expect(records[0]?.cwd).toBe("/tmp/work");
+    expect(records[4]?.text).toBe("ok");
   });
 });
