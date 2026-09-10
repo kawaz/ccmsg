@@ -403,7 +403,13 @@ export class Supervisor {
         timer = setTimeout(() => resolve(false), this.#stopTimeoutMs);
       });
       try {
-        return await Promise.race([work.then(() => true, () => false), deadline]);
+        return await Promise.race([
+          work.then(
+            () => true,
+            () => false,
+          ),
+          deadline,
+        ]);
       } finally {
         clearTimeout(timer);
       }
@@ -427,7 +433,7 @@ export class Supervisor {
         await this.#stopChild(unit, child);
       }),
     );
-    await this.#listener?.stop(true);
+    this.#listener?.stop(true);
     this.#listener = undefined;
     this.#left?.();
     await this.#ran;

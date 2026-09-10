@@ -1,5 +1,5 @@
 import { afterAll, afterEach, describe, expect, test } from "bun:test";
-import { appendFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { main } from "../src/cli.ts";
 import {
@@ -15,6 +15,7 @@ import {
   rowFor,
   type StatusRow,
   stop,
+  STOP_TIMEOUT_MS,
   Supervisor,
   ask,
   tailOf,
@@ -22,6 +23,7 @@ import {
 } from "../src/daemon/index.ts";
 import { loadShared } from "../src/instance/index.ts";
 import { resolvePaths } from "../src/instance/paths.ts";
+import { endpoint, leasePort } from "./cluster.ts";
 import { capture, Host, json, reapOrphans } from "./harness.ts";
 
 const hosts: Host[] = [];
@@ -229,6 +231,58 @@ describe("add and remove against a running supervisor", () => {
     await supervisor.stop();
   }, 60_000);
 
+  test("three linked instances are all the way down before the supervisor answers", async () => {
+    const at = host();
+    // Three real children with a mesh between them: the shape a stop wedged in,
+    // where a link being torn down held a listener open past the point the
+    // socket had already gone and the instance read as stopped.
+    const leases = [leasePort(), leasePort(), leasePort()];
+    const peers = leases.map((lease) => endpoint(lease.port));
+    const homes = ["one", "two", "three"].map((name) => at.home(name));
+    for (const home of homes) add(process.env, home);
+    const configFile = resolvePaths(process.env).configFile;
+    writeFileSync(
+      configFile,
+      JSON.stringify({
+        instances: homes.map((dir, index) => ({
+          dir,
+          peers,
+          entry: {
+            host: "127.0.0.1",
+            port: (leases[index] as (typeof leases)[number]).port,
+            origins: [peers[index]],
+          },
+        })),
+      }),
+    );
+    for (const lease of leases) await lease.release();
+
+    const supervisor = await supervising();
+    const logs = registered(process.env).map((target) => target.paths.logFile);
+    // A link each way, read as the state each peer is left in rather than as a
+    // count of the lines: both ends dial, one of the two connections is dropped
+    // as the duplicate, and the peer that says so says `established` twice.
+    const linked = (log: string): number => {
+      if (!existsSync(log)) return 0;
+      const state = new Map<string, boolean>();
+      for (const line of readFileSync(log, "utf8").split("\n")) {
+        const said = /"message":"mesh peer (established|lost)","peer":"([^"]+)"/.exec(line);
+        if (said !== null) state.set(said[2] as string, said[1] === "established");
+      }
+      return [...state.values()].filter(Boolean).length;
+    };
+    await waitFor(() => logs.every((log) => linked(log) === 2), 30_000);
+
+    const started = Date.now();
+    await supervisor.stop();
+    // Answering is the children having gone, so what this measures is the
+    // whole of the shutdown and not the moment it was asked for.
+    expect(Date.now() - started).toBeLessThan(STOP_TIMEOUT_MS);
+    for (const target of registered(process.env)) {
+      expect(rowFor(target).running).toBe(false);
+    }
+  }, 60_000);
+
   test("with no supervisor, add writes the file and says nobody was told", async () => {
     const at = host();
     const home = at.home("one");
@@ -292,6 +346,42 @@ describe("the supervisor", () => {
     await ran;
     expect(children.length).toBe(before);
   });
+
+  test("a child that will not leave is signalled, and then killed", async () => {
+    const at = host();
+    add(process.env, at.home("one"));
+
+    // Deaf to everything but SIGKILL: what a child wedged in its own shutdown
+    // looks like from here, and the case a supervisor used to wait out forever
+    // because it had nothing after `await child.exited`.
+    const signals: string[] = [];
+    let end: (code: number) => void = () => undefined;
+    const exited = new Promise<number>((resolve) => {
+      end = resolve;
+    });
+    const child: Child = {
+      pid: 4242,
+      exited,
+      kill: (signal) => {
+        signals.push(String(signal));
+        if (signal === "SIGKILL") end(137);
+      },
+    };
+    let spawned = 0;
+    const supervisor = new Supervisor({
+      stopTimeoutMs: 50,
+      log: () => undefined,
+      spawn: () => {
+        spawned += 1;
+        return child;
+      },
+    });
+    const ran = supervisor.run();
+    await waitFor(() => spawned === 1);
+    await supervisor.stop();
+    await ran;
+    expect(signals).toEqual(["SIGTERM", "SIGKILL"]);
+  }, 15_000);
 
   test("it supervises exactly the config homes the shared file lists", () => {
     const at = host();
