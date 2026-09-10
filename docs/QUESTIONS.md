@@ -20,9 +20,14 @@
 
 ## 裁定待ち
 
-### DS-Q1 dump のタイプ大分類 (起草中)
+### DS-Q1 dump のタイプ大分類
 
-kawaz 指示 (2026-09-10): 用途 (完了済みセッションの日記 / rewind 後の引き継ぎ 等) ごとに条件をオプションで指定できるよう、まずタイプの大分類を行う。`docs/design/dump-kinds.md` を起草中で、上がったら本節を大分類の妥当性 / preset 名 / 既定値の問いに差し替える。
+起草: [design/dump-kinds.md](design/dump-kinds.md)。用途 = 5 軸 (発話者 / 種別 / 範囲 / 付随物 (id 台帳) / subagent 配置) の既定値セット (preset) として整理。id 台帳は agent / background Bash / Monitor / TODO / cron / session が transcript の構造化 field から取れ、ccmsg の room / sid は Bash 文字列にしか無いので取れない。
+
+- [ ] a: 大分類は 日記 / 引き継ぎ / 監査 / 抜粋 の 4 種でよい (監査・抜粋は構造から導いたもので実需未確認。不要なら「日記 / 引き継ぎ の 2 種」と返して)
+- [ ] b: preset 名は `journal` / `handoff` / `audit` / `excerpt` (推し。preset を持たず軸だけ、も可)
+- [ ] c: preset 無指定の既定は 日記 (推し。現状の平坦な全部入りを既定に残す、も可)
+- [ ] d: subagent 配置の既定は「Agent 呼び出しの子として 1 段インデント、response のみ」(推し)
 
 ## 確認待ち
 
