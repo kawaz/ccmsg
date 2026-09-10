@@ -193,7 +193,7 @@ CLI source では、UUID でなければ exact session name を lookup し、次
 
 `<thread-uuid>` は同じ実行の `SessionStart.session_id`・rollout file 名の UUID と一致した。`.coordination.lock` は thread を名乗らない。
 
-upstream (`codex-rs/rollout/src/writer_lock.rs`) では lock は flock (`try_lock`) で保持され、`acquire` の際に `remove_stale_thread_locks` が「flock を取れる lock = 誰も掴んでいない lock」を削除する。したがって `SIGKILL` で残った lock は**次に誰かが thread を書き始めるまで**残り、その時点で掃除される。flock を試せば stale 判定は可能である。
+upstream (`codex-rs/thread-store/src/local/writer_lock.rs`) では lock は flock (`try_lock`) で保持され、`acquire` の際に `remove_stale_thread_locks` が「flock を取れる lock = 誰も掴んでいない lock」を削除する。したがって `SIGKILL` で残った lock は**次に誰かが thread を書き始めるまで**残り、その時点で掃除される。flock を試せば stale 判定は可能である。
 
 ## ccmsg のセッションが Codex から起動された場合の環境 (2026-09-10 追記)
 
@@ -204,7 +204,15 @@ upstream (`codex-rs/rollout/src/writer_lock.rs`) では lock は flock (`try_loc
 
 **hook の環境に thread id は入らない**。入っていたのは `CODEX_HOME` だけで、`CODEX_THREAD_ID` / `CODEX_SESSION_ID` は無かった。hook が thread を知る経路は stdin の `session_id` である。
 
-**ツール実行の環境には入る**。本物の Codex セッションでコマンドを走らせると `CODEX_THREAD_ID` と `CODEX_SESSION_ID` の両方が立ち、値はどちらも同じ thread UUID (= `SessionStart.session_id` と同じ形、UUIDv7) だった。
+**ツール実行の環境には入る**。本物の Codex セッションでコマンドを走らせると `CODEX_THREAD_ID` と `CODEX_SESSION_ID` の**両方が立ち、値は同一の thread UUID** だった (`SessionStart.session_id` と同じ形、UUIDv7。3 番目のブロックが `7` で始まる)。名前がバイナリ内に在ることではなく、この観測が両変数を読む根拠である。
+
+## 対話プロンプトと非対話の `codex queue` (2026-09-10 追記、0.154.0)
+
+対話で起動した Codex は、条件により起動時に 2 つの選択を求める (kawaz 観測): 更新案内 (`Update available … 1. Update now 2. Skip 3. Skip until next version`) と、そのディレクトリを初めて開く時の信頼確認 (`Do you trust the contents of this directory? 1. Yes, continue 2. No, quit`)。どちらも hook 発火より前である。
+
+`codex queue` はどちらにも当たらない。新規の `CODEX_HOME` (config.toml も無い)、Codex に信頼を伝えたことのないディレクトリ、標準入力を閉じ端末を持たない状態で存在しない thread id を指定したところ、待たされずに thread store のエラーで終了した (status 1)。両プロンプトは対話 interface のものである。
+
+抑止する設定はいずれも存在する: 更新確認は `check_for_update_on_startup`、ディレクトリの信頼は `projects."<dir>".trust_level`。
 
 ## 一次資料
 
@@ -220,6 +228,7 @@ upstream (`codex-rs/rollout/src/writer_lock.rs`) では lock は flock (`try_loc
 - [`SessionStart` implementation](https://github.com/openai/codex/blob/rust-v0.153.0/codex-rs/hooks/src/events/session_start.rs)
 - [`SessionEnd` implementation](https://github.com/openai/codex/blob/rust-v0.153.0/codex-rs/hooks/src/events/session_end.rs)
 - [legacy `notify` payload and argv invocation](https://github.com/openai/codex/blob/rust-v0.153.0/codex-rs/hooks/src/legacy_notify.rs)
+- [thread writer lock: flock, and the stale sweep on acquire](https://github.com/openai/codex/blob/rust-v0.153.0/codex-rs/thread-store/src/local/writer_lock.rs)
 - [rollout recorder and JSONL layout](https://github.com/openai/codex/blob/rust-v0.153.0/codex-rs/rollout/src/recorder.rs)
 - [rollout filename parser / renderer](https://github.com/openai/codex/blob/rust-v0.153.0/codex-rs/rollout/src/rollout_file_name.rs)
 - [official app-server documentation](https://github.com/openai/codex/tree/rust-v0.153.0/codex-rs/app-server)

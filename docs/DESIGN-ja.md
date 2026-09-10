@@ -365,7 +365,9 @@ config home はそれを名乗った harness の側から引く — 「自分は
 複数が名乗った時は **Codex を先に見る**。Claude Code は自分の session id を配下のプロセス
 すべて (別 harness を含む) へ export するのに対し、Codex が thread を名乗るのは自分の turn の
 コマンドに対してだけで、狭い主張の方が真である。逆の入れ子 (Codex の turn から起動した
-Claude Code のセッション) は Codex として読まれ、`--sid` がそれを覆す。
+Claude Code のセッション) は Codex として読まれる。`--sid` が覆すのは**名乗る sid だけ**で、
+どの instance に話すかは変わらない (別の config home の instance に話したいなら、その
+harness の変数を立てた環境で呼ぶ)。
 
 **Codex はツール実行の環境に thread を名乗る。** `CODEX_THREAD_ID` と `CODEX_SESSION_ID` の
 両方が入り、値はどちらも thread UUID = sid である (0.153.4 実測)。よって `ccmsg post` /
@@ -390,6 +392,12 @@ Codex の主張が先に見られるので、**Codex から送ったつもりが
 「flock が取れる = 誰も掴んでいない」lock を掃除するので、残った lock はその時点まで残る。
 flock を試せば stale 判定は可能だが、Node 標準に flock が無いので採らない。よってその thread は
 掃除されるまで生存として読まれる。
+
+**配送は対話の選択に当たらない**。対話で起動した Codex は更新案内とディレクトリの信頼確認を
+起動時に求めることがあるが、`codex queue` はそのどちらにも当たらず、新規 config home・未信頼の
+ディレクトリ・標準入力を閉じた状態でも待たずに答えた (0.154.0 実測)。それでも子プロセスには
+標準入力を渡さず時間制限を掛ける — 答えない子は `message_send` をその寿命だけ止めてしまい、
+経路 (b) は「来なかった経路が message に何も損させない」ためにある (§4.1)。
 
 **hooks の trust**: Codex は一度人が確認した hook しか実行しない。`plugin install codex` は
 file を置き、trust が要ることを `needs` として答えるだけで、trust 自体は書かない

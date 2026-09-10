@@ -15,7 +15,13 @@ import { type InboxMessage, type InstanceId, Sid, validationErrors } from "@ccms
 import { add, harnessFor } from "../src/daemon/index.ts";
 import { currentSession } from "../src/harness/index.ts";
 import { DEFAULT_CONFIG, loadShared, parseConfig } from "../src/instance/config.ts";
-import { resolveConfigHome, resolvePaths } from "../src/instance/index.ts";
+import {
+  type Instance,
+  isRunning,
+  resolveConfigHome,
+  resolvePaths,
+  start,
+} from "../src/instance/index.ts";
 import { CodexQueueRoute } from "../src/messaging/index.ts";
 import { HOOKS_FILE, install, status, uninstall } from "../src/plugin/index.ts";
 import { Sessions } from "../src/sessions/index.ts";
@@ -192,6 +198,16 @@ describe("route (a)", () => {
     const route = new CodexQueueRoute({
       configHome: "/tmp/a-codex-home",
       run: () => Promise.resolve({ code: 1 }),
+    });
+    expect(await route.send(THREAD, message)).toBe("unavailable");
+  });
+
+  test("a CLI that never answers is the route not applying, not a send held open", async () => {
+    // The real one answers at once (measured), and this is what the budget is
+    // for: `message_send` must not wait on a child's whole life.
+    const route = new CodexQueueRoute({
+      configHome: "/tmp/a-codex-home",
+      run: () => Promise.resolve({ code: 124 }),
     });
     expect(await route.send(THREAD, message)).toBe("unavailable");
   });
@@ -584,5 +600,51 @@ describe("a Codex thread id is a sid", () => {
     });
     // Both variables carry the same thread UUID, so either answers.
     expect(currentSession({ CODEX_SESSION_ID: THREAD_ID })?.sid).toBe(THREAD_ID);
+  });
+});
+
+describe("which config home an instance answers for", () => {
+  const started: Instance[] = [];
+
+  afterEach(async () => {
+    for (const instance of started.splice(0)) await instance.stop();
+  });
+
+  test("a `daemon run <dir>` from inside a session of the other harness still answers for <dir>", async () => {
+    const claude = temp("ccmsg-claude-home-");
+    writeFileSync(join(claude, "settings.json"), "{}");
+    const outcome = await start({
+      configHome: claude,
+      echoLog: false,
+      // The environment of a Codex turn, which is what a `daemon run` issued
+      // from one carries. The directory was named, so nothing here decides.
+      env: {
+        ...env(),
+        CODEX_HOME: codexHome(),
+        CODEX_THREAD_ID: "01a08a1e-b0d7-78c1-a9e2-d61560138fac",
+      },
+    });
+    expect(isRunning(outcome)).toBe(true);
+    if (!isRunning(outcome)) return;
+    started.push(outcome);
+    expect(outcome.paths.configHome).toBe(claude);
+  });
+
+  test("with no directory named, the session the process is inside decides", async () => {
+    const codex = codexHome();
+    const outcome = await start({
+      echoLog: false,
+      env: {
+        ...env(),
+        CLAUDE_CONFIG_DIR: temp("ccmsg-claude-home-"),
+        CLAUDE_CODE_SESSION_ID: "6f1a2b3c-4d5e-4f60-8a91-b2c3d4e5f607",
+        CODEX_HOME: codex,
+        CODEX_THREAD_ID: "01a08a1e-b0d7-78c1-a9e2-d61560138fac",
+      },
+    });
+    expect(isRunning(outcome)).toBe(true);
+    if (!isRunning(outcome)) return;
+    started.push(outcome);
+    expect(outcome.paths.configHome).toBe(codex);
   });
 });

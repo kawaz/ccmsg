@@ -408,7 +408,9 @@ disagree.
 Where more than one claims it, **Codex is asked first**. Claude Code exports its session id into
 every process it starts, another harness included; Codex names its thread only to the commands
 of its own turn, and the narrower claim is the truer one. The reverse nesting — a Claude Code
-session started from a Codex turn — reads as Codex, and `--sid` is what says otherwise.
+session started from a Codex turn — reads as Codex. `--sid` overrides **only the sid a command
+speaks as**; which instance it speaks to is unchanged (to reach another config home's instance,
+run the command with that harness's variable set).
 
 **Codex names its thread to the commands a tool runs.** Both `CODEX_THREAD_ID` and
 `CODEX_SESSION_ID` are set, and each carries the thread UUID, which is the sid (measured,
@@ -434,6 +436,14 @@ somebody next starts writing a thread, sweeps the locks it can take — "takeabl
 holds it — so a leftover lock stands until then. Testing it with flock would settle staleness,
 but Node has no flock, so that is not taken. The thread therefore reads as present until the
 sweep.
+
+**Delivery meets none of the interactive questions.** A Codex started interactively may ask
+about an update and about trusting the directory before anything else runs; `codex queue` meets
+neither, and answered without waiting in a config home that had never been used, in a directory
+never trusted, with standard input closed (measured, 0.154.0). The child is still given no
+standard input and a deadline: a child that never answers would hold `message_send` open for as
+long as it lived, and route (b) is there so a route that does not come through costs a message
+nothing (§4.1).
 
 **Hook trust**: Codex will not run a command hook a person has not reviewed. `plugin install
 codex` lays the files down and answers that trust is required in `needs`; it does not write the
