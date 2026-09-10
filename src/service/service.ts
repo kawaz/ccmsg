@@ -164,7 +164,7 @@ function alreadyLoaded(answer: RunResult): boolean {
  * rather than worded, and a `Bootstrap failed: 5: Input/output error` handed
  * straight to the person is worth more than anything this could say instead. */
 function refuse(command: readonly string[], answer: RunResult): never {
-  const said = (answer.stderr.trim() || answer.stdout.trim()) ?? "";
+  const said = answer.stderr.trim() || answer.stdout.trim();
   throw new CommandError(
     "internal_error",
     `${command.join(" ")} が失敗しました (exit ${String(answer.code)})${said === "" ? "" : `: ${said}`}`,
