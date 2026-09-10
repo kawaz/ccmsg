@@ -3,6 +3,7 @@ import { chmodSync, unlinkSync } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { type InboxMessage, renderDirectDelivery, type Sid } from "@ccmsg/protocol";
+import { HARNESS, HARNESSES } from "../harness/index.ts";
 
 /** What route (a) answered (§4.1).
  *
@@ -333,12 +334,26 @@ export type RunCodex = (args: readonly string[], env: Env) => Promise<{ code: nu
 
 type Env = Record<string, string>;
 
+/** What the CLI must not inherit from the daemon.
+ *
+ * An instance is started with the config home it answers for in Claude Code's
+ * own variable, whichever harness that home runs (§8.1) — so a Codex CLI that
+ * inherited it would be told about a config home this instance is not about,
+ * and a session id belonging to whoever started the daemon. The home this
+ * route means is passed explicitly, and the rest is dropped (§3.8). */
+const DROPPED = HARNESSES.filter((harness) => harness !== "codex").flatMap((harness) => [
+  HARNESS[harness].homeEnv,
+  ...HARNESS[harness].sessionEnv,
+]);
+
 const runCodex: RunCodex = async (args, env) => {
   let spawned: Bun.Subprocess<"ignore", "ignore", "ignore">;
+  const inherited = { ...process.env } as Record<string, string | undefined>;
+  for (const name of DROPPED) delete inherited[name];
   try {
     spawned = Bun.spawn({
       cmd: ["codex", ...args],
-      env: { ...process.env, ...env },
+      env: { ...inherited, ...env } as Record<string, string>,
       stdout: "ignore",
       stderr: "ignore",
     });

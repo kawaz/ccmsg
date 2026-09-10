@@ -15,6 +15,7 @@
 
 import { readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { HARNESS, HARNESSES } from "../harness/index.ts";
 import type { InstancePaths } from "../instance/index.ts";
 import {
   type InstallReport,
@@ -72,18 +73,37 @@ const SKILL_FILE = join("skills", "ccmsg", "SKILL.md");
  * Codex runs, and everything that needs a shell — finding `ccmsg`, naming the
  * config home — happens inside it where a shell is certain.
  *
- * The config home is named rather than inherited because a session started
- * against the default home has no variable saying so, and a hook that guessed
- * would greet another instance (M6). `ccmsg` itself is reached through `PATH`:
+ * The config home is named, and every other harness's is dropped. A session
+ * started against the default home has no variable saying so, and a Codex
+ * session started from inside a Claude Code session inherits that session's
+ * `CLAUDE_CONFIG_DIR` and session id — so a hook that only added its own would
+ * still greet the other instance, as the other session (§3.8, measured). What
+ * is dropped is named here rather than left to the shell: the hook has to
+ * speak for the session it fired for.
+ *
+ * `env` is spelled absolutely because `PATH` is what the hook is about to
+ * search and not something it can lean on before it has. `ccmsg` itself is
+ * reached through `PATH`:
  * the binary belongs to whoever installed ccmsg, and a plugin carrying its own
  * copy would be a second version of it to keep current. A session whose `PATH`
  * has no `ccmsg` leaves without saying anything, because a person who has not
  * installed ccmsg has not asked to hear about it at every session start. */
 function hookScript(configHome: string, command: string): string {
+  const dropped = HARNESSES.filter((harness) => harness !== "codex").flatMap((harness) => [
+    HARNESS[harness].homeEnv,
+    ...HARNESS[harness].sessionEnv,
+  ]);
   return `#!/bin/sh
 command -v ccmsg >/dev/null 2>&1 || exit 0
-CODEX_HOME='${configHome}' exec ccmsg ${command} --hook
+exec /usr/bin/env ${dropped.map((name) => `-u ${name}`).join(" ")} CODEX_HOME=${shellQuoted(configHome)} ccmsg ${command} --hook
 `;
+}
+
+/** One value as a POSIX shell reads it literally: single quotes, and the one
+ * escape those admit for a single quote of their own. A config home is a path
+ * a person chose, so it is quoted rather than assumed to hold nothing. */
+function shellQuoted(value: string): string {
+  return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
 /** Every file the plugin is made of, by its path under the plugin's root. */
