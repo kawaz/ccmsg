@@ -102,7 +102,8 @@ describe("nothing pushes a topic frame outside the topic mechanism (M5)", () => 
       // manifests, and the receipt that says which of them were written and
       // what was run. Both are files an uninstall reads back, and neither is a
       // value pushed to anybody.
-      "plugin/install.ts",
+      "plugin/codex.ts",
+      "plugin/receipt.ts",
       // The one writer whose file is not instance state: a dump is the
       // artifact `session_dump_write` was asked for, written once and never
       // read back, so it neither survives a restart for the instance's sake

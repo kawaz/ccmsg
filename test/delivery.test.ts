@@ -438,6 +438,7 @@ describe("the sessions a message can be addressed to", () => {
       }),
     );
     const domain = new Sessions({
+      harness: "claude",
       self: SELF,
       endpoint: SELF_ENDPOINT,
       configHome: home,
@@ -482,6 +483,7 @@ describe("the sessions a message can be addressed to", () => {
     dirs.push(home);
     mkdirSync(join(home, "sessions"));
     const domain = new Sessions({
+      harness: "claude",
       self: SELF,
       endpoint: SELF_ENDPOINT,
       configHome: home,

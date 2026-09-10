@@ -150,7 +150,7 @@ describe("ccmsg plugin install", () => {
     const paths = home();
     const claude = agent();
 
-    const done = await install(paths, VERSION, claude.run);
+    const done = await install(paths, "claude", VERSION, claude.run);
 
     expect(done.ok).toBe(true);
     const root = join(paths.pluginsDir, "claude");
@@ -167,7 +167,7 @@ describe("ccmsg plugin install", () => {
     const paths = home();
     const claude = agent();
 
-    await install(paths, VERSION, claude.run);
+    await install(paths, "claude", VERSION, claude.run);
 
     const receipt = await receiptOf(paths);
     expect(receipt).toMatchObject({
@@ -194,9 +194,9 @@ describe("ccmsg plugin install", () => {
   test("installing again replaces the copy the agent took, rather than leaving the old one", async () => {
     const paths = home();
     const claude = agent();
-    await install(paths, "0.0.1", claude.run);
+    await install(paths, "claude", "0.0.1", claude.run);
 
-    const again = await install(paths, VERSION, claude.run);
+    const again = await install(paths, "claude", VERSION, claude.run);
 
     expect(again.ok).toBe(true);
     expect(again.plugin).toEqual({ id: PLUGIN_ID, installed: true, replaced: true });
@@ -211,7 +211,7 @@ describe("ccmsg plugin install", () => {
         ? { code: 1, stdout: "", stderr: "そんな marketplace は追加できません" }
         : { code: 0, stdout: "[]", stderr: "" };
 
-    const done = await install(paths, VERSION, refusing);
+    const done = await install(paths, "claude", VERSION, refusing);
 
     expect(done.ok).toBe(false);
     // The refusal names the command that was refused, so the caller does not
@@ -221,8 +221,8 @@ describe("ccmsg plugin install", () => {
       code: 1,
       said: "そんな marketplace は追加できません",
     });
-    expect(done.marketplace.registered).toBe(false);
-    expect(done.plugin.installed).toBe(false);
+    expect(done.marketplace?.registered).toBe(false);
+    expect(done.plugin?.installed).toBe(false);
     const receipt = await receiptOf(paths);
     expect(receipt.commands).toEqual([]);
     expect(receipt.marketplace).toBeUndefined();
@@ -233,7 +233,7 @@ describe("ccmsg plugin install", () => {
 describe("the plugin's files", () => {
   async function laid(): Promise<{ root: string; read: (path: string) => Promise<string> }> {
     const paths = home();
-    await install(paths, VERSION, agent().run);
+    await install(paths, "claude", VERSION, agent().run);
     const root = join(paths.pluginsDir, "claude");
     return { root, read: (path) => Bun.file(join(root, path)).text() };
   }
@@ -318,14 +318,14 @@ describe("ccmsg plugin status", () => {
     const paths = home();
     const claude = agent();
 
-    const clean = await status(paths, claude.run);
+    const clean = await status(paths, "claude", claude.run);
     expect(clean.receipt).toBeUndefined();
     expect(clean.plugin).toEqual({});
     expect(clean.marketplace).toEqual({ name: MARKETPLACE_NAME, registered: false });
 
     claude.markets.set(MARKETPLACE_NAME, "/somewhere/else");
     claude.held.set(PLUGIN_ID, "1.2.3");
-    const foreign = await status(paths, claude.run);
+    const foreign = await status(paths, "claude", claude.run);
     // What says somebody else installed it: a version is there with no receipt
     // stating one, which is two fields rather than a sentence about them.
     expect(foreign.receipt).toBeUndefined();
@@ -340,9 +340,9 @@ describe("ccmsg plugin status", () => {
     const paths = home();
     const claude = agent();
     const root = join(paths.pluginsDir, "claude");
-    await install(paths, VERSION, claude.run);
+    await install(paths, "claude", VERSION, claude.run);
 
-    const agreed = await status(paths, claude.run);
+    const agreed = await status(paths, "claude", claude.run);
     expect(agreed).toMatchObject({
       agent: "claude",
       ok: true,
@@ -360,7 +360,7 @@ describe("ccmsg plugin status", () => {
     });
     expect(agreed.receipt).toContain("claude.receipt.json");
     // Agreement is the absence of the drift fields, not a field claiming it.
-    expect(agreed.marketplace.points_at).toBeUndefined();
+    expect(agreed.marketplace?.points_at).toBeUndefined();
 
     // The three ways the world moves out from under a receipt: somebody removed
     // the plugin, somebody deleted what it was reading, and the marketplace of
@@ -369,7 +369,7 @@ describe("ccmsg plugin status", () => {
     claude.markets.set(MARKETPLACE_NAME, "/somewhere/else");
     rmSync(join(root, "hooks", "hooks.json"));
 
-    const drifted = await status(paths, claude.run);
+    const drifted = await status(paths, "claude", claude.run);
     expect(drifted.files).toEqual({
       expected: 4,
       present: 3,
@@ -386,13 +386,13 @@ describe("ccmsg plugin status", () => {
   test("a version other than the receipt's is two fields that differ", async () => {
     const paths = home();
     const claude = agent();
-    await install(paths, VERSION, claude.run);
+    await install(paths, "claude", VERSION, claude.run);
     claude.held.set(PLUGIN_ID, "0.0.1");
 
-    const seen = await status(paths, claude.run);
+    const seen = await status(paths, "claude", claude.run);
 
-    expect(seen.plugin.installed_version).toBe("0.0.1");
-    expect(seen.plugin.expected_version).toBe(VERSION);
+    expect(seen.plugin?.installed_version).toBe("0.0.1");
+    expect(seen.plugin?.expected_version).toBe(VERSION);
   });
 });
 
@@ -400,10 +400,10 @@ describe("ccmsg plugin uninstall", () => {
   test("what install did is exactly what uninstall undoes", async () => {
     const paths = home();
     const claude = agent();
-    await install(paths, VERSION, claude.run);
+    await install(paths, "claude", VERSION, claude.run);
     const root = join(paths.pluginsDir, "claude");
 
-    const done = await uninstall(paths, claude.run);
+    const done = await uninstall(paths, "claude", claude.run);
 
     expect(done.ok).toBe(true);
     expect(done.removed).toEqual({
@@ -426,9 +426,9 @@ describe("ccmsg plugin uninstall", () => {
     const claude = agent();
     claude.markets.set("theirs", "/their/marketplace");
     claude.held.set("theirs@theirs", "1.0.0");
-    await install(paths, VERSION, claude.run);
+    await install(paths, "claude", VERSION, claude.run);
 
-    await uninstall(paths, claude.run);
+    await uninstall(paths, "claude", claude.run);
 
     expect(claude.markets.get("theirs")).toBe("/their/marketplace");
     expect(claude.held.get("theirs@theirs")).toBe("1.0.0");
@@ -438,7 +438,7 @@ describe("ccmsg plugin uninstall", () => {
     const paths = home();
     const claude = agent();
 
-    const done = await uninstall(paths, claude.run);
+    const done = await uninstall(paths, "claude", claude.run);
 
     expect(done.ok).toBe(true);
     expect(done.receipt).toBeUndefined();
@@ -452,10 +452,10 @@ describe("ccmsg plugin uninstall", () => {
       args[1] === "marketplace" && args[2] === "add"
         ? { code: 1, stdout: "", stderr: "だめ" }
         : { code: 0, stdout: "[]", stderr: "" };
-    await install(paths, VERSION, refusing);
+    await install(paths, "claude", VERSION, refusing);
     const claude = agent();
 
-    const done = await uninstall(paths, claude.run);
+    const done = await uninstall(paths, "claude", claude.run);
 
     expect(done.ok).toBe(true);
     // Nothing was registered, so nothing is unregistered; the files that were
@@ -510,7 +510,7 @@ describe("the version ccmsg names", () => {
     // numbers for one release.
     expect((await client.next())["version"]).toBe(BUILD_VERSION);
 
-    await install(paths, BUILD_VERSION, agent().run);
+    await install(paths, "claude", BUILD_VERSION, agent().run);
     const manifest = JSON.parse(
       await Bun.file(join(paths.pluginsDir, "claude", ".claude-plugin", "plugin.json")).text(),
     ) as { version: string };

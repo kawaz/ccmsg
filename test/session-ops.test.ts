@@ -141,6 +141,7 @@ function ops(over: Partial<ProcessDeps> & { typed?: string[][]; lastLive?: Sid[]
     }
   }
   const domain = new Sessions({
+    harness: "claude",
     self: SELF,
     endpoint: SELF_ENDPOINT,
     configHome,
@@ -174,6 +175,7 @@ function ops(over: Partial<ProcessDeps> & { typed?: string[][]; lastLive?: Sid[]
     configHome,
     stateDir,
     files: new TranscriptFiles({
+      harness: "claude",
       configHome,
       announced: (sid) => domain.transcriptPath(sid),
     }),

@@ -456,6 +456,7 @@ describe("what the fold settles reaches the sessions domain (§5.1)", () => {
       last_user_input_at: NOW - 1000,
     };
     const sessions = new Sessions({
+      harness: "claude",
       self: SELF,
       endpoint: SELF_ENDPOINT,
       configHome: root,
@@ -1019,7 +1020,11 @@ describe("where a sid's transcript is (§5.1)", () => {
     const root = configHome();
     const announced = join(root, "projects", "a-project", `${SID}.jsonl`);
     writeFileSync(announced, "");
-    const files = new TranscriptFiles({ configHome: root, announced: () => announced });
+    const files = new TranscriptFiles({
+      harness: "claude",
+      configHome: root,
+      announced: () => announced,
+    });
     expect(files.path(SID)).toBe(announced);
   });
 
@@ -1027,12 +1032,20 @@ describe("where a sid's transcript is (§5.1)", () => {
     const root = configHome();
     const written = join(root, "projects", "a-project", `${SID}.jsonl`);
     writeFileSync(written, "");
-    const files = new TranscriptFiles({ configHome: root, announced: () => undefined });
+    const files = new TranscriptFiles({
+      harness: "claude",
+      configHome: root,
+      announced: () => undefined,
+    });
     expect(files.path(SID)).toBe(written);
   });
 
   test("a sid with no file under this config home has none", () => {
-    const files = new TranscriptFiles({ configHome: configHome(), announced: () => undefined });
+    const files = new TranscriptFiles({
+      harness: "claude",
+      configHome: configHome(),
+      announced: () => undefined,
+    });
     expect(files.path(SID)).toBeUndefined();
   });
 });

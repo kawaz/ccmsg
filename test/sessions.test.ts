@@ -201,6 +201,7 @@ function sessions(
   const waiters: (() => void)[] = [];
   const logged: { message: string; fields: Record<string, unknown> }[] = [];
   const domain = new Sessions({
+    harness: "claude",
     log: (message, fields = {}) => {
       logged.push({ message, fields });
     },
@@ -236,6 +237,7 @@ function sessions(
  * directory, which is all a restart is. */
 function restart(context: { root: string; stateDir: string }): Sessions {
   const domain = new Sessions({
+    harness: "claude",
     self: SELF,
     endpoint: SELF_ENDPOINT,
     configHome: context.root,
@@ -435,7 +437,7 @@ describe("hello", () => {
       fields: {
         sid: SID,
         path: join(elsewhere, "b.jsonl"),
-        refused: "outside this config home's projects tree",
+        refused: "outside this config home's transcript tree",
       },
     });
   });
@@ -917,6 +919,7 @@ describe("last_live", () => {
     );
 
     const domain = new Sessions({
+      harness: "claude",
       self: SELF,
       endpoint: SELF_ENDPOINT,
       configHome: root,

@@ -41,7 +41,11 @@ function home(transcripts: Record<string, readonly string[]>) {
     deps: {
       self: SELF,
       configHome: root,
-      files: new TranscriptFiles({ configHome: root, announced: () => undefined }),
+      files: new TranscriptFiles({
+        harness: "claude",
+        configHome: root,
+        announced: () => undefined,
+      }),
     },
   };
 }
