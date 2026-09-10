@@ -3,3 +3,6 @@ node_modules/
 package-lock.json
 # playwright-cli skill がセッション中に落とす snapshot / console log
 .playwright-cli/
+# 各自の VS Code workspace ファイル (ccmsg@<worktree>.local.code-workspace)。
+# oxfmt はユーザ global の ignore を読まないので、ここに書かないと lint が拾う
+*.local.*
