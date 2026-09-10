@@ -35,3 +35,7 @@ origin: 自リポ TODO
 - [ ] socket の unlink は listener が実際に閉じた後に行う (unlink 済みで process が残ると「動いていない」と誤認される)
 - [ ] `service stop` は監督者の終了 (pid 消失) を確認してから `running: false` を返し、期限内に終わらなければ SIGKILL にエスカレートして事実を返す
 - [ ] テスト: 3 instance の mesh を張った状態で supervisor stop が N 秒内に完了する
+
+## 追加観測 (2026-09-10 18:10, v0.3.1 → v0.3.2 の `daemon restart --all`)
+
+instance 単体の stop でも再現した。emrd instance (pid 90012) の daemon.log は `mesh peer lost` ×2 → `stopping` を記録した後に終了せず、`daemon status --all` は `running: false` (socket は unlink 済み) を返し、`daemon restart --all` は 600 秒経っても返らなかった。pid 指定の SIGTERM で即終了し、監督者が新しい instance を起動して復旧。personal と bare は同じ操作で正常に止まった (mesh link の閉じ方 = 自分が dial した側か accept した側かで差がある可能性)。停止順序 §8.5 で `stopping` の後に待っているものを特定する。
