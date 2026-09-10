@@ -34,7 +34,7 @@ dump は transcript の行をそのまま並べるのではなく、**アイテ�
 | フィールド | use 側 | result 側 |
 |---|---|---|
 | `role` | `"use"` | `"result"` |
-| リンク | `result_item?` — 対応する result アイテムの uuid。**まだ返ってきていなければ無い** | `parent_item` — 対応する use アイテムの uuid |
+| リンク | `result_item?` — 対応する result アイテムの id。**まだ返ってきていなければ無い** | `parent_item` — 対応する use アイテムの id |
 | 中身 | 呼び出しの引数 (下表) | 返ってきたもの (`stdout` / `stderr` / `exit_code` / エラー) |
 
 結果が **何 turn も後に来る**ものがあるのが理由。`Agent` は worker が走り終わるまで、`Monitor` は監視対象が動くまで返らず、その間に別の会話とツール呼び出しが挟まる。分類の段階で 1 つに畳むと、transcript 上に離れて存在する 2 つの事実を「どちらの時刻に置くか」を分類が決めることになる。実体が 2 行なら 2 アイテムで出し、時刻はそれぞれが持つ。
@@ -258,40 +258,29 @@ peer   9f2c1ab4   ccmsg-webui/main
 
 ## 3. 分類の置き場
 
-分類 (jsonl の 1 行 → 型 + フィールド) を誰が持つか。dump と webui が同じ仕分けを使うのは前提で、置き場が 2 案ある。**統括の推しは案 B**。決めるのは kawaz。
+分類 (jsonl の 1 行 → 型 + フィールド) は **daemon だけが持つ** (`src/transcript/items/`)。契約が持つのは **型の語彙 (型名の集合と item の形) と、型付き item を運ぶ op / topic** で、jsonl を読むコードは入らない。webui は **生 jsonl を読まず**、型付き item だけを描く。
 
-どちらでも共通なのは、**型に専用コンポーネントを当てる**ところは dump と webui がそれぞれ持つこと。dump はテキストの表示コンポーネント、webui は React コンポーネント。型が増えたら両方に描き方を足す (足すまでは汎用形で出る)。
+jsonl はハーネスの内部形式で、こちらの合意なく変わる。**その追従は daemon の責務**で、契約 (wire の形) に同居させると形式変更のたびに契約 release が要り、責務がにじむ。codex の rollout 形式 (DESIGN §3.8 のハーネス差) も daemon 側の分類で吸収されるので、ハーネスが増えても webui は無変更で済む。
 
-### 案 A — 契約 package に分類コードを置く
+**型に専用コンポーネントを当てる**ところは dump と webui がそれぞれ持つ。dump はテキストの表示コンポーネント、webui は React コンポーネント。型が増えたら両方に描き方を足す (足すまでは汎用形で出る)。
 
-分類の実装を `@ccmsg/protocol/transcript-items` (契約 package の subpath) に 1 つ置き、daemon の dump と webui の Timeline が同じものを import する。webui は今までどおり生 jsonl を受け取り、手元で分類する。
+### 生 record の取り寄せ
 
-型名は `types` 引数と `dump.presets` の config に現れる wire の語彙なので、分類の実装と選択の schema が同じ package に居るのは素直に見える。
+分類は誤りうるので、**元の record を生で見る道は必ず残す**。各 item は `source` (`offset` / `bytes` = transcript 内での元 record の位置) を持ち、`transcript_read` にそのまま渡せば元 record が返る。普段は型付き item だけを描き、「jsonl」ボタンや分類の甘い item を開いた時にだけ取り寄せる。情報は全部見られるが、常時運ぶのは型付き item の側。
 
-### 案 B — daemon が分類し、wire に型付き item を流す (推し)
+1 record が複数 item になる場合 (assistant 1 行 = thinking + tool use + text) は 3 つが同じ `source` を共有するので、**取り寄せは record 単位**になる。item の identity はこの `source` ではなく `id` (= `<uuid>:<index>`) で、`uuid` は元 record の参照として残る。codex の rollout も同じ形で、`offset` は rollout ファイル内の位置を指す。
 
-分類の実装は **daemon にだけ**置く。契約 package が持つのは **型の enum と item の形 (fields) という語彙だけ**で、jsonl を読むコードは入らない。daemon が transcript を型付き item に変換して wire に流し (dump の result と、Timeline 用の新 topic または `transcript_read` の型付き版)、webui は **生 jsonl を一切読まず**型付き item だけを描く。
+### 型付きの経路 (契約 1.13.0)
 
-jsonl はハーネスの内部形式で、こちらの合意なく変わる。**その追従は daemon の責務**で、契約 (wire の形) に同居させると形式変更のたびに契約 release が要り、責務がにじむ。webui から jsonl パーサが消え、codex の rollout 形式 (DESIGN §3.8 のハーネス差) も daemon 側の分類で吸収されるので、ハーネスが増えても webui は無変更で済む。
-
-悪い面もはっきりしている。Timeline の追記 (tail) を型付きで流す経路が要り、今は生の byte 範囲を運んでいる `transcript:<sid>` topic の意味論が変わる。契約 minor + webui の Timeline モデルの作り直しがそのまま代償になる。
-
-### 比較
-
-| 軸 | 案 A (契約に分類コード) | 案 B (daemon が分類、推し) |
+| 用途 | op / topic | 中身 |
 |---|---|---|
-| 分類の責務 | 契約 package (daemon と webui が共有) | daemon 単独 |
-| jsonl 形式変更の追従先 | 契約 package → **契約 release が要る** | daemon の release だけ |
-| 契約が持つもの | 型の語彙 + 分類の実装 | **型の語彙だけ** |
-| webui の変更量 | 小 (3 系統を共通分類からの導出に置き換えるだけ) | 大 (jsonl パーサを捨て、型付き item を受ける Timeline モデルに作り直す) |
-| wire | 今のまま (生 jsonl / byte 範囲) | 型付き item を流す経路が要る (`transcript:<sid>` topic の意味論変更 = 契約 minor) |
-| codex 等の別ハーネス形式 | 分類が契約側に入る (契約がハーネスの内部形式を知る) | daemon が吸収し、**webui は無変更** |
+| 範囲を指定して読む | `transcript_items_read` | dump と同じ範囲指定 (`since_at` / `since_uuid` / `until_*`) + `types` 選択 + `limit`。返りは `items` と、`limit` で切れた時の続き位置 `next` (次回 `since_id` に渡す) |
+| 追記を受け取る | `transcript_items:<sid>` topic | snapshot は末尾側の item 一定量 (件数は daemon が決める)、以降の frame は新しく分類された item の配列。granularity は `transcript:<sid>` と同じ `append` |
+| 生 record の取り寄せ | `transcript_read` / `transcript:<sid>` | 今のまま。item の `source` で 1 record を引く経路になる |
 
 ### webui の現状と移行
 
-### webui の現状と移行
-
-どちらの案でも webui の分類 3 系統は型の階層に置き換わる。違うのは分類がどこで走るか (案 A は webui の中、案 B は daemon の中) だけで、置き換わる先の型は同じ。
+webui は jsonl パーサを捨て、型付き item を受ける Timeline モデルに作り直す。分類 3 系統は型の階層に置き換わる。
 
 webui は今 3 系統を並べていて、階層を持たない。
 
@@ -432,22 +421,24 @@ worker の transcript は 1 ファイルで完結し、全行が `isSidechain: t
 
 `SessionDumpWriteResult`: `path` / `instance` / `bytes` は既存のまま。`entries` は型ごとの内訳 (`{ "message:user:in": 12, "tool:Bash": 301, … }`) に変える。総数だけでは何が入ったか読み手に分からない。
 
-item の形 (契約 package が持つ語彙。案 A / 案 B のどちらでもここは同じ):
+item の形 (契約 package が持つ語彙):
 
 ```
 {
-  uuid: string            // record id。アイテムの identity
+  id: string              // "<uuid>:<index>"。アイテムの identity
+  uuid: string            // 元 record の id
+  source: {offset, bytes} // transcript 内での元 record の位置
   type: string            // "tool:Bash" / "message:user:in" / "hook:PreToolUse" …
   at: number              // そのアイテム自身の時刻
   role?: "use" | "result" // tool:* と message:sub:* が持つ
-  result_item?: string    // use 側 → result の uuid。未着なら無し
-  parent_item?: string    // result 側 → use の uuid
+  result_item?: string    // use 側 → result の id。未着なら無し
+  parent_item?: string    // result 側 → use の id
   turn?: number
   ...fields               // 型ごとのフィールド (§1 の表)
 }
 ```
 
-`result_item` / `parent_item` は uuid で指す。位置 (配列の index) で指さないのは、`types` の選択や範囲の切り方で配列が変わり、片方だけが範囲内に入る場合があるため。**リンク先が dump に入っていないことは正常**で、読み手はその uuid で元の transcript を引ける。
+`result_item` / `parent_item` は id で指す。位置 (配列の index) で指さないのは、`types` の選択や範囲の切り方で配列が変わり、片方だけが範囲内に入る場合があるため。record id (`uuid`) でもないのは、assistant 1 行が複数 item に割れると同時に全部を名指すことになるため。**リンク先が dump に入っていないことは正常**で、読み手はその id で元の transcript を引ける。
 
 新規 op `dump_presets_read`: config が持つ preset の `{name, description, opts}` の配列を返す。
 
