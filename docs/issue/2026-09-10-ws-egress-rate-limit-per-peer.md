@@ -57,3 +57,7 @@ coalesce・値比較) と同じリリースに入れる想定。
       ことを確認
 - [ ] 原因側の修正 (sessions/ 監視の coalesce・値比較、findings
       `2026-09-10-sessions-topic-storm` 参照) と同じリリースに含める
+
+## 形 (kawaz 2026-09-10: throttle + queue + folding)
+
+WS 終端ごとに「flush 周期付きの出力 queue」を 1 つ持ち、現在値 topic は `topic × instance` を key に最新 1 つへ畳む (folding)、出来事 topic は順序どおり並べる (queue)、flush は周期の上限で行い 1 回で畳んだ現在値と溜まった出来事をまとめて出す (throttle)。queue が溢れるのは出来事側だけで、その時は投入した op に `rate_limited` を返す。mesh relay / 人 / gateway の全終端が同じ層を通る。
