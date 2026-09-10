@@ -20,26 +20,19 @@
 
 ## 裁定待ち
 
-### 👺EP-Q1: webui のホスト先と endpoint の URL 形
+### 👺EP-Q4: `ccmsg.<host>.kawaz.jp` は今 旧 daemon (8642、旧 webui + room) に向いている
 
-[DR-0001](decisions/DR-0001-passkey-auth-for-people.md) §2.3 の制約 (passkey を使う webui は endpoint と同じ registrable domain) を満たす配置。
+新系の人の入口をこの名前にすると旧 webui が見えなくなる。
 
-- [ ] a (推奨): ホストごとに 1 origin `https://ccmsg.<host>.kawaz.jp/`、webui はその直下、instance はパス (`/personal/ws` `/emrd/ws` `/bare/ws`) で相乗り
-- [ ] b: instance ごとにサブドメイン (`personal.ccmsg.<host>.kawaz.jp`)、webui は `--rp-id` で共通 suffix を指定
-- [ ] c: 人の入口だけ LB 名 `https://ccmsg.<host>.kawaz.jp/` に集約 (mesh の `self` は instance 固有 URL のまま)
+- [ ] a (推奨): 旧系を `ccmsg-old.<host>.kawaz.jp` に退避し、`ccmsg.<host>` を新系へ (旧 room は旧 URL で読める。DR-0032 §2.2「切替は一気に」)
+- [ ] b: 新系の入口を当面 `ccmsg2.<host>.kawaz.jp` にし、日常利用が移ってから入れ替え
 
-a は証明書 1 枚・caddy のパス振り分けだけで済み、mesh-peer-auth §4.2 の相乗り前提と同じ形。
+### 👺EP-Q5: 新 webui の静的ファイルの配信先
 
-### 👺EP-Q2: 名前解決と証明書の経路
+daemon は webui を配信しない ([DR-0032](https://github.com/kawaz/claude-ccmsg/blob/main/docs/decisions/DR-0032-repo-split-protocol-first.md) §2.1)。caddy の `ccmsg.<host>/` ルートを `file_server` にする必要がある。
 
-- [ ] a: 既存の `*.kawaz-mbp16-20211217.kawaz.jp` と同じ (tailnet IP の DNS + caddy が DNS-01 で取得)。別 PC も同じ形
-- [ ] b: tailscale の `ts.net` 名 + `tailscale cert` (サブドメインが切れないのでパス相乗り必須)
-
-### 👺EP-Q3: 本番 config の `self` / `peers` と passkey 登録の開始
-
-EP-Q1 / Q2 が決まったら統括が行う作業の確認。
-
-- [ ] a: 3 instance の `~/.config/ccmsg/config.json` に `self` / `entry.origins` (webui の origin) を書き、caddy 設定を用意 (caddy の設定ファイルの場所と反映手順を教えてほしい)、`ccmsg daemon passkey add personal --name <ラベル>` を統括が発行して URL とコードを r292 に貼る
+- [ ] a (推奨): canddy-app-proxy の justfile に `webui-build` を足し、`~/.local/share/repos/github.com/kawaz/ccmsg-webui/main` で `bun run build` した `dist/` を caddy の `root` に指す (worktree 直参照、更新は `just webui-build` + reload)
+- [ ] b: webui リポの release で `dist` を tarball 化し、canddy-app-proxy 配下に展開して固定
 
 ## 確認待ち
 
