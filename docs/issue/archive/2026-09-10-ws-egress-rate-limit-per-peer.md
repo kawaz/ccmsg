@@ -1,6 +1,6 @@
 ---
 title: 各 WS 終端の送出側に rate limit 層 (現在値 coalesce / event backpressure)
-status: open
+status: resolved
 category: task
 created: 2026-09-10T15:40:00+09:00
 last_read:
@@ -9,10 +9,10 @@ wip_entered:
 blocked_entered:
 pending_entered:
 discarded_entered:
-resolved_entered:
+resolved_entered: 2026-09-10T21:45:02+09:00
 discard_reason:
 pending_reason:
-close_reason:
+close_reason: ["done: daemon v0.3.4 (2026-09-10 本番反映)", "impl: src/topics/egress.ts の Egress (WS 終端ごとに1 queue、Topics.publish は必ずここを通る = 人/mesh peer/CLI/relay 同一経路)", "folding: granularity whole/per_instance_whole を topic×instance で最新値に差し替え(位置は保つ)", "queue: element/append/event は順序どおり", "throttle: FLUSH_PERIOD_MS=100ms(待たされるframeが出た時だけone-shotでarm)", "limit: QUEUE_LIMIT=256超過でpublishがrate_limitedを返す。notify_send/say_postは暫定internal_error、message_sendはinbox保持{delivered:false,reason:throttled}", "design: DESIGN §6.4", "契約のrate_limited codeは契約issue rate-limited-error-codeが追う"]
 blocked_by:
 origin: kawaz 指示 (2026-09-10)
 ---

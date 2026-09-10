@@ -31,7 +31,6 @@ wire の契約は [kawaz/ccmsg-protocol](https://github.com/kawaz/ccmsg-protocol
 | 2026-09-10 | bug | open | [service-stop-wedges-with-sockets-unlinked](./2026-09-10-service-stop-wedges-with-sockets-unlinked.md) | 本運用 (v0.2.13 監督者 + 3 instance) で `service stop` が socket unlink 後に wedge し、応答は `run… |
 | 2026-09-10 | task | open | [design-doc-reflow-after-v2-settles](./2026-09-10-design-doc-reflow-after-v2-settles.md) | `docs/DESIGN-ja.md` / `docs/DESIGN.md` (と契約リポの DESIGN、README-ja) は v2 の構築中に節を足し続… |
 | 2026-09-10 | design | open | [dump-sidechain-rows-placement](./2026-09-10-dump-sidechain-rows-placement.md) | session_dump_write が出力する日記に、subagent (sidechain) の発話をどう配置するかを裁定する。 |
-| 2026-09-10 | task | open | [ws-egress-rate-limit-per-peer](./2026-09-10-ws-egress-rate-limit-per-peer.md) | 本番で bare instance が `agents` / `peers` を ~1 kHz で publish し (0.92 秒で 882 frame)、mesh 経由で全… |
 | 2026-09-09 | design | open | [codex-plugin-delivery-via-thread-queue](./2026-09-09-codex-plugin-delivery-via-thread-queue.md) | codex plugin: 配送は `codex queue --thread <sid>`、hello でハーネス種別を名乗る |
 | 2026-09-09 | design | open | [sandbox-grant-delivery-path](./2026-09-09-sandbox-grant-delivery-path.md) | sandbox_grant は capability URL を発行するが、`SandboxGrants.find` の呼び... |
 
