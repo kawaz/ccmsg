@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -316,5 +316,91 @@ describe("ccmsg say", () => {
     const speech = fake();
     expect(await say(["誰も聞いていない"], speech.spawn)).toBe(0);
     expect(speech.commands).toEqual([["/usr/bin/say", "誰も聞いていない"]]);
+  });
+});
+
+/** A session's own transcript, where this harness keeps one. */
+function transcript(home: string, sid: string, text: string): void {
+  const dir = join(home, "projects", "-Users-someone-a-repo");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, `${sid}.jsonl`), text);
+}
+
+const SPOKE = `${JSON.stringify({
+  type: "user",
+  uuid: "u1",
+  parentUuid: null,
+  timestamp: "2026-09-01T00:00:00.000Z",
+  message: { role: "user", content: "行を数えて" },
+})}
+${JSON.stringify({
+  type: "assistant",
+  uuid: "a1",
+  parentUuid: "u1",
+  timestamp: "2026-09-01T00:00:01.000Z",
+  message: {
+    role: "assistant",
+    content: [{ type: "tool_use", id: "t1", name: "Bash", input: { command: "wc -l < f" } }],
+  },
+})}
+`;
+
+describe("ccmsg dump", () => {
+  test("the instance writes the file and the command draws it", async () => {
+    const at = await instance();
+    transcript(process.env["CLAUDE_CONFIG_DIR"] as string, SID, SPOKE);
+
+    const drawn = await capture(() => main(["dump", SID]));
+    expect(drawn.code).toBe(0);
+    expect(drawn.err).toBe("");
+    // Markdown, not the JSON every other command answers with: what a dump is
+    // for is somebody reading it.
+    expect(drawn.out).toContain(`# dump ${SID}`);
+    expect(drawn.out).toContain(`- instance: \`${at.self}\``);
+    expect(drawn.out).toContain("[u1] message:user:in");
+    expect(drawn.out).toContain("$ wc -l < f");
+    expect(drawn.out).toContain("## ids");
+  });
+
+  test("--json hands over the file as the contract states it", async () => {
+    await instance();
+    transcript(process.env["CLAUDE_CONFIG_DIR"] as string, SID, SPOKE);
+
+    const asked = await capture(() => main(["dump", SID, "--json"]));
+    expect(asked.code).toBe(0);
+    const file = json(asked.out) as { sid: string; items: { type: string }[] };
+    expect(file.sid).toBe(SID);
+    expect(file.items.map((one) => one.type)).toEqual(["message:user:in", "tool:Bash"]);
+  });
+
+  test("--types is applied, and --out writes instead of printing", async () => {
+    await instance();
+    const home = process.env["CLAUDE_CONFIG_DIR"] as string;
+    transcript(home, SID, SPOKE);
+    const path = join(home, "drawn.md");
+
+    const written = await capture(() => main(["dump", SID, "--types", "tool:Bash", "--out", path]));
+    expect(written.code).toBe(0);
+    const answer = json(written.out) as { path: string; bytes: number };
+    expect(answer.path).toBe(path);
+    const text = readFileSync(path, "utf8");
+    expect(answer.bytes).toBe(Buffer.byteLength(text));
+    expect(text).toContain("$ wc -l < f");
+    expect(text).not.toContain("message:user:in");
+  });
+
+  test("dump presets answers with what this instance is configured with", async () => {
+    await instance();
+    const listed = await capture(() => main(["dump", "presets"]));
+    expect(listed.code).toBe(0);
+    expect(json(listed.out)).toEqual({ presets: [] });
+  });
+
+  test("a preset the instance does not have is refused rather than ignored", async () => {
+    await instance();
+    transcript(process.env["CLAUDE_CONFIG_DIR"] as string, SID, SPOKE);
+    const refused = await capture(() => main(["dump", SID, "--preset", "nowhere"]));
+    expect(refused.code).toBe(1);
+    expect(json(refused.err)).toMatchObject({ error: { code: "invalid_args" } });
   });
 });

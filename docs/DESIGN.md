@@ -296,7 +296,16 @@ outlives the request that made it and has to say on its own what it is a dump of
 left out. The `ids` ledger is not a type and is never selected away. The older `no_thinking` / `no_agent` mean `["-thinking"]` and
 `["-message:sub", "-tool:Agent"]`, and are applied last.
 
-There are **no text components per type yet**: a dump file is typed JSON of the contract's shape.
+**Turning types into readable words is the drawing layer's work** (`src/transcript/items/render.ts`
+and `document.ts`, and the CLI's `ccmsg dump`). One function per type answers with the words of a
+heading and the lines under it; the document is those, each headed
+`[uuid8] <type> <heading> <time> turn` with its body indented, behind a preamble naming the
+subject, the instance, the selection and the bounds, and followed by the `ids` ledger.
+**A type nobody drew is drawn anyway**: an unknown tool and an unknown attachment lay out their
+type name and whatever fields they carried, since a drawing sharpens how a type reads and never
+decides whether it is kept. Whether a call and its answer are folded into one is **decided
+here** — touching, they are folded under `→`; apart, the answer is drawn where it arrived under
+`←`; an agent's answer alone is drawn under the brief however many turns separate them.
 Where the classifying
 belongs is still open (DS-Q3); should it move to the contract package, `src/transcript/items/` is
 the unit that moves. What the op adds over

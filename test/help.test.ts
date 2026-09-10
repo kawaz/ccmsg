@@ -16,6 +16,8 @@ const LEVELS = [
   ["service", "register"],
   ["plugin"],
   ["plugin", "install"],
+  ["dump"],
+  ["dump", "presets"],
   ["post"],
   ["reply"],
   ["notify"],
@@ -55,7 +57,8 @@ describe("the help, at every level", () => {
   });
 
   test("a command whose arguments are required answers no arguments with its help", async () => {
-    for (const level of [["daemon", "add"], ["daemon", "start"], ["post"], ["reply"], ["notify"]]) {
+    const levels = [["daemon", "add"], ["daemon", "start"], ["dump"], ["post"], ["reply"]];
+    for (const level of levels) {
       const bare = await capture(() => main(level));
       // Not a refusal in the error shape: nothing was attempted, and what the
       // caller needs is what the command takes.

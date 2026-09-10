@@ -63,6 +63,16 @@ ccmsg peers --all      他ホストの instance が知っている分も含め�
 根拠をこちらで要約し直しても情報は増えず、時間とコンテキストだけが減る。人に言うのは
 自セッション目線の事実 (何を頼んだ・何が返り・その結果こちらが何をしたか) だけ。
 
+## 別のセッションのやり方を読む
+
+\`\`\`
+ccmsg dump <sid> --preset howto        親セッションが何を考えて何を叩いたか
+ccmsg dump <sid>/agent-<id> --preset howto   その worker 自身のやり口
+\`\`\`
+
+出力の末尾に ids 台帳があり、そこに出た \`agent\` の id が 2 行目の \`<id>\` になる。
+preset の一覧は \`ccmsg dump presets\`。
+
 ## 見ている人へ知らせる
 
 \`\`\`

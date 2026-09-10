@@ -1,5 +1,12 @@
 #!/usr/bin/env bun
-import { type MessageSendArgs, type NotifySendArgs, PROTOCOL_VERSION } from "@ccmsg/protocol";
+import {
+  type MessageSendArgs,
+  type NotifySendArgs,
+  PROTOCOL_VERSION,
+  type SessionDumpFile,
+  type SessionDumpWriteArgs,
+  type SessionDumpWriteResult,
+} from "@ccmsg/protocol";
 import {
   add as addToConfig,
   ask,
@@ -24,8 +31,10 @@ import {
   type Target,
   targetFor,
 } from "./daemon/index.ts";
+import { readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
+import { document } from "./transcript/items/index.ts";
 import { currentSession, DEFAULT_HARNESS, HARNESS, HARNESSES, isHarness } from "./harness/index.ts";
 
 /** The variables a session is named by, for the help and for the message a
@@ -356,6 +365,40 @@ const ROOT: Command = {
         ["--json", "JSON で答える (既定、この CLI は常に JSON で答える)"],
       ],
       run: (args) => agents(args),
+    },
+    {
+      name: "dump",
+      summary: "セッション (か配下の worker 1 体) の transcript を型ごとの表示で書き出す",
+      usage: "ccmsg dump <sid>[/agent-<id>] [--preset <名前>] [--types <選択>]",
+      options: [
+        ["--preset <名前>", "instance が持つ選択 (ccmsg dump presets で一覧)"],
+        ["--types <選択>", "型をカンマ区切りで。prefix 可、-で除外、@名前で preset 展開"],
+        ["--since <at|uuid>", "下限。時刻 (ISO か epoch ミリ秒) か record の uuid"],
+        ["--until <at|uuid>", "上限。同上"],
+        ["--max-chars <n>", "1 アイテムの本文をこの文字数で切る (既定は切らない)"],
+        ["--json", "markdown ではなく dump file の中身をそのまま出す"],
+        ["--out <path>", "標準出力ではなくこの path に書く"],
+      ],
+      notes: [
+        {
+          title: "別のセッションのやり方を読む:",
+          docs: [
+            ["1", "ccmsg dump <sid> --preset howto で親を読む"],
+            ["2", "末尾の ids 台帳から良さそうな worker の agent id を選ぶ"],
+            ["3", "ccmsg dump <sid>/agent-<id> --preset howto で主語を移して掘る"],
+          ],
+        },
+      ],
+      children: [
+        {
+          name: "presets",
+          summary: "この instance が持つ preset の名前と中身を並べる",
+          usage: "ccmsg dump presets",
+          bare: true,
+          run: () => instanceAsk({ op: "dump_presets_read" }),
+        },
+      ],
+      run: (args) => dump(args),
     },
     {
       name: "post",
@@ -857,6 +900,115 @@ async function topic(
   }
 }
 
+/** `ccmsg dump <sid>[/agent-<id>]`: read how a session worked.
+ *
+ * The instance writes the file — it is the one that can read a transcript, and
+ * a path that outlives the request is the point of the op — and this reads it
+ * back and draws it. Which means the two halves stay where they belong: what
+ * an item is settled by whoever read the file, and how an item reads is
+ * settled here, where somebody is looking at it.
+ *
+ * `--json` hands over the file as it stands, for a reader that is a program. */
+async function dump(args: readonly string[]): Promise<unknown> {
+  const parsed = options(args, ["preset", "types", "since", "until", "out", "max-chars"], ["json"]);
+  const subject = parsed.rest[0];
+  if (subject === undefined) {
+    throw new CommandError(
+      "invalid_args",
+      "使い方: ccmsg dump <sid>[/agent-<id>] [--preset <名前>] [--types <選択>]",
+    );
+  }
+  const written = (await instanceAsk({
+    op: "session_dump_write",
+    ...dumpArgs(subject, parsed.named),
+  })) as unknown as SessionDumpWriteResult;
+  const body = readFileSync(written.path, "utf8");
+  const since = parsed.named.get("since");
+  const until = parsed.named.get("until");
+  const limit = parsed.named.get("max-chars");
+  const text = parsed.flags.has("json")
+    ? body
+    : document(JSON.parse(body) as SessionDumpFile, {
+        instance: written.instance,
+        ...(since === undefined ? {} : { since }),
+        ...(until === undefined ? {} : { until }),
+        ...(limit === undefined ? {} : { max_chars: chars(limit) }),
+      });
+  const out = parsed.named.get("out");
+  if (out === undefined) {
+    process.stdout.write(text.endsWith("\n") ? text : `${text}\n`);
+    return undefined;
+  }
+  writeFileSync(out, text);
+  return {
+    path: out,
+    bytes: Buffer.byteLength(text),
+    dump: written.path,
+    instance: written.instance,
+    entries: written.entries,
+    ids: written.ids,
+  };
+}
+
+/** What a person typed, as the op's arguments.
+ *
+ * `<sid>/agent-<id>` is split here and nowhere else: the contract keeps the
+ * two apart so that a sid stays a validated sid, and the joined spelling is
+ * the CLI's own convenience — it is how the file the agent's records live in
+ * is named, which is what makes the two halves tellable apart by eye. */
+export function dumpArgs(
+  subject: string,
+  named: ReadonlyMap<string, string> = new Map(),
+): SessionDumpWriteArgs {
+  const at = subject.indexOf(AGENT_MARK);
+  const sid = at === -1 ? subject : subject.slice(0, at);
+  const agent = at === -1 ? undefined : subject.slice(at + AGENT_MARK.length);
+  const types = named.get("types");
+  const preset = named.get("preset");
+  return {
+    sid,
+    ...(agent === undefined || agent === "" ? {} : { agent_id: agent }),
+    ...(preset === undefined ? {} : { preset }),
+    ...(types === undefined
+      ? {}
+      : {
+          types: types
+            .split(",")
+            .map((one) => one.trim())
+            .filter((one) => one !== ""),
+        }),
+    ...bound("since", named.get("since")),
+    ...bound("until", named.get("until")),
+  };
+}
+
+const AGENT_MARK = "/agent-";
+
+/** One bound, as whichever of the two kinds it was written in.
+ *
+ * A time and a record id cannot be confused for one another — one parses as a
+ * moment and the other does not — so the caller writes what they have rather
+ * than saying which it is. */
+function bound(kind: "since" | "until", value: string | undefined): Record<string, unknown> {
+  if (value === undefined || value === "") return {};
+  const at = moment(value);
+  return at === undefined ? { [`${kind}_uuid`]: value } : { [`${kind}_at`]: at };
+}
+
+function moment(value: string): number | undefined {
+  if (/^\d+$/.test(value)) return Number(value);
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? undefined : parsed;
+}
+
+function chars(value: string): number {
+  const limit = Number(value);
+  if (!Number.isInteger(limit) || limit <= 0) {
+    throw new CommandError("invalid_args", "--max-chars は 1 以上の整数です");
+  }
+  return limit;
+}
+
 /** `ccmsg post <sid> <text>`: start a conversation with another session. */
 function post(args: readonly string[]): Promise<unknown> {
   const parsed = options(args, ["sid"]);
@@ -1106,6 +1258,26 @@ async function call(
       `自分のセッション ID が分かりません (--sid か ${SESSION_ENV.join(" / ")})`,
     );
   }
+  return await exchange(
+    { op: "hello", role: "session", sid, protocol_version: PROTOCOL_VERSION, ...meta },
+    request,
+  );
+}
+
+/** One op, spoken as the person at the keyboard.
+ *
+ * Which is who is asking: reading a transcript is not something a session is a
+ * party to, and the ops that do it are open to a person and to nobody else. */
+function instanceAsk(request: Record<string, unknown>): Promise<unknown> {
+  return exchange({ op: "hello", role: "user", protocol_version: PROTOCOL_VERSION }, request);
+}
+
+/** Greet this config home's instance, ask it one thing, and answer with what
+ * it said. */
+async function exchange(
+  greeting: Record<string, unknown>,
+  request: Record<string, unknown>,
+): Promise<unknown> {
   const paths = resolvePaths();
   const conn = await connect(paths.socket);
   if (conn === undefined) {
@@ -1115,15 +1287,9 @@ async function call(
     );
   }
   try {
-    const greeting = await conn.ask({
-      op: "hello",
-      role: "session",
-      sid,
-      protocol_version: PROTOCOL_VERSION,
-      ...meta,
-    });
-    if (greeting["ok"] !== true) {
-      throw new CommandError("forbidden", `hello が拒否されました: ${JSON.stringify(greeting)}`);
+    const greeted = await conn.ask(greeting);
+    if (greeted["ok"] !== true) {
+      throw new CommandError("forbidden", `hello が拒否されました: ${JSON.stringify(greeted)}`);
     }
     const answer = await conn.ask(request);
     if (answer["ok"] !== true) {
