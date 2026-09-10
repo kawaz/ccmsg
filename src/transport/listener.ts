@@ -32,11 +32,13 @@ export class Transport {
    * come before this one (§8.5 1-4: refuse new work, stop upstream watches,
    * tell the connections, settle what is persisted). */
   async close(): Promise<void> {
-    const ordered = [
-      ...this.#listeners.filter((l) => l.kind !== "uds"),
-      ...this.#listeners.filter((l) => l.kind === "uds"),
-    ];
+    const held = [...this.#listeners];
     this.#listeners.length = 0;
-    for (const listener of ordered) await listener.close();
+    // The order that matters is the unix socket coming last; among the rest
+    // there is none, and closing them one after another would add up their
+    // deadlines for no reason — two served listeners is a second of waiting
+    // that nothing is waiting for.
+    await Promise.all(held.filter((l) => l.kind !== "uds").map((l) => l.close()));
+    for (const listener of held.filter((l) => l.kind === "uds")) await listener.close();
   }
 }

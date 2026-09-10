@@ -2,7 +2,7 @@ import { chmodSync } from "node:fs";
 import { BaseConn, type Conn, type ConnRegistry } from "./conn.ts";
 import { createDriver, type FrameHandler } from "./driver.ts";
 import { LineReader, WriteQueue } from "./framing.ts";
-import { type Listener, STOP_DEADLINE_MS } from "./listener.ts";
+import type { Listener } from "./listener.ts";
 
 interface UdsState {
   conn: BaseConn;
@@ -81,8 +81,11 @@ export function listenUds(options: UdsOptions): Listener {
   return {
     kind: "uds",
     address: options.path,
-    async close() {
-      await Promise.race([server.stop(true), Bun.sleep(STOP_DEADLINE_MS)]);
+    close() {
+      // Nothing to wait on: a unix listener gives its address up inside the
+      // call, unlike the served WebSocket next door (Bun 1.3.13).
+      server.stop(true);
+      return Promise.resolve();
     },
   };
 }
