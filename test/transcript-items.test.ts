@@ -520,10 +520,10 @@ describe("classifying a transcript", () => {
     expect(of(only(items, "message:session:out"))["one_way"]).toBeUndefined();
   });
 
-  test("an answer to a call this reading never saw states the record rather than a pointer", () => {
-    // What a reading that starts part-way down a file meets. A dump reads the
-    // whole file before it cuts, so the call is there; a tail carries the
-    // reading forward, so it is there too.
+  test("an answer to a call this reading never saw keeps the key it is joined by", () => {
+    // What a reading that starts part-way down a file meets: the seed of a
+    // topic begins at the end of the file, and a transcript resumed from
+    // another one has its calls in the file before it.
     const items = classify(
       lines(
         said("u1", [{ type: "tool_result", tool_use_id: "t-elsewhere" }], {
@@ -531,7 +531,14 @@ describe("classifying a transcript", () => {
         }),
       ),
     );
-    expect(typesOf(items)).toEqual(["system:unknown"]);
+    // The record never says which tool was called, so the type is the reserved
+    // name rather than a guess, and what came back is stated as a result and
+    // not as a record nobody could read.
+    expect(typesOf(items)).toEqual(["tool:unknown"]);
+    expect(of(items[0])["role"]).toBe("result");
+    expect(of(items[0])["parent_tool_use_id"]).toBe("t-elsewhere");
+    expect(of(items[0])["result"]).toEqual({ stdout: "3\n" });
+    expect(of(items[0])["parent_item"]).toBeUndefined();
     expect(validationErrors(TranscriptItem, items[0])).toEqual([]);
   });
 

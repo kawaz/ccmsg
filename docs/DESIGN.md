@@ -287,11 +287,14 @@ that one record. `bytes` runs to the newline that ends the record, so what comes
 record and not a slice of it. Several items read out of one record share the address, which makes
 fetching a record-sized operation.
 
-**A result that cannot name its call states the record instead of inventing a pointer.** A result
-item always names the call it answers, and a reading that began part-way down a file has no id to
-name; such a line is emitted as `system:unknown`, carrying the record. Both routes that produce
-items keep the call in hand — a dump classifies the whole file before it cuts a range, and the
-topic carries one classification forward as the file grows.
+**A result whose call was never read is stated under the key it joins on rather than under an
+invented pointer.** A reading that began part-way down a file — a topic's seed, a transcript
+resumed from another file — has no `parent_item` to name, and the record never says which tool was
+called either. **`tool:unknown` is the reserved name for exactly this**: the `unknown` says that
+the result is here and the tool's name is not something this instance knows, and never a name
+guessed from what came back. `parent_tool_use_id` is always carried, so a reader restores the name
+by joining it against the `tool_use_id` of the calls it holds. The shape is the generic result
+(`{result}` plus `parent_tool_use_id`).
 
 **A call that has no way of coming back is drawn apart from one still waiting.** Writing to an
 agent with `SendMessage` is one direction of a correspondence: the reply arrives whenever that

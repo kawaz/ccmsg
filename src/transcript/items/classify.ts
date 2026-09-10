@@ -318,12 +318,18 @@ export class Classification {
     const id = str(block["tool_use_id"]) ?? "";
     const call = this.#calls.get(id);
     if (call === undefined) {
-      // An answer to a call this reading never saw. A result item names the
-      // call it answers and there is no id to name, so what is stated is the
-      // record itself rather than a pointer to something that does not exist.
-      // It happens where a reading starts part-way down a file: the whole file
-      // is read before a dump's range is applied, so the call is there.
-      make("system:unknown", { record });
+      // An answer to a call this reading never saw, which is what a reading
+      // that starts part-way down a file meets. The record says which call it
+      // answers and never which tool was called, so the type is the reserved
+      // name for a result whose tool this instance does not know rather than a
+      // name guessed from what came back. What ties it to the call is the key
+      // the harness paired them by, which a reader joins against the calls it
+      // holds.
+      make("tool:unknown", {
+        role: "result",
+        parent_tool_use_id: id,
+        result: genericResult(record["toolUseResult"]),
+      });
       return;
     }
     const failed = block["is_error"] === true;
