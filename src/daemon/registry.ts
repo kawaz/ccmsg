@@ -95,10 +95,54 @@ export function registered(env: Env): Target[] {
   return loadShared(paths.configFile).instances.map((entry) => targetFor(env, entry.dir));
 }
 
+/** The selections the shared file starts with.
+ *
+ * Presets are the operator's to name — what one names is an interest, and this
+ * instance has no opinion on which interests a person has — so these are
+ * written into the file as examples to edit rather than built in. A default
+ * that lived in the code would be invisible in the file and would come back
+ * after being deleted.
+ *
+ * They also show the two things a person would otherwise have to be told: that
+ * a prefix takes a family, and that `@name` puts one selection inside
+ * another. */
+const STARTING_PRESETS = [
+  {
+    name: "file",
+    description: "ファイル操作。読み書きと探索をひとまとめに",
+    opts: { types: ["tool:Read", "tool:Write", "tool:Edit", "tool:Glob", "tool:Grep"] },
+  },
+  {
+    name: "howto",
+    description: "調査のノウハウだけ。何を考えて何を叩いて何を読み書きしたか",
+    opts: { types: ["thinking", "message:user", "message:sub", "tool:Bash", "@file"] },
+  },
+  {
+    name: "journal",
+    description: "日記用。人との往復と worker の答え、思考は要点だけ",
+    opts: { types: ["message:user", "message:sub:in", "thinking"] },
+  },
+  {
+    name: "handoff",
+    description: "後継セッションへの引き継ぎ。直近の会話と、走っているものの台帳",
+    opts: { types: ["message", "system:task", "ids"] },
+  },
+  {
+    name: "audit",
+    description: "何をしたかの追跡。会話は落として操作と通知だけ",
+    opts: { types: ["@file", "tool:Bash", "notice", "ids"] },
+  },
+];
+
 /** Add a config home to the shared file. The settings it will run with are the
  * defaults until somebody edits its entry, so the entry starts empty — save
  * for the harness, which is written down when it is not the default because it
- * is the one setting the directory itself cannot be asked for (§3.8). */
+ * is the one setting the directory itself cannot be asked for (§3.8).
+ *
+ * The dump presets above go to `defaults`, and only where the file names none:
+ * they are the same for every instance and are examples to edit, so writing
+ * them per entry would repeat them and re-adding a config home would bring
+ * back what somebody deleted. */
 export function add(env: Env, dir: string, harness: Harness = DEFAULT_HARNESS): InstanceRow {
   const home = configHome(dir, harness);
   const file = resolvePaths(env).configFile;
@@ -110,7 +154,11 @@ export function add(env: Env, dir: string, harness: Harness = DEFAULT_HARNESS): 
     dir: home,
     settings: harness === DEFAULT_HARNESS ? {} : { harness },
   };
-  saveShared(file, { ...shared, instances: [...shared.instances, entry] });
+  const defaults =
+    shared.defaults["dump"] === undefined
+      ? { ...shared.defaults, dump: { presets: STARTING_PRESETS } }
+      : shared.defaults;
+  saveShared(file, { defaults, instances: [...shared.instances, entry] });
   const target = targetFor(env, home);
   // The id is made here rather than at the first start, so that what `add`
   // prints is what the instance will answer to and so that a person can write

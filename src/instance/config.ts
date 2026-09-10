@@ -1,6 +1,6 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute } from "node:path";
-import type { Endpoint } from "@ccmsg/protocol";
+import type { DumpPreset, Endpoint } from "@ccmsg/protocol";
 import { DEFAULT_HARNESS, type Harness, HARNESSES, isHarness } from "../harness/index.ts";
 import { parseCidr } from "./client.ts";
 
@@ -91,6 +91,17 @@ export interface UpstreamConfig {
   readonly sandbox_origin?: string;
 }
 
+/** The named selections a person dumps by.
+ *
+ * Configured rather than fixed in the contract because what a preset names is
+ * an interest — how the work was done, what to hand over — and an interest is
+ * not a property of the wire. A type name stays one to one with what a record
+ * is, and the groupings people reach for are made by naming a set of them. */
+export interface DumpConfig {
+  /** In configured order, which is the order `dump_presets_read` answers in. */
+  readonly presets: readonly DumpPreset[];
+}
+
 export interface InstanceConfig {
   /** Which harness this config home runs (§3.8).
    *
@@ -118,6 +129,7 @@ export interface InstanceConfig {
    * one that does not never pays for it. The `fork` capability follows this,
    * so a client learns which it is from `hello`. */
   readonly fork_origin: boolean;
+  readonly dump: DumpConfig;
 }
 
 /** A config file that could not be understood.
@@ -146,6 +158,7 @@ export const DEFAULT_CONFIG: InstanceConfig = {
   upstream: {},
   direct_delivery: true,
   fork_origin: false,
+  dump: { presets: [] },
 };
 
 /** Read the config, once, at startup (DV-Q8).
@@ -258,6 +271,11 @@ export const MERGE_RULES: Readonly<Record<string, MergeRule>> = {
   "upstream.launcher.templates": "replace",
   "upstream.launcher.clean_env": "replace",
   "upstream.launcher.keep_env": "replace",
+  dump: "merge",
+  // A preset list is a whole vocabulary: an instance that names its own means
+  // to dump by those and not by the defaults' as well, since a name it did not
+  // write could shadow or be referenced by one it did.
+  "dump.presets": "replace",
 };
 
 function ruleFor(path: string): MergeRule {
@@ -308,7 +326,90 @@ export function parseConfig(file: string, fields: Record<string, unknown>): Inst
       DEFAULT_CONFIG.direct_delivery,
     ),
     fork_origin: flagOf(file, "fork_origin", fields["fork_origin"], DEFAULT_CONFIG.fork_origin),
+    dump: dumpOf(file, fields["dump"]),
   };
+}
+
+/** One element of a selection, as the contract spells it: a type name, a
+ * prefix of one, either negated with `-`, or `@name` for a preset. */
+const SELECTOR = /^-?(?:@[A-Za-z0-9][A-Za-z0-9_-]*|[a-z]+(?::[A-Za-z0-9_.-]+)*)$/;
+
+function dumpOf(file: string, raw: unknown): DumpConfig {
+  if (raw === undefined) return { presets: [] };
+  const fields = objectOf(file, "dump", raw);
+  const presets = presetsOf(file, fields["presets"]);
+  // A reference is resolved here rather than at each dump: a cycle or a name
+  // nobody configured would otherwise be found once per request, long after
+  // the file that holds the mistake was last looked at.
+  for (const preset of presets) resolvable(file, preset, presets, []);
+  return { presets };
+}
+
+function presetsOf(file: string, raw: unknown): DumpPreset[] {
+  if (raw === undefined) return [];
+  if (!Array.isArray(raw)) {
+    throw new ConfigError(file, "dump.presets must be an array of named selections");
+  }
+  const names = new Set<string>();
+  return raw.map((entry, index) => {
+    const at = `dump.presets[${index}]`;
+    const fields = objectOf(file, at, entry);
+    const name = fields["name"];
+    if (typeof name !== "string" || name === "") {
+      throw new ConfigError(file, `${at}.name must be a name for the selection`);
+    }
+    if (names.has(name)) throw new ConfigError(file, `${at}.name repeats ${name}`);
+    names.add(name);
+    const description = fields["description"];
+    if (description !== undefined && typeof description !== "string") {
+      throw new ConfigError(file, `${at}.description must be a string`);
+    }
+    const opts = objectOf(file, `${at}.opts`, fields["opts"]);
+    const types = stringsOf(file, `${at}.opts.types`, opts["types"]);
+    const wrong = types.filter((element) => !SELECTOR.test(element));
+    if (wrong.length > 0) {
+      throw new ConfigError(
+        file,
+        `${at}.opts.types must be item types, prefixes, exclusions or @presets, got ${wrong.join(", ")}`,
+      );
+    }
+    return {
+      name,
+      ...(description === undefined ? {} : { description }),
+      opts: { types: [...types] },
+    };
+  });
+}
+
+/** Every `@name` a preset reaches, down through the presets it names.
+ *
+ * The path is carried so a cycle is named where it closes rather than as a
+ * stack that ran out — an operator reading the refusal has to be able to find
+ * which two presets point at each other. */
+function resolvable(
+  file: string,
+  preset: DumpPreset,
+  presets: readonly DumpPreset[],
+  path: readonly string[],
+): void {
+  if (path.includes(preset.name)) {
+    throw new ConfigError(
+      file,
+      `dump.presets reference each other in a cycle: ${[...path, preset.name].join(" -> ")}`,
+    );
+  }
+  for (const element of preset.opts.types) {
+    const name = element.startsWith("-") ? element.slice(1) : element;
+    if (!name.startsWith("@")) continue;
+    const referenced = presets.find((one) => one.name === name.slice(1));
+    if (referenced === undefined) {
+      throw new ConfigError(
+        file,
+        `dump.presets[${preset.name}] names ${name}, which is not configured`,
+      );
+    }
+    resolvable(file, referenced, presets, [...path, preset.name]);
+  }
 }
 
 function harnessOf(file: string, raw: unknown): Harness {

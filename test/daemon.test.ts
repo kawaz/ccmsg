@@ -21,7 +21,7 @@ import {
   tailOf,
   targetFor,
 } from "../src/daemon/index.ts";
-import { DEFAULT_CONFIG, loadShared } from "../src/instance/index.ts";
+import { DEFAULT_CONFIG, loadShared, saveShared } from "../src/instance/index.ts";
 import { resolvePaths } from "../src/instance/paths.ts";
 import { endpoint, leasePort } from "./cluster.ts";
 import { capture, Host, json, reapOrphans } from "./harness.ts";
@@ -88,8 +88,31 @@ describe("which config homes there are (daemon add / remove / list)", () => {
     const home = at.home("one");
     add(process.env, home);
     const shared = loadShared(resolvePaths(process.env).configFile);
-    expect(shared.defaults).toEqual({});
+    // The entry states only what differs from the defaults, which for a config
+    // home running the default harness is nothing.
     expect(shared.instances).toEqual([{ dir: home, settings: {} }]);
+    // The one thing written to `defaults` is the dump presets: what a preset
+    // names is an interest, which this instance has no opinion on, so they are
+    // examples in the file rather than a default in the code.
+    expect(Object.keys(shared.defaults)).toEqual(["dump"]);
+    const presets = (shared.defaults["dump"] as { presets: { name: string }[] }).presets;
+    expect(presets.map((one) => one.name)).toEqual([
+      "file",
+      "howto",
+      "journal",
+      "handoff",
+      "audit",
+    ]);
+  });
+
+  test("adding a second config home leaves the presets a person edited alone", () => {
+    const at = host();
+    add(process.env, at.home("one"));
+    const file = resolvePaths(process.env).configFile;
+    const edited = loadShared(file);
+    saveShared(file, { ...edited, defaults: { dump: { presets: [] } } });
+    add(process.env, at.home("two"));
+    expect(loadShared(file).defaults).toEqual({ dump: { presets: [] } });
   });
 });
 
@@ -135,8 +158,13 @@ describe("the round trip against real processes", () => {
       // list of others is empty rather than absent.
       expect(row.peers).toEqual([]);
       // What a restart would apply, answered from the file: nothing was
-      // configured here, so it is the built-ins (§8.2).
-      expect(row.config).toEqual(DEFAULT_CONFIG);
+      // configured here beyond the presets `add` seeded, so the rest is the
+      // built-ins (§8.2).
+      expect(row.config).toEqual({
+        ...DEFAULT_CONFIG,
+        dump: { presets: row.config.dump.presets },
+      });
+      expect(row.config.dump.presets.map((one) => one.name)).toContain("howto");
     }
 
     const stopped = (await ask({ op: "supervise_stop", all: true })) as { stopped: boolean }[];
