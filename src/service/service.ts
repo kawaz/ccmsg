@@ -171,20 +171,59 @@ function refuse(command: readonly string[], answer: RunResult): never {
   );
 }
 
+/** How long the supervisor gets to leave after being asked to, before the init
+ * system is told to kill it.
+ *
+ * The same budget the supervisor gives each of its own children, because that
+ * is what it spends: a supervisor that is going to leave has finished leaving
+ * by the time its last child has. */
+export const STOP_DEADLINE_MS = 10_000;
+
+/** How often the init system is asked again while waiting for a departure. */
+const DEPARTURE_POLL_MS = 100;
+
+/** Whether the supervisor that held `pid` is gone, waited for up to the
+ * deadline.
+ *
+ * Asked again rather than awaited: the supervisor belongs to the init system
+ * and not to this process, so there is no exit to wait on — the only account of
+ * whether it is still there is the one `report` fetches. A pid the report no
+ * longer names, or names differently, is a departure either way: the second is
+ * the init system having already restarted the unit, which it can only do once
+ * the process being waited for has gone. */
+async function departed(
+  pid: number | null,
+  report: () => Promise<ServiceReport | null>,
+  deadlineMs: number,
+): Promise<boolean> {
+  if (pid === null) return true;
+  const end = Date.now() + deadlineMs;
+  for (;;) {
+    if ((await report())?.pid !== pid) return true;
+    const left = end - Date.now();
+    if (left <= 0) return false;
+    await Bun.sleep(Math.min(DEPARTURE_POLL_MS, left));
+  }
+}
+
 export class LaunchdService implements Service {
   readonly kind = "launchd" as const;
   readonly unitFile: string;
   readonly #label: string;
   readonly #env: Env;
   readonly #domain: string;
+  readonly #stopDeadlineMs: number;
 
   /** The label is a parameter for `Run`'s reason: a test that drives this
    * machine's real launchd has to do it under a name that is not the one the
    * machine's own supervisor is registered under. Nothing in ccmsg passes it —
-   * `serviceFor` is where the name is settled. */
-  constructor(env: Env, label: string = LAUNCHD_LABEL) {
+   * `serviceFor` is where the name is settled. The deadline is a parameter for
+   * the same reason: a test drives the escalation without waiting out ten
+   * seconds of it. */
+  constructor(env: Env, label: string = LAUNCHD_LABEL, stopDeadlineMs = STOP_DEADLINE_MS) {
     this.#env = env;
     this.#label = label;
+    this.#stopDeadlineMs = stopDeadlineMs;
     const home = env["HOME"] ?? homedir();
     this.unitFile = join(home, "Library", "LaunchAgents", `${label}.plist`);
     this.#domain = `gui/${String(process.getuid?.() ?? 0)}`;
@@ -261,8 +300,25 @@ export class LaunchdService implements Service {
     return await this.state(run);
   }
 
+  /** Ask launchd to signal the supervisor, and stay until it has gone.
+   *
+   * The state used to be read the moment the signal was sent, which is the
+   * moment the supervisor starts leaving rather than the one it finishes at: a
+   * supervisor wedged in its own shutdown answered as `running` and looked, to
+   * the person who asked for it to stop, exactly like one that had ignored
+   * them. So the answer is delayed until the pid is gone, and a supervisor that
+   * will not go within the deadline is killed rather than reported on. */
   async stop(run: Run): Promise<ServiceState> {
-    await run(["launchctl", "kill", "SIGTERM", `${this.#domain}/${this.#label}`]);
+    const before = await this.#report(run);
+    const signal = (name: string) =>
+      run(["launchctl", "kill", name, `${this.#domain}/${this.#label}`]);
+    const held = before.service?.pid ?? null;
+    const report = async () => (await this.#report(run)).service;
+    await signal("SIGTERM");
+    if (!(await departed(held, report, this.#stopDeadlineMs))) {
+      await signal("SIGKILL");
+      await departed(held, report, this.#stopDeadlineMs);
+    }
     return await this.state(run);
   }
 
@@ -306,9 +362,11 @@ class SystemdService implements Service {
   readonly kind = "systemd" as const;
   readonly unitFile: string;
   readonly #env: Env;
+  readonly #stopDeadlineMs: number;
 
-  constructor(env: Env) {
+  constructor(env: Env, stopDeadlineMs = STOP_DEADLINE_MS) {
     this.#env = env;
+    this.#stopDeadlineMs = stopDeadlineMs;
     const home = env["HOME"] ?? homedir();
     const config = env["XDG_CONFIG_HOME"] ?? join(home, ".config");
     this.unitFile = join(config, "systemd", "user", SYSTEMD_UNIT);
@@ -374,8 +432,22 @@ class SystemdService implements Service {
     return await this.state(run);
   }
 
+  /** `LaunchdService.stop`'s reasoning, in systemd's vocabulary.
+   *
+   * `stop` here holds until the unit is inactive on its own, so the wait below
+   * usually settles on its first question; it is asked anyway because what the
+   * caller is promised is the departure, not the command having returned, and
+   * a `stop` that gave up on its own `TimeoutStopSec` returns having left the
+   * process behind. */
   async stop(run: Run): Promise<ServiceState> {
+    const before = await this.#report(run);
     await run(["systemctl", "--user", "stop", SYSTEMD_UNIT]);
+    const held = before.service?.pid ?? null;
+    const report = async () => (await this.#report(run)).service;
+    if (!(await departed(held, report, this.#stopDeadlineMs))) {
+      await run(["systemctl", "--user", "kill", "--signal=SIGKILL", SYSTEMD_UNIT]);
+      await departed(held, report, this.#stopDeadlineMs);
+    }
     return await this.state(run);
   }
 

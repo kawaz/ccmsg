@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { ENTRY } from "../src/daemon/registry.ts";
 import {
   LAUNCHD_LABEL,
+  LaunchdService,
   type Run,
   type RunResult,
   serviceFor,
@@ -202,6 +203,50 @@ describe("launchd", () => {
       pid: null,
       last_exit: null,
     });
+  });
+
+  test("stop stays until the supervisor is gone, and kills one that will not go", async () => {
+    const at = host();
+    // A supervisor that leaves when it is signalled: the answer is the state
+    // after it left, and nothing beyond the one signal was needed.
+    const leaving = new LaunchdService(at.env, LAUNCHD_LABEL, 200);
+    laid(leaving);
+    let alive = true;
+    const cooperative = recorder((command) => {
+      if (command[1] === "kill") {
+        alive = false;
+        return {};
+      }
+      return { stdout: alive ? "\tstate = running\n\tpid = 4242\n" : "\tstate = not running\n" };
+    });
+    expect(await leaving.stop(cooperative.run)).toMatchObject({ running: false });
+    expect(cooperative.commands.filter((command) => command[1] === "kill")).toEqual([
+      ["launchctl", "kill", "SIGTERM", expect.any(String)],
+    ]);
+
+    // One wedged in its own shutdown: the deadline passes, SIGKILL follows, and
+    // the answer is what the pid did rather than what the signal asked for.
+    const wedged = new LaunchdService(at.env, LAUNCHD_LABEL, 200);
+    laid(wedged);
+    let held: number | null = 4242;
+    const stuck = recorder((command) => {
+      if (command[2] === "SIGKILL") {
+        held = null;
+        return {};
+      }
+      return {
+        stdout:
+          held === null
+            ? "\tstate = not running\n"
+            : `\tstate = running\n\tpid = ${String(held)}\n`,
+      };
+    });
+    const started = Date.now();
+    expect(await wedged.stop(stuck.run)).toMatchObject({ running: false });
+    expect(Date.now() - started).toBeGreaterThanOrEqual(200);
+    expect(
+      stuck.commands.filter((command) => command[1] === "kill").map((command) => command[2]),
+    ).toEqual(["SIGTERM", "SIGKILL"]);
   });
 });
 
