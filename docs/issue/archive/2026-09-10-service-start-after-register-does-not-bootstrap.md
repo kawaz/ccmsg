@@ -1,6 +1,6 @@
 ---
 title: service start after register does not bootstrap the unit
-status: open
+status: resolved
 category: bug
 created: 2026-09-10T13:08:48+09:00
 last_read: 2026-09-10T13:09:26+09:00
@@ -9,10 +9,10 @@ wip_entered:
 blocked_entered:
 pending_entered:
 discarded_entered:
-resolved_entered:
+resolved_entered: 2026-09-10T13:20:00+09:00
 discard_reason:
 pending_reason:
-close_reason:
+close_reason: ["done: start が bootstrap してから kickstart するよう修正 (systemd は daemon-reload + enable --now)、init system の refusal は CommandError で stderr ごと出す", "done: register は unit を書いて start する、に一本化 (登録=起動まで含む)", "done: 実機観測で register->status->unregister->register->start->status->unregister の全段一致を確認"]
 blocked_by:
 origin: 自リポ TODO
 ---
