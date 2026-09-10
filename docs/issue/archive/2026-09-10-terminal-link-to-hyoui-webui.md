@@ -1,6 +1,6 @@
 ---
 title: hyoui 端末セッションに hyoui-webui へのリンクを出す
-status: open
+status: resolved
 category: design
 created: 2026-09-10T16:11:58+09:00
 last_read:
@@ -9,10 +9,10 @@ wip_entered:
 blocked_entered:
 pending_entered:
 discarded_entered:
-resolved_entered:
+resolved_entered: 2026-09-10T17:19:52+09:00
 discard_reason:
 pending_reason:
-close_reason:
+close_reason: ["done: 契約 1.10.0 (hello に terminal_gateway)、daemon v0.3.1 (config upstream.terminal_gateway を hello で名乗る、pattern 検証)、webui v0.2.9 (一覧の端末リンク + Terminal タブ iframe ?embed=1&resize=1、fab は v2 に浮遊ボタンが無いので落とした)。本番 3 instance に terminal_gateway = hyoui を設定し、kawaz が実機で Terminal タブの動作を確認 (2026-09-10 17:19)。"]
 blocked_by:
 origin: kawaz 依頼 (2026-09-10)
 ---
