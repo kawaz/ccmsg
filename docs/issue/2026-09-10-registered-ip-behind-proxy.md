@@ -3,7 +3,7 @@ title: registered_ip/last_used_ip が caddy 越しの構成で空になる
 status: open
 category: design
 created: 2026-09-10T12:07:53+09:00
-last_read:
+last_read: 2026-09-10T13:37:13+09:00
 open_entered: 2026-09-10T12:07:53+09:00
 wip_entered:
 blocked_entered:
