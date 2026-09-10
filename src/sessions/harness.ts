@@ -1,6 +1,7 @@
 import { type FSWatcher, readdirSync, readFileSync, watch } from "node:fs";
 import { join } from "node:path";
 import type { AgentInfo, InstanceId, Sid } from "@ccmsg/protocol";
+import type { Harness } from "../harness/index.ts";
 
 /** The status the harness writes while a dialog is open and it is waiting for
  * an answer, alongside a `waitingFor` naming what it waits on.
@@ -23,6 +24,96 @@ export const CONFIRM_POLL_MS = 5_000;
 
 const STATE_FILE = /^\d+\.json$/;
 
+/** Which sessions one harness says exist right now, read from its config home.
+ *
+ * Two answers rather than one, because the harnesses do not say the same
+ * amount. Claude Code writes a file per session carrying its pid, its working
+ * directory and what it is doing, which is the shape the contract's `AgentInfo`
+ * states and what the `agents` topic is; Codex says only that a thread has a
+ * live writer, which answers "is it there" and nothing else. So `rows` is what
+ * can be reported and `present` is what the classification reads, and a harness
+ * that reports nothing still has its sessions classified (§5.1). */
+export interface OwnSessions {
+  readonly running: boolean;
+  /** Begins watching. Called when the first subscriber arrives and not before
+   * (§6.3 / §8.3: no upstream is read until somebody is listening). */
+  start(): void;
+  stop(): void;
+  /** The harness's own rows, as `agents` answers with them. Empty for a
+   * harness whose own view is not the one that contract states. */
+  rows(): ReadonlyMap<Sid, AgentInfo>;
+  /** The sessions the harness says are there at this instant. */
+  present(): ReadonlySet<Sid>;
+}
+
+/** The one this config home runs (§3.7). */
+export function ownSessions(
+  harness: Harness,
+  configHome: string,
+  instance: InstanceId,
+  onChange: () => void,
+  pollMs?: number,
+): OwnSessions {
+  return harness === "codex"
+    ? new CodexThreads(join(configHome, CODEX_LOCKS), onChange, pollMs)
+    : new HarnessSessions(join(configHome, "sessions"), instance, onChange, pollMs);
+}
+
+/** Where the Codex thread store takes a lock while a thread has a live writer,
+ * and what one of those locks is called.
+ *
+ * Measured against codex-cli 0.153.4: the file appears under this directory
+ * while a thread is being written and is gone once the process that had it
+ * ends normally. The `.coordination.lock` beside them belongs to the store's
+ * own cleanup and names no thread, which the shape below excludes.
+ *
+ * A process killed outright leaves its lock behind (measured), so a thread
+ * whose session died without a word reads as present until Codex itself sweeps
+ * the stale lock. That is the same direction as the state file Claude Code
+ * leaves behind — except that a lock names no pid, so there is nothing here to
+ * ask whether anybody still holds it. */
+const CODEX_LOCKS = "thread-writer-locks";
+const THREAD_LOCK = /^([0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12})\.lock$/;
+
+/** The Codex threads with a live writer, read from one config home.
+ *
+ * It reports no rows: `AgentInfo` is Claude Code's own list (contract), and a
+ * lock file carries none of what that shape states. What a Codex session is —
+ * where it works, what it is called — is what it said when it greeted, and
+ * that is held by the registry for every harness alike. */
+class CodexThreads implements OwnSessions {
+  readonly #watch: DirectoryWatch;
+
+  constructor(dir: string, onChange: () => void, pollMs?: number) {
+    this.#watch = new DirectoryWatch(dir, onChange, pollMs);
+  }
+
+  get running(): boolean {
+    return this.#watch.running;
+  }
+
+  start(): void {
+    this.#watch.start();
+  }
+
+  stop(): void {
+    this.#watch.stop();
+  }
+
+  rows(): ReadonlyMap<Sid, AgentInfo> {
+    return new Map();
+  }
+
+  present(): ReadonlySet<Sid> {
+    const live = new Set<Sid>();
+    for (const name of this.#watch.names()) {
+      const sid = THREAD_LOCK.exec(name)?.[1];
+      if (sid !== undefined) live.add(sid);
+    }
+    return live;
+  }
+}
+
 /** The sessions the harness itself reports, read from one config home.
  *
  * The directory is the whole input: it says which sessions exist and which is
@@ -34,13 +125,83 @@ const STATE_FILE = /^\d+\.json$/;
  * a question, and is done whenever one is asked. Watching it says the answer
  * may have changed, which is only worth knowing while somebody is subscribed —
  * so the watch is what the subscription drives, and no answer waits on it. */
-export class HarnessSessions {
+export class HarnessSessions implements OwnSessions {
+  readonly #watch: DirectoryWatch;
+
+  constructor(
+    private readonly dir: string,
+    private readonly instance: InstanceId,
+    onChange: () => void,
+    pollMs?: number,
+  ) {
+    this.#watch = new DirectoryWatch(dir, onChange, pollMs);
+  }
+
+  get running(): boolean {
+    return this.#watch.running;
+  }
+
+  start(): void {
+    this.#watch.start();
+  }
+
+  stop(): void {
+    this.#watch.stop();
+  }
+
+  rows(): ReadonlyMap<Sid, AgentInfo> {
+    return this.scan();
+  }
+
+  /** Every session with a state file, which for this harness is the same
+   * reading its rows came from. */
+  present(): ReadonlySet<Sid> {
+    return new Set(this.scan().keys());
+  }
+
+  /** The directory as it is at this instant.
+   *
+   * Every answer comes from here rather than from anything the watch left
+   * behind. Which sessions exist is an input to the classification (§5.1), and
+   * classifying happens inside `message_send`'s decision and inside the
+   * recompute that writes `last_live` — neither of which can hand back a
+   * promise without changing what it means, and neither of which may depend on
+   * somebody being subscribed. The ops that signal a session's process read it
+   * here too: a pid from a poll that has not run is a number belonging to
+   * nobody.
+   *
+   * Read in place because the directory is a handful of small files of this
+   * uid's own config home (M6) — a syscall or two per session, not a wait. */
+  scan(): ReadonlyMap<Sid, AgentInfo> {
+    const rows = new Map<Sid, AgentInfo>();
+    for (const name of this.#watch.names()) {
+      if (!STATE_FILE.test(name)) continue;
+      let document: unknown;
+      try {
+        document = JSON.parse(readFileSync(join(this.dir, name), "utf8"));
+      } catch {
+        continue;
+      }
+      const row = toRow(document, this.dir, this.instance);
+      if (row !== undefined) rows.set(row.sid, row);
+    }
+    return rows;
+  }
+}
+
+/** One directory that says what the harness's sessions are, watched while
+ * somebody is subscribed and read whenever an answer is wanted.
+ *
+ * The two things §6.3 separates live here. Reading the directory answers a
+ * question, and is done whenever one is asked. Watching it says the answer may
+ * have changed, which is only worth knowing while somebody is listening — so
+ * the watch is what the subscription drives, and no answer waits on it. */
+class DirectoryWatch {
   #watcher: FSWatcher | undefined;
   #timer: ReturnType<typeof setInterval> | undefined;
 
   constructor(
     private readonly dir: string,
-    private readonly instance: InstanceId,
     private readonly onChange: () => void,
     private readonly pollMs: number = CONFIRM_POLL_MS,
   ) {}
@@ -49,8 +210,6 @@ export class HarnessSessions {
     return this.#watcher !== undefined || this.#timer !== undefined;
   }
 
-  /** Begins watching. Called when the first subscriber arrives and not before
-   * (§6.3 / §8.3: no upstream is read until somebody is listening). */
   start(): void {
     if (this.running) return;
     try {
@@ -72,39 +231,15 @@ export class HarnessSessions {
     this.#timer = undefined;
   }
 
-  /** The directory as it is at this instant.
-   *
-   * Every answer comes from here rather than from anything the watch left
-   * behind. Which sessions exist is an input to the classification (§5.1), and
-   * classifying happens inside `message_send`'s decision and inside the
-   * recompute that writes `last_live` — neither of which can hand back a
-   * promise without changing what it means, and neither of which may depend on
-   * somebody being subscribed. The ops that signal a session's process read it
-   * here too: a pid from a poll that has not run is a number belonging to
-   * nobody.
-   *
-   * Read in place because the directory is a handful of small files of this
-   * uid's own config home (M6) — a syscall or two per session, not a wait. */
-  scan(): ReadonlyMap<Sid, AgentInfo> {
-    const rows = new Map<Sid, AgentInfo>();
-    let names: string[];
+  /** What is in the directory now. Read in place because it is a handful of
+   * small entries of this uid's own config home (M6) — a syscall or two, not a
+   * wait. */
+  names(): string[] {
     try {
-      names = readdirSync(this.dir);
+      return readdirSync(this.dir);
     } catch {
-      return rows;
+      return [];
     }
-    for (const name of names) {
-      if (!STATE_FILE.test(name)) continue;
-      let document: unknown;
-      try {
-        document = JSON.parse(readFileSync(join(this.dir, name), "utf8"));
-      } catch {
-        continue;
-      }
-      const row = toRow(document, this.dir, this.instance);
-      if (row !== undefined) rows.set(row.sid, row);
-    }
-    return rows;
   }
 }
 

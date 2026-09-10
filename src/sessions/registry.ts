@@ -19,16 +19,32 @@ import {
 } from "@ccmsg/protocol";
 import { type HandlerInput, OpError, type Requester } from "../dispatch/index.ts";
 import { within } from "../files/index.ts";
+import { HARNESS, type Harness } from "../harness/index.ts";
 import type { TranscriptFacts } from "../transcript/index.ts";
 import type { TopicValue, UpstreamResource } from "../topics/index.ts";
 import { classify, type SessionInputs } from "./classify.ts";
-import { HarnessSessions, isWaiting } from "./harness.ts";
+import { isWaiting, type OwnSessions, ownSessions } from "./harness.ts";
 import { LastLiveStore, type StoredEntry } from "./last-live.ts";
 import { stoppedOn } from "./status.ts";
 import { TerminalCache, type TerminalReader } from "./terminals.ts";
 
+/** What the harness says at one instant: the rows it reports, and which
+ * sessions it says are there (§3.7).
+ *
+ * Two readings of one moment, passed together so a caller answering several
+ * questions about that moment reads once. They are the same set for a harness
+ * that reports a row per session and differ for one that reports none, which
+ * is why the classification reads `present` and never the rows' keys. */
+interface Own {
+  readonly rows: ReadonlyMap<Sid, AgentInfo>;
+  readonly present: ReadonlySet<Sid>;
+}
+
 /** What the sessions domain needs from the instance around it. */
 export interface SessionsDeps {
+  /** Which harness this config home runs (§3.7). It decides what says a
+   * session is there and, through that, what `agents` can report. */
+  readonly harness: Harness;
   readonly self: InstanceId;
   /** Where this instance says it is reached, which `hello` states beside the
    * id: the caller got here by some URL of its own — a proxy's, an alias — and
@@ -155,7 +171,7 @@ interface Connected {
  * built, and never stored (M4). */
 export class Sessions implements UpstreamResource {
   readonly #connected = new Map<Sid, Connected>();
-  readonly #harness: HarnessSessions;
+  readonly #harness: OwnSessions;
   readonly #terminals: TerminalCache | undefined;
   readonly #lastLive: LastLiveStore;
   /** Sessions seen live since the last recompute, kept so the moment one stops
@@ -191,8 +207,9 @@ export class Sessions implements UpstreamResource {
   readonly #stopping = new Map<Sid, Timestamp>();
 
   constructor(private readonly deps: SessionsDeps) {
-    this.#harness = new HarnessSessions(
-      join(deps.configHome, "sessions"),
+    this.#harness = ownSessions(
+      deps.harness,
+      deps.configHome,
       deps.self,
       () => this.changed(),
       deps.pollMs,
@@ -203,7 +220,7 @@ export class Sessions implements UpstreamResource {
       deps.terminals === undefined
         ? undefined
         : new TerminalCache(deps.terminals, () => this.changed());
-    this.#live = this.#liveNow(Date.now(), this.#rows());
+    this.#live = this.#liveNow(Date.now(), this.#own());
   }
 
   /** `hello`, which is where a session becomes something this instance can
@@ -283,18 +300,18 @@ export class Sessions implements UpstreamResource {
   classify(
     sid: Sid,
     now: Timestamp = Date.now(),
-    rows: ReadonlyMap<Sid, AgentInfo> = this.#rows(),
+    own: Own = this.#own(),
   ): SessionState | undefined {
-    return classify(this.inputs(sid, rows), now);
+    return classify(this.inputs(sid, own), now);
   }
 
   /** The harness's sessions as they are at this instant. One read serves one
    * question, and a caller answering several about the same instant passes the
    * result on rather than reading again. */
-  #rows(): ReadonlyMap<Sid, AgentInfo> {
-    const rows = this.#harness.scan();
+  #own(): Own {
+    const rows = this.#harness.rows();
     const terminals = this.#terminals;
-    if (terminals === undefined) return rows;
+    if (terminals === undefined) return { rows, present: this.#harness.present() };
     // What the scan found is what exists: a pid that has left it is one whose
     // terminal is no longer anybody's, and one that has arrived is read once.
     terminals.observe([...rows.values()].map((row) => row.pid));
@@ -314,7 +331,7 @@ export class Sessions implements UpstreamResource {
             },
       );
     }
-    return named;
+    return { rows: named, present: this.#harness.present() };
   }
 
   /** Everything the classification of one session reads, exposed so the rule
@@ -327,21 +344,22 @@ export class Sessions implements UpstreamResource {
    * "a session exists" mean "somebody is listening", which is how a live
    * session becomes `session_not_found` to a sender and how a session that is
    * still running is written into `last_live` as gone. */
-  inputs(sid: Sid, rows: ReadonlyMap<Sid, AgentInfo> = this.#rows()): SessionInputs {
-    const row = rows.get(sid);
+  inputs(sid: Sid, own: Own = this.#own()): SessionInputs {
+    const row = own.rows.get(sid);
+    const present = own.present.has(sid);
     const stored = this.#lastLive.get(sid);
     const facts = this.deps.transcript?.facts(sid);
-    const gatewayActiveAt = this.#gatewayActiveAt(sid, row !== undefined);
+    const gatewayActiveAt = this.#gatewayActiveAt(sid, present);
     return {
       connected: this.#connected.has(sid),
       ...(gatewayActiveAt === undefined ? {} : { gateway_active_at: gatewayActiveAt }),
       ...(facts === undefined || stoppedOn(facts) === undefined ? {} : { api_error_stopped: true }),
-      ...(row === undefined
+      ...(!present
         ? {}
         : {
             harness: {
-              waiting: isWaiting(row),
-              ...(row.terminal_id === undefined ? {} : { terminal_id: row.terminal_id }),
+              waiting: row !== undefined && isWaiting(row),
+              ...(row?.terminal_id === undefined ? {} : { terminal_id: row.terminal_id }),
             },
           }),
       ...(stored === undefined ? {} : { last_live: { stopped_at: stored.stopped_at } }),
@@ -379,7 +397,7 @@ export class Sessions implements UpstreamResource {
    * so a session that named neither is one no path is admitted for. */
   where(sid: Sid): { root?: string; cwd?: string } {
     const meta = this.#connected.get(sid)?.meta;
-    const cwd = meta?.cwd ?? this.#rows().get(sid)?.cwd;
+    const cwd = meta?.cwd ?? this.#own().rows.get(sid)?.cwd;
     // The container when the session named one, the working directory
     // otherwise — the same order `repo_root` is meant in (§4.2).
     const root = meta?.repo_root ?? cwd;
@@ -394,7 +412,7 @@ export class Sessions implements UpstreamResource {
    * through this: the watch runs only while somebody is subscribed (§6.3), and
    * a pid from a poll that has not run is a number belonging to nobody. */
   rowsNow(): ReadonlyMap<Sid, AgentInfo> {
-    return this.#rows();
+    return this.#own().rows;
   }
 
   /** Drop one entry from `last_live`, which is what
@@ -445,8 +463,8 @@ export class Sessions implements UpstreamResource {
   }
 
   snapshot(topic: string): readonly TopicValue[] {
-    const rows = this.#rows();
-    const data = topic === "agents" ? this.agents(rows) : this.peers(Date.now(), rows);
+    const own = this.#own();
+    const data = topic === "agents" ? this.agents(own) : this.peers(Date.now(), own);
     return [{ instance: this.deps.self, data }];
   }
 
@@ -473,14 +491,14 @@ export class Sessions implements UpstreamResource {
    * from stating that nothing is reachable. */
   peers(
     now: Timestamp = Date.now(),
-    rows: ReadonlyMap<Sid, AgentInfo> = this.#rows(),
+    own: Own = this.#own(),
   ): { peers: PeerInfo[]; last_live: LastLiveSession[]; instances?: InstanceInfo[] } {
     const instances = this.deps.mesh?.instances();
     return {
-      peers: [...this.#connected.values()].map((session) => this.#peer(session, now, rows)),
+      peers: [...this.#connected.values()].map((session) => this.#peer(session, now, own)),
       last_live: this.#lastLive.entries(now).map((entry) => ({
         ...entry,
-        state: this.classify(entry.sid, now, rows) ?? "disappeared",
+        state: this.classify(entry.sid, now, own) ?? "disappeared",
         pinned: this.#pinned(entry.sid),
       })),
       ...(instances === undefined ? {} : { instances }),
@@ -493,8 +511,8 @@ export class Sessions implements UpstreamResource {
    * make every confirmation poll a value the list did not have before, so the
    * one suppression every topic shares (M5) would let a five-second heartbeat
    * through for a directory that had not changed. */
-  agents(rows: ReadonlyMap<Sid, AgentInfo> = this.#rows()): { agents: AgentInfo[] } {
-    return { agents: [...rows.values()] };
+  agents(own: Own = this.#own()): { agents: AgentInfo[] } {
+    return { agents: [...own.rows.values()] };
   }
 
   /** Bind a session to this instance, and take what it says about itself. Its
@@ -515,7 +533,7 @@ export class Sessions implements UpstreamResource {
     const held = this.#connected.get(sid);
     const meta = {
       ...this.#stated.get(sid),
-      ...metaOf(args, this.deps.configHome, (refused) => {
+      ...metaOf(this.deps, args, (refused) => {
         this.deps.log?.("transcript_path not taken", { sid, path: args.transcript_path, refused });
       }),
     };
@@ -552,8 +570,8 @@ export class Sessions implements UpstreamResource {
    * mechanism and is written once for every topic (M5) — a payload equal to
    * the last one goes no further than that. */
   private changed(now: Timestamp = Date.now()): void {
-    const rows = this.#rows();
-    const live = this.#liveNow(now, rows);
+    const own = this.#own();
+    const live = this.#liveNow(now, own);
     for (const [sid, entry] of this.#live) {
       if (live.has(sid)) continue;
       // The declaration came first and the departure has now arrived, which is
@@ -571,23 +589,23 @@ export class Sessions implements UpstreamResource {
       this.#stated.delete(sid);
     }
     this.#live = live;
-    this.deps.publish("peers", this.peers(now, rows));
-    this.deps.publish("agents", this.agents(rows));
+    this.deps.publish("peers", this.peers(now, own));
+    this.deps.publish("agents", this.agents(own));
     this.deps.onChanged?.();
   }
 
   /** Every session live right now, in the form its `last_live` entry takes if
    * it stops being live. */
-  #liveNow(now: Timestamp, rows: ReadonlyMap<Sid, AgentInfo>): Map<Sid, StoredEntry> {
+  #liveNow(now: Timestamp, own: Own): Map<Sid, StoredEntry> {
     const live = new Map<Sid, StoredEntry>();
-    for (const sid of this.#connected.keys()) live.set(sid, this.#entry(sid, now, rows));
-    for (const sid of rows.keys()) live.set(sid, this.#entry(sid, now, rows));
+    for (const sid of this.#connected.keys()) live.set(sid, this.#entry(sid, now, own));
+    for (const sid of own.present) live.set(sid, this.#entry(sid, now, own));
     return live;
   }
 
-  #entry(sid: Sid, now: Timestamp, rows: ReadonlyMap<Sid, AgentInfo>): StoredEntry {
+  #entry(sid: Sid, now: Timestamp, own: Own): StoredEntry {
     const held = this.#connected.get(sid);
-    const row = rows.get(sid);
+    const row = own.rows.get(sid);
     // What answered last, not what the session named when it greeted: the
     // greeting is one instant and `/model` moves afterwards, so the fold is
     // asked first and the greeting only fills in for a transcript that has
@@ -602,7 +620,7 @@ export class Sessions implements UpstreamResource {
       // The harness knows a title for a session that stated none itself, so
       // it goes first and what the session named overrides it.
       ...(row?.name === undefined ? {} : { title: row.name }),
-      ...this.#where(sid, rows),
+      ...this.#where(sid, own),
       ...(model === undefined ? {} : { model }),
       ...(effort === undefined ? {} : { effort }),
       ...(held === undefined ? {} : { connected_at: held.connected_at }),
@@ -610,7 +628,7 @@ export class Sessions implements UpstreamResource {
     };
   }
 
-  #peer(session: Connected, now: Timestamp, rows: ReadonlyMap<Sid, AgentInfo>): PeerInfo {
+  #peer(session: Connected, now: Timestamp, own: Own): PeerInfo {
     // The two "last activity" values are different questions (§5.3): the one
     // above moves on every request the session makes, this one only when a
     // person speaks, and the fold is the only place that knows the second.
@@ -618,12 +636,12 @@ export class Sessions implements UpstreamResource {
     // What the gateway last saw run for this session: an attribute of the row
     // beside the classification, not folded into it (§5.1). Absent from an
     // instance with no gateway, where nothing observes inference at all.
-    const gatewayActiveAt = this.#gatewayActiveAt(session.sid, rows.has(session.sid));
+    const gatewayActiveAt = this.#gatewayActiveAt(session.sid, own.present.has(session.sid));
     return {
       sid: session.sid,
       instance: this.deps.self,
-      ...this.#where(session.sid, rows),
-      state: this.classify(session.sid, now, rows) ?? "live",
+      ...this.#where(session.sid, own),
+      state: this.classify(session.sid, now, own) ?? "live",
       pinned: this.#pinned(session.sid),
       connected_at: session.connected_at,
       last_activity_at: session.last_activity_at,
@@ -675,10 +693,10 @@ export class Sessions implements UpstreamResource {
    * until one does. */
   #where(
     sid: Sid,
-    rows: ReadonlyMap<Sid, AgentInfo>,
+    own: Own,
   ): Pick<PeerInfo, "repo" | "ws" | "cwd" | "transcript_path" | "repo_root" | "branch" | "title"> {
     const meta = this.#stated.get(sid) ?? {};
-    const cwd = meta.cwd ?? rows.get(sid)?.cwd ?? "";
+    const cwd = meta.cwd ?? own.rows.get(sid)?.cwd ?? "";
     return {
       repo: meta.repo ?? "",
       ws: meta.ws ?? "",
@@ -697,7 +715,7 @@ export class Sessions implements UpstreamResource {
  *
  * `transcript_path` is the exception, because it is the one field that is not
  * only displayed: it names a file this instance then reads and follows. What is
- * taken is a path under this config home's `projects/`, resolved, and nothing
+ * taken is a path under this config home's transcript tree, resolved, and nothing
  * else — a session naming a file elsewhere is a session that named nothing,
  * which is what a session that stayed silent already is (M6). It is not an
  * error: how a session describes itself is its own business, and the instance
@@ -705,8 +723,8 @@ export class Sessions implements UpstreamResource {
  * not taken is told to `refused`, which is the operator's answer to a field
  * that is simply absent from what `peers` says. */
 function metaOf(
+  deps: Pick<SessionsDeps, "configHome" | "harness">,
   args: HelloArgs,
-  configHome: string,
   refused: (reason: string) => void,
 ): SessionMeta {
   const meta: Record<string, string> = {};
@@ -714,7 +732,7 @@ function metaOf(
     const value = args[field];
     if (value === undefined) continue;
     if (field === "transcript_path") {
-      const taken = ownTranscript(value, configHome);
+      const taken = ownTranscript(value, deps);
       if (typeof taken === "string") meta[field] = taken;
       else refused(taken.refused);
       continue;
@@ -727,7 +745,7 @@ function metaOf(
 /** A transcript path this instance will read, or nothing.
 
  * The test is where the file would be, not whether it is there. M6 is a
- * boundary on what this instance reads, and a path inside `projects/` stays
+ * boundary on what this instance reads, and a path inside the tree stays
  * inside it whether or not anything has been written there yet — a session
  * greeting at its very start names a transcript the harness has created
  * neither the file nor the directory for, and refusing it would mean the one
@@ -741,23 +759,27 @@ function metaOf(
  * along it that leads out of the tree lands outside and is refused. What is
  * already there must be a file: a directory by that name is not a transcript.
  *
- * `projects/` itself is settled the same way, so a config home whose first
+ * The tree itself is settled the same way, so a config home whose first
  * session has yet to write anything is a boundary all the same: the directory
  * that is there is followed, the part that is not is taken as spelled, and the
  * comparison is between two paths resolved by one rule. The config home is not
  * treated that way — an instance answers for a home it is running out of, and
  * one that is not there names no tree to be inside of. */
-function ownTranscript(named: string, configHome: string): string | Refused {
+function ownTranscript(
+  named: string,
+  deps: Pick<SessionsDeps, "configHome" | "harness">,
+): string | Refused {
   if (!isAbsolute(named)) return { refused: "not an absolute path" };
-  let projects: string | undefined;
+  let tree: string | undefined;
   try {
-    projects = resolveAsFarAsItGoes(join(realpathSync(configHome), "projects"));
+    const home = realpathSync(deps.configHome);
+    tree = resolveAsFarAsItGoes(join(home, HARNESS[deps.harness].transcripts));
   } catch {
     return { refused: "the config home is not there" };
   }
   const settled = resolveAsFarAsItGoes(named);
-  if (projects === undefined || settled === undefined || !within(settled, projects)) {
-    return { refused: "outside this config home's projects tree" };
+  if (tree === undefined || settled === undefined || !within(settled, tree)) {
+    return { refused: "outside this config home's transcript tree" };
   }
   const stat = statSync(settled, { throwIfNoEntry: false });
   if (stat !== undefined && !stat.isFile()) return { refused: "not a file" };
