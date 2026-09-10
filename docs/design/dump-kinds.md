@@ -19,7 +19,7 @@ dump は transcript の行をそのまま並べるのではなく、**アイテ�
 | `message:session:out` | main → 他セッション | `tool_use` `name=="Bash"` の `command` が `ccmsg post` / `ccmsg reply`、および `name=="SendMessage"` で宛先が sid のもの | `SessionReply` | (なし) |
 | `message:session:in` | 他セッション → main | user 行の本文に含まれる `<cross-session-message …>` 封筒。`ccmsg` の直接配送は `<teammate-message …>` の形でも届く | `IncomingMessage` (`extractIncomingMessages`) | `I` |
 
-`message:sub` の in と out は同じ Agent 呼び出しに属するので、`tool_use.id` → `tool_result.tool_use_id` → `toolUseResult.agentId` の鎖で束ねて 1 組として出す (実測でこの鎖は全件つながった)。
+`message:sub` の in と out は同じ Agent 呼び出しに属する。`tool_use.id` → `tool_result.tool_use_id` → `toolUseResult.agentId` の鎖で対応が取れる (実測でこの鎖は全件つながった) ので、`tool:*` と同じくリンクで結ぶ (out 側が `result_item`、in 側が `parent_item`)。worker の答えは何 turn も後に来るため、1 アイテムには畳まない。
 
 ### thinking
 
@@ -29,24 +29,40 @@ dump は transcript の行をそのまま並べるのではなく、**アイテ�
 
 ### tool — ツール呼び出し
 
-`tool:<ToolName>` の 1 段。呼び出しと結果は別の型にせず **1 アイテムに畳む** (`tool_use.id` と `tool_result.tool_use_id` で対にする)。読み手にとって「何をして何が返ったか」が 1 かたまりであるほうが読めるため。
+`tool:<ToolName>` の 1 段。呼び出しと結果は **行の実体どおり 2 アイテム**に分け、互いへのリンクを持つ。型は同じ `tool:<Name>` で、区別は `role` フィールド。
 
-| 型 | フィールド |
-|---|---|
-| `tool:Bash` | `{command, description, stdout, stderr, interrupted}` |
-| `tool:Read` | `{file_path, offset, limit, bytes}` |
-| `tool:Write` / `tool:Edit` | `{file_path, old_string, new_string}` (本文は行数に畳む) |
-| `tool:Grep` / `tool:Glob` | `{pattern, path, matches}` |
-| `tool:WebFetch` / `tool:WebSearch` | `{url, prompt}` / `{query, results}` |
-| `tool:Agent` | `message:sub:out` / `:in` の素材。`tool:Agent` としては起動事実 (`agent_id`, `name`, `subagent_type`, `status`) だけを出す |
-| `tool:SendMessage` | `{to, summary, msg_id, routing}` |
-| `tool:Monitor` | `{description, command, persistent, taskId, timeoutMs}` |
-| `tool:Skill` | `{skill, args, agentId, background, status}` |
-| `tool:TodoWrite` | `{todos: [{content, status}]}` |
-| `tool:TaskStop` | `{task_id, ok}` |
-| `tool:<その他>` | `{input, result}` の汎用形 |
+| フィールド | use 側 | result 側 |
+|---|---|---|
+| `role` | `"use"` | `"result"` |
+| リンク | `result_item?` — 対応する result アイテムの uuid。**まだ返ってきていなければ無い** | `parent_item` — 対応する use アイテムの uuid |
+| 中身 | 呼び出しの引数 (下表) | 返ってきたもの (`stdout` / `stderr` / `exit_code` / エラー) |
 
-`tool:Bash` に **exit code は無い**。実 transcript の `toolUseResult` は `{interrupted, isImage, noOutputExpected, stderr, stdout}` で、終了コードは記録されていない (稀に `returnCodeInterpretation` が付く)。表示は `interrupted` と `stderr` の有無で代替する。
+結果が **何 turn も後に来る**ものがあるのが理由。`Agent` は worker が走り終わるまで、`Monitor` は監視対象が動くまで返らず、その間に別の会話とツール呼び出しが挟まる。分類の段階で 1 つに畳むと、transcript 上に離れて存在する 2 つの事実を「どちらの時刻に置くか」を分類が決めることになる。実体が 2 行なら 2 アイテムで出し、時刻はそれぞれが持つ。
+
+`result_item` が無い use は **まだ返っていない呼び出し**を表す (dump の範囲が結果の前で切れた場合を含む)。これは欠損ではなく、そのとき transcript がそう言っている状態そのもの。
+
+畳むのは **表示側の責務**。dump のテキストコンポーネントは `result_item` があれば 1 かたまりに寄せて描き、webui は use を即描いて result 到着で差し替える。同じ分類から、非同期をそのまま見せる描き方と、往復を 1 つに見せる描き方の両方が作れる。
+
+`types` の選択は型単位なので、use と result は必ず一緒に選ばれる。`tool:Bash` を選んで呼び出しだけが出て結果が消える、という切れ方は起きない。
+
+| 型 | use 側 | result 側 |
+|---|---|---|
+| `tool:Bash` | `{command, description}` | `{stdout, stderr, interrupted}` |
+| `tool:Read` | `{file_path, offset, limit}` | `{bytes, lines}` |
+| `tool:Write` / `tool:Edit` | `{file_path, old_string, new_string}` (本文は行数に畳む) | `{ok}` |
+| `tool:Grep` / `tool:Glob` | `{pattern, path}` | `{matches}` |
+| `tool:WebFetch` / `tool:WebSearch` | `{url, prompt}` / `{query}` | `{text}` / `{results}` |
+| `tool:Agent` | `{name, subagent_type, description, prompt}` | `{agent_id, status}` |
+| `tool:SendMessage` | `{to, summary}` | `{msg_id, routing}` |
+| `tool:Monitor` | `{description, command, persistent, timeout_ms}` | `{task_id}` |
+| `tool:Skill` | `{skill, args}` | `{agent_id, background, status}` |
+| `tool:TodoWrite` | `{todos: [{content, status}]}` | `{ok}` |
+| `tool:TaskStop` | `{task_id}` | `{ok}` |
+| `tool:<その他>` | `{input}` の汎用形 | `{result}` の汎用形 |
+
+`tool:Bash` の result に **exit code は無い**。実 transcript の `toolUseResult` は `{interrupted, isImage, noOutputExpected, stderr, stdout}` で、終了コードは記録されていない (稀に `returnCodeInterpretation` が付く)。`exit_code` は item の形としては持てるが、Bash では埋まらない。表示は `interrupted` と `stderr` の有無で代替する。
+
+`tool:Agent` の use と result は、`message:sub:out` / `message:sub:in` と同じ往復を **ツール呼び出しの側から**見たもの。`tool:Agent` の result は起動の事実 (`agent_id` と最終 `status`) までで、worker が返した本文は `message:sub:in` が持つ。
 
 未知のツールも「専用表示が無い型も必ず出る」の原則どおり汎用形で出る (後述)。
 
@@ -143,13 +159,16 @@ wire 上は `type:"user"` / `type:"assistant"` / `type:"attachment"` に化け�
 
 ### `message:sub:out` / `message:sub:in`
 
-Agent 呼び出しの往復を 1 かたまりにし、答えを 1 段インデントで子として置く。
+別アイテムだが、`result_item` が指す先を 1 段インデントで子として寄せて描く。答えが来ていなければ (dump の範囲外を含む) use 側だけが出る。
 
 ```
-[b7e41d09] message:sub:out  agent=a471372f2 type=opus5-worker-high  10:15:11
+[b7e41d09] message:sub:out  agent=a471372f2 type=opus5-worker-high  → c2d80f16  10:15:11
   docs/design/dump-kinds.md を書き直す。範囲は csa と同じ since / until。
   [c2d80f16] message:sub:in  agent=a471372f2 status=ok 4m12s  10:19:23
     型一覧を 4 群 (message / thinking / tool / notice) に整理しました。
+
+[f04b71c8] message:sub:out  agent=b83e0f114 type=sonnet5-worker-medium  (未着)  10:41:03
+  INDEX の再生成だけやって。
 ```
 
 ### `message:session:in` / `:out`
@@ -170,18 +189,28 @@ Agent 呼び出しの往復を 1 かたまりにし、答えを 1 段インデ�
 
 ### `tool:Bash`
 
+use と result は別アイテム。隣り合っていれば 1 かたまりに寄せ、result 側の見出しは省く。
+
 ```
-[07c5e1b8] tool:Bash  jq でセッションの型を数える
+[07c5e1b8] tool:Bash  jq でセッションの型を数える  → 18d6f2c9
   $ jq -r '.type' session.jsonl | sort | uniq -c
   stdout  1174 assistant / 753 user / 684 queue-operation …
   stderr  (なし)
 ```
 
+離れている (間に別のアイテムが挟まる) ときは、result 側を自分の時刻の位置に置き、`parent_item` を見出しに出す。
+
+```
+[29e7a3da] tool:Monitor  just watch を監視  persistent  → 3ac8b4eb  10:12:40
+   … (別のアイテムが続く) …
+[3ac8b4eb] tool:Monitor  ← 29e7a3da  task=b6mmcr0ax  10:47:19
+```
+
 ### `tool:Read` / `tool:Grep`
 
 ```
-[19d7a02f] tool:Read  src/sessions/dump.ts  103 行
-[2ab84c71] tool:Grep  pattern=session_dump_write path=src  3 hits
+[19d7a02f] tool:Read  src/sessions/dump.ts  → 4bd9c5fc  103 行
+[2ab84c71] tool:Grep  pattern=session_dump_write path=src  → 5ce0d60d  3 hits
 ```
 
 ### `tool:TodoWrite`
@@ -274,7 +303,7 @@ webui は今 3 系統を並べていて、階層を持たない。
 
 行を分類する 2 つとブロックを分類する 1 つが同じ平面に並んでいるのが、階層を持てない理由になっている。分類はアイテムを **行より細かくブロック単位**で出し (assistant 1 行が `thinking` + `tool:Bash` + `message:user:out` の 3 アイテムになる)、webui 側は今の `ParsedLine` の下にそれを敷く。`UserMessageKind` / `AssistantMessageKind` は共通分類からの導出に置き換わり、`Segment` は「共通アイテム + webui だけの表示都合」の和になる。
 
-webui が `bash-use` と `bash-result` を別 Segment に持つのは残せる。分類が返すのは畳んだ 1 アイテム (`tool:Bash`) で、webui はそれを描くときに use と result の 2 ブロックに開く。逆向き (webui の 2 分割を共通分類に持ち上げる) にしないのは、開いた形から畳むには対応付けをもう一度やる必要があり、分類の責務が呼び出し側に漏れるため。**畳んだものを開くのは表示の自由、開いたものを畳むのは分類のやり直し**になる。
+webui が `bash-use` と `bash-result` を別 Segment に持つのは、そのまま自然に対応する。分類も use と result を別アイテムで返し、リンクだけ持たせる。webui は今の 2 分割をそのまま描けばよく、dump は `result_item` を辿って 1 かたまりに寄せる。**畳むかどうかは表示側の判断**で、どちらの側も相手の都合を背負わない。
 
 ## 4. 選択と範囲
 
@@ -402,6 +431,23 @@ worker の transcript は 1 ファイルで完結し、全行が `isSidechain: t
 - `since_at` / `since_uuid` / `until_at` / `until_uuid` — 既存のまま
 
 `SessionDumpWriteResult`: `path` / `instance` / `bytes` は既存のまま。`entries` は型ごとの内訳 (`{ "message:user:in": 12, "tool:Bash": 301, … }`) に変える。総数だけでは何が入ったか読み手に分からない。
+
+item の形 (契約 package が持つ語彙。案 A / 案 B のどちらでもここは同じ):
+
+```
+{
+  uuid: string            // record id。アイテムの identity
+  type: string            // "tool:Bash" / "message:user:in" / "hook:PreToolUse" …
+  at: number              // そのアイテム自身の時刻
+  role?: "use" | "result" // tool:* と message:sub:* が持つ
+  result_item?: string    // use 側 → result の uuid。未着なら無し
+  parent_item?: string    // result 側 → use の uuid
+  turn?: number
+  ...fields               // 型ごとのフィールド (§1 の表)
+}
+```
+
+`result_item` / `parent_item` は uuid で指す。位置 (配列の index) で指さないのは、`types` の選択や範囲の切り方で配列が変わり、片方だけが範囲内に入る場合があるため。**リンク先が dump に入っていないことは正常**で、読み手はその uuid で元の transcript を引ける。
 
 新規 op `dump_presets_read`: config が持つ preset の `{name, description, opts}` の配列を返す。
 
