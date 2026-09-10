@@ -1,24 +1,24 @@
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { rm } from "node:fs/promises";
+import { join } from "node:path";
 import type { InstancePaths } from "../instance/index.ts";
 import { claudePluginFiles, MARKETPLACE_NAME, PLUGIN_ID } from "./claude.ts";
-
-/** The agents ccmsg can install a plugin for. One so far; the word is in the
- * command because the second one is what the shape is for. */
-export const AGENTS = ["claude"] as const;
-export type Agent = (typeof AGENTS)[number];
-
-/** How the agent's own CLI is run. The environment is inherited, which is how
- * the install lands in the config home this instance answers for and not in
- * another one (M6). Named so a test can watch what would be run without a
- * config home of a person's being touched. */
-export type Run = (args: readonly string[]) => Promise<Ran>;
-
-export interface Ran {
-  readonly code: number;
-  readonly stdout: string;
-  readonly stderr: string;
-}
+import * as codex from "./codex.ts";
+import {
+  type Agent,
+  type InstallReport,
+  place,
+  type Ran,
+  readReceipt,
+  type Receipt,
+  receiptFile,
+  refusal as refusalOf,
+  type Refusal,
+  rootFor,
+  type Run,
+  type StatusReport,
+  type UninstallReport,
+  writeReceipt,
+} from "./receipt.ts";
 
 export const runClaude: Run = async (args) => {
   let spawned: Bun.Subprocess<"ignore", "pipe", "pipe">;
@@ -34,140 +34,28 @@ export const runClaude: Run = async (args) => {
   return { code: await spawned.exited, stdout, stderr };
 };
 
-/** Why one of these commands stopped where it did: the agent command that was
- * refused, and what it said. */
-export interface Refusal {
-  readonly command: readonly string[];
-  readonly code: number;
-  readonly said: string;
-}
-
-/** What the three commands answer with.
+/** The three commands, dispatched to the agent they are about.
  *
- * Fields rather than sentences: these commands are read by whatever runs them
- * as much as by a person, and a line of prose is something a caller has to
- * parse back into the facts it was built from. The words a person wants are in
- * `--help`; what is here is what was found. */
-interface Report {
-  readonly agent: Agent;
-  /** Whether the command did everything it set out to do. */
-  readonly ok: boolean;
-  /** The step that stopped it. Absent while `ok`. */
-  readonly refused?: Refusal;
+ * What each one installs differs in kind — Claude Code takes a plugin through
+ * its own CLI, Codex reads files out of its config home — so the two are
+ * written apart and only the shapes they answer with are shared. */
+export function install(
+  paths: InstancePaths,
+  agent: Agent,
+  version: string,
+  run?: Run,
+): Promise<InstallReport> {
+  return agent === "codex"
+    ? codex.install(paths, version, run)
+    : installClaude(paths, version, run);
 }
 
-export interface InstallReport extends Report {
-  readonly version: string;
-  readonly config_home: string;
-  readonly root: string;
-  /** The files laid down, by their path under `root`. */
-  readonly files: readonly string[];
-  readonly marketplace: { readonly name: string; readonly registered: boolean };
-  readonly plugin: {
-    readonly id: string;
-    readonly installed: boolean;
-    /** Whether a copy of the same id was taken out first, which is what makes
-     * a repeated install run what was just laid down. */
-    readonly replaced: boolean;
-  };
-  /** The agent commands that were run, as they were run. */
-  readonly commands: readonly (readonly string[])[];
+export function status(paths: InstancePaths, agent: Agent, run?: Run): Promise<StatusReport> {
+  return agent === "codex" ? codex.status(paths, run) : statusClaude(paths, run);
 }
 
-export interface StatusReport extends Report {
-  /** Where the receipt is. Absent when ccmsg installed nothing here, which is
-   * what makes every field below it absent too. */
-  readonly receipt?: string;
-  readonly installed_at?: string;
-  /** What the receipt says was installed. */
-  readonly version?: string;
-  readonly config_home?: string;
-  readonly root?: string;
-  /** The receipt's files, counted against what is under `root` now. */
-  readonly files?: {
-    readonly expected: number;
-    readonly present: number;
-    readonly missing: readonly string[];
-  };
-  readonly marketplace: {
-    readonly name?: string;
-    /** Whether the agent has it. Absent when the agent could not be asked,
-     * which is a different thing from it not being registered. */
-    readonly registered?: boolean;
-    /** Where the agent thinks it points, when that is not where the receipt
-     * put it. */
-    readonly points_at?: string;
-  };
-  readonly plugin: {
-    readonly id?: string;
-    /** What the agent reports having, and whether it has it switched on.
-     * Present with no `expected_version` beside it means something other than
-     * ccmsg installed it. */
-    readonly installed_version?: string;
-    readonly enabled?: boolean;
-    /** What the receipt says should be there. */
-    readonly expected_version?: string;
-  };
-}
-
-export interface UninstallReport extends Report {
-  readonly receipt?: string;
-  /** What was actually taken back out. A step the receipt does not name was
-   * never taken, so it is not undone and does not appear here. */
-  readonly removed: {
-    readonly plugin?: string;
-    readonly marketplace?: string;
-    readonly root?: string;
-  };
-}
-
-export type Outcome = InstallReport | StatusReport | UninstallReport;
-
-/** What one install did, so that uninstall can undo exactly that.
- *
- * Everything reversible is written down before the next step is taken: the
- * files that were laid down, the commands that were run against the agent, and
- * the id the agent now knows the plugin by. Undoing reads this and nothing
- * else — an install that half-finished leaves a receipt for the half that
- * happened, and a plugin somebody else installed is not in it and is left
- * alone. */
-export interface Receipt {
-  readonly agent: Agent;
-  readonly version: string;
-  readonly installed_at: string;
-  /** The config home the agent was asked to install into. */
-  readonly config_home: string;
-  /** Where the plugin's own files were laid down. */
-  readonly root: string;
-  /** Their paths under that root, in the order they were written. */
-  readonly files: readonly string[];
-  /** The agent commands that were run, as they were run. */
-  readonly commands: readonly (readonly string[])[];
-  readonly marketplace?: string;
-  readonly plugin_id?: string;
-}
-
-function rootFor(paths: InstancePaths, agent: Agent): string {
-  return join(paths.pluginsDir, agent);
-}
-
-function receiptFile(paths: InstancePaths, agent: Agent): string {
-  return join(paths.pluginsDir, `${agent}.receipt.json`);
-}
-
-async function readReceipt(paths: InstancePaths, agent: Agent): Promise<Receipt | undefined> {
-  try {
-    const parsed: unknown = JSON.parse(await readFile(receiptFile(paths, agent), "utf8"));
-    return typeof parsed === "object" && parsed !== null ? (parsed as Receipt) : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-async function writeReceipt(paths: InstancePaths, receipt: Receipt): Promise<void> {
-  const file = receiptFile(paths, receipt.agent);
-  await mkdir(dirname(file), { recursive: true });
-  await writeFile(file, `${JSON.stringify(receipt, null, 2)}\n`);
+export function uninstall(paths: InstancePaths, agent: Agent, run?: Run): Promise<UninstallReport> {
+  return agent === "codex" ? codex.uninstall(paths) : uninstallClaude(paths, run);
 }
 
 /** Lay the plugin's files down under the instance's own state, register it
@@ -180,21 +68,14 @@ async function writeReceipt(paths: InstancePaths, receipt: Receipt): Promise<voi
  * and a version already installed is not re-read. So an install that finds its
  * own id already there removes it first, which is what makes "install" mean
  * "what is running is what was just laid down". */
-export async function install(
+async function installClaude(
   paths: InstancePaths,
   version: string,
   run: Run = runClaude,
 ): Promise<InstallReport> {
   const root = rootFor(paths, "claude");
   const files = claudePluginFiles(version);
-  for (const [path, content] of files) {
-    const file = join(root, path);
-    await mkdir(dirname(file), { recursive: true });
-    await writeFile(
-      file,
-      typeof content === "string" ? content : `${JSON.stringify(content, null, 2)}\n`,
-    );
-  }
+  await place(root, files);
 
   // Kept as it grows rather than rebuilt per step: each step adds what it did
   // to what the earlier ones did, and the file on disk is that running total.
@@ -254,7 +135,7 @@ export async function install(
  * the current reading of the same thing beside it, so drift — a file deleted, a
  * marketplace pointed elsewhere, a version other than the one installed — is
  * two fields that differ rather than a sentence about them. */
-export async function status(paths: InstancePaths, run: Run = runClaude): Promise<StatusReport> {
+async function statusClaude(paths: InstancePaths, run: Run = runClaude): Promise<StatusReport> {
   const receipt = await readReceipt(paths, "claude");
   const here = await installedRow(run);
   const registered = await marketplaces(run);
@@ -325,7 +206,7 @@ function known(
  * then of the marketplace that offered it, and only then are the files it was
  * reading taken away. A step the receipt does not name is a step that was
  * never taken, so it is not undone. */
-export async function uninstall(
+async function uninstallClaude(
   paths: InstancePaths,
   run: Run = runClaude,
 ): Promise<UninstallReport> {
@@ -411,6 +292,5 @@ function rows(output: string): Record<string, unknown>[] {
  * exited with, and its first line of complaint. The exit code is stated apart
  * from the words because a command that said nothing still failed. */
 function refusal(command: readonly string[], ran: Ran): Refusal {
-  const said = `${ran.stderr}${ran.stdout}`.trim();
-  return { command: ["claude", ...command], code: ran.code, said: said.split("\n")[0] ?? "" };
+  return refusalOf("claude", command, ran);
 }

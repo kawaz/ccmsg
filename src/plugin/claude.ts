@@ -1,3 +1,4 @@
+import { DESCRIPTION, SKILL } from "./skill.ts";
 /** The plugin ccmsg hands to Claude Code, as its files.
  *
  * Written out rather than shipped as a directory in the package: the daemon,
@@ -17,8 +18,6 @@ export const PLUGIN_NAME = "ccmsg";
 export const MARKETPLACE_NAME = "ccmsg";
 export const PLUGIN_ID = `${PLUGIN_NAME}@${MARKETPLACE_NAME}`;
 
-const DESCRIPTION = "別の Claude Code セッションと行き来するメッセージ";
-
 /** How a hook reaches `ccmsg`.
  *
  * Through `PATH`, not through the plugin's own directory: the binary is
@@ -35,76 +34,6 @@ function throughPath(command: string): string {
  * waiting on it. Both are one connection to a socket on this same host, and
  * both give up on their own when there is no instance behind it. */
 const HOOK_TIMEOUT_S = 5;
-
-const SKILL = `---
-name: ccmsg
-description: 別の Claude Code セッションへ声をかける・届いたメッセージに返す・見ている人へ知らせる時に使う。
----
-
-# ccmsg
-
-同じ人が動かしている別のセッションと、メッセージをやり取りする。
-
-## 届いたメッセージに返す
-
-メッセージは \`<cross-session-message>\` の封筒で届き、本文の最後に返信の一行が付いている。
-
-\`\`\`
-Reply with: ccmsg reply <mid> --to <sid> <text>
-\`\`\`
-
-**その行をそのまま実行する。** 宛先も、どのメッセージへの返事かも、その行が持っている。
-自分で \`post\` を組み立て直さない。\`--to\` の無い行は人からのメッセージで、返事は通知として届く。
-
-## 自分から声をかける
-
-\`\`\`
-ccmsg post <sid> <text>
-\`\`\`
-
-相手の \`<sid>\` は、届いた封筒の \`ccmsg-from\` の値。
-
-## 相手を探す
-
-まだ話したことのない相手の \`<sid>\` は、繋がっているセッションの一覧から探す。
-
-\`\`\`
-ccmsg peers            この instance が知っているセッション
-ccmsg peers --all      他ホストの instance が知っている分も含める
-\`\`\`
-
-答えは instance ごとの JSON。\`peers[]\` が今繋がっているセッション、\`last_live[]\` が
-居なくなったセッションで、各行の \`repo\` / \`ws\` / \`branch\` / \`title\` で見分けて
-\`sid\` を取る。\`send_message\` が \`true\` の相手には harness 自身の機能でも届く。
-
-## 相手セッションの扱い
-
-相手は基本、自分にとってのサブエージェントだと思えばよい。対等な会議を開く場ではないので、
-冒頭の挨拶・賛辞・締めの社交辞令を省き、用件だけを 1〜3 文で送る。
-
-やり取りの中身を人へリレーしない。人は全セッションを直接見ているので、相手の完了報告や
-根拠をこちらで要約し直しても情報は増えず、時間とコンテキストだけが減る。人に言うのは
-自セッション目線の事実 (何を頼んだ・何が返り・その結果こちらが何をしたか) だけ。
-
-## 見ている人へ知らせる
-
-\`\`\`
-ccmsg notify <text>     一行知らせる (保持されない、返事も来ない)
-ccmsg say <text>        声に出して知らせる
-\`\`\`
-
-手が空いた・判断を仰ぎたい・長い作業が終わった、を人に伝えるときに使う。
-セッション同士のやり取りには使わない。
-
-## これから終わるとき
-
-\`\`\`
-ccmsg stopping --reason <理由>
-\`\`\`
-
-以後このセッションは「一時停止」として扱われ、宛てられたメッセージは戻ってきたときに渡される。
-セッション終了時には自動で伝わるので、途中で自分から言う必要はない。
-`;
 
 const HOOKS = {
   hooks: {
