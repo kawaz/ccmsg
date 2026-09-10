@@ -1,6 +1,6 @@
 ---
 title: mesh の信頼の根を TLS サーバ証明書で担保する (現状は plain ws 依存)
-status: open
+status: resolved
 category: design
 created: 2026-09-09T01:37:50+09:00
 last_read:
@@ -9,10 +9,10 @@ wip_entered:
 blocked_entered:
 pending_entered:
 discarded_entered:
-resolved_entered:
+resolved_entered: 2026-09-10T15:23:24+09:00
 discard_reason:
 pending_reason:
-close_reason:
+close_reason: ["done:kawaz 裁定 (2026-09-10, TL-Q1=a) — mesh の TLS は前段 (caddy) の終端で足りる、証明書運用を daemon の責務にしない。DESIGN の前提に「TLS は前段の責務」を明記 (後続 commit)"]
 blocked_by:
 origin: 自リポ TODO
 ---
