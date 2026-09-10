@@ -20,12 +20,9 @@
 
 ## 裁定待ち
 
-### DS-Q2 dump の軸 (opts) の名前を固定してよいか
+### DS-Q2 dump のアイテム型の体系 (起草中)
 
-裁定済み (2026-09-10 r298m26): preset は契約に焼き込まず、config `dump.presets: [{name, opts, description}]` で operator が定義する (session_launcher のテンプレと同じ位置づけ)。契約が持つのは軸だけ、一覧は `dump_presets_read` op、無指定時は軸の既定 (今の平坦な全部入り)、`daemon add` の初期 config に `journal` / `handoff` の例を入れる、subagent 配置の既定は「子として 1 段インデント、response のみ」。残る問いは軸名の固定 ([design/dump-kinds.md](design/dump-kinds.md) §2 の 5 軸: `speakers` / `include` / `range` / `ids` / `agent_placement`)。preset が opts 名に結びつくので、改名は config を壊す。
-
-- [ ] a: 5 軸この名前で固定してよい (推し)
-- [ ] b: 名前を変える → 自由記述で
+kawaz 指示 (2026-09-10 r298m27): 分類は csa timeline の型 (T/U/R…) と同じ「TL アイテムの型」で、階層名 (`message:user:in` / `tool:Bash` …) を enum 的に列挙して出し分け、型ごとにテキスト表示コンポーネントを持つ。範囲は since / until。主語は main。preset は config 定義 (裁定済み)。`docs/design/dump-kinds.md` を型の体系で書き直し中。上がったら型一覧の確認を本節に差し替える。
 
 ### CW-Q1 Codex の「入力待ち」を app-server 購読で拾うか
 
