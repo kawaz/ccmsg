@@ -26,9 +26,4 @@ kawaz 指示 (2026-09-10): 用途 (完了済みセッションの日記 / rewind
 
 ## 確認待ち
 
-### NT-C1 npm token の rotate
-
-webui-slice1 worker が `~/.npmrc` の token を transcript に出した件 (2026-09-09)。
-
-- [ ] rotate 済み
-- [ ] 当該セッション jsonl の掃除済み
+(なし)
