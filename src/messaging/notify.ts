@@ -105,7 +105,7 @@ export class Notify implements UpstreamResource {
     // raise another (§6.4).
     if (this.deps.publish(NOTIFY, notification, this.deps.self) === "rate_limited") {
       throw new OpError(
-        "internal_error",
+        "rate_limited",
         "a watcher is behind on this topic; the notification was not taken",
       );
     }

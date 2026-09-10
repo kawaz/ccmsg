@@ -25,6 +25,19 @@ function rig() {
   return { time, hub, conn };
 }
 
+/** The code an op refused with, or nothing where it answered. Stated rather
+ * than only that something was thrown, because which code the caller hears is
+ * what says whether to send the call again. */
+function refusal(call: () => unknown): string | undefined {
+  try {
+    call();
+    return undefined;
+  } catch (cause) {
+    if (cause instanceof OpError) return cause.code;
+    throw cause;
+  }
+}
+
 /** The frames a subscriber has actually been handed, past the snapshot the
  * subscription itself delivered. */
 function delivered(conn: TestConn): Record<string, unknown>[] {
@@ -163,7 +176,21 @@ describe("what happened, as against what is (§6.4)", () => {
     // notification was not taken rather than it going nowhere.
     // The first goes out at once, so the queue fills on the ones after it.
     for (let n = 0; n < QUEUE_LIMIT + 1; n += 1) notify.send(input);
-    expect(() => notify.send(input)).toThrow(OpError);
+    // Nothing failed and the arguments were never the problem: what the caller
+    // is told is that the reader is behind, which the same call sent again
+    // once it has caught up gets past.
+    expect(refusal(() => notify.send(input))).toBe("rate_limited");
+    // A session saying it just spoke raises the same notification, so it is
+    // refused the same way rather than under a code of its own.
+    const spoke = refusal(() =>
+      notify.post({
+        ...input,
+        op: "say_post" as const,
+        args: { op: "say_post", request_id: "2", text: "spoke" },
+        identity: { state: "settled" as const, role: "session" as const, sid: SID },
+      }),
+    );
+    expect(spoke).toBe("rate_limited");
 
     time.advance(FLUSH_PERIOD_MS);
     expect(delivered(conn)).toHaveLength(QUEUE_LIMIT + 1);
