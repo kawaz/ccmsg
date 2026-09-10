@@ -2,6 +2,7 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
   LAST_LIVE_RETENTION_MS,
+  type InstanceId,
   type LastLiveSession,
   type Sid,
   type Timestamp,
@@ -35,7 +36,14 @@ const VERSION = 1;
 export class LastLiveStore {
   #entries = new Map<Sid, StoredEntry>();
 
-  constructor(private readonly file: string) {}
+  /** `id` is this instance's own: every entry this store holds is by
+   * definition an observation *this* instance made, so `instance` is forced
+   * to it on both ends (load and record) rather than trusted from whatever
+   * the field on disk happens to say. */
+  constructor(
+    private readonly file: string,
+    private readonly id: InstanceId,
+  ) {}
 
   /** Read at startup (§8.3 step 4), before anything can ask for the list. A
    * file that is missing or unreadable starts an empty list: the daemon has no
@@ -50,7 +58,9 @@ export class LastLiveStore {
     const sessions = (document as Document | null)?.sessions;
     if (!Array.isArray(sessions)) return;
     for (const entry of sessions as StoredEntry[]) {
-      if (typeof entry?.sid === "string") this.#entries.set(entry.sid, entry);
+      if (typeof entry?.sid === "string") {
+        this.#entries.set(entry.sid, { ...entry, instance: this.id });
+      }
     }
     this.#prune(now);
   }
@@ -71,7 +81,11 @@ export class LastLiveStore {
    * Paused rather than Disappeared (§5.2). */
   record(entry: StoredEntry): void {
     const stopped = this.#entries.get(entry.sid)?.stopped_at ?? entry.stopped_at;
-    this.#entries.set(entry.sid, stopped === undefined ? entry : { ...entry, stopped_at: stopped });
+    this.#entries.set(entry.sid, {
+      ...entry,
+      instance: this.id,
+      ...(stopped === undefined ? {} : { stopped_at: stopped }),
+    });
     this.#save();
   }
 

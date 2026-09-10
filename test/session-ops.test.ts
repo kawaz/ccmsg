@@ -128,7 +128,7 @@ function ops(over: Partial<ProcessDeps> & { typed?: string[][]; lastLive?: Sid[]
   // `last_live` is read as the domain is constructed (§8.3 step 4), so a test
   // that wants an entry in it writes the file first.
   if (over.lastLive !== undefined) {
-    const store = new LastLiveStore(lastLivePath(stateDir));
+    const store = new LastLiveStore(lastLivePath(stateDir), SELF);
     for (const sid of over.lastLive) {
       store.record({
         sid,

@@ -817,15 +817,85 @@ describe("last_live", () => {
   test("an entry past the retention window is dropped", () => {
     const { stateDir } = home();
     const file = join(stateDir, "last-live.json");
-    const store = new LastLiveStore(file);
+    const store = new LastLiveStore(file, SELF);
     const now = 1_800_000_000_000;
     store.record({ sid: SID, instance: SELF, repo: "", ws: "", cwd: "", last_seen_at: now });
     expect(store.entries(now).map((entry) => entry.sid)).toEqual([SID]);
     expect(store.entries(now + LAST_LIVE_RETENTION_MS + 1)).toEqual([]);
 
-    const reloaded = new LastLiveStore(file);
+    const reloaded = new LastLiveStore(file, SELF);
     reloaded.load(now + LAST_LIVE_RETENTION_MS + 1);
     expect(reloaded.entries(now)).toEqual([]);
+  });
+
+  test("an entry whose `instance` field is not this instance's id is normalized on load", () => {
+    // Every entry a store holds is, by definition, this instance's own
+    // observation: a stale or corrupted file (e.g. one written with the
+    // gateway's endpoint URL in place of the id, as seen in production) must
+    // not leak a non-conforming `instance` value into what is read back.
+    const { stateDir } = home();
+    const file = join(stateDir, "last-live.json");
+    mkdirSync(stateDir, { recursive: true });
+    writeFileSync(
+      file,
+      JSON.stringify({
+        version: 1,
+        sessions: [
+          {
+            sid: SID,
+            instance: "ws://localhost/ccmsg/personal/",
+            repo: "",
+            ws: "",
+            cwd: "",
+            last_seen_at: NOW,
+          },
+        ],
+      }),
+    );
+
+    const store = new LastLiveStore(file, SELF);
+    store.load(NOW);
+    expect(store.entries(NOW)).toEqual([
+      { sid: SID, instance: SELF, repo: "", ws: "", cwd: "", last_seen_at: NOW },
+    ]);
+  });
+
+  test("a broken `instance` field in last-live.json does not reach the peers payload", () => {
+    const { root, stateDir } = home();
+    mkdirSync(stateDir, { recursive: true });
+    writeFileSync(
+      join(stateDir, "last-live.json"),
+      JSON.stringify({
+        version: 1,
+        sessions: [
+          {
+            sid: SID,
+            instance: "ws://localhost/ccmsg/personal/",
+            repo: "",
+            ws: "",
+            cwd: "",
+            last_seen_at: NOW,
+          },
+        ],
+      }),
+    );
+
+    const domain = new Sessions({
+      self: SELF,
+      endpoint: "https://host.example.ts.net/ccmsg/personal/",
+      configHome: root,
+      stateDir,
+      capabilities: [],
+      version: "0.0.1",
+      startedAt: NOW,
+      publish: () => {},
+      pollMs: 50,
+    });
+    running.push(domain);
+
+    const payload = domain.peers(NOW);
+    expect(payload.last_live[0]?.instance).toBe(SELF);
+    expect(validationErrors(TOPIC_SCHEMAS.peers, frame("peers", payload))).toEqual([]);
   });
 
   test("nothing but the three kinds of §3.6 is written, across a restart", () => {

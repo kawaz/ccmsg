@@ -190,7 +190,7 @@ export class Sessions implements UpstreamResource {
       () => this.changed(),
       deps.pollMs,
     );
-    this.#lastLive = new LastLiveStore(join(deps.stateDir, "last-live.json"));
+    this.#lastLive = new LastLiveStore(join(deps.stateDir, "last-live.json"), deps.self);
     this.#lastLive.load();
     this.#terminals =
       deps.terminals === undefined
