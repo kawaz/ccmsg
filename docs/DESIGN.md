@@ -336,7 +336,7 @@ same thing an arrow points at.
 
 | Purpose | op / topic | What it carries |
 |---|---|---|
-| Read a range | `transcript_items_read` | The bounds a dump takes (`since_at` / `since_uuid` / `until_*`), plus `since_id` to resume, the `types` selection and a `limit`. It answers with `items` and, where a limit cut it short, the `next` item |
+| Read a range | `transcript_items_read` | The bounds a dump takes (`since_at` / `since_uuid` / `until_*`), plus `since_id` / `until_id` for a bound at item granularity, the `types` selection and a `limit`. It answers with `items` and, where a limit cut it short, the `next` or `prev` item |
 | Receive what is appended | `transcript_items:<sid>` topic | The opening frame is the tail of what has been read, a fixed number of items; every frame after carries what has since been classified (the `append` granularity of §6.2) |
 | Fetch a raw record | `transcript_read` / `transcript:<sid>` | Unchanged. An item's `source` is what addresses one record on it |
 
@@ -347,6 +347,17 @@ is the ordinary case rather than a broken pointer — the reader has the id and 
 page is bounded by a count and by bytes, whichever is reached first: a count alone cannot hold one
 connection's payload down when items differ in size by orders of magnitude, and bytes alone would
 answer the same request with a number of items that varied with what was said.
+
+**Which end of the range a page is taken from follows from the bound given.** A lower bound
+(`since_at` / `since_uuid` / `since_id`) reads from the range's start, and `next` names where it
+stopped, to be given back as `since_id`. An upper bound alone (`until_at` / `until_uuid` /
+`until_id`) reads the range's **end**, and `prev` names the first item answered, to be given back
+as `until_id` — which is exclusive, so nothing already held is answered twice. With no bound at
+all the range is the whole file and is read from its start. A client that draws the newest first
+(the web UI's Timeline) has no coordinate on an item to page back from, so paging back is the
+range's work: what `before` does for `transcript_read` on the byte side, an upper-bounded read
+does on the item side. Either direction answers oldest first, because that is the order a
+transcript has.
 
 **A client never reads raw jsonl.** The contract holds the vocabulary and the daemon holds the
 classifying because jsonl is the harness's internal format and changes without our agreement;
@@ -845,7 +856,9 @@ onto the same offsets.
 `transcript_items:<sid>` carries the same appending in items (§3.6). Its snapshot is **the tail of
 what has been read, a fixed number of items**: where the byte snapshot answers "where do I page
 back from", this one answers with the end a subscriber can draw immediately — an item has no
-coordinate to page back from, and paging back is `transcript_items_read`'s work. The bound is a
+coordinate to page back from, and paging back is `transcript_items_read`'s work: hand its first
+item to `until_id` and what precedes it comes back, then keep handing back the `prev` it names.
+The bound is a
 count because the read that feeds it is bounded in bytes (`FOLD_TAIL_BYTES`, 1 MiB), which would
 otherwise make the opening frame as large as that read for a file of many small records.
 

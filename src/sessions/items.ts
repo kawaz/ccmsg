@@ -69,12 +69,32 @@ export function itemsRead(
   }
   const keep = selection(args.types === undefined ? {} : { types: args.types }, deps.presets);
   const { items } = select(within(classify(located(text)), args), keep);
-  const page = paged(items, args.limit);
+  const page = paged(items, args.limit, backwards(args));
   return {
     items: page.items,
     ...(page.next === undefined ? {} : { next: page.next }),
+    ...(page.prev === undefined ? {} : { prev: page.prev }),
     ...(keep.keeps(IDS) ? { ids: ledger(page.items) } : {}),
   };
+}
+
+/** Whether the range's end is the part to answer with.
+ *
+ * A caller that named where to start is reading forward from there; one that
+ * named only where to stop is looking at the newest of what it asked for, and
+ * answering with the oldest of that range would hand it the far side of a
+ * transcript it is walking back through. With neither bound the range is the
+ * whole transcript, which is read from its beginning. */
+function backwards(bounds: TranscriptItemsReadArgs): boolean {
+  const lower =
+    bounds.since_at !== undefined ||
+    bounds.since_uuid !== undefined ||
+    bounds.since_id !== undefined;
+  const upper =
+    bounds.until_at !== undefined ||
+    bounds.until_uuid !== undefined ||
+    bounds.until_id !== undefined;
+  return upper && !lower;
 }
 
 /** As much of the range as one answer carries, and where the next one starts.
@@ -82,24 +102,36 @@ export function itemsRead(
  * Two bounds, because either alone leaves a case unanswered: a count cannot
  * keep a page of long briefs inside what a connection should carry, and bytes
  * alone would answer with a number of items that varied with what was said in
- * them. Whichever is reached first ends the page, and the first item left out
- * is named so the caller resumes exactly where this stopped. */
+ * them. Whichever is reached first ends the page.
+ *
+ * Which end of the range is kept is the caller's, and the item named back is
+ * the one it continues from: reading forward, the first item left out, to be
+ * given as `since_id`; reading back, the first item answered, to be given as
+ * `until_id`. Either way the answer is oldest first, because that is the order
+ * a transcript has. */
 function paged(
   items: readonly Item[],
   limit: number | undefined,
-): { items: Item[]; next?: string } {
+  back: boolean,
+): { items: Item[]; next?: string; prev?: string } {
   const most = Math.min(limit ?? ITEMS_LIMIT, ITEMS_LIMIT);
   const kept: Item[] = [];
   let held = 0;
-  for (const item of items) {
+  for (let at = 0; at < items.length; at += 1) {
+    const item = items[back ? items.length - 1 - at : at];
+    if (item === undefined) continue;
     // A first item larger than the whole budget is still answered: a page of
     // nothing would leave the caller resuming at the item it just failed to
     // get, forever.
     if (kept.length > 0 && (kept.length >= most || held >= READ_LIMIT)) {
-      return { items: kept, next: item.id };
+      if (!back) return { items: kept, next: item.id };
+      kept.reverse();
+      const first = kept[0];
+      return first === undefined ? { items: kept } : { items: kept, prev: first.id };
     }
     kept.push(item);
     held += JSON.stringify(item).length;
   }
+  if (back) kept.reverse();
   return { items: kept };
 }

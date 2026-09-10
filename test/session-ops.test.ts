@@ -1043,7 +1043,12 @@ describe("transcript_items_read", () => {
       sid: SID,
       ...over,
     });
-    return answer as { items: DumpedItem[]; next?: string; ids?: Record<string, unknown>[] };
+    return answer as {
+      items: DumpedItem[];
+      next?: string;
+      prev?: string;
+      ids?: Record<string, unknown>[];
+    };
   }
 
   test("a range is answered as the items the records were read into", async () => {
@@ -1076,6 +1081,50 @@ describe("transcript_items_read", () => {
     expect([...page.items, ...rest.items].map((item) => item.id)).toEqual(
       whole.map((item) => item.id),
     );
+  });
+
+  test("an upper bound alone answers the range's end and names what precedes it", async () => {
+    const { configHome, handlers } = ops();
+    writeTranscript(configHome, SID, BUSY_TRANSCRIPT);
+    const whole = (await all(handlers)).items;
+    const page = await all(handlers, { until_id: whole.at(-1)?.id, limit: 3 });
+    // The bound is open, so the item it names is not answered again; what
+    // comes back is the three before it, still oldest first.
+    expect(page.items.map((item) => item.id)).toEqual(whole.slice(-4, -1).map((item) => item.id));
+    expect(page.next).toBeUndefined();
+    expect(page.prev).toBe(page.items[0]?.id);
+  });
+
+  test("handing back what preceded a page walks to the start of the transcript", async () => {
+    const { configHome, handlers } = ops();
+    writeTranscript(configHome, SID, BUSY_TRANSCRIPT);
+    const whole = (await all(handlers)).items;
+    const walked: string[] = [];
+    let bound: string | undefined;
+    for (;;) {
+      const page = await all(handlers, {
+        limit: 2,
+        ...(bound === undefined ? { until_uuid: whole.at(-1)?.uuid } : { until_id: bound }),
+      });
+      walked.unshift(...page.items.map((item) => item.id));
+      if (page.prev === undefined) break;
+      bound = page.prev;
+    }
+    expect(walked).toEqual(whole.map((item) => item.id));
+  });
+
+  test("a lower bound reads forward even when an upper one cuts the range short", async () => {
+    const { configHome, handlers } = ops();
+    writeTranscript(configHome, SID, BUSY_TRANSCRIPT);
+    const whole = (await all(handlers)).items;
+    const page = await all(handlers, {
+      since_id: whole[1]?.id,
+      until_id: whole.at(-1)?.id,
+      limit: 2,
+    });
+    expect(page.items.map((item) => item.id)).toEqual(whole.slice(1, 3).map((item) => item.id));
+    expect(page.next).toBe(whole[3]?.id);
+    expect(page.prev).toBeUndefined();
   });
 
   test("a selection is applied to the whole file before the page is cut", async () => {
@@ -1152,6 +1201,20 @@ describe("transcript_items_read", () => {
           sid: SID,
           since_uuid: "a1",
           since_id: "a1:0",
+        }),
+      ),
+    ).toBe("invalid_args");
+  });
+
+  test("a range with two upper bounds is refused the same way", async () => {
+    const { configHome, handlers } = ops();
+    writeTranscript(configHome, SID, BUSY_TRANSCRIPT);
+    expect(
+      await refusalOf(() =>
+        run("transcript_items_read", handlers.transcript_items_read, {
+          sid: SID,
+          until_uuid: "a1",
+          until_id: "a1:0",
         }),
       ),
     ).toBe("invalid_args");

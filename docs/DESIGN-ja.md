@@ -293,7 +293,7 @@ worker の答えだけは何 turn 離れていても指示書の下に付ける)
 
 | 用途 | op / topic | 中身 |
 |---|---|---|
-| 範囲を指定して読む | `transcript_items_read` | dump と同じ範囲指定 (`since_at` / `since_uuid` / `until_*`) + `since_id` (前回の続きから) + `types` 選択 + `limit`。返りは `items` と、切れた時の続き位置 `next` |
+| 範囲を指定して読む | `transcript_items_read` | dump と同じ範囲指定 (`since_at` / `since_uuid` / `until_*`) + `since_id` / `until_id` (アイテム単位の下限・上限) + `types` 選択 + `limit`。返りは `items` と、切れた時の続き位置 `next` / `prev` |
 | 追記を受け取る | `transcript_items:<sid>` topic | snapshot は末尾側のアイテム一定数、以降の frame は新しく分類されたアイテムの配列 (§6.2 の `append`) |
 | 生 record の取り寄せ | `transcript_read` / `transcript:<sid>` | 変更なし。アイテムの `source` で 1 record を引く経路になる |
 
@@ -302,6 +302,14 @@ worker の答えだけは何 turn 離れていても指示書の下に付ける)
 正常な状態であって壊れたポインタではない (読み手はその id で取りに行ける)。1 ページの上限は件数と bytes の両方で、
 先に達した方で切る: 件数だけではアイテム 1 個の大きさが桁で違うため 1 接続あたりの payload を抑えられず、
 bytes だけでは同じ要求が中身次第で違う件数を返すことになる。
+
+**どちら端を 1 ページとして残すかは、与えられた境界で決まる。** 下限 (`since_at` / `since_uuid` / `since_id`)
+があれば範囲の先頭から返し、切れた位置を `next` が名乗る (次は `since_id` に渡す)。上限 (`until_at` /
+`until_uuid` / `until_id`) だけなら範囲の**末尾**から返し、返した先頭のアイテム id を `prev` が名乗る
+(次は `until_id` に渡す。`until_id` は排他で、既に手元にあるアイテムを二度返さない)。境界が無ければ
+範囲は file 全体なので先頭から返す。末尾から描く client (webui の Timeline) はアイテム側に「そこから遡る」
+座標を持たないので、遡りは範囲指定の側が担う — byte 側で `transcript_read` が `before` で遡るのと同じ役割を、
+アイテム側では上限指定の読みが果たす。返りの並びはどちら向きでも古い順である (transcript の並びがそれであるため)。
 
 **client は生 jsonl を読まない。** 契約が語彙だけを持ち daemon が分類を持つのは、jsonl がハーネスの内部形式で
 こちらの合意なく変わるためで、その追従を契約に同居させると形式変更のたびに契約 release が要る。
@@ -738,7 +746,8 @@ topic の仕組みに内蔵するので「この topic には抑制がない」�
 
 `transcript_items:<sid>` は同じ追記をアイテムで運ぶ (§3.6)。snapshot は**末尾側のアイテム一定数**で、
 byte 側の snapshot が「どこから遡るか」を答えるのに対し、こちらは購読者が即描ける末尾そのものを答える
-(アイテムには「そこから遡る」ための座標が無く、遡るのは範囲指定の `transcript_items_read` の仕事である)。
+(アイテムには「そこから遡る」ための座標が無く、遡るのは範囲指定の `transcript_items_read` の仕事である。
+snapshot の先頭アイテムを `until_id` に渡せばその手前が返り、以降は `prev` を渡し続けて遡れる)。
 件数で切るのは、tail の読み出し (`FOLD_TAIL_BYTES` = 1 MiB) が bytes で切られているためで、
 小さい record が並ぶ file では最初の frame がその読み出しと同じ大きさになってしまう。
 

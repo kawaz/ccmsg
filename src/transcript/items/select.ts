@@ -149,13 +149,16 @@ export function select(
  * A record bound cuts at that record's position rather than at its clock, so
  * records sharing an instant stay on their own side of the cut — which is the
  * whole reason there are two kinds. An item bound is finer than either: it
- * resumes inside a record whose earlier items were already answered for. */
+ * cuts inside a record whose other items were already answered for, closed at
+ * the lower end where it resumes a read and open at the upper end where it
+ * stops short of what the caller already holds. */
 export interface Bounds {
   readonly since_at?: number;
   readonly since_uuid?: string;
   readonly since_id?: string;
   readonly until_at?: number;
   readonly until_uuid?: string;
+  readonly until_id?: string;
 }
 
 /** The bounds as stated, refused where they say two things at once.
@@ -170,8 +173,11 @@ export function bounded(bounds: Bounds): void {
   if (lower > 1) {
     throw new OpError("invalid_args", "a lower bound is a time, a record or an item, not several");
   }
-  if (bounds.until_at !== undefined && bounds.until_uuid !== undefined) {
-    throw new OpError("invalid_args", "an upper bound is a time or a record, not both");
+  const upper = [bounds.until_at, bounds.until_uuid, bounds.until_id].filter(
+    (one) => one !== undefined,
+  ).length;
+  if (upper > 1) {
+    throw new OpError("invalid_args", "an upper bound is a time, a record or an item, not several");
   }
 }
 
@@ -200,6 +206,9 @@ export function within(items: readonly Item[], bounds: Bounds): Item[] {
     }
     if (bounds.since_at !== undefined && item.at < bounds.since_at) continue;
     if (bounds.until_at !== undefined && item.at > bounds.until_at) break;
+    // An upper bound by item is open: it names an item the caller already
+    // holds, so the range ends before it rather than at it.
+    if (bounds.until_id !== undefined && item.id === bounds.until_id) break;
     kept.push(item);
     // An upper bound by record is inclusive and cuts after the last item that
     // record became, so the rest of the same record is still let through.
