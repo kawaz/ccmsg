@@ -1,6 +1,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute } from "node:path";
 import type { Endpoint } from "@ccmsg/protocol";
+import { parseCidr } from "./client.ts";
 
 /** Where the instance accepts WebSocket connections, and from whom.
  *
@@ -14,6 +15,15 @@ export interface EntryConfig {
   /** Source addresses allowed to connect. Empty means every address the bind
    * itself already permits, which for the default loopback bind is this host. */
   readonly source_ips: readonly string[];
+  /** Address blocks, in CIDR notation, whose `X-Forwarded-For` this instance
+   * believes.
+   *
+   * Separate from `source_ips` because the two answer different questions: that
+   * one is who may connect at all, this one is whose account of somebody else
+   * to take. A reverse proxy is commonly allowed in without being the only
+   * thing allowed in, and an operator with no proxy leaves this empty and has
+   * every forwarding header ignored. */
+  readonly trusted_proxies: readonly string[];
 }
 
 /** One value a launch recipe's command reads, as the operator declares it. */
@@ -274,10 +284,22 @@ function entryOf(file: string, raw: unknown): EntryConfig {
   if (typeof host !== "string" || host === "") {
     throw new ConfigError(file, "entry.host must be an address to bind");
   }
+  const proxies = stringsOf(file, "entry.trusted_proxies", fields["trusted_proxies"]);
+  // Read here rather than where a request is: a block that parses to nothing
+  // would silently trust nobody, and an operator who wrote one meant to trust
+  // somebody.
+  const unreadable = proxies.filter((block) => parseCidr(block) === undefined);
+  if (unreadable.length > 0) {
+    throw new ConfigError(
+      file,
+      `entry.trusted_proxies must be CIDR blocks, got ${unreadable.join(", ")}`,
+    );
+  }
   return {
     host,
     port,
     source_ips: stringsOf(file, "entry.source_ips", fields["source_ips"]),
+    trusted_proxies: proxies,
   };
 }
 

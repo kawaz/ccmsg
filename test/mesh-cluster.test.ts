@@ -649,9 +649,23 @@ describe("the credentials and tokens the cluster shares (DR-0001 §2.6)", () => 
 
     // B holds the family but may not write it, so it asks A — the single
     // writer — and answers with what A minted (§2.4).
-    const rotated = await b.auth.refreshToken(minted.refresh.value);
+    const rotated = await b.auth.refreshToken(minted.refresh.value, {
+      reason: "reconnect",
+      ip: "203.0.113.7",
+      userAgent: "a browser",
+    });
     expect(rotated.session.sub).toBe("someone");
     expect(a.auth.admits(rotated.session.access.value)?.sub).toBe("someone");
+
+    // What B observed of the person travels with the value: A's own connection
+    // is to B and not to them, so a rotation forwarded without it would be
+    // remembered as a time and nothing else.
+    const [held] = a.auth.records.families();
+    expect(held?.body.last_refresh).toMatchObject({
+      reason: "reconnect",
+      ip: "203.0.113.7",
+      user_agent: "a browser",
+    });
   });
 
   test("a removal travels, and refuses the credential everywhere", async () => {

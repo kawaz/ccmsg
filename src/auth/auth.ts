@@ -684,12 +684,17 @@ export class Auth {
       throw new OpError("auth_invalid", "この refresh token は使えません");
     }
     if (held.body.iss !== this.deps.self) {
-      // What the client said about this refresh stays here: `auth_rotate`
-      // carries the value and nothing else, and the address the issuer would
-      // see is this instance's rather than the person's. The issuer records
-      // that the family rotated, which is the part it can vouch for.
+      // What the carrier observed goes with the value: the person is at the
+      // other end of this instance's connection and not the issuer's, so these
+      // are only knowable here, and a rotation forwarded without them would be
+      // remembered as a time and nothing else. The issuer writes them
+      // unchecked, as it does the ones it observes itself (contract,
+      // `AuthRotateArgs`).
       const answer = (await this.#atIssuer(held.body.iss, "auth_rotate", {
         refresh_token: value,
+        ...(from.reason === undefined ? {} : { reason: from.reason }),
+        ...(from.ip === undefined ? {} : { ip: from.ip }),
+        ...(from.userAgent === undefined ? {} : { user_agent: from.userAgent }),
       } satisfies AuthRotateArgs)) as AuthRotateResult;
       return { session: { sub: answer.sub, access: answer.access }, refresh: answer.refresh };
     }
@@ -927,8 +932,17 @@ export function authHandlers(auth: Auth) {
       // the URL and the count of tries against it (§2.2).
       return { kind: "register", claims: auth.resolveRegistration(args.token, args.code) };
     },
-    auth_rotate: (input: HandlerInput): AuthRotateResult =>
-      auth.rotate((input.args as unknown as AuthRotateArgs).refresh_token),
+    auth_rotate: (input: HandlerInput): AuthRotateResult => {
+      const args = input.args as unknown as AuthRotateArgs;
+      // The receiving instance's account of the person, taken as stated: it is
+      // the only one that saw them, and `last_refresh` is a hint nothing is
+      // decided by (contract, `AuthRotateArgs`).
+      return auth.rotate(args.refresh_token, {
+        ...(args.reason === undefined ? {} : { reason: args.reason }),
+        ...(args.ip === undefined ? {} : { ip: args.ip }),
+        ...(args.user_agent === undefined ? {} : { userAgent: args.user_agent }),
+      });
+    },
   };
 }
 

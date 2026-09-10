@@ -39,8 +39,13 @@ export interface WsOptions {
    * posts to this instance reaches it at the address it already has, and the
    * entry check of §3.1 runs before this is asked, so a route cannot be
    * reached by anyone the WebSocket could not be. Answering `undefined` leaves
-   * the request to the upgrade, which refuses it. */
-  readonly route?: (request: Request) => Promise<Response | undefined>;
+   * the request to the upgrade, which refuses it.
+   *
+   * `source` is the peer address the server observed, passed for the reason
+   * `allowRequest` is given it: what a route can be told about where a request
+   * came from is written by whoever is in front of us, and only the listener
+   * knows who that actually was. */
+  readonly route?: (request: Request, source: string | undefined) => Promise<Response | undefined>;
 }
 
 /** Accept the webui, and later mesh peers, over WebSocket.
@@ -61,10 +66,11 @@ export function serveWs(options: WsOptions): Listener {
     hostname: options.hostname ?? "127.0.0.1",
     port: options.port,
     async fetch(request, srv) {
-      if (entry.allowRequest?.(request, srv.requestIP(request)?.address) === false) {
+      const source = srv.requestIP(request)?.address;
+      if (entry.allowRequest?.(request, source) === false) {
         return new Response("Forbidden", { status: 403 });
       }
-      const routed = await options.route?.(request);
+      const routed = await options.route?.(request, source);
       if (routed !== undefined) return routed;
       if (!entryPath(new URL(request.url).pathname, path)) {
         return new Response("Not Found", { status: 404 });

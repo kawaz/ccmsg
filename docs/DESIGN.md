@@ -120,6 +120,22 @@ means passing the directory's permissions. mesh has the peer's TLS plus `iss` / 
 (§7.2), and webhook has `Authorization: Bearer`; each of those routes carries a secret of its
 own.
 
+**A proxy in front of the instance is one the operator names, or it is not believed.**
+`entry.trusted_proxies` holds address blocks in CIDR notation, and `X-Forwarded-For` is read only
+when the address the listener observed is inside one of them. Nothing else could decide it: a
+forwarding header is written by whoever is in front of us, and anyone who can reach the port can
+write one, so until the config says who the front is the header is a claim from a stranger. Where
+the chain is believed, it is read from the right and the first hop that is not itself a named
+proxy is taken — the entries to its right were written by our own hops, and everything to its left
+by whoever was talking to the outermost one. This is separate from `source_ips` because the
+questions differ: that one is who may connect at all, this one is whose account of somebody else
+to take, and a proxy is commonly let in without being the only thing let in. What is recovered is
+the person's address for `registered_ip`, `last_used_ip` and `last_refresh.ip` — a hint they
+recognise their own sessions by and nothing is decided by (DR-0001 §2.2). Getting it wrong costs
+little in access and much in that hint: a forged address kept on a record points the one person
+reading it away from themselves, which is why an unnamed front leaves the observed address rather
+than a guess.
+
 **A person's and a gateway's entry points (`<endpoint>ws`, `<endpoint>auth/*`,
 `<endpoint>webhook/<source>`) are matched by the end of the path, and the prefix is not asked about** (DR-0001 §2.7). A proxy may pass the
 path through with its prefix intact, which is what lets an alias endpoint, or a load balancer

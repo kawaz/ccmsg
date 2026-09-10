@@ -87,6 +87,7 @@ import {
   handleAuth,
   recordsDir,
 } from "../auth/index.ts";
+import { type Cidr, clientAddress, parseCidr } from "./client.ts";
 import { type EntryConfig, type InstanceConfig, loadConfig } from "./config.ts";
 import { completeHandlers } from "./handlers.ts";
 import { acquireLock, type Held, isHeldByUs, type Lock } from "./lock.ts";
@@ -264,7 +265,8 @@ async function bindForMesh(config: InstanceConfig, mesh: Mesh): Promise<MeshWiri
         ? Promise.resolve(failure(undefined, "internal_error", "this instance is still starting"))
         : instance.handle(frame, conn),
     entry: entryPolicy(config, true, () => instance?.auth),
-    route: async (request) => (await mesh.route(request)) ?? (await instance?.route(request)),
+    route: async (request, source) =>
+      (await mesh.route(request)) ?? (await instance?.route(request, source)),
     onConn: (conn, info) => {
       mesh.accept(conn, info);
       instance?.accepted(conn, info);
@@ -313,6 +315,10 @@ export class Instance {
   /** The person's authentication: who may open a connection, and the records
    * that say so (DR-0001). */
   readonly #auth: Auth;
+  /** The forwarding proxies the operator named, read once: a block is config,
+   * and parsing one per request would be work done for every caller to answer
+   * a question the config already settled. */
+  readonly #proxies: readonly Cidr[];
   readonly #handlers: Handlers;
   readonly #capabilities: ReadonlySet<Capability>;
   /** Set the moment shutdown starts, which is the re-entry guard of §8.5 step
@@ -343,6 +349,12 @@ export class Instance {
     now?: () => Timestamp,
   ) {
     this.#conns = wiring?.conns ?? new ConnRegistry();
+    // Config refused anything that does not parse, so what is dropped here is
+    // nothing an operator wrote.
+    this.#proxies = (config.entry?.trusted_proxies ?? []).flatMap((block) => {
+      const parsed = parseCidr(block);
+      return parsed === undefined ? [] : [parsed];
+    });
     this.#mesh = wiring?.mesh;
     this.#boundWs = wiring?.ws;
     // Every capability rests on an upstream, so what is configured is what
@@ -644,7 +656,7 @@ export class Instance {
           },
           // The gateway posts to the address this instance already serves,
           // behind the same entry check (§3.1).
-          route: (request) => this.route(request),
+          route: (request, source) => this.route(request, source),
         }),
       );
     }
@@ -665,11 +677,16 @@ export class Instance {
    * gateway's webhook is the one such route this instance answers itself; the
    * mesh's two are answered before this is asked, because they are served
    * before anything is proven and this instance's own routes are not. */
-  async route(request: Request): Promise<Response | undefined> {
+  async route(request: Request, source?: string): Promise<Response | undefined> {
     // The person's authentication comes first: it is the one route reached
     // before anything is proven, and the gateway's webhook carries its own
     // secret and cannot be confused with it (DR-0001 §2.7).
-    const authorized = await handleAuth(request, { auth: this.#auth, self: this.self }, {});
+    const ip = clientAddress(request, source, this.#proxies);
+    const authorized = await handleAuth(
+      request,
+      { auth: this.#auth, self: this.self },
+      ip === undefined ? {} : { ip },
+    );
     if (authorized !== undefined) return authorized;
     return await this.#gateway.route(request);
   }

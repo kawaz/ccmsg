@@ -109,6 +109,20 @@ instance に届く URL が増えるたびに operator が同期させ続ける�
 `iss` / `aud` + proof (§7.2)、webhook は `Authorization: Bearer` で、どちらも経路自身が
 秘密を持つ。
 
+**前段 proxy は operator が名指した相手だけを信じる。** `entry.trusted_proxies` に CIDR で
+アドレス塊を書き、listener が観測した接続元がそこに含まれる時だけ `X-Forwarded-For` を読む。
+他に判断材料は無い: forwarded ヘッダを書くのは自分の前に居る誰かであり、ポートに届く者なら
+誰でも書けるので、**前段が誰かを config が言うまで、そのヘッダは見知らぬ相手の自己申告**である。
+信じる場合は右から読み、名指した proxy でない最初の値を採る (その右側は自分たちの hop が
+書いた値、左側は最外の proxy と話していた誰かが書ける値)。`source_ips` と別項目なのは問いが
+違うからで、あちらは「そもそも誰が接続してよいか」、こちらは「他人についての証言を誰から
+受け取るか」であり、proxy は「入って良い唯一の相手」でないまま入口に立つのが普通である。
+ここで復元するのは `registered_ip` / `last_used_ip` / `last_refresh.ip` に入る人の IP、つまり
+本人が自分のセッションを見分けるための **手がかり** で、認可には一切使わない (DR-0001 §2.2)。
+取り違えた時の実害は認可の面では小さく、手がかりとしては大きい: 偽装された IP が record に
+残ると、一覧を読む本人を自分から遠ざける手がかりになる。名指しの無い前段で生の接続元を
+そのまま使うのはこのためである。
+
 **人と gateway の入口 (`<endpoint>ws`、`<endpoint>auth/*`、`<endpoint>webhook/<source>`) は
 パスの末尾で照合し、prefix を問わない** (DR-0001 §2.7)。proxy は prefix を剥がさずそのまま渡してよく、
 別名の endpoint や、1 つの origin の裏に複数 instance を束ねる LB が自分の endpoint と
