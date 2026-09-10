@@ -18,7 +18,6 @@ export type AdminRequest =
       readonly admin: "passkey_add";
       readonly request_id: string;
       readonly endpoint?: Endpoint;
-      readonly rp_id?: string;
       readonly name?: string;
       readonly sub?: Subject;
     }
@@ -45,7 +44,6 @@ export function handleAdmin(auth: Auth, request: AdminRequest): DispatchResult {
           request.request_id,
           auth.issue({
             ...(request.endpoint === undefined ? {} : { endpoint: request.endpoint }),
-            ...(request.rp_id === undefined ? {} : { rpId: request.rp_id }),
             ...(request.name === undefined ? {} : { label: request.name }),
             ...(request.sub === undefined ? {} : { sub: request.sub }),
           }),

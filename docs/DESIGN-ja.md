@@ -244,18 +244,21 @@ M4 とも矛盾しない。M4 が禁じるのは派生値をディスクに置�
 **HTTP の 4 経路** (`/auth/challenge` `/auth/register` `/auth/assert` `/auth/refresh`) は
 「`needs_hello: false` の op を HTTP で運ぶもの」で、`request_id` は carrier が合成する。
 末尾照合なのは `ws` と同じ理由である (§3.1)。未認証で叩けるので 4 経路で 1 つの rate limit を
-共有する。CORS は **request の `Origin` のホストが、この instance が持つ relying party
-(credential の `rp_id`、未使用の登録 URL の `rp_id`、自分の endpoint のホスト) のどれかに
-一致するかその配下**なら `Access-Control-Allow-Origin` + `Allow-Credentials` を echo し、
-外れていれば 403 を返す。これは「どの page が答えを読めるか」の境界であって、誰を通すかは
-credential 側が決める。
+共有する。CORS は **request の `Origin` が、この instance が知る endpoint の origin
+(自分の endpoint、credential record の `endpoint`、未使用の登録 URL の `endpoint`) の
+どれかと完全一致**する時だけ `Access-Control-Allow-Origin` + `Allow-Credentials` を echo し、
+外れていれば 403 を返す。**rp_id (ドメイン) では判定しない**: rp_id の配下を許すと兄弟
+サブドメインが `/auth/refresh` を `credentials: "include"` で叩けてしまい、cookie は
+ドメイン単位で付くので本人の access token を読まれる。したがって **webui を endpoint と別の
+サブドメインに置く構成は非対応**である (webui は endpoint の直下に配る)。
 
 **認証は record の endpoint (base URL 全体) に束ねる。** 登録時に登録 URL の claims の
 endpoint を `CredentialRecord.endpoint` に書き、register / assert の受理条件は
 **`clientDataJSON.origin` == endpoint の origin** かつ **request が届いたパスの prefix ==
 endpoint のパス**である。`https://h/` と `https://h/personal/` は別 endpoint で別登録になる
 (rp_id はホストなので両者で同じになりうるが、rp_id は「authenticator がどのドメインに答えるか」で、
-「どの instance に通すか」より粗い)。
+「どの instance に通すか」より粗い)。**rp_id は登録時の endpoint のホストに固定**で、指定する口は
+持たない — registrable suffix を名乗れると、その配下の全ホストでその credential が使えてしまう。
 
 **token は署名しない opaque 値**で、検証は record の lookup である。access は応答の body、
 refresh は httpOnly cookie (`__Secure-ccmsg-<sha256(instance id + 改行 + sub) の先頭 16 hex>`、

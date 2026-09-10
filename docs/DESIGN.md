@@ -271,10 +271,13 @@ which is the footing the supervisor's own control requests stand on.
 are "ops with `needs_hello: false` carried over HTTP", and the carrier synthesizes the
 `request_id`. They are matched by the end of the path for the reason `ws` is (§3.1). They are
 reachable before anything is proven, so the four share one rate limit. CORS echoes
-`Access-Control-Allow-Origin` and `Allow-Credentials` when **the request `Origin`'s host is one of
-the relying parties this instance holds — a credential's `rp_id`, an outstanding registration
-URL's `rp_id`, or the host of its own endpoint — or sits under one**, and answers 403 otherwise.
-That bounds which pages may read an answer; who is admitted is decided by the credential.
+`Access-Control-Allow-Origin` and `Allow-Credentials` only when **the request `Origin` matches, in
+full, one of the endpoint origins this instance knows — its own, a credential record's
+`endpoint`, or an outstanding registration URL's `endpoint`** — and answers 403 otherwise. **The
+RP ID is not what decides this**: it is a domain, and admitting everything under one would let a
+sibling subdomain call `/auth/refresh` with `credentials: "include"` and read the person's access
+token, since a browser attaches the cookie by domain. **Serving the web UI from a subdomain other
+than the endpoint's is therefore not supported** — the UI is served below the endpoint.
 
 **Authentication is bound to the record's endpoint, the base URL whole.** A registration writes
 the endpoint from its URL's claims into `CredentialRecord.endpoint`, and register and assert are
@@ -282,7 +285,9 @@ accepted only where **`clientDataJSON.origin` is the endpoint's origin** and **t
 request arrived at is the endpoint's path**. `https://h/` and `https://h/personal/` are two
 endpoints and take two registrations — the RP ID is the host and may well be the same for both,
 because it says which domain an authenticator answers for, which is coarser than which instance a
-person has been admitted to.
+person has been admitted to. **The RP ID is fixed to the endpoint's host** and there is no way to
+state another: naming a registrable suffix would make the credential usable at every host under
+it.
 
 **Tokens are unsigned opaque values**, verified by looking a record up. The access token is in
 the response body; the refresh token is an httpOnly cookie

@@ -177,7 +177,6 @@ export class Auth {
    * terminal this ran on. Somebody holding the URL alone cannot register. */
   issue(options: {
     readonly endpoint?: Endpoint;
-    readonly rpId?: string;
     readonly label?: string;
     readonly sub?: Subject;
   }): IssuedRegistration {
@@ -198,14 +197,11 @@ export class Auth {
         `endpoint は末尾が / の http(s) base URL です (${endpoint}): ${problems.join("; ")}`,
       );
     }
-    const host = hostOf(endpoint);
-    const rpId = options.rpId ?? host;
-    // The relying party is a domain the endpoint's host belongs to, and nothing
-    // wider: a credential made for a suffix this instance does not sit under
-    // would be usable at every other host under it (§2.3).
-    if (!isRegistrableSuffix(rpId, host)) {
-      throw new OpError("invalid_args", `${rpId} は ${host} の登録可能なドメインではありません`);
-    }
+    // The relying party is the endpoint's own host and nothing wider. A
+    // registrable suffix of it would make the credential usable at every other
+    // host under that suffix, and there is no deployment this instance supports
+    // where that is what was wanted (DR-0001 §2.3).
+    const rpId = hostOf(endpoint);
     const sub = options.sub ?? this.#nextSubject();
     if (this.deps.records.removed(sub)) {
       throw new OpError("forbidden", `${sub} は削除済みなので、この名前では登録できません`);
@@ -600,23 +596,28 @@ export class Auth {
     return [record.rp_id ?? hostOf(record.endpoint)];
   }
 
-  /** The relying parties this instance has anything to do with: the ones its
-   * credentials were made under, the ones its outstanding registration URLs
-   * name, and the host of its own endpoint.
+  /** The origins whose pages may read these answers: this instance's own, the
+   * ones its credentials were registered at, and the ones its outstanding
+   * registration URLs were issued for.
    *
-   * Read by the HTTP carrier to decide whose page it answers with CORS headers
-   * (§2.3). It is a bound on which pages may read an answer, not on who is
-   * admitted: what admits anybody is the credential, checked against the
-   * endpoint the record names. */
-  knownRpIds(): string[] {
-    const names = new Set<string>();
+   * Its own is there because a browser may land here holding a URL another
+   * instance issued — the page it runs the exchange from is then this
+   * instance's, and the issuer is only asked to spend the URL (§2.6).
+   *
+   * Read by the HTTP carrier, which compares them whole (§2.3). Not the relying
+   * party: an RP ID is a domain, so a page at any host under it would be let in
+   * — and `/auth/refresh` answers a cookie the browser attaches by domain, so a
+   * sibling subdomain admitted here would read a person's access token. What
+   * this instance serves is its endpoints, so its endpoints are the answer. */
+  knownOrigins(): string[] {
+    const origins = new Set<string>();
     for (const record of this.deps.records.credentials()) {
-      names.add(record.rp_id ?? hostOf(record.endpoint));
+      origins.add(originOf(record.endpoint));
     }
-    for (const held of this.#pending.values()) names.add(held.claims.rp_id);
+    for (const held of this.#pending.values()) origins.add(originOf(held.claims.endpoint));
     const endpoint = this.deps.endpoint();
-    if (endpoint !== undefined) names.add(hostOf(endpoint));
-    return [...names];
+    if (endpoint !== undefined) origins.add(originOf(endpoint));
+    return [...origins];
   }
 
   // --- tokens (§2.4) ---
@@ -1016,14 +1017,4 @@ export function servesPath(endpoint: Endpoint, path: string): boolean {
  * `clientDataJSON.origin`. */
 export function originOf(endpoint: Endpoint): string {
   return new URL(endpoint).origin;
-}
-
-/** Whether a relying party id is the host or a domain the host sits under.
- *
- * The WebAuthn rule as far as this instance can check it: a credential made
- * for a suffix the endpoint does not sit under would be usable at hosts this
- * instance has nothing to do with. Whether the suffix is one a registrar hands
- * out is the browser's to refuse, and it does. */
-export function isRegistrableSuffix(rpId: string, host: string): boolean {
-  return host === rpId || host.endsWith(`.${rpId}`);
 }

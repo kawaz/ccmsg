@@ -7,6 +7,7 @@ import { type Env, type Instance, isRunning, start } from "../src/instance/index
 import {
   Auth,
   AuthRecords,
+  handleAuth,
   cookieName,
   cookiePath,
   originOf,
@@ -253,7 +254,7 @@ describe("authenticating and the tokens that follow (§2.4, §2.5)", () => {
     expect((await post(at, "refresh", {}, { cookie: standing })).status).toBe(401);
   });
 
-  test("an origin under no relying party of this instance is refused before anything else", async () => {
+  test("an origin that is none of this instance's endpoints is refused before anything else", async () => {
     const at = await serving();
     // A registration URL exists, so this instance does hold a relying party —
     // the refusal below is about the origin asking and not about there being
@@ -267,11 +268,46 @@ describe("authenticating and the tokens that follow (§2.4, §2.5)", () => {
     expect(refused.status).toBe(403);
   });
 
-  test("a preflight from a page under this instance's relying party is answered with credentials allowed", async () => {
+  test("a sibling of this instance's own host is not this instance", async () => {
+    // The relying party is a domain, so every host under it is one an
+    // authenticator will answer for. That is not who may read these answers:
+    // `/auth/refresh` hands back an access token, and a browser attaches the
+    // cookie for it by domain, so a neighbour let in on the domain alone would
+    // read the person's token. The comparison is of whole origins.
+    const dir = mkdtempSync(join(tmpdir(), "ccmsg-auth-cors-"));
+    const self = "0".repeat(32);
+    const auth = new Auth({
+      self,
+      records: new AuthRecords({ dir, self, publish: () => {} }),
+      endpoint: () => "https://ui.example.com/",
+      unit: "unit",
+    });
+    auth.issue({});
+    expect(auth.knownOrigins()).toEqual(["https://ui.example.com"]);
+    const deps = { auth, self };
+    const preflight = async (origin: string) =>
+      (
+        await handleAuth(
+          new Request("https://ui.example.com/auth/refresh", {
+            method: "OPTIONS",
+            headers: { origin },
+          }),
+          deps,
+        )
+      )?.status;
+    expect(await preflight("https://evil.example.com")).toBe(403);
+    expect(await preflight("https://example.com")).toBe(403);
+    // A different port is a different origin, and so is a different scheme.
+    expect(await preflight("https://ui.example.com:8443")).toBe(403);
+    expect(await preflight("http://ui.example.com")).toBe(403);
+    expect(await preflight("https://ui.example.com")).toBe(204);
+  });
+
+  test("a preflight from a page at this instance's own endpoint is answered with credentials allowed", async () => {
     const at = await serving();
     // What makes this instance answer for that page is the registration URL an
-    // operator issued for it: no list of origins is configured, and the relying
-    // party of the URL is where the answer comes from (DR-0001 §2.3).
+    // operator issued for it: no list of origins is configured, and the
+    // endpoint the URL names is where the answer comes from (DR-0001 §2.3).
     at.instance.auth.issue({ endpoint: servedAt(at) });
     const answer = await fetch(`http://${at.instance.http[0] as string}/auth/assert`, {
       method: "OPTIONS",

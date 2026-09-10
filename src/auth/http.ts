@@ -56,22 +56,6 @@ export function endpointPath(pathname: string): string {
   return at === -1 ? "/" : pathname.slice(0, at + 1);
 }
 
-/** Whether a page at this origin may read these answers: its host is one of
- * the relying parties this instance holds, or sits under one.
- *
- * A relying party is a domain and an origin is a scheme, host and port, so the
- * comparison is of hosts — the same containment WebAuthn itself applies when it
- * decides which pages an authenticator will answer for. */
-function underKnownRpId(origin: string, rpIds: readonly string[]): boolean {
-  let host: string;
-  try {
-    host = new URL(origin).hostname;
-  } catch {
-    return false;
-  }
-  return rpIds.some((rpId) => host === rpId || host.endsWith(`.${rpId}`));
-}
-
 /** The cookie path for a request: everything up to and including its `/auth/`.
  *
  * It narrows what the browser sends where, and nothing more — same-origin
@@ -127,11 +111,12 @@ export async function handleAuth(
   const route = authRouteOf(url.pathname);
   if (route === undefined) return undefined;
   const origin = request.headers.get("origin");
-  // A page from a domain this instance holds no relying party for is refused
-  // before anything else, including the preflight that would tell it to try.
-  // It bounds who may read an answer; what admits anybody is the credential,
-  // held to the endpoint its record names (§2.3).
-  if (origin !== null && !underKnownRpId(origin, deps.auth.knownRpIds())) {
+  // A page from an origin this instance is not one of is refused before
+  // anything else, including the preflight that would tell it to try. Compared
+  // whole rather than by domain: `/auth/refresh` answers with a person's access
+  // token, and a browser attaches the cookie it is asked for by domain, so a
+  // sibling subdomain let in here could read that token (§2.3).
+  if (origin !== null && !deps.auth.knownOrigins().includes(origin)) {
     return new Response("Forbidden", { status: 403 });
   }
   // These routes change state and are reachable before anything is proven, so
