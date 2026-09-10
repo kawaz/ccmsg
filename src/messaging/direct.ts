@@ -327,6 +327,72 @@ export class ClaudeCodeSocketRoute implements DirectRoute {
   }
 }
 
+/** How the Codex CLI is run, and what it answered. Named so a test can watch
+ * what would be run without a thread of anybody's being written to. */
+export type RunCodex = (args: readonly string[], env: Env) => Promise<{ code: number }>;
+
+type Env = Record<string, string>;
+
+const runCodex: RunCodex = async (args, env) => {
+  let spawned: Bun.Subprocess<"ignore", "ignore", "ignore">;
+  try {
+    spawned = Bun.spawn({
+      cmd: ["codex", ...args],
+      env: { ...process.env, ...env },
+      stdout: "ignore",
+      stderr: "ignore",
+    });
+  } catch {
+    // No `codex` on `PATH`, which is the same as the route not applying: the
+    // message goes by route (b) and nothing about it is lost (§4.1).
+    return { code: 127 };
+  }
+  return { code: await spawned.exited };
+};
+
+export interface QueueRouteOptions {
+  /** The one config home this instance answers for (M6). It is named to the
+   * CLI rather than inherited, because the daemon's own environment says which
+   * config home it serves in its own words and Codex reads only its own. */
+  readonly configHome: string;
+  readonly run?: RunCodex;
+}
+
+/** Route (a) against a Codex thread's queue (§4.1).
+ *
+ * Codex has no socket a message can be written to: what it has is a queue per
+ * thread, held by the app-server the thread belongs to, and `codex queue` is
+ * the way in that ccmsg does not have to reimplement. A queued message is
+ * delivered when the thread is idle, after the current turn when it is busy,
+ * and on resume when it is not loaded (codex-cli 0.153.4).
+ *
+ * So `delivered` here means the queue took it, which is the same promise route
+ * (a) makes on the other harness: the receiving session holds the message, and
+ * nothing says the model has read it. There is no receipt channel, so there is
+ * no `refused` — a thread that turns a message away does so where nothing
+ * reports back, and a queue that would not take it fails the command and falls
+ * to route (b). */
+export class CodexQueueRoute implements DirectRoute {
+  readonly #run: RunCodex;
+
+  readonly #env: Env;
+
+  constructor(options: QueueRouteOptions) {
+    this.#run = options.run ?? runCodex;
+    this.#env = { CODEX_HOME: options.configHome };
+  }
+
+  async send(sid: Sid, message: InboxMessage): Promise<DirectOutcome> {
+    const { code } = await this.#run(
+      ["queue", "--thread", sid, "--message", renderDirectDelivery(message)],
+      this.#env,
+    );
+    return code === 0 ? "delivered" : "unavailable";
+  }
+
+  close(): void {}
+}
+
 /** The two lines one send writes: the auth frame the harness's own senders
  * write first, then the message.
  *

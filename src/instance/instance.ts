@@ -30,6 +30,7 @@ import {
 } from "../files/index.ts";
 import {
   ClaudeCodeSocketRoute,
+  CodexQueueRoute,
   Delivery,
   DisabledDirectRoute,
   type DirectRoute,
@@ -420,6 +421,7 @@ export class Instance {
     // here, so a sid resolves to the same file whichever way it is reached.
     const transcriptFiles = new TranscriptFiles({
       configHome: paths.configHome,
+      harness: config.harness,
       announced: (sid) => this.#sessions.transcriptPath(sid),
     });
 
@@ -442,6 +444,7 @@ export class Instance {
     // 6. `last_live` and the inbox, read as the domains are constructed.
     this.#sessions = new Sessions({
       self: this.self,
+      harness: config.harness,
       ...(this.#mesh === undefined ? {} : { endpoint: this.#mesh.self }),
       authExpiresAt: (conn) => this.#auth.expiresAt(conn),
       configHome: paths.configHome,
@@ -490,9 +493,15 @@ export class Instance {
 
     const inbox = new Inbox(inboxPath(paths.stateDir));
     inbox.load();
-    this.#direct = config.direct_delivery
-      ? new ClaudeCodeSocketRoute({ configHome: paths.configHome })
-      : new DisabledDirectRoute();
+    // Route (a) is the harness's own way in (§4.1): Claude Code's messaging
+    // socket, Codex's thread queue. Which one an instance speaks follows the
+    // config home it answers for (§3.7), and the flag turns the route off for
+    // either.
+    this.#direct = !config.direct_delivery
+      ? new DisabledDirectRoute()
+      : config.harness === "codex"
+        ? new CodexQueueRoute({ configHome: paths.configHome })
+        : new ClaudeCodeSocketRoute({ configHome: paths.configHome });
     this.#delivery = new Delivery({
       self: this.self,
       sessions: this.#sessions,
