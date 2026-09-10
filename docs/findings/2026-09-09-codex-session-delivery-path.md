@@ -180,6 +180,30 @@ CLI source では、UUID でなければ exact session name を lookup し、次
 - notify schema: payload key が hooks の snake_case と異なる kebab-case であり、`thread-id` と `turn-id` を混同しない parser が必要。
 - hook trust / install: command hooks は trust gate を持つ。plugin installer が hook 配置だけでなく user consent と非破壊 merge をどう扱うか確認が必要。
 
+## 走行中の thread が在ることの証拠 (2026-09-10 追記)
+
+`$CODEX_HOME/thread-writer-locks/` に thread 1 つにつき 1 つの lock file が現れる。隔離した `CODEX_HOME` と localhost の mock Responses API で `codex exec` を走らせ、turn の最中と終了後に同ディレクトリを読んだ結果は次の通り。
+
+| 時点 | `thread-writer-locks/` の中身 |
+|---|---|
+| 起動前 | ディレクトリ自体が無い |
+| turn 進行中 (応答を遅延させて観測) | `.coordination.lock` と `<thread-uuid>.lock` |
+| 正常終了後 | `.coordination.lock` のみ |
+| `SIGKILL` 後 | `.coordination.lock` と `<thread-uuid>.lock` (残留) |
+
+`<thread-uuid>` は同じ実行の `SessionStart.session_id`・rollout file 名の UUID と一致した。`.coordination.lock` は thread を名乗らない。
+
+upstream (`codex-rs/rollout/src/writer_lock.rs`) では lock は flock (`try_lock`) で保持され、`acquire` の際に `remove_stale_thread_locks` が「flock を取れる lock = 誰も掴んでいない lock」を削除する。したがって `SIGKILL` で残った lock は**次に誰かが thread を書き始めるまで**残り、その時点で掃除される。flock を試せば stale 判定は可能である。
+
+## ccmsg のセッションが Codex から起動された場合の環境 (2026-09-10 追記)
+
+親セッションの環境をそのまま継承する。Claude Code のセッションから `codex exec` を起動し、`SessionStart` hook の `env` を保存した結果、hook の環境には次が同時に立っていた。
+
+- `CODEX_HOME` (起動側が指定した値)
+- `CLAUDE_CONFIG_DIR`、`CLAUDE_CODE_SESSION_ID`、`CLAUDE_CODE_MESSAGING_SOCKET` 等、親 Claude Code セッションのもの一式
+
+**hook の環境に thread id は入らない**。入っていたのは `CODEX_HOME` だけで、`CODEX_THREAD_ID` / `CODEX_SESSION_ID` は無かった。両者の名前は codex 本体のバイナリ内に存在するが、実行コマンド向けの環境注入を観測できていない (0.153.4 は Responses request に `tools` を送らないため、mock model から shell tool を呼ばせられなかった)。
+
 ## 一次資料
 
 実機 0.153.4 に最も近い公開 tag として `rust-v0.153.0`、commit `41e22fee981a63b3698df7ed36bad393cda24715` を参照した。0.153.0 から 0.153.4 の patch 差は未観測だが、この文書で引用した CLI help、hook payload、notify payload、queue failure は 0.153.4 実機でも一致した。
