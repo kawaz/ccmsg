@@ -30,6 +30,10 @@ reverse proxy を置く構成で空になる。daemon から見える接続元�
 接続元 IP を復元できるが、無条件に信頼すると forwarded ヘッダは誰でも
 書けるため偽装が可能になる。
 
+## kawaz 裁定 (2026-09-10 r292m66)
+
+信頼する前段を CIDR で設定できるようにする: `entry.trusted_proxies: ["127.0.0.0/8", "100.64.0.0/10", …]`。接続元がここに含まれる時だけ `X-Forwarded-For` / `X-Forwarded-Host` / `X-Forwarded-Proto` を信じる (最右の信頼できない値を採る)。`source_ips` (入口の許可) とは目的が違うので別項目。含まれない接続元からの forwarded ヘッダは無視して生の接続元を使う。
+
 ## 背景
 
 本番 (personal instance、caddy 8643) で観測 (2026-09-10)。
