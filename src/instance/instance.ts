@@ -495,7 +495,7 @@ export class Instance {
     inbox.load();
     // Route (a) is the harness's own way in (§4.1): Claude Code's messaging
     // socket, Codex's thread queue. Which one an instance speaks follows the
-    // config home it answers for (§3.7), and the flag turns the route off for
+    // config home it answers for (§3.8), and the flag turns the route off for
     // either.
     this.#direct = !config.direct_delivery
       ? new DisabledDirectRoute()

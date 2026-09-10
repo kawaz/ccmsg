@@ -46,7 +46,7 @@ export interface OwnSessions {
   present(): ReadonlySet<Sid>;
 }
 
-/** The one this config home runs (§3.7). */
+/** The one this config home runs (§3.8). */
 export function ownSessions(
   harness: Harness,
   configHome: string,

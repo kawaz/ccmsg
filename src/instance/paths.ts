@@ -74,7 +74,7 @@ export type Env = Record<string, string | undefined>;
  * and not the other's, so the order only decides a shell that has set both —
  * where Claude Code's wins because it is what an existing setup has exported
  * for every process, ccmsg's own commands included. The default is Claude
- * Code's home for the same reason (§3.7). */
+ * Code's home for the same reason (§3.8). */
 export function resolveConfigHome(env: Env = process.env): string {
   for (const facts of Object.values(HARNESS)) {
     const named = env[facts.homeEnv];

@@ -20,7 +20,7 @@ import { CommandError } from "./link.ts";
  *
  * The harness's own settings file is what says the directory is a config home
  * rather than any directory somebody typed, so which file is looked for
- * follows which harness the directory runs (§3.7). Checked where a directory
+ * follows which harness the directory runs (§3.8). Checked where a directory
  * is named — `add` and `run` — rather than at every use, so the mistake is
  * caught when it is made. */
 export function configHome(dir: string, harness: Harness = DEFAULT_HARNESS): string {
@@ -88,7 +88,7 @@ export function registered(env: Env): Target[] {
 /** Add a config home to the shared file. The settings it will run with are the
  * defaults until somebody edits its entry, so the entry starts empty — save
  * for the harness, which is written down when it is not the default because it
- * is the one setting the directory itself cannot be asked for (§3.7). */
+ * is the one setting the directory itself cannot be asked for (§3.8). */
 export function add(env: Env, dir: string, harness: Harness = DEFAULT_HARNESS): InstanceRow {
   const home = configHome(dir, harness);
   const file = resolvePaths(env).configFile;

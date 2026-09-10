@@ -323,6 +323,48 @@ key で畳む。roles は `instance` だけで、relay が `caller` を付ける
 `passkey remove` は sub 単位の tombstone を打ち、tombstone はその key 配下への以後の
 書き込みを拒む (LWW の例外)。credential の tombstone に保持期限は無く、family のそれは 7 日。
 
+### 3.8 ハーネス
+
+instance は config home 1 つに答える (A2)。その config home を持っている**プログラムが何か**は
+instance の属性であり、**契約には出さない**。`ccmsg daemon add --harness <種別> <dir>` で
+共通 config の当該 entry に書き、instance は起動時にそれを読む (§8.2)。既定は `claude` で、
+既存の entry は何も書き換えずにそのまま動く。
+
+**発見ではなく設定にする理由**: 空の config home はどのプログラムのものかを何も語らない。
+推測する instance は、最初のセッションが始まるまでの間ずっと別の木を歩くことになる。
+
+差分は次の 6 点だけで、これ以外に harness を読む場所は無い。
+
+| 何が | claude | codex |
+|---|---|---|
+| config home を指す環境変数 | `CLAUDE_CONFIG_DIR` | `CODEX_HOME` |
+| config home だと言う file | `settings.json` | `config.toml` |
+| セッションが在ることの証拠 | `sessions/<pid>.json` (pid・cwd・status を持つ) | `thread-writer-locks/<thread-id>.lock` (thread id しか持たない) |
+| transcript の置き場と名前 | `projects/<cwd を潰した名前>/<sid>.jsonl` | `sessions/<年>/<月>/<日>/rollout-<開始時刻>-<thread-id>.jsonl` |
+| 直送 (経路 (a)) | messaging socket へ書く (§4.1) | `codex queue --thread <sid> --message <本文>` |
+| plugin の置き場 | agent の CLI に登録させる | config home の `hooks.json` と `skills/` へ直接置く |
+
+sid は両者とも harness 自身が名乗る値をそのまま使う。codex では thread の UUID がそれで、
+`SessionStart` hook・rollout の file 名・`codex queue --thread` のどれでも同じ値だった
+(codex-cli 0.153.4 実測)。revert した thread の rollout は `<thread-id>_<rollout-id>` になるが、
+**session を名乗るのは前半**なので、ccmsg が引くのは同じ 1 つのセッションである。
+
+**`agents` topic は Claude Code 固有である。** 契約の `AgentInfo` は pid・cwd・kind を必須に
+持つ Claude Code の一覧そのもの (契約 `AgentInfo` の upstream 表記) で、lock file はそのどれも
+持たない。よって codex の instance は `agents` に**何も出さない**。セッションがどこで動いて
+いるか・何という名前かは hello が言ったことで、それは harness に依らず registry が持つ。
+
+**stale lock**: 正常に終わった thread の lock は消える。プロセスが即殺された場合は残り
+(実測)、lock は pid を持たないので「まだ誰か掴んでいるか」を ccmsg から問う手段が無い。
+その thread は Codex 自身が stale lock を掃除するまで生存として読まれる。Claude Code の
+state file が残る場合と向きは同じで、違うのは pid で確かめられないことである。
+
+**hooks の trust**: Codex は一度人が確認した hook しか実行しない。`plugin install codex` は
+file を置き、trust が要ることを `needs` として答えるだけで、trust 自体は書かない
+(trust は「このプログラムを走らせてよいか」という問いで、代わりに答えるのは install の
+仕事ではない)。`hooks.json` は config home の持ち物なので**併合**し、uninstall では
+ccmsg が置いた entry だけを外す。
+
 ## 4. 配送
 
 契約の `message_send` は「宛先 sid に届ける」だけを約束し、届かなかった場合は理由を返す。
@@ -332,7 +374,7 @@ daemon 側の実装はその 2 つ (配送手段と、届かない理由の判�
 
 | 経路 | 内容 | 前提 |
 |---|---|---|
-| (a) Claude Code の messaging socket へ直接 | `sessions/<pid>.json` の `messagingSocketPath` に connect し、config home の 0600 key の `peerToken` で認証してから user frame を書く | 非公式プロトコル。`peerProtocol` の世代一致 |
+| (a) harness 自身の入口へ直接 | Claude Code は `sessions/<pid>.json` の `messagingSocketPath` に connect し、config home の 0600 key の `peerToken` で認証してから user frame を書く。Codex は `codex queue --thread <sid>` に本文を渡す (§3.8) | 非公式プロトコル。Claude Code では `peerProtocol` の世代一致、Codex では `codex` が PATH に在ること |
 | (b) topic `inbox` の delta として push | セッション側の購読 (subscribe を張っている常駐) 経由で届ける | セッションが購読していること |
 
 **(a) を優先し、失敗したら (b) にフォールバックする** (DV-Q1)。理由は 2 つ。
@@ -446,7 +488,7 @@ webui が生の値を組み合わせて分類すると、instance ごとに解�
 | 入力 | 何が分かるか | 取り方 |
 |---|---|---|
 | 接続 | ccmsg と話しているか、いつ話したか | transport (イベント) |
-| `sessions/` の各 `<pid>.json` | **セッションの存在**と `waiting` (dialog)、messaging socket | 自 config home のみ (M6)。**判定が要る時にその場で読む** |
+| harness 自身の一覧 (§3.8) | **セッションの存在**と、Claude Code ではさらに `waiting` (dialog)・messaging socket | 自 config home のみ (M6)。**判定が要る時にその場で読む** |
 | llm-gateway の request / response | **実際に推論が走っているか** (= 忙しさ) | webhook (push)。**この instance が知っている sid にだけ効く** |
 | `last_live` + `stopped_at` | 前回稼働中・意図して止めた | 自分が書いたファイル |
 | transcript の fold | API error で止まっているか、最後の人間入力 | tail |
@@ -457,6 +499,11 @@ webui が生の値を組み合わせて分類すると、instance ごとに解�
 その場でディレクトリを読む。監視と poll は「変化を購読者へ push する」ための資源であって、
 答えの取得経路ではない。混同すると、誰も購読していない間は生きているセッションが
 `session_not_found` になり、生きたままのセッションが last_live へ「消えた」と書かれる。
+
+**codex のセッションは端末を名乗らない。** 分類の「管理外」は「生きているが、こちらから
+打ち込む手がかりが無い」の意味で (§5.2)、Codex の thread に端末として打ち込む道は無い。
+よって接続を持たない codex の生存セッションは `live_unmanaged` として読まれる。
+配送はこれとは別で、経路 (a) が thread の queue に載せる (§4.1)。
 
 **`claude agents` の subprocess は持たない** (DV-Q6)。自 config home の `sessions/` を
 監視すれば同じ集合が得られるので、5 秒ごとの子プロセス起動が丸ごと消える (M3)。

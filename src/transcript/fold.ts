@@ -135,7 +135,7 @@ export class TranscriptFold {
     if (!isRecord(row)) return false;
     // A Codex rollout line settles one of these facts and none of the others,
     // so it is folded on its own rather than run past readers of records it
-    // does not have (§3.7).
+    // does not have (§3.8).
     const rollout = rolloutRecord(row, str(row["type"]));
     if (rollout !== undefined) return this.#foldRollout(rollout);
     // Every value this fold derives, derived from the one parse (M5).

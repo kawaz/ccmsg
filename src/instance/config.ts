@@ -92,7 +92,7 @@ export interface UpstreamConfig {
 }
 
 export interface InstanceConfig {
-  /** Which harness this config home runs (§3.7).
+  /** Which harness this config home runs (§3.8).
    *
    * A setting rather than something discovered, because it decides where the
    * instance looks before there is anything there to look at: an empty config

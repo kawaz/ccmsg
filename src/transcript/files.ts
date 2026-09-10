@@ -7,7 +7,7 @@ import { OpError } from "../dispatch/index.ts";
 const SUFFIX = ".jsonl";
 
 /** Where one harness keeps transcripts under its config home, and how a file
- * there says which session it belongs to (§3.7).
+ * there says which session it belongs to (§3.8).
  *
  * Two facts, because the two harnesses file the same thing differently. Claude
  * Code keeps one directory per working directory and names the file after the
@@ -70,7 +70,7 @@ const TEAMMATE = /^[A-Za-z0-9_-]{1,64}$/;
  * (M6) — nothing searches for another one. */
 export interface TranscriptFilesDeps {
   readonly configHome: string;
-  /** Which harness's tree is under it (§3.7). */
+  /** Which harness's tree is under it (§3.8). */
   readonly harness: Harness;
   /** Where a connected session said its transcript is (§5.1). A session that
    * never greeted has none, and the walk below answers for it. */

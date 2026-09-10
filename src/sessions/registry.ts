@@ -29,7 +29,7 @@ import { stoppedOn } from "./status.ts";
 import { TerminalCache, type TerminalReader } from "./terminals.ts";
 
 /** What the harness says at one instant: the rows it reports, and which
- * sessions it says are there (§3.7).
+ * sessions it says are there (§3.8).
  *
  * Two readings of one moment, passed together so a caller answering several
  * questions about that moment reads once. They are the same set for a harness
@@ -42,7 +42,7 @@ interface Own {
 
 /** What the sessions domain needs from the instance around it. */
 export interface SessionsDeps {
-  /** Which harness this config home runs (§3.7). It decides what says a
+  /** Which harness this config home runs (§3.8). It decides what says a
    * session is there and, through that, what `agents` can report. */
   readonly harness: Harness;
   readonly self: InstanceId;

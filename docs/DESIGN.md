@@ -362,6 +362,52 @@ writes a tombstone per subject, and a tombstone refuses every later write under 
 exception to last-write-wins). A credential's tombstone is kept without end; a family's for seven
 days.
 
+### 3.8 Harnesses
+
+An instance answers for one config home (A2). **Which program owns that config home** is an
+attribute of the instance and **is not stated in the contract**. `ccmsg daemon add --harness
+<kind> <dir>` writes it into that entry of the shared config, and the instance reads it at
+startup (§8.2). The default is `claude`, so an existing entry runs unchanged.
+
+**Why a setting rather than a discovery**: an empty config home says nothing about the program
+it belongs to. An instance that guessed would walk the wrong tree for the whole of its first
+session.
+
+The differences are these six and nothing else reads the harness.
+
+| What | claude | codex |
+|---|---|---|
+| Environment variable naming the config home | `CLAUDE_CONFIG_DIR` | `CODEX_HOME` |
+| The file that says "this is a config home" | `settings.json` | `config.toml` |
+| Evidence that a session is there | `sessions/<pid>.json` (carries pid, cwd, status) | `thread-writer-locks/<thread-id>.lock` (carries only the thread id) |
+| Where transcripts live, and their names | `projects/<flattened cwd>/<sid>.jsonl` | `sessions/<year>/<month>/<day>/rollout-<start>-<thread-id>.jsonl` |
+| Direct delivery (route (a)) | Write to the messaging socket (§4.1) | `codex queue --thread <sid> --message <text>` |
+| Where the plugin goes | Registered through the agent's own CLI | Written straight into the config home's `hooks.json` and `skills/` |
+
+For both, the sid is the value the harness itself states. On Codex that is the thread UUID, and
+the `SessionStart` hook, the rollout's filename and `codex queue --thread` all carried the same
+one (measured against codex-cli 0.153.4). A reverted thread's rollout is named
+`<thread-id>_<rollout-id>`, and **the first half is what names the session**, so ccmsg resolves
+it to the same single session.
+
+**The `agents` topic is Claude Code's own.** The contract's `AgentInfo` requires a pid, a cwd
+and a kind — it is Claude Code's own list (see the upstream note on `AgentInfo`) — and a lock
+file carries none of them. So a Codex instance reports **nothing** on `agents`. Where a session
+runs and what it is called is what its greeting said, and the registry holds that for every
+harness alike.
+
+**Stale locks**: a thread that ends normally takes its lock with it. A process killed outright
+leaves it behind (measured), and a lock carries no pid, so ccmsg has no way to ask whether
+anybody still holds it. That thread reads as present until Codex sweeps the stale lock itself.
+This runs in the same direction as a Claude Code state file left behind; what differs is that
+there is no pid to check it against.
+
+**Hook trust**: Codex will not run a command hook a person has not reviewed. `plugin install
+codex` lays the files down and answers that trust is required in `needs`; it does not write the
+trust itself (trust is Codex asking whether this program may run, and answering that on
+somebody's behalf is not an install's business). `hooks.json` belongs to the config home, so it
+is **merged**, and uninstall takes out only the entries ccmsg put there.
+
 ## 4. Delivery
 
 The contract's `message_send` promises only "deliver to the destination sid," returning a
@@ -372,7 +418,7 @@ delivery means, and determining the reason for non-delivery.
 
 | Route | Content | Prerequisites |
 |---|---|---|
-| (a) Directly to Claude Code's messaging socket | Connect to the `messagingSocketPath` in `sessions/<pid>.json`, authenticate with the config home's 0600 `peerToken` key, then write a user frame | Unofficial protocol. `peerProtocol` generation must match |
+| (a) Directly to the harness's own way in | Claude Code: connect to the `messagingSocketPath` in `sessions/<pid>.json`, authenticate with the config home's 0600 `peerToken` key, then write a user frame. Codex: hand the text to `codex queue --thread <sid>` (§3.8) | Unofficial protocol. On Claude Code the `peerProtocol` generation must match; on Codex `codex` must be on `PATH` |
 | (b) Push as a delta of the `inbox` topic | Delivered via the receiving session's subscription (a long-running process holding a subscribe) | The session must be subscribed |
 
 **Prefer (a); fall back to (b) on failure** (DV-Q1). Two reasons.
@@ -506,7 +552,7 @@ drifts per instance.
 | Input | What it tells us | How it's obtained |
 |---|---|---|
 | Connection | Whether it's talking to ccmsg, and when it last did | transport (events) |
-| Each `sessions/<pid>.json` in `sessions/` | **The session's existence** and `waiting` (dialog), the messaging socket | Own config home only (M6). **Read where a judgement needs it** |
+| The harness's own list (§3.8) | **The session's existence**, and on Claude Code also `waiting` (dialog) and the messaging socket | Own config home only (M6). **Read where a judgement needs it** |
 | llm-gateway's request / response | **Whether inference is actually running** (= busyness) | webhook (push). **Counts only for sids this instance knows** |
 | `last_live` + `stopped_at` | Previously running / intentionally stopped | a file we wrote ourselves |
 | transcript's fold | Whether it's stopped on an API error, the last human input | tail |
@@ -519,6 +565,12 @@ where a judgement needs it: `message_send` deciding on an addressee, the recompu
 to subscribers, not the route by which an answer is obtained. Confusing the two makes a live
 session `session_not_found` while nobody is subscribed, and writes a session that is still
 running into `last_live` as gone.
+
+**A Codex session names no terminal.** "Unmanaged" in the classification means "alive, but with
+no handle to type into" (§5.2), and there is no way to type into a Codex thread the way a
+terminal is typed into. So a live Codex session this instance holds no connection to reads as
+`live_unmanaged`. Delivery is a separate matter: route (a) puts the message on the thread's
+queue (§4.1).
 
 **No subprocess for `claude agents`** (DV-Q6). Watching our own config home's `sessions/`
 yields the same set, so the child-process launch every 5 seconds disappears entirely (M3).
