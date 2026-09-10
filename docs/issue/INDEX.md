@@ -29,6 +29,7 @@ wire の契約は [kawaz/ccmsg-protocol](https://github.com/kawaz/ccmsg-protocol
 
 | date | category | status | slug | 概要 |
 |---|---|---|---|---|
+| 2026-09-10 | bug | open | [service-start-after-register-does-not-bootstrap](./2026-09-10-service-start-after-register-does-not-bootstrap.md) | `ccmsg service unregister` → `register` → `start` で `service status`… |
 | 2026-09-10 | design | open | [registered-ip-behind-proxy](./2026-09-10-registered-ip-behind-proxy.md) | registered_ip/last_used_ip が caddy 越しで空になる。X-Forwarded-For を信頼条… |
 | 2026-09-09 | design | open | [codex-plugin-delivery-via-thread-queue](./2026-09-09-codex-plugin-delivery-via-thread-queue.md) | codex plugin: 配送は `codex queue --thread <sid>`、hello でハーネス種別を名乗る |
 | 2026-09-09 | design | open | [mesh-tls-trust-root](./2026-09-09-mesh-tls-trust-root.md) | mesh-peer-auth の信頼の根は TLS サーバ証明書 (2 層) だが、daemon の listener... |
