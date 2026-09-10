@@ -298,6 +298,19 @@ describe("the plugin's files", () => {
     // The one thing a session has to do with a message it receives.
     expect(skill).toContain("Reply with: ccmsg reply");
   });
+
+  test("the skill says how to hold a conversation, not only which command to run", async () => {
+    const { read } = await laid();
+
+    const skill = await read("skills/ccmsg/SKILL.md");
+    // Who the other session is to this one: something to hand work to, not a
+    // meeting of equals to open with greetings and close with thanks.
+    expect(skill).toContain("サブエージェント");
+    expect(skill).toContain("社交辞令");
+    // The person is watching every session already, so what passed between two
+    // of them is not news to carry back.
+    expect(skill).toContain("リレー");
+  });
 });
 
 describe("ccmsg plugin status", () => {
