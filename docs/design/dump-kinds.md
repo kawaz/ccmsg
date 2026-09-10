@@ -2,7 +2,7 @@
 
 dump は transcript の行をそのまま並べるのではなく、**アイテム型**に分類してから型ごとの表示コンポーネントでテキストに落とす。webui の Timeline が行を単位に分けてコンポーネントを割り当てているのと同じ構造を、出力先がテキストになっただけのものとして持つ。
 
-主語は **main セッション**。「誰が誰に」は main から見た `in` / `out` で表す。範囲は時刻または record 位置で切る。
+主語は既定で **main セッション**、指定すればその配下の worker 1 体。「誰が誰に」は主語から見た `in` / `out` で表す。範囲は時刻または record 位置で切る。
 
 ## 1. 型の体系
 
@@ -199,7 +199,45 @@ peer   9f2c1ab4   ccmsg-webui/main
 
 csa の turn 番号 / marker は **採らない**。turn 番号はファイルを読み直すたびに振り直される派生値で、`until_uuid` が同じ役割を安定した名前で果たしている。ただし turn は各アイテムの属性としては出す (見出しの `10:14:02` の隣に置ける)。webui の Timeline も位置は offset と uuid で指す。
 
-## 4. preset
+## 4. 主語の指定
+
+やり方を盗みたい相手が worker のことがある。親の dump に出るのは Agent 呼び出しの指示と返ってきた答えだけで、その worker が実際に何を叩いて何を読んだかは worker 自身の transcript にしかない。dump の対象はセッションだけでなく **worker 1 体**も指せる。
+
+### 対象の記法
+
+```
+<sid>                      main セッション (既定)
+<sid>/agent-<agentId>      その worker (= <sid>/subagents/agent-<agentId>.jsonl)
+```
+
+`agent-` の接頭辞はファイル名の形をそのまま採る。sid と agent id はどちらも不透明な文字列で、区切りを見ただけでどちらがどちらか分かる必要があるため。
+
+### 主語が worker のときの各型
+
+型の定義は変えない。主語が入れ替わることで指すものが移る。
+
+| 型 | 主語が main | 主語が worker |
+|---|---|---|
+| `message:user:in` | 人 → main の発言 | **親 → worker の指示書** (Agent tool の `input.prompt`。worker の transcript では `parentUuid` が `null` の先頭 user 行) |
+| `message:user:out` | main → 人 への応答 | **worker → 親 への回答** (assistant の text。末尾のものが最終回答、途中のものも同型) |
+| `message:sub:out` / `:in` | main → subagent とその答え | **worker が呼んだ孫 Agent** とその答え |
+| `message:session:*` | main と他セッションの往復 | worker が `ccmsg` を叩いた場合のみ現れる |
+| `thinking` / `tool:*` / `notice:*` | main のもの | **worker のもの** |
+
+`ids` 台帳も主語相対になる。worker を主語にした台帳の `agent_id` はその worker が起動した孫であって、自分自身ではない。
+
+worker の transcript は 1 ファイルで完結し、全行が `isSidechain: true` で同じ `agentId` を持つ (実測 3 セッション 201 件で全件)。親の main JSONL 側に同じ turn が重複することはないので、主語を worker にした dump は親の dump と行を共有しない。
+
+### 掘り下げの導線
+
+1. 親を `howto` で見る (`{"sid": "<sid>", "preset": "howto"}`)
+2. `ids` 台帳の `agent_id` から、うまくやっていそうな worker を選ぶ
+3. その worker を主語にして同じ preset で掘る (`{"sid": "<sid>", "agent_id": "a471372f2", "preset": "howto"}`)
+4. 孫がいれば台帳にまた `agent_id` が出るので、同じ手順を繰り返す
+
+同じ preset がそのまま使えるのは、型が主語相対に定義されているため。「親の指示を読んで、思考と Bash とファイル操作を追う」という関心の切り方が、どの階層でも同じ名前で通る。
+
+## 5. preset
 
 契約には焼かず config の `dump.presets` で operator が定義する。
 
@@ -255,10 +293,11 @@ csa の turn 番号 / marker は **採らない**。turn 番号はファイル�
 ["@journal", "notice:task"]   日記に背景タスクの通知を足す
 ```
 
-## 5. 契約に足す候補
+## 6. 契約に足す候補
 
 `SessionDumpWriteArgs`:
 
+- `agent_id: string` — 主語をこの worker にする。無指定なら main セッション。`sid` と合成した 1 本の文字列 (`<sid>/agent-<id>`) にはしない: `sid` は既に `Sid` として検証されていて、合成すると検証が効かなくなり、パースの責務が daemon 側に増える。人が打つ `<sid>/agent-<id>` の表記は CLI が区切って 2 つの引数に割る
 - `types: string[]` — 型の選択。要素は型 (prefix 可、`-` で除外) か `@<preset 名>` (config の preset をその位置に展開、再帰可、循環は config 検証で拒否)。無指定は既定。`no_thinking` / `no_agent` は `["-thinking"]` / `["-message:sub", "-tool:Agent"]` で表せるので、この 2 つは `types` に吸収する
 - `preset: string` — config の preset 名。`types` と併用したら preset を土台に `types` を後から適用する
 - `since_at` / `since_uuid` / `until_at` / `until_uuid` — 既存のまま
@@ -267,7 +306,7 @@ csa の turn 番号 / marker は **採らない**。turn 番号はファイル�
 
 新規 op `dump_presets_read`: config が持つ preset の `{name, description, opts}` の配列を返す。
 
-## 6. kawaz に決めてもらうこと
+## 7. kawaz に決めてもらうこと
 
 1. **型一覧の確認** — `message` / `thinking` / `tool` / `notice` の 4 群と、その配下の型名。特に `notice:*` は csa の `I` を分解したもので、この粒度でいいか (もっと粗く `notice` 1 つに畳む案もある)。
 2. **`message:sub:in` の本文をどこから取るか** — task-notification の `<result>` (main の jsonl だけで完結、要約済み) か、`subagents/*.jsonl` の末尾 assistant text (全文、別ファイルを読む) か。両方出す選択肢もある。
