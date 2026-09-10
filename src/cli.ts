@@ -169,6 +169,10 @@ const ROOT: Command = {
               usage:
                 "ccmsg daemon passkey add <unit> [endpoint] [--rp-id <domain>] [--name <ラベル>]",
               options: [
+                [
+                  "[endpoint]",
+                  "登録先の公開 base URL (末尾 /)。既定はこの instance が確定した endpoint",
+                ],
                 ["--rp-id <domain>", "WebAuthn の relying party。既定は endpoint のホスト"],
                 ["--name <ラベル>", "誰宛に発行した URL かの管理ラベル"],
               ],

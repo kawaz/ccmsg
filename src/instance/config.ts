@@ -14,12 +14,6 @@ export interface EntryConfig {
   /** Source addresses allowed to connect. Empty means every address the bind
    * itself already permits, which for the default loopback bind is this host. */
   readonly source_ips: readonly string[];
-  /** `Origin` values a browser connection may present. Empty admits no
-   * browser at all: a request carrying no `Origin` is not a browser's and is
-   * judged on the address and the token alone, so the list only ever widens
-   * what reaches the socket, and an unlisted webui is refused rather than
-   * let in by default. */
-  readonly origins: readonly string[];
 }
 
 /** One value a launch recipe's command reads, as the operator declares it. */
@@ -248,13 +242,20 @@ function flagOf(file: string, at: string, raw: unknown, fallback: boolean): bool
   return raw;
 }
 
-const ENDPOINT = /^wss?:\/\/[^\s?#]+$/;
+/** An endpoint as the contract spells it: the instance's public base URL, with
+ * the trailing slash and no route of its own. What hangs below it — `ws`,
+ * `mesh/*`, `auth/*`, `webhook/*` — is a route rather than part of the address
+ * (contract, `Endpoint`). */
+const ENDPOINT = /^https?:\/\/[^\s?#]*\/$/;
 
 function endpointOf(file: string, at: string, raw: unknown): Endpoint {
   if (typeof raw !== "string" || !ENDPOINT.test(raw)) {
-    throw new ConfigError(file, `${at} must be a ws:// or wss:// URL, got ${String(raw)}`);
+    throw new ConfigError(
+      file,
+      `${at} must be an http:// or https:// base URL ending in /, got ${String(raw)}`,
+    );
   }
-  return raw;
+  return raw as Endpoint;
 }
 
 function peersOf(file: string, raw: unknown): readonly Endpoint[] {
@@ -277,7 +278,6 @@ function entryOf(file: string, raw: unknown): EntryConfig {
     host,
     port,
     source_ips: stringsOf(file, "entry.source_ips", fields["source_ips"]),
-    origins: stringsOf(file, "entry.origins", fields["origins"]),
   };
 }
 

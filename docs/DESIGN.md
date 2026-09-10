@@ -102,22 +102,24 @@ persistence writes only what must not be lost across a crash and restart
 |---|---|
 | Accepting connections | UDS (same-host sessions / CLI), WS (webui / mesh) |
 | Framing | newline-delimited JSON. Holds the per-line size limit and backpressure handling in one place |
-| Entry-point permission | source IP allowlist, allowed Origin set, mesh peer TLS |
+| Entry-point permission | source IP allowlist, mesh peer TLS |
 | Determining identity | binds a role and (for sessions) a sid to the connection as the result of `hello` |
 
 **A person is authenticated by a passkey** (DR-0001; where it joins the rest is §3.7). A person's
 WS connection presents the subprotocol `ccmsg.token.<access token>`, and a handshake whose token
-no record answers to is refused. `entry.origins` and `source_ips` remain as the allowlist for
-*where* a connection may come from, but **what answers "who came" is the token alone**: a
-handshake without one is refused rather than let in as an anonymous person. The access token's
+no record answers to is refused. `source_ips` remains as the allowlist for *where* a connection
+may come from, but **what answers "who came" is the token alone**: the `Origin` is not read, since
+it would be a second answer to a question the token has already answered — one the operator would
+have to keep in step with every URL the instance is reached through. A handshake without a token
+is refused rather than let in as an anonymous person. The access token's
 expiry is the connection's, stated by `hello`'s `auth_expires_at` and extended by `auth_refresh`
 on the connection itself. UDS presents nothing and carries no expiry, since reaching it already
 means passing the directory's permissions. mesh has the peer's TLS plus `iss` / `aud` and a proof
 (§7.2), and webhook has `Authorization: Bearer`; each of those routes carries a secret of its
 own.
 
-**A person's and a gateway's entry points (`/ws`, `/auth/*`, `/webhook/<source>`) are matched by
-the end of the path, and the prefix is not asked about** (DR-0001 §2.7). A proxy may pass the
+**A person's and a gateway's entry points (`<endpoint>ws`, `<endpoint>auth/*`,
+`<endpoint>webhook/<source>`) are matched by the end of the path, and the prefix is not asked about** (DR-0001 §2.7). A proxy may pass the
 path through with its prefix intact, which is what lets an alias endpoint, or a load balancer
 putting several instances behind one origin, hold without any relation to this instance's own
 endpoint. **Only the mesh's key (`/mesh/jwk/<kid>`) stays under that endpoint's path**: the tie is
@@ -255,11 +257,9 @@ discards them.
 DR-0001 is the source of truth. What is here is only where it joins the other layers.
 
 **Registration can only begin locally.** `ccmsg daemon passkey add <unit> [endpoint]` issues one
-registration URL (`<the endpoint with the WebSocket's own `/ws` segment taken off>/#register=<jwt>`)
-and **a six-digit code**. An endpoint is the address of a door and the web UI is served where that
-door is (`wss://h/personal/ws` → `https://h/personal/`), so leaving the segment on would send the
-person to the WebSocket rather than to the page. The code is
-not in the URL and is shown only on the terminal — the two halves reach the browser by different
+registration URL (`<endpoint>#register=<jwt>`) and **a six-digit code**. An endpoint is the
+instance's own public base URL (`https://h/personal/`) and the web UI is served there, so nothing
+has to be taken off it to build the address. The code is not in the URL and is shown only on the terminal — the two halves reach the browser by different
 routes, so a leaked URL is not a registration. The secret signing the jwt lives only in the
 issuing instance's memory and is lost on a restart: there is no lasting key. These three commands
 (`add` / `list` / `remove`) are **not ops of the contract but administrative frames that reach
@@ -269,10 +269,20 @@ which is the footing the supervisor's own control requests stand on.
 
 **The four HTTP routes** (`/auth/challenge`, `/auth/register`, `/auth/assert`, `/auth/refresh`)
 are "ops with `needs_hello: false` carried over HTTP", and the carrier synthesizes the
-`request_id`. They are matched by the end of the path for the reason `/ws` is (§3.1). They are
-reachable before anything is proven, so `Origin` is compared against `entry.origins` and the four
-share one rate limit. CORS answers `Access-Control-Allow-Origin` and `Allow-Credentials` only to
-an origin `entry.origins` names.
+`request_id`. They are matched by the end of the path for the reason `ws` is (§3.1). They are
+reachable before anything is proven, so the four share one rate limit. CORS echoes
+`Access-Control-Allow-Origin` and `Allow-Credentials` when **the request `Origin`'s host is one of
+the relying parties this instance holds — a credential's `rp_id`, an outstanding registration
+URL's `rp_id`, or the host of its own endpoint — or sits under one**, and answers 403 otherwise.
+That bounds which pages may read an answer; who is admitted is decided by the credential.
+
+**Authentication is bound to the record's endpoint, the base URL whole.** A registration writes
+the endpoint from its URL's claims into `CredentialRecord.endpoint`, and register and assert are
+accepted only where **`clientDataJSON.origin` is the endpoint's origin** and **the path the
+request arrived at is the endpoint's path**. `https://h/` and `https://h/personal/` are two
+endpoints and take two registrations — the RP ID is the host and may well be the same for both,
+because it says which domain an authenticator answers for, which is coarser than which instance a
+person has been admitted to.
 
 **Tokens are unsigned opaque values**, verified by looking a record up. The access token is in
 the response body; the refresh token is an httpOnly cookie
@@ -602,6 +612,11 @@ same topic name.
 
 ### 7.1 Endpoint and id
 
+**An endpoint is the instance's public base URL** (`https://h.example/personal/`, trailing slash,
+`http(s)://`). `<endpoint>ws` (upgraded in place, the scheme kept), `<endpoint>mesh/*`,
+`<endpoint>auth/*` and `<endpoint>webhook/*` are routes below it rather than part of the address
+(contract, `Endpoint`).
+
 **All config carries is `peers` — every mesh endpoint, this instance's own among them — and
 which of them is this instance is settled at startup by the probe** (mesh-self-identification,
 §8.2, DR-0001 §2.7). The URL of an instance sitting behind a proxy or an alias is not a value
@@ -720,8 +735,8 @@ home.** A CLI within a session looks up its own instance from `CLAUDE_CONFIG_DIR
 | Item | Content |
 |---|---|
 | Own config home | The single config home this instance sees (M6) |
-| peers | A list of mesh endpoint URLs. **The same list, this instance's own URL included, can be distributed to every instance** (which entry is this one is settled by the startup probe, and the reader takes itself out, §7.1) |
-| Entry-point permission | bind, source IP, Origin |
+| peers | A list of mesh endpoints (each the instance's public base URL, trailing slash included). **The same list, this instance's own URL included, can be distributed to every instance** (which entry is this one is settled by the startup probe, and the reader takes itself out, §7.1). **It is the only list of URLs config carries** |
+| Entry-point permission | bind, source IP |
 | upstream | gateway's URL and webhook source, terminal gateway, launcher (roots and recipes), translation helper, sandbox origin |
 
 **config is read only once, at startup. There is no hot reload** (DV-Q8). Because
@@ -921,6 +936,8 @@ boundary. We do not skip this on the grounds that "it's covered by e2e."
 - Containment of file access (each of the contained / workspace / external surfaces)
 - Narrowing of delivery destinations (a user-only topic does not flow to a session role)
 - A forwarded op is also authorized at the forwarding destination (§7.3)
+- A credential is accepted only at the endpoint it was registered for (an instance at another
+  origin, or under another path prefix, refuses it, §3.7)
 
 ### 11.3 Detect changes that break "do not grow"
 

@@ -21,7 +21,12 @@ import type {
   Timestamp,
   TokenFamily,
 } from "@ccmsg/protocol";
-import { AUTH_CHALLENGE_TTL_MS, REGISTER_TTL_MS } from "@ccmsg/protocol";
+import {
+  AUTH_CHALLENGE_TTL_MS,
+  Endpoint as EndpointSchema,
+  REGISTER_TTL_MS,
+  validationErrors,
+} from "@ccmsg/protocol";
 import { type HandlerInput, OpError, type Requester } from "../dispatch/index.ts";
 import { AuthRecords, credentialKey, familyKey } from "./records.ts";
 import {
@@ -35,7 +40,6 @@ import {
   WebAuthnError,
 } from "./webauthn.ts";
 import { CborError } from "./cbor.ts";
-import { ENTRY_PATH } from "../transport/index.ts";
 
 /** How long an access token is accepted, and how long a refresh token is.
  *
@@ -101,10 +105,7 @@ export interface AuthorizedConn {
 export interface AuthDeps {
   readonly self: InstanceId;
   readonly records: AuthRecords;
-  /** The pages allowed to run these exchanges: `clientDataJSON.origin` is
-   * compared against this, and so is the CORS answer (§2.3). */
-  readonly origins: () => readonly string[];
-  /** Where this instance is dialed, which a registration URL is issued against
+  /** Where this instance is reached, which a registration URL is issued against
    * when the operator names none. */
   readonly endpoint: () => Endpoint | undefined;
   /** The instance's name as a person operates it, carried in the URL for
@@ -187,6 +188,16 @@ export class Auth {
         "この instance には endpoint が無いので、登録先の URL を引数で渡してください",
       );
     }
+    // An operator types this one, so it is read here rather than trusted: an
+    // address that is not a base URL would be written into the record and be
+    // compared, forever after, against a request that can never match it.
+    const problems = validationErrors(EndpointSchema, endpoint);
+    if (problems.length > 0) {
+      throw new OpError(
+        "invalid_args",
+        `endpoint は末尾が / の http(s) base URL です (${endpoint}): ${problems.join("; ")}`,
+      );
+    }
     const host = hostOf(endpoint);
     const rpId = options.rpId ?? host;
     // The relying party is a domain the endpoint's host belongs to, and nothing
@@ -216,7 +227,7 @@ export class Auth {
     this.#pending.set(claims.jti, { claims, secret, code, attempts: 0 });
     return {
       sub,
-      url: `${webOrigin(endpoint)}/#register=${sign(claims, secret)}`,
+      url: `${endpoint}#register=${sign(claims, secret)}`,
       code,
       user_id: claims.user_id,
       expires_at: claims.expires_at,
@@ -378,13 +389,17 @@ export class Auth {
    * here, by whoever the browser reached (§2.6). */
   async register(
     args: AuthRegisterArgs,
-    from: { ip?: string; userAgent?: string } = {},
+    from: { ip?: string; userAgent?: string; path?: string } = {},
   ): Promise<MintedSession> {
     // What the URL says about itself, before anything has vouched for it. It is
     // read to know which relying party the credential should have been made
     // under; nothing is decided by it, because the same fields come back
     // authenticated below and the two are held to each other.
     const stated = claimsOf(args.token);
+    // The endpoint this URL was issued for is where it may be spent: a
+    // registration posted to a neighbour sharing the host is a registration at
+    // an instance the URL never named (contract, `CredentialRecord.endpoint`).
+    this.#servedHere(stated.endpoint, from.path);
     // What the page answered, verified before anything is spent: a challenge is
     // good once, so consuming it for a message that then fails to verify would
     // let a caller burn challenges without ever holding a credential (m9).
@@ -392,7 +407,7 @@ export class Auth {
     const verified = refusable(() =>
       verifyRegistration(args.credential, {
         challenge,
-        origins: this.deps.origins(),
+        origin: originOf(stated.endpoint),
         rpId: stated.rp_id,
       }),
     );
@@ -428,6 +443,7 @@ export class Auth {
       credential_id: verified.credentialId,
       public_key: verified.publicKey,
       user_handle: claims.user_id,
+      endpoint: claims.endpoint,
       rp_id: claims.rp_id,
       sign_count: verified.signCount,
       ...(claims.issued_label === undefined ? {} : { issued_label: claims.issued_label }),
@@ -505,12 +521,16 @@ export class Auth {
 
   async assert(
     args: AuthAssertArgs,
-    from: { ip?: string; userAgent?: string } = {},
+    from: { ip?: string; userAgent?: string; path?: string } = {},
   ): Promise<MintedSession> {
     const record = this.deps.records.credential(args.credential.raw_id);
     if (record === undefined) {
       throw new OpError("auth_invalid", "この credential は登録されていません");
     }
+    // The endpoint the credential was registered for, and no other: two
+    // instances may share a host, and this is what keeps one's credential from
+    // being a way into the other (contract, `CredentialRecord.endpoint`).
+    this.#servedHere(record.endpoint, from.path);
     // A resident credential answers with the handle it was created against,
     // which is how a person is found without having named an account. It is
     // held to what the registration settled: a handle naming somebody else is
@@ -535,7 +555,7 @@ export class Auth {
         },
         {
           challenge: args.challenge.challenge,
-          origins: this.deps.origins(),
+          origin: originOf(record.endpoint),
           rpIds: this.#rpIdFor(record),
         },
       ),
@@ -556,32 +576,46 @@ export class Auth {
     return this.mint(record.sub);
   }
 
+  /** Refuse an exchange that arrived somewhere other than the endpoint it is
+   * about.
+   *
+   * The path the request came in on is the carrier's observation, so a caller
+   * cannot state it. A carrier that does not observe one — the mesh, where the
+   * issuer is asked about a URL rather than posted to — states nothing and is
+   * not held to a path it never had. */
+  #servedHere(endpoint: Endpoint, path: string | undefined): void {
+    if (path !== undefined && !servesPath(endpoint, path)) {
+      throw new OpError("auth_invalid", `この要求は ${endpoint} 宛ではありません`);
+    }
+  }
+
   /** The relying party an assertion is checked against.
    *
    * The one the credential was registered under, which the record carries: a
    * passkey only ever answers for the domain it was made under, and the
-   * endpoint being reached says nothing about that (§2.3). Only a record
-   * written before the field existed falls back to the names this instance was
-   * configured to be, and nothing is widened to a suffix. */
+   * endpoint being reached says nothing about that (§2.3). Nothing is widened
+   * to a suffix, and a record from before the field existed names the host of
+   * the endpoint it was registered for. */
   #rpIdFor(record: CredentialRecord): string[] {
-    if (record.rp_id !== undefined) return [record.rp_id];
-    return this.#configuredNames();
+    return [record.rp_id ?? hostOf(record.endpoint)];
   }
 
-  #configuredNames(): string[] {
+  /** The relying parties this instance has anything to do with: the ones its
+   * credentials were made under, the ones its outstanding registration URLs
+   * name, and the host of its own endpoint.
+   *
+   * Read by the HTTP carrier to decide whose page it answers with CORS headers
+   * (§2.3). It is a bound on which pages may read an answer, not on who is
+   * admitted: what admits anybody is the credential, checked against the
+   * endpoint the record names. */
+  knownRpIds(): string[] {
     const names = new Set<string>();
-    for (const origin of this.deps.origins()) {
-      try {
-        names.add(new URL(origin).hostname);
-      } catch {
-        // A configured value that is not a URL names no host.
-      }
+    for (const record of this.deps.records.credentials()) {
+      names.add(record.rp_id ?? hostOf(record.endpoint));
     }
+    for (const held of this.#pending.values()) names.add(held.claims.rp_id);
     const endpoint = this.deps.endpoint();
     if (endpoint !== undefined) names.add(hostOf(endpoint));
-    if (names.size === 0) {
-      throw new OpError("auth_invalid", "この instance には relying party がありません");
-    }
     return [...names];
   }
 
@@ -964,20 +998,24 @@ export function hostOf(endpoint: Endpoint): string {
   return new URL(endpoint).hostname;
 }
 
-/** Where the page that runs the registration is served from.
+/** Whether a request that arrived at this path was made to this endpoint.
  *
- * The endpoint over HTTP, with the WebSocket's own path segment taken off: an
- * endpoint is the address of a door (`wss://h/personal/ws`), and the web UI is
- * what is served where that door is (`https://h/personal/`). Leaving the
- * segment on would send the person to the WebSocket rather than to the page
- * (DR-0001 §2.2). An endpoint that names no path is an instance whose UI is at
- * the root. */
-export function webOrigin(endpoint: Endpoint): string {
-  const url = new URL(endpoint);
-  url.protocol = url.protocol === "wss:" ? "https:" : "http:";
-  const path = url.pathname.replace(/\/$/, "");
-  const prefix = path.endsWith(ENTRY_PATH) ? path.slice(0, -ENTRY_PATH.length) : path;
-  return `${url.origin}${prefix}`;
+ * The endpoint's own path, compared exactly: `https://h/` and
+ * `https://h/personal/` are two instances that may share a host, so a
+ * credential registered for one is not a way into the other (contract,
+ * `CredentialRecord.endpoint`). The prefix a proxy leaves on the front is what
+ * the carrier already stripped down to when it found the route.
+ *
+ * Whether the origin matches is asked separately: the two together are what
+ * bind a credential to one instance. */
+export function servesPath(endpoint: Endpoint, path: string): boolean {
+  return new URL(endpoint).pathname === path;
+}
+
+/** The origin an endpoint is served from, which is what a browser writes into
+ * `clientDataJSON.origin`. */
+export function originOf(endpoint: Endpoint): string {
+  return new URL(endpoint).origin;
 }
 
 /** Whether a relying party id is the host or a domain the host sits under.

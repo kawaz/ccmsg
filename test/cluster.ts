@@ -79,8 +79,10 @@ export function deadPort(): number {
   return port;
 }
 
+/** An endpoint as the contract spells it: the instance's base URL, ending in
+ * the slash everything it serves hangs off (contract, `Endpoint`). */
 export function endpoint(port: number): Endpoint {
-  return `ws://127.0.0.1:${port}`;
+  return `http://127.0.0.1:${port}/`;
 }
 
 /** A second URL that reaches the instance at `target`: what an alias, or a
@@ -96,7 +98,7 @@ export function proxyTo(target: Endpoint): Endpoint {
     port: 0,
     fetch: async (request) => {
       const path = new URL(request.url).pathname;
-      return await fetch(`http://${to.host}${path}`, {
+      return await fetch(`${to.origin}${path}`, {
         method: request.method,
         headers: request.headers,
         body: request.method === "GET" ? undefined : await request.text(),

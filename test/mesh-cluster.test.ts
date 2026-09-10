@@ -684,16 +684,26 @@ describe("registering at one instance with another's URL (DR-0001 §2.6)", () =>
       issued.user_id,
     );
 
-    // And the person can authenticate at either endpoint.
-    const asserted = await authChallenge(a, `http://${addressOf(a)}`);
-    const at = await authPost(a, `http://${addressOf(a)}`, "assert", {
-      credential: await authenticator.get({
-        challenge: asserted.challenge,
-        origin: `http://${addressOf(a)}`,
-      }),
+    // The person authenticates at the endpoint the credential was registered
+    // for, which is B.
+    const asserted = await authChallenge(b, origin);
+    const atB = await authPost(b, origin, "assert", {
+      credential: await authenticator.get({ challenge: asserted.challenge, origin }),
       challenge: asserted,
     });
-    expect(at.status).toBe(200);
+    expect(atB.status).toBe(200);
+
+    // Not at A, even though A holds the same record and issued the URL: a
+    // credential is good for the endpoint it names and no other, which is what
+    // keeps one instance's passkey from being a way into its neighbour
+    // (contract, `CredentialRecord.endpoint`).
+    const elsewhere = `http://${addressOf(a)}`;
+    const other = await authChallenge(a, elsewhere);
+    const atA = await authPost(a, elsewhere, "assert", {
+      credential: await authenticator.get({ challenge: other.challenge, origin: elsewhere }),
+      challenge: other,
+    });
+    expect(atA.status).toBe(401);
   });
 });
 

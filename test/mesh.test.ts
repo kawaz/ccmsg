@@ -417,7 +417,7 @@ describe("what a handshake leaves behind (mesh-peer-auth §10.5)", () => {
 
 describe("glare (mesh-peer-auth §8.1)", () => {
   test("both ends decide the same way, and it is the smaller `iss` that dialled", () => {
-    const [small, large] = ["ws://a", "ws://b"] as [InstanceId, InstanceId];
+    const [small, large] = ["http://a/", "http://b/"] as [InstanceId, InstanceId];
     // From `small`'s side: the connection it dialled stays, the one it accepted
     // goes. From `large`'s side, the mirror of that. Between them exactly one
     // connection survives, which is what the rule is for.

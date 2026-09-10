@@ -165,16 +165,18 @@ describe("config", () => {
   test("the four things config carries (§8.2)", () => {
     const { root, env, home } = disposable();
     const file = shared(root, {
-      peers: ["wss://elsewhere.example/ccmsg"],
-      entry: { host: "127.0.0.1", port: 0, source_ips: ["127.0.0.1"], origins: ["http://ui"] },
+      peers: ["https://elsewhere.example/ccmsg/"],
+      entry: { host: "127.0.0.1", port: 0, source_ips: ["127.0.0.1"] },
       upstream: { gateway_url: "https://gateway.example" },
     });
     const config = loadConfig(file, home);
-    // The config home is the fifth, and it is the environment's rather than
+    // The config home is the fourth, and it is the environment's rather than
     // the file's: an instance is the config home it was started in (A2).
     expect(resolvePaths(env).configHome).toBe(home);
-    expect(config.peers).toEqual(["wss://elsewhere.example/ccmsg"]);
-    expect(config.entry?.origins).toEqual(["http://ui"]);
+    // The only URLs config carries are the peer endpoints: no origin list, and
+    // no statement of which entry is this instance (§7.1, DR-0001 §2.7).
+    expect(config.peers).toEqual(["https://elsewhere.example/ccmsg/"]);
+    expect(config.entry?.source_ips).toEqual(["127.0.0.1"]);
     expect(config.upstream.gateway_url).toBe("https://gateway.example");
   });
 

@@ -456,7 +456,7 @@ describe("what the fold settles reaches the sessions domain (§5.1)", () => {
     };
     const sessions = new Sessions({
       self: SELF,
-      endpoint: "wss://host.example.ts.net/ccmsg/personal",
+      endpoint: "https://host.example.ts.net/ccmsg/personal/",
       configHome: root,
       stateDir: join(root, "state"),
       capabilities: [],

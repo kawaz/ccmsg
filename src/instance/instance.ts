@@ -520,7 +520,6 @@ export class Instance {
     this.#auth = new Auth({
       self: this.self,
       records,
-      origins: () => config.entry?.origins ?? [],
       endpoint: () => this.#mesh?.self,
       unit: paths.key,
       ...(this.#mesh === undefined
@@ -670,11 +669,7 @@ export class Instance {
     // The person's authentication comes first: it is the one route reached
     // before anything is proven, and the gateway's webhook carries its own
     // secret and cannot be confused with it (DR-0001 §2.7).
-    const authorized = await handleAuth(
-      request,
-      { auth: this.#auth, self: this.self, origins: () => this.config.entry?.origins ?? [] },
-      {},
-    );
+    const authorized = await handleAuth(request, { auth: this.#auth, self: this.self }, {});
     if (authorized !== undefined) return authorized;
     return await this.#gateway.route(request);
   }
@@ -914,19 +909,18 @@ export class Instance {
   }
 }
 
-/** Who may reach the WebSocket at all (§3.1): an Origin the operator named and
- * an address the operator named.
+/** Who may reach the WebSocket at all (§3.1): an address the operator named.
  *
- * The two config lists are read as allowlists in both directions. An empty
- * `origins` admits no browser: a permission that was never granted is not a
- * permission, and the one deployment that would want "any page may connect" is
- * the one that must say so. An empty `source_ips` leaves the addresses to the
- * bind, which for the default loopback host is this machine.
+ * An empty `source_ips` leaves the addresses to the bind, which for the default
+ * loopback host is this machine. The `Origin` a request carries is not read:
+ * a WebSocket is authorized by the access token it presents (DR-0001 §2.5), and
+ * an allowlist of pages would be a second answer to a question the token has
+ * already answered — one the operator has to keep in step with every URL the
+ * instance is reached through.
  *
- * Neither of them says who came, which is what the access token on the
- * handshake answers (DR-0001 §2.5): every connection that is not a peer's
- * presents one, and a handshake without one is refused rather than let in as an
- * anonymous person. */
+ * The address does not say who came either. Every connection that is not a
+ * peer's presents a token, and a handshake without one is refused rather than
+ * let in as an anonymous person. */
 function entryPolicy(
   config: InstanceConfig,
   mesh: boolean,
@@ -935,11 +929,7 @@ function entryPolicy(
   const entry = config.entry;
   if (entry === undefined) return {};
   return {
-    allowRequest(request: Request, source: string | undefined): boolean {
-      const origin = request.headers.get("origin");
-      // A request carrying no `Origin` is not a browser's, and there is nothing
-      // to compare: it stands or falls on the address and the token below.
-      if (origin !== null && !entry.origins.includes(origin)) return false;
+    allowRequest(_request: Request, source: string | undefined): boolean {
       if (entry.source_ips.length === 0) return true;
       // The address the server observed, not one a header claims: a forwarding
       // header is written by whoever is in front of us, and anyone who can

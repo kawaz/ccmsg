@@ -201,7 +201,7 @@ function sessions(
   const waiters: (() => void)[] = [];
   const domain = new Sessions({
     self: SELF,
-    endpoint: "wss://host.example.ts.net/ccmsg/personal",
+    endpoint: "https://host.example.ts.net/ccmsg/personal/",
     configHome: dirs.root,
     stateDir: dirs.stateDir,
     capabilities: [],
@@ -233,7 +233,7 @@ function sessions(
 function restart(context: { root: string; stateDir: string }): Sessions {
   const domain = new Sessions({
     self: SELF,
-    endpoint: "wss://host.example.ts.net/ccmsg/personal",
+    endpoint: "https://host.example.ts.net/ccmsg/personal/",
     configHome: context.root,
     stateDir: context.stateDir,
     capabilities: [],

@@ -1,43 +1,48 @@
 import type { Endpoint } from "@ccmsg/protocol";
 import type { MeshJwk } from "./keys.ts";
 
-/** The paths an instance's endpoint URL stands in front of.
+/** The routes an instance's endpoint stands in front of.
  *
- * An `Endpoint` is compared whole, path included (contract, `Endpoint`), so
- * everything an instance serves hangs below it. That is also what keeps two
- * instances sharing one origin apart: the key of `wss://h/a` is only ever
- * fetched from below `/a`, so `wss://h/b` cannot answer for it and a proof made
- * with b's key cannot pass as a's (mesh-peer-auth §6.3). The separation is the
- * shape of the URLs rather than a rule written somewhere.
+ * An `Endpoint` is the instance's public base URL, ending in a slash and
+ * naming no route of its own (contract, `Endpoint`), so everything an instance
+ * serves is reached by appending to it. That is also what keeps two instances
+ * sharing one origin apart: the key of `https://h/a/` is only ever fetched from
+ * below `/a/`, so `https://h/b/` cannot answer for it and a proof made with b's
+ * key cannot pass as a's (mesh-peer-auth §6.3). The separation is the shape of
+ * the URLs rather than a rule written somewhere.
  *
  * The probe is the exception, and has to be: it is what tells an instance which
  * endpoint it is, so while one is arriving there is nothing yet to hang it
  * under. */
-const WS_PATH = "/ws";
-const JWK_PATH = "/mesh/jwk/";
-const PROBE_PATH = "/mesh/probe";
+const WS_ROUTE = "ws";
+const JWK_ROUTE = "mesh/jwk/";
+const PROBE_ROUTE = "mesh/probe";
+const PROBE_PATH = `/${PROBE_ROUTE}`;
 
-/** Where a peer's mesh link is dialled. */
+/** Where a peer's mesh link is dialled.
+ *
+ * The endpoint's own scheme, kept: the link is an HTTP connection upgraded in
+ * place, so there is no second scheme to rewrite it into (DR-0001 §2.7). */
 export function wsEndpoint(endpoint: Endpoint): string {
-  return `${endpoint}${WS_PATH}`;
+  return `${endpoint}${WS_ROUTE}`;
 }
 
 /** Where one connection's key is fetched, and the challenge for it left.
  *
- * `http` rather than `ws` because this is the second connection of §6, which
- * carries one request and closes: the protocol asks that it be a connection of
- * its own outside the one being authenticated, not that it be a WebSocket. */
+ * A plain request rather than a frame on the link, because this is the second
+ * connection of §6: the protocol asks that the key be fetched outside the
+ * connection being authenticated. */
 export function jwkEndpoint(endpoint: Endpoint, kid: string): string {
-  return `${httpBase(endpoint)}${JWK_PATH}${encodeURIComponent(kid)}`;
+  return `${endpoint}${JWK_ROUTE}${encodeURIComponent(kid)}`;
 }
 
 export function probeEndpoint(endpoint: Endpoint): string {
-  return `${httpBase(endpoint)}${PROBE_PATH}`;
+  return `${endpoint}${PROBE_ROUTE}`;
 }
 
 /** The `kid` a request names, or nothing when the path is not a key request. */
 export function kidOfPath(pathname: string, self: Endpoint): string | undefined {
-  const prefix = `${new URL(self).pathname.replace(/\/$/, "")}${JWK_PATH}`;
+  const prefix = `${new URL(self).pathname}${JWK_ROUTE}`;
   if (!pathname.startsWith(prefix)) return undefined;
   const kid = decodeURIComponent(pathname.slice(prefix.length));
   return kid === "" ? undefined : kid;
@@ -47,20 +52,12 @@ export function kidOfPath(pathname: string, self: Endpoint): string | undefined 
  *
  * Matched by the end of the path and not below an endpoint, because a probe is
  * what settles which endpoint this instance is: at the moment one arrives there
- * is no `self` to hang it under, and the prefix it came in on is whatever the
+ * is no endpoint to hang it under, and the prefix it came in on is whatever the
  * sender's list or a proxy in front of it says. Nothing is decided here anyway
  * — the receiver only echoes acceptance, and the comparison belongs to whoever
  * minted the token (§5.1). */
 export function isProbePath(pathname: string): boolean {
   return pathname.endsWith(PROBE_PATH);
-}
-
-/** The same authority and path, reached over HTTP. A `ws` URL and the `http`
- * one beside it are one server; the scheme differs and nothing else does. */
-function httpBase(endpoint: Endpoint): string {
-  const url = new URL(endpoint);
-  url.protocol = url.protocol === "wss:" ? "https:" : "http:";
-  return url.href.replace(/\/$/, "");
 }
 
 /** The subprotocol a dialling instance offers.

@@ -7,7 +7,7 @@ export const SELF = "1f0e2d3c4b5a69788796a5b4c3d2e1f0";
 export const OTHER_INSTANCE = "00112233445566778899aabbccddeeff";
 /** Where `SELF` is reached, for the one field that states a URL rather than an
  * id. Two instances behind one host, which is the shape an id has to survive. */
-export const SELF_ENDPOINT = "wss://host.example.ts.net/ccmsg/personal";
+export const SELF_ENDPOINT = "https://host.example.ts.net/ccmsg/personal/";
 
 /** One accepted argument set per op, so the authorization steps can be swept
  * across the whole attribute table with frames that reach them.

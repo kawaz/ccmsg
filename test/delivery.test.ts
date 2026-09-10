@@ -439,7 +439,7 @@ describe("the sessions a message can be addressed to", () => {
     );
     const domain = new Sessions({
       self: SELF,
-      endpoint: "wss://host.example.ts.net/ccmsg/personal",
+      endpoint: "https://host.example.ts.net/ccmsg/personal/",
       configHome: home,
       stateDir: stateDir(),
       capabilities: [],
@@ -483,7 +483,7 @@ describe("the sessions a message can be addressed to", () => {
     mkdirSync(join(home, "sessions"));
     const domain = new Sessions({
       self: SELF,
-      endpoint: "wss://host.example.ts.net/ccmsg/personal",
+      endpoint: "https://host.example.ts.net/ccmsg/personal/",
       configHome: home,
       stateDir: stateDir(),
       capabilities: [],

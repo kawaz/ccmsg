@@ -93,21 +93,22 @@ persistence 落ちて上がっても失われては困るものだけを書く
 |---|---|
 | 接続の受理 | UDS (同一ホストのセッション・CLI)、WS (webui・mesh) |
 | framing | 改行区切り JSON。1 行の上限と backpressure の扱いを 1 箇所に持つ |
-| 入口の許可 | source IP の allowlist、Origin の許可集合、mesh 相手の TLS |
+| 入口の許可 | source IP の allowlist、mesh 相手の TLS |
 | identity の確定 | `hello` の結果として接続に role と (session なら) sid を束縛する |
 
 **人の認証は passkey が担う** (DR-0001、実装の接続点は §3.7)。人の WS 接続は subprotocol
 `ccmsg.token.<access token>` を提示し、token が record に引けなければ handshake を断る。
-`entry.origins` と `source_ips` は「どこから来られるか」の allowlist として残るが、
-**「誰が来たか」に答えるのは token だけ**である。token を持たない handshake は匿名の人として
-通すのではなく断る。access token の `exp` が接続の期限で、`hello` の応答の
+`source_ips` は「どこから来られるか」の allowlist として残るが、**「誰が来たか」に答えるのは
+token だけ**である。`Origin` は見ない: token が既に答えている問いに対する 2 つ目の答えになり、
+instance に届く URL が増えるたびに operator が同期させ続ける対象が増えるだけになる。token を
+持たない handshake は匿名の人として通すのではなく断る。access token の `exp` が接続の期限で、`hello` の応答の
 `auth_expires_at` がそれを名乗り、同じ接続上の `auth_refresh` で延ばす。UDS は到達すること
 自体がディレクトリの権限を通ることなので何も提示せず、期限も付かない。mesh は相手の TLS と
 `iss` / `aud` + proof (§7.2)、webhook は `Authorization: Bearer` で、どちらも経路自身が
 秘密を持つ。
 
-**人と gateway の入口 (`/ws`、`/auth/*`、`/webhook/<source>`) はパスの末尾で照合し、
-prefix を問わない** (DR-0001 §2.7)。proxy は prefix を剥がさずそのまま渡してよく、
+**人と gateway の入口 (`<endpoint>ws`、`<endpoint>auth/*`、`<endpoint>webhook/<source>`) は
+パスの末尾で照合し、prefix を問わない** (DR-0001 §2.7)。proxy は prefix を剥がさずそのまま渡してよく、
 別名の endpoint や、1 つの origin の裏に複数 instance を束ねる LB が自分の endpoint と
 無関係に成立する。**自分の endpoint のパス配下に固定するのは mesh の鍵
 (`/mesh/jwk/<kid>`) だけ**である: 同じ origin に居る 2 つの instance が互いの鍵に
@@ -231,11 +232,9 @@ M4 とも矛盾しない。M4 が禁じるのは派生値をディスクに置�
 正本は DR-0001。ここに置くのは他の層との接続点だけである。
 
 **登録はローカルからしか始まらない。** `ccmsg daemon passkey add <unit> [endpoint]` が
-登録用 URL (`<endpoint から WS の `/ws` を落とした prefix>/#register=<jwt>`) と
-**6 桁のコード**を 1 組出す。endpoint は入口の住所で、webui はその入口が在る場所に配られる
-(`wss://h/personal/ws` → `https://h/personal/`) ので、`/ws` を残すと本人を webui ではなく
-WebSocket に送ってしまう。URL に
-コードは入らず、コードは端末にしか出ない — 2 つが別経路で browser に届くので、URL が
+登録用 URL (`<endpoint>#register=<jwt>`) と **6 桁のコード**を 1 組出す。endpoint は instance の
+公開 base URL そのもの (`https://h/personal/`) で、webui はそこに配られるので、URL の組み立てに
+細工は要らない。URL にコードは入らず、コードは端末にしか出ない — 2 つが別経路で browser に届くので、URL が
 漏れただけでは登録にならない。jwt を署名する secret は発行 instance のメモリにだけ在り、
 再起動で消える (永続鍵を持たない)。この 3 つの命令 (`add` / `list` / `remove`) は
 **契約の op ではなく instance の UDS にだけ届く管理フレーム**である: 契約はネットワーク
@@ -244,9 +243,19 @@ WebSocket に送ってしまう。URL に
 
 **HTTP の 4 経路** (`/auth/challenge` `/auth/register` `/auth/assert` `/auth/refresh`) は
 「`needs_hello: false` の op を HTTP で運ぶもの」で、`request_id` は carrier が合成する。
-末尾照合なのは `/ws` と同じ理由である (§3.1)。未認証で叩けるので `Origin` を
-`entry.origins` と照合し、4 経路で 1 つの rate limit を共有する。CORS は `entry.origins` に
-在る origin にだけ `Access-Control-Allow-Origin` + `Allow-Credentials` を返す。
+末尾照合なのは `ws` と同じ理由である (§3.1)。未認証で叩けるので 4 経路で 1 つの rate limit を
+共有する。CORS は **request の `Origin` のホストが、この instance が持つ relying party
+(credential の `rp_id`、未使用の登録 URL の `rp_id`、自分の endpoint のホスト) のどれかに
+一致するかその配下**なら `Access-Control-Allow-Origin` + `Allow-Credentials` を echo し、
+外れていれば 403 を返す。これは「どの page が答えを読めるか」の境界であって、誰を通すかは
+credential 側が決める。
+
+**認証は record の endpoint (base URL 全体) に束ねる。** 登録時に登録 URL の claims の
+endpoint を `CredentialRecord.endpoint` に書き、register / assert の受理条件は
+**`clientDataJSON.origin` == endpoint の origin** かつ **request が届いたパスの prefix ==
+endpoint のパス**である。`https://h/` と `https://h/personal/` は別 endpoint で別登録になる
+(rp_id はホストなので両者で同じになりうるが、rp_id は「authenticator がどのドメインに答えるか」で、
+「どの instance に通すか」より粗い)。
 
 **token は署名しない opaque 値**で、検証は record の lookup である。access は応答の body、
 refresh は httpOnly cookie (`__Secure-ccmsg-<sha256(instance id + 改行 + sub) の先頭 16 hex>`、
@@ -533,6 +542,10 @@ topic の仕組みに内蔵するので「この topic には抑制がない」�
 
 ### 7.1 endpoint と id
 
+**endpoint は instance の公開 base URL** (`https://h.example/personal/`、末尾 `/`、`http(s)://`) で、
+`<endpoint>ws` (https のまま HTTP upgrade する)・`<endpoint>mesh/*`・`<endpoint>auth/*`・
+`<endpoint>webhook/*` はその下の route であって endpoint の一部ではない (契約 `Endpoint`)。
+
 **config が持つのは `peers` (自分の分を含む全 endpoint の一覧) だけで、そのどれが自分かは
 起動時の probe で確定する** (mesh-self-identification、§8.2、DR-0001 §2.7)。proxy や別名の
 裏に居る instance の URL は、プロセスが自分の socket から読み取れる値ではないが、probe は
@@ -633,8 +646,8 @@ socket path / HTTP の bind / state dir / data dir / ログ。**すべて config
 | 項目 | 中身 |
 |---|---|
 | 自 config home | この instance が見る唯一の config home (M6) |
-| peers | mesh の endpoint URL 一覧。**自分の分を含めた同じものを全 instance に配れる** (どれが自分かは起動時の probe で確定し、読む側が自分を除く、§7.1) |
-| 入口の許可 | bind、source IP、Origin |
+| peers | mesh の endpoint (instance の公開 base URL、末尾 `/`) の一覧。**自分の分を含めた同じものを全 instance に配れる** (どれが自分かは起動時の probe で確定し、読む側が自分を除く、§7.1)。**config に載る URL の一覧はこれだけ**である |
+| 入口の許可 | bind、source IP |
 | upstream | gateway の URL と webhook source、terminal gateway、launcher (root と テンプレ)、translate helper、sandbox origin |
 
 **config は起動時に 1 回だけ読む。無再起動での反映は持たない** (DV-Q8)。instance ごとの
@@ -814,6 +827,7 @@ v2 は境界を持つ経路に**その経路を直接呼ぶテスト**を置く�
 - ファイルアクセスの containment (contained / workspace / external の各面)
 - 配信先の絞り込み (user 限定の topic が session role に流れない)
 - 転送された op が転送先でも認可される (§7.3)
+- credential が登録先の endpoint でだけ通る (別 origin / 別パス prefix の instance では拒否、§3.7)
 
 ### 11.3 「増やさない」を壊す変更を検出する
 

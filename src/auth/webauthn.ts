@@ -79,13 +79,13 @@ export function parseAuthenticatorData(bytes: Uint8Array): AuthenticatorData {
  * 11-15): what the browser was doing, which challenge it answered, which page
  * asked, and that the answer belongs to one page rather than an embedded one.
  *
- * The origin is compared against the set the operator configured for the web
- * UI rather than against the endpoint: the endpoint is where the instance is
- * dialed, and the page may be served from another name under the same
- * registrable domain (DR-0001 §2.3). */
+ * The origin is compared against the endpoint the credential is registered
+ * for, which is where the page that runs these exchanges is served: an
+ * endpoint is the base URL of the instance itself, so the page and the
+ * instance are one origin by construction (DR-0001 §2.3). */
 export function checkClientData(
   clientDataJson: Uint8Array,
-  expected: { type: string; challenge: string; origins: readonly string[] },
+  expected: { type: string; challenge: string; origin: string },
 ): void {
   let parsed: ClientData;
   try {
@@ -99,8 +99,8 @@ export function checkClientData(
   if (typeof parsed.challenge !== "string" || !equalStrings(parsed.challenge, expected.challenge)) {
     throw new WebAuthnError("the client data answers another challenge");
   }
-  if (typeof parsed.origin !== "string" || !expected.origins.includes(parsed.origin)) {
-    throw new WebAuthnError(`${String(parsed.origin)} is not an origin this instance serves`);
+  if (typeof parsed.origin !== "string" || parsed.origin !== expected.origin) {
+    throw new WebAuthnError(`${String(parsed.origin)} is not ${expected.origin}`);
   }
   // What is refused is an exchange an embedding page ran, which is what either
   // of these says when it is there to say it. `crossOrigin: false` is not that:
@@ -141,12 +141,12 @@ export interface VerifiedRegistration {
  * page asked for something other than what this instance asked it to. */
 export function verifyRegistration(
   credential: RegistrationCredential,
-  expected: { challenge: string; origins: readonly string[]; rpId: string },
+  expected: { challenge: string; origin: string; rpId: string },
 ): VerifiedRegistration {
   checkClientData(base64UrlDecode(credential.client_data_json), {
     type: "webauthn.create",
     challenge: expected.challenge,
-    origins: expected.origins,
+    origin: expected.origin,
   });
   let attestation: CborValue;
   try {
@@ -187,13 +187,13 @@ export function verifyRegistration(
 export async function verifyAssertion(
   credential: AssertionCredential,
   known: { publicKey: Base64Url; signCount?: number },
-  expected: { challenge: string; origins: readonly string[]; rpIds: readonly string[] },
+  expected: { challenge: string; origin: string; rpIds: readonly string[] },
 ): Promise<{ signCount: number }> {
   const clientDataJson = base64UrlDecode(credential.client_data_json);
   checkClientData(clientDataJson, {
     type: "webauthn.get",
     challenge: expected.challenge,
-    origins: expected.origins,
+    origin: expected.origin,
   });
   const authData = base64UrlDecode(credential.authenticator_data);
   const data = parseAuthenticatorData(authData);

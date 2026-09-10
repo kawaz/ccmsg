@@ -4,8 +4,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PROTOCOL_VERSION } from "@ccmsg/protocol";
 import { type Env, type Instance, isRunning, start } from "../src/instance/index.ts";
-import { Auth, AuthRecords, cookieName, cookiePath, PREVIOUS_GRACE_MS } from "../src/auth/index.ts";
-import { webOrigin } from "../src/auth/index.ts";
+import {
+  Auth,
+  AuthRecords,
+  cookieName,
+  cookiePath,
+  originOf,
+  PREVIOUS_GRACE_MS,
+  servesPath,
+} from "../src/auth/index.ts";
 import { SoftAuthenticator } from "./authenticator.ts";
 import { connectWs, type LineClient } from "./client.ts";
 
@@ -44,7 +51,7 @@ async function serving(
   writeFileSync(
     join(root, "config", "config.json"),
     JSON.stringify({
-      defaults: { entry: { host: "127.0.0.1", port, origins: [origin] } },
+      defaults: { entry: { host: "127.0.0.1", port } },
     }),
   );
   const env: Env = {
@@ -80,11 +87,11 @@ async function post(
   });
 }
 
-/** Where a page this instance serves is reached, as a registration has to be
- * told. An instance with no mesh has settled no endpoint of its own (§7.1), so
- * the URL is the caller's to state. */
-function servedAt(at: { instance: Instance }): `ws://${string}` {
-  return `ws://${at.instance.http[0] as string}`;
+/** This instance's endpoint: the base URL it is served at, which a
+ * registration has to be told. An instance with no mesh has settled none of its
+ * own (§7.1), so the URL is the caller's to state. */
+function servedAt(at: { instance: Instance }): `http://${string}/` {
+  return `http://${at.instance.http[0] as string}/`;
 }
 
 /** The whole of what a person does the first time: take the URL and the code
@@ -217,6 +224,9 @@ describe("authenticating and the tokens that follow (§2.4, §2.5)", () => {
 
   test("refreshing rotates, and any generation rotated away fails the family", async () => {
     const at = await serving();
+    // The registration URL is what tells this instance which relying party its
+    // pages belong to, and every `/auth/*` answer is bounded by that (§2.3).
+    at.instance.auth.issue({ endpoint: servedAt(at) });
     const first = at.instance.auth.mint("someone");
     const name = cookieName(at.instance.self, "someone");
     const zero = `${name}=${first.refresh.value}`;
@@ -243,8 +253,12 @@ describe("authenticating and the tokens that follow (§2.4, §2.5)", () => {
     expect((await post(at, "refresh", {}, { cookie: standing })).status).toBe(401);
   });
 
-  test("an origin this instance does not serve is refused before anything else", async () => {
+  test("an origin under no relying party of this instance is refused before anything else", async () => {
     const at = await serving();
+    // A registration URL exists, so this instance does hold a relying party —
+    // the refusal below is about the origin asking and not about there being
+    // nothing to compare it with.
+    at.instance.auth.issue({ endpoint: servedAt(at) });
     const refused = await fetch(`http://${at.instance.http[0] as string}/auth/challenge`, {
       method: "POST",
       headers: { origin: "http://elsewhere.example", "content-type": "application/json" },
@@ -253,8 +267,12 @@ describe("authenticating and the tokens that follow (§2.4, §2.5)", () => {
     expect(refused.status).toBe(403);
   });
 
-  test("a preflight from a served origin is answered with credentials allowed", async () => {
+  test("a preflight from a page under this instance's relying party is answered with credentials allowed", async () => {
     const at = await serving();
+    // What makes this instance answer for that page is the registration URL an
+    // operator issued for it: no list of origins is configured, and the relying
+    // party of the URL is where the answer comes from (DR-0001 §2.3).
+    at.instance.auth.issue({ endpoint: servedAt(at) });
     const answer = await fetch(`http://${at.instance.http[0] as string}/auth/assert`, {
       method: "OPTIONS",
       headers: { origin: at.origin },
@@ -309,7 +327,6 @@ describe("a token reused after its grace fails the family (§2.4)", () => {
     const self = "0".repeat(32);
     const deps = {
       self,
-      origins: () => [],
       endpoint: () => undefined,
       unit: "unit",
     };
@@ -339,7 +356,6 @@ describe("a token reused after its grace fails the family (§2.4)", () => {
     const auth = new Auth({
       self: "0".repeat(32),
       records: new AuthRecords({ dir, self: "0".repeat(32), publish: () => {}, now: () => now }),
-      origins: () => [],
       endpoint: () => undefined,
       unit: "unit",
       now: () => now,
@@ -480,6 +496,7 @@ describe("what a registration or an assertion is refused for", () => {
 
   test("a body missing a field the contract requires is invalid_args", async () => {
     const at = await serving();
+    at.instance.auth.issue({ endpoint: servedAt(at) });
     const response = await post(at, "register", { token: "x" });
     expect(response.status).toBe(400);
     expect(((await response.json()) as { error: { code: string } }).error.code).toBe(
@@ -569,8 +586,7 @@ describe("the registration URL runs out (§2.2)", () => {
     const auth = new Auth({
       self: "0".repeat(32),
       records: new AuthRecords({ dir, self: "0".repeat(32), publish: () => {}, now: () => now }),
-      origins: () => ["http://ui.example"],
-      endpoint: () => "ws://ui.example",
+      endpoint: () => "http://ui.example/",
       unit: "unit",
       now: () => now,
     });
@@ -598,8 +614,7 @@ describe("the registration URL runs out (§2.2)", () => {
     const deps = {
       self: "0".repeat(32),
       records,
-      origins: () => ["http://ui.example"],
-      endpoint: () => "ws://ui.example" as const,
+      endpoint: () => "http://ui.example/" as const,
       unit: "unit",
     };
     records.write("credential/unit-3/abc", {
@@ -608,6 +623,7 @@ describe("the registration URL runs out (§2.2)", () => {
       credential_id: "abc",
       public_key: "k",
       user_handle: "u",
+      endpoint: "http://ui.example/",
       registered_at: 1,
     });
     // A restart is a new Auth over the same records, and it must not hand the
@@ -675,7 +691,6 @@ describe("what a peer's records may and may not do (§2.4, §2.6)", () => {
     const auth = new Auth({
       self,
       records,
-      origins: () => [],
       endpoint: () => undefined,
       unit: "unit",
     });
@@ -700,6 +715,7 @@ describe("what a peer's records may and may not do (§2.4, §2.6)", () => {
       credential_id: "abc",
       public_key: "k",
       user_handle: "u",
+      endpoint: "http://ui.example/",
       registered_at: 1,
     });
     const removal = records.merge([
@@ -723,6 +739,7 @@ describe("what a peer's records may and may not do (§2.4, §2.6)", () => {
             credential_id: "abc",
             public_key: "k",
             user_handle: "u",
+            endpoint: "http://ui.example/",
             registered_at: 1,
           },
         },
@@ -777,20 +794,62 @@ describe("the user handle a subject is known by (§2.2)", () => {
   });
 });
 
+describe("a credential is good for one endpoint (§2.3)", () => {
+  test("a registration posted under another prefix than its endpoint is refused", async () => {
+    const at = await serving();
+    // The URL was issued for the instance at `/personal/`, and the browser
+    // posts to the one at the root. Both are answered by this listener — the
+    // routes are matched by the end of the path — so what tells them apart is
+    // the endpoint the URL named (contract, `CredentialRecord.endpoint`).
+    const issued = at.instance.auth.issue({ endpoint: `${servedAt(at)}personal/` });
+    const authenticator = new SoftAuthenticator(issued.rp_id);
+    const challenge = (await (await post(at, "challenge", {})).json()) as { challenge: string };
+    const credential = await authenticator.create({
+      challenge: challenge.challenge,
+      origin: at.origin,
+      userId: issued.user_id,
+    });
+    const token = issued.url.slice(issued.url.indexOf("#register=") + "#register=".length);
+    const body = { token, code: issued.code, credential };
+    const elsewhere = await post(at, "register", body);
+    expect(elsewhere.status).toBe(401);
+
+    // The same registration, posted where the URL said, is taken.
+    const here = await fetch(`http://${at.instance.http[0] as string}/personal/auth/register`, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: at.origin },
+      body: JSON.stringify(body),
+    });
+    expect(here.status).toBe(200);
+  });
+
+  test("an endpoint that is not a base URL is refused where it is typed", async () => {
+    const at = await serving();
+    // An operator types this one. A URL naming a route, or missing the trailing
+    // slash, would be written into a record and compared forever after against
+    // a request that can never match it.
+    expect(() => at.instance.auth.issue({ endpoint: `${servedAt(at)}ws` as never })).toThrow(
+      /base URL/,
+    );
+    expect(() =>
+      at.instance.auth.issue({ endpoint: "wss://h.example/personal/ws" as never }),
+    ).toThrow(/base URL/);
+  });
+});
+
 describe("where the registration URL points (§2.2)", () => {
-  test("the WebSocket's own segment is not part of the page's address", () => {
-    // An endpoint is the address of a door; the web UI is served where that
-    // door is, not at it. Sending the person to `/ws` would hand them the
-    // WebSocket instead of the page.
-    expect(webOrigin("wss://h.example/personal/ws")).toBe("https://h.example/personal");
-    expect(webOrigin("wss://h.example/ws")).toBe("https://h.example");
-    expect(webOrigin("ws://127.0.0.1:8080/ws")).toBe("http://127.0.0.1:8080");
-    // An endpoint naming no path is an instance whose UI is at the root, and a
-    // trailing slash says the same thing.
-    expect(webOrigin("ws://127.0.0.1:8080")).toBe("http://127.0.0.1:8080");
-    expect(webOrigin("ws://127.0.0.1:8080/")).toBe("http://127.0.0.1:8080");
-    // A prefix that merely ends in those letters is not the segment.
-    expect(webOrigin("wss://h.example/notws")).toBe("https://h.example/notws");
+  test("two endpoints on one host are two instances, told apart by their path", () => {
+    // An endpoint is the instance's own base URL, so what a credential is good
+    // for is that path and no other: a neighbour under the same host answers at
+    // a different one and is a separate registration.
+    expect(servesPath("https://h.example/personal/", "/personal/")).toBe(true);
+    expect(servesPath("https://h.example/personal/", "/")).toBe(false);
+    expect(servesPath("https://h.example/", "/")).toBe(true);
+    expect(servesPath("https://h.example/", "/personal/")).toBe(false);
+    // The origin is the other half, and says nothing about which of the two it
+    // is: both endpoints share it.
+    expect(originOf("https://h.example/personal/")).toBe("https://h.example");
+    expect(originOf("https://h.example/")).toBe("https://h.example");
   });
 
   test("the URL a command issues is the page, with the token in its fragment", () => {
@@ -799,8 +858,7 @@ describe("where the registration URL points (§2.2)", () => {
     const auth = new Auth({
       self,
       records: new AuthRecords({ dir, self, publish: () => {} }),
-      origins: () => ["https://h.example"],
-      endpoint: () => "wss://h.example/personal/ws",
+      endpoint: () => "https://h.example/personal/",
       unit: "unit",
     });
     const issued = auth.issue({});

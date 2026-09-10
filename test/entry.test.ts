@@ -115,25 +115,19 @@ describe("the entry is matched at the end of the path (DR-0001 §2.7)", () => {
   });
 });
 
-describe("the two allowlists (§3.1)", () => {
-  test("no configured origin admits no browser", async () => {
-    // An empty list is not "anyone": a permission nobody was granted is not a
-    // permission. A request carrying no `Origin` is not a browser's and has
-    // nothing to be compared, so it is judged on the address alone.
+describe("who may reach the entry (§3.1)", () => {
+  test("a browser's `Origin` is not what admits it; the token is", async () => {
+    // There is no origin allowlist to be on or off (DR-0001 §2.7): a page at
+    // any URL the instance is reached through presents the access token its
+    // person was given, and one arriving without a token is refused as the
+    // anonymous connection it is.
     const instance = await serving();
-    expect((await handshake(instance, { origin: "http://ui.example" })).status).toBe(403);
-    expect(
-      (await handshake(instance, { protocols: [`ccmsg.token.${personToken(instance)}`] })).status,
-    ).toBe(101);
-  });
-
-  test("a configured origin admits that one and refuses the rest", async () => {
-    const instance = await serving({ origins: ["http://ui.example"] });
+    expect((await handshake(instance, { origin: "http://ui.example" })).status).toBe(401);
     const protocols = [`ccmsg.token.${personToken(instance)}`];
-    expect((await handshake(instance, { origin: "http://ui.example", protocols })).status).toBe(
-      101,
-    );
-    expect((await handshake(instance, { origin: "http://elsewhere.example" })).status).toBe(403);
+    expect(
+      (await handshake(instance, { origin: "http://elsewhere.example", protocols })).status,
+    ).toBe(101);
+    expect((await handshake(instance, { protocols })).status).toBe(101);
   });
 
   test("the address compared is the one the server saw, not the one a header claims", async () => {
