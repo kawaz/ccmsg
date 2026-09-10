@@ -20,21 +20,6 @@
 
 ## 裁定待ち
 
-### DS-Q2 dump のアイテム型の体系の確認
-
-起草: [design/dump-kinds.md](design/dump-kinds.md)。主語は main、`:` 区切りで prefix 選択可 (`tool` = `tool:*`)。4 群:
-
-- `message:user:{in,out}` (人との会話)、`message:sub:{out,in}` (Agent への指示 / worker の答え)、`message:session:{out,in}` (ccmsg の他セッション)
-- `thinking` (空白のみ除外)
-- `tool:<ToolName>` (use と result を `tool_use.id` で対にして 1 アイテム。Bash / Read / Edit / Grep / Agent / SendMessage / Monitor / Skill / TodoWrite … は個別フィールド、未知は `{input, result}`)
-- `notice:{slash,interrupt,compact,api-error,hook,task,attachment,meta}` (csa の `I` の分解先)
-- `ids` は型でなく台帳 (各アイテムが `uuid` + 型に応じた `agent_id` / `task_id` / `tool_use_id` / `msg_id` / `sid` / `cron_id` を持ち、末尾で集約)
-
-範囲は契約既存の `since_at` / `since_uuid` / `until_at` / `until_uuid` (csa の turn 番号は派生値なので採らず、turn はアイテムの属性で出す)。opts は `types: string[]` (prefix 可、`-thinking` で除外)、`preset`。実測の注意: `tool:Bash` に exit code は記録されていない (`interrupted` / `stderr` の有無で代替)。
-
-- [ ] a: この型体系で契約 → daemon に進んでよい
-- [ ] b: 直したい型がある → 自由記述で
-
 ### DS-Q3 アイテム分類の置き場
 
 [design/dump-kinds.md](design/dump-kinds.md) §3。dump と webui が同じ仕分けを使うのは前提で、分類コードをどこに置くか。
