@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, describe, expect, test } from "bun:test";
 import {
   existsSync,
   mkdirSync,
@@ -31,6 +31,7 @@ import {
 } from "../src/instance/index.ts";
 import { connectUds, type LineClient } from "./client.ts";
 import { SID } from "./frames.ts";
+import { reapOrphans, trackRoot } from "./harness.ts";
 
 const CLI = join(import.meta.dir, "..", "src", "cli.ts");
 
@@ -39,6 +40,7 @@ const CLI = join(import.meta.dir, "..", "src", "cli.ts");
  * makes "what did a run leave behind" a directory listing (M4). */
 function disposable(): { env: Env; root: string; home: string } {
   const root = mkdtempSync(join(tmpdir(), "ccmsg-instance-"));
+  trackRoot(root);
   const home = join(root, "home");
   mkdirSync(join(home, "sessions"), { recursive: true });
   // What makes the directory a config home rather than any directory: the CLI
@@ -82,6 +84,13 @@ async function greet(instance: Instance): Promise<LineClient> {
 afterEach(async () => {
   for (const client of clients.splice(0)) await client.close();
   for (const instance of running.splice(0)) await instance.stop();
+});
+
+// A daemon this file spawned and did not collect is a process left on the
+// machine the run happened on. It is stopped here and named, so the run says so
+// rather than ending green with the thing still holding a socket.
+afterAll(async () => {
+  expect(await reapOrphans()).toEqual([]);
 });
 
 describe("paths", () => {

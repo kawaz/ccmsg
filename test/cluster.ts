@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type Endpoint, type InstanceId, PROTOCOL_VERSION } from "@ccmsg/protocol";
 import { type Env, Instance, isRunning, start } from "../src/instance/index.ts";
+import { reapOrphans, trackRoot } from "./harness.ts";
 import {
   EphemeralKey,
   type MeshJwk,
@@ -30,6 +31,9 @@ const closing: (() => void)[] = [];
 export async function release(): Promise<void> {
   for (const instance of running.splice(0)) await instance.stop();
   for (const close of closing.splice(0)) close();
+  // Nothing here starts a process of its own, so anything still running against
+  // one of these homes got there by way of the daemon and is a leak.
+  expect(await reapOrphans()).toEqual([]);
 }
 
 /** A port held for the listener that is going to take it.
@@ -135,6 +139,7 @@ const leaseOf = new WeakMap<Env, PortLease>();
 export function homeFor(lease: PortLease, peers: readonly Endpoint[]): Env {
   const port = lease.port;
   const root = mkdtempSync(join(tmpdir(), "ccmsg-mesh-"));
+  trackRoot(root);
   const home = join(root, "home");
   mkdirSync(join(home, "sessions"), { recursive: true });
   const configDir = join(root, "config");

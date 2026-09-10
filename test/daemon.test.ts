@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, describe, expect, test } from "bun:test";
 import { appendFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { main } from "../src/cli.ts";
@@ -22,7 +22,7 @@ import {
 } from "../src/daemon/index.ts";
 import { loadShared } from "../src/instance/index.ts";
 import { resolvePaths } from "../src/instance/paths.ts";
-import { capture, Host, json } from "./harness.ts";
+import { capture, Host, json, reapOrphans } from "./harness.ts";
 
 const hosts: Host[] = [];
 const supervisors: Supervisor[] = [];
@@ -48,6 +48,14 @@ afterEach(async () => {
     one.release();
   }
   hosts.splice(0);
+});
+
+// A supervisor spawns real instances. One that outlived the test that started
+// it is a daemon left running against a directory that has just been removed,
+// which the run has to fail over rather than leave for a person to find in
+// `ps` hours later.
+afterAll(async () => {
+  expect(await reapOrphans()).toEqual([]);
 });
 
 describe("which config homes there are (daemon add / remove / list)", () => {

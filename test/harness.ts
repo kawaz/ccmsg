@@ -36,6 +36,75 @@ export function json(text: string): unknown {
   return JSON.parse(text) as unknown;
 }
 
+/** Every disposable root a run has made, kept after the directory itself is
+ * gone: a process still running against a path that no longer exists is the one
+ * thing worth finding here. */
+const roots: string[] = [];
+
+/** Say that everything under this directory belongs to the run, so that
+ * anything found running against it afterwards is the run's to answer for.
+ * Called by `Host` for its own root, and by whoever makes a disposable
+ * directory some other way. */
+export function trackRoot(dir: string): void {
+  roots.push(dir);
+}
+
+/** How long a process gets to leave on its own before it is taken. Short: it
+ * was asked to stop once already, by whatever ought to have stopped it. */
+const REAP_GRACE_MS = 500;
+
+function alive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function survivors(): Promise<{ pid: number; argv: string }[]> {
+  const ps = Bun.spawn(["ps", "-Ao", "pid=,args="], { stdout: "pipe", stderr: "ignore" });
+  const listing = await new Response(ps.stdout).text();
+  await ps.exited;
+  const found: { pid: number; argv: string }[] = [];
+  for (const line of listing.split("\n")) {
+    const row = /^\s*(\d+)\s+(.*\S)\s*$/.exec(line);
+    if (row === null) continue;
+    const pid = Number(row[1]);
+    if (pid === process.pid) continue;
+    const argv = row[2] as string;
+    if (roots.some((root) => argv.includes(root))) found.push({ pid, argv });
+  }
+  return found;
+}
+
+/** Stop whatever is still running against a disposable root, and name it.
+ *
+ * A test that leaves a daemon behind leaves it on the person's own machine,
+ * holding a socket and writing into a directory that is about to be removed —
+ * and a run that ended green would be saying none of that happened. So the
+ * survivors are stopped, gently and then not, and returned: the caller asserts
+ * the list is empty, which is what turns a leak into a failure rather than
+ * into somebody's `ps` output hours later. */
+export async function reapOrphans(): Promise<string[]> {
+  const leaked = await survivors();
+  if (leaked.length === 0) return [];
+  for (const one of leaked) {
+    try {
+      process.kill(one.pid, "SIGTERM");
+    } catch {}
+  }
+  const until = Date.now() + REAP_GRACE_MS;
+  while (Date.now() < until && leaked.some((one) => alive(one.pid))) await Bun.sleep(25);
+  for (const one of leaked) {
+    if (!alive(one.pid)) continue;
+    try {
+      process.kill(one.pid, "SIGKILL");
+    } catch {}
+  }
+  return leaked.map((one) => one.argv);
+}
+
 /** A host of its own: an XDG config home and state home nobody else uses, with
  * config homes made inside it on demand.
  *
@@ -52,6 +121,7 @@ export class Host {
   constructor(prefix = "ccmsg-host-") {
     this.root = mkdtempSync(join(tmpdir(), prefix));
     this.#owned = [this.root];
+    trackRoot(this.root);
     this.env = {
       XDG_CONFIG_HOME: join(this.root, "config"),
       XDG_STATE_HOME: join(this.root, "state"),
