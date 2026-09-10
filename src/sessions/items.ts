@@ -80,21 +80,18 @@ export function itemsRead(
 
 /** Whether the range's end is the part to answer with.
  *
- * A caller that named where to start is reading forward from there; one that
- * named only where to stop is looking at the newest of what it asked for, and
- * answering with the oldest of that range would hand it the far side of a
- * transcript it is walking back through. With neither bound the range is the
- * whole transcript, which is read from its beginning. */
+ * A caller that named where to start is reading forward from there; anyone
+ * else is looking at the newest of what it asked for, and answering with the
+ * oldest of that range would hand it the far side of a transcript it is
+ * walking back through. Naming no bound at all is the ordinary first read and
+ * answers the tail the same way; a caller that wants the transcript from its
+ * beginning says so with `since_at: 0`. */
 function backwards(bounds: TranscriptItemsReadArgs): boolean {
   const lower =
     bounds.since_at !== undefined ||
     bounds.since_uuid !== undefined ||
     bounds.since_id !== undefined;
-  const upper =
-    bounds.until_at !== undefined ||
-    bounds.until_uuid !== undefined ||
-    bounds.until_id !== undefined;
-  return upper && !lower;
+  return !lower;
 }
 
 /** As much of the range as one answer carries, and where the next one starts.

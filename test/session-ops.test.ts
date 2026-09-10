@@ -1071,7 +1071,7 @@ describe("transcript_items_read", () => {
     const { configHome, handlers } = ops();
     writeTranscript(configHome, SID, BUSY_TRANSCRIPT);
     const whole = (await all(handlers)).items;
-    const page = await all(handlers, { limit: 3 });
+    const page = await all(handlers, { since_at: 0, limit: 3 });
     expect(page.items).toHaveLength(3);
     expect(page.next).toBe(whole[3]?.id);
 
@@ -1081,6 +1081,27 @@ describe("transcript_items_read", () => {
     expect([...page.items, ...rest.items].map((item) => item.id)).toEqual(
       whole.map((item) => item.id),
     );
+  });
+
+  test("asking with no bound answers the tail, as the raw read with no before does", async () => {
+    const { configHome, handlers } = ops();
+    writeTranscript(configHome, SID, BUSY_TRANSCRIPT);
+    const whole = (await all(handlers)).items;
+    const page = await all(handlers, { limit: 3 });
+    // The newest items are what a first read wants, and `prev` is how it walks
+    // back from there through a transcript it never has to read whole.
+    expect(page.items.map((item) => item.id)).toEqual(whole.slice(-3).map((item) => item.id));
+    expect(page.next).toBeUndefined();
+    expect(page.prev).toBe(page.items[0]?.id);
+  });
+
+  test("a transcript is read from its beginning by saying since_at: 0", async () => {
+    const { configHome, handlers } = ops();
+    writeTranscript(configHome, SID, BUSY_TRANSCRIPT);
+    const whole = (await all(handlers)).items;
+    const page = await all(handlers, { since_at: 0, limit: 3 });
+    expect(page.items.map((item) => item.id)).toEqual(whole.slice(0, 3).map((item) => item.id));
+    expect(page.prev).toBeUndefined();
   });
 
   test("an upper bound alone answers the range's end and names what precedes it", async () => {
