@@ -229,11 +229,40 @@ peer   9f2c1ab4   ccmsg-webui/main
 
 ## 3. 分類の置き場
 
-分類 (jsonl の 1 行 → 型 + フィールド) は **契約 package の subpath に 1 つ置く**。想定は `@ccmsg/protocol/transcript-items`。daemon の dump と webui の Timeline は同じものを import し、**型に専用コンポーネントを当てる**ところだけをそれぞれ持つ。dump はテキストの表示コンポーネント、webui は React コンポーネント。型が増えたら両方に描き方を足す (足すまでは汎用形で出る)。
+分類 (jsonl の 1 行 → 型 + フィールド) を誰が持つか。dump と webui が同じ仕分けを使うのは前提で、置き場が 2 案ある。**統括の推しは案 B**。決めるのは kawaz。
 
-契約 package に置くのは、型名が `types` 引数と `dump.presets` の config に現れる **wire の語彙**だから。分類の実装と、その結果を選択する引数の schema が離れると、片方だけ増えて名前がずれる。
+どちらでも共通なのは、**型に専用コンポーネントを当てる**ところは dump と webui がそれぞれ持つこと。dump はテキストの表示コンポーネント、webui は React コンポーネント。型が増えたら両方に描き方を足す (足すまでは汎用形で出る)。
+
+### 案 A — 契約 package に分類コードを置く
+
+分類の実装を `@ccmsg/protocol/transcript-items` (契約 package の subpath) に 1 つ置き、daemon の dump と webui の Timeline が同じものを import する。webui は今までどおり生 jsonl を受け取り、手元で分類する。
+
+型名は `types` 引数と `dump.presets` の config に現れる wire の語彙なので、分類の実装と選択の schema が同じ package に居るのは素直に見える。
+
+### 案 B — daemon が分類し、wire に型付き item を流す (推し)
+
+分類の実装は **daemon にだけ**置く。契約 package が持つのは **型の enum と item の形 (fields) という語彙だけ**で、jsonl を読むコードは入らない。daemon が transcript を型付き item に変換して wire に流し (dump の result と、Timeline 用の新 topic または `transcript_read` の型付き版)、webui は **生 jsonl を一切読まず**型付き item だけを描く。
+
+jsonl はハーネスの内部形式で、こちらの合意なく変わる。**その追従は daemon の責務**で、契約 (wire の形) に同居させると形式変更のたびに契約 release が要り、責務がにじむ。webui から jsonl パーサが消え、codex の rollout 形式 (DESIGN §3.8 のハーネス差) も daemon 側の分類で吸収されるので、ハーネスが増えても webui は無変更で済む。
+
+悪い面もはっきりしている。Timeline の追記 (tail) を型付きで流す経路が要り、今は生の byte 範囲を運んでいる `transcript:<sid>` topic の意味論が変わる。契約 minor + webui の Timeline モデルの作り直しがそのまま代償になる。
+
+### 比較
+
+| 軸 | 案 A (契約に分類コード) | 案 B (daemon が分類、推し) |
+|---|---|---|
+| 分類の責務 | 契約 package (daemon と webui が共有) | daemon 単独 |
+| jsonl 形式変更の追従先 | 契約 package → **契約 release が要る** | daemon の release だけ |
+| 契約が持つもの | 型の語彙 + 分類の実装 | **型の語彙だけ** |
+| webui の変更量 | 小 (3 系統を共通分類からの導出に置き換えるだけ) | 大 (jsonl パーサを捨て、型付き item を受ける Timeline モデルに作り直す) |
+| wire | 今のまま (生 jsonl / byte 範囲) | 型付き item を流す経路が要る (`transcript:<sid>` topic の意味論変更 = 契約 minor) |
+| codex 等の別ハーネス形式 | 分類が契約側に入る (契約がハーネスの内部形式を知る) | daemon が吸収し、**webui は無変更** |
 
 ### webui の現状と移行
+
+### webui の現状と移行
+
+どちらの案でも webui の分類 3 系統は型の階層に置き換わる。違うのは分類がどこで走るか (案 A は webui の中、案 B は daemon の中) だけで、置き換わる先の型は同じ。
 
 webui は今 3 系統を並べていて、階層を持たない。
 
@@ -243,9 +272,9 @@ webui は今 3 系統を並べていて、階層を持たない。
 | `AssistantMessageKind` | `type:"assistant"` 行 | `message:user:out` / `system:api-error` |
 | `Segment` | 1 行の中の content ブロック | `thinking` / `tool:*` |
 
-行を分類する 2 つとブロックを分類する 1 つが同じ平面に並んでいるのが、階層を持てない理由になっている。共通の分類はアイテムを **行より細かくブロック単位**で出し (assistant 1 行が `thinking` + `tool:Bash` + `message:user:out` の 3 アイテムになる)、webui 側は今の `ParsedLine` の下にそれを敷く。`UserMessageKind` / `AssistantMessageKind` は共通分類からの導出に置き換わり、`Segment` は「共通アイテム + webui だけの表示都合」の和になる。
+行を分類する 2 つとブロックを分類する 1 つが同じ平面に並んでいるのが、階層を持てない理由になっている。分類はアイテムを **行より細かくブロック単位**で出し (assistant 1 行が `thinking` + `tool:Bash` + `message:user:out` の 3 アイテムになる)、webui 側は今の `ParsedLine` の下にそれを敷く。`UserMessageKind` / `AssistantMessageKind` は共通分類からの導出に置き換わり、`Segment` は「共通アイテム + webui だけの表示都合」の和になる。
 
-webui が `bash-use` と `bash-result` を別 Segment に持つのは残せる。共通分類が返すのは畳んだ 1 アイテム (`tool:Bash`) で、webui はそれを描くときに use と result の 2 ブロックに開く。逆向き (webui の 2 分割を共通分類に持ち上げる) にしないのは、開いた形から畳むには対応付けをもう一度やる必要があり、分類の責務が呼び出し側に漏れるため。**畳んだものを開くのは表示の自由、開いたものを畳むのは分類のやり直し**になる。
+webui が `bash-use` と `bash-result` を別 Segment に持つのは残せる。分類が返すのは畳んだ 1 アイテム (`tool:Bash`) で、webui はそれを描くときに use と result の 2 ブロックに開く。逆向き (webui の 2 分割を共通分類に持ち上げる) にしないのは、開いた形から畳むには対応付けをもう一度やる必要があり、分類の責務が呼び出し側に漏れるため。**畳んだものを開くのは表示の自由、開いたものを畳むのは分類のやり直し**になる。
 
 ## 4. 選択と範囲
 
