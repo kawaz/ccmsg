@@ -3,6 +3,7 @@ import {
   type Capability,
   type Notification,
   type Role,
+  SESSION_SCOPED_TOPICS,
   TOPIC_ATTRIBUTES,
   TOPIC_SCHEMAS,
   topicGranularity,
@@ -519,6 +520,9 @@ describe("the granularity is the contract's (M5)", () => {
 /** A subscribable name for a kind: the parameterised ones need their parameter. */
 function topicName(kind: TopicKind): string {
   if (kind === "kv") return `${kind}:ui`;
-  if (kind === "session_status" || kind === "transcript") return `${kind}:${SID}`;
+  // Read off the contract rather than listed, so a session-scoped topic added
+  // to it is named correctly here instead of subscribing under a name no
+  // caller could have written.
+  if ((SESSION_SCOPED_TOPICS as readonly string[]).includes(kind)) return `${kind}:${SID}`;
   return kind;
 }
