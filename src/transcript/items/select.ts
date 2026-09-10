@@ -14,27 +14,29 @@ import type { Item } from "./item.ts";
  * `message:user` reaches both directions, while `notice` never reaches a type
  * that merely starts with those letters. */
 
-/** The ledger is asked for the way a type is, because that is how a person
- * thinks of it — one more thing the dump may carry — but it is not a type: it
- * is the ids the items already carried, gathered once. Selecting it says to
- * write that section, and nothing about which items are kept. */
-export const IDS = "ids";
-
-/** Stands for every type at once, so the default can be written as what it is:
- * all of it, less the attachments. It is spelled with a character no type name
- * may hold, which keeps it out of reach of anything a caller could send — the
- * default is this instance's, not a selection anyone writes. */
-const EVERYTHING = "*";
-
-/** What a dump keeps when nobody said. Everything the transcript held except
- * the attachments, which are the harness furnishing a turn rather than
- * anything that happened in it, and which outnumber the rest. */
-const DEFAULT_TYPES = [EVERYTHING, "-system:attachment"];
+/** What a dump keeps when nobody said: every family there is, less the
+ * attachments — the harness furnishing a turn rather than anything that
+ * happened in it, and more numerous than everything else together.
+ *
+ * Written as selectors a person could have typed, rather than as a wildcard
+ * this alone understands, because the file states the selection it was written
+ * under and a reader of that file has only the one vocabulary. */
+const DEFAULT_TYPES = [
+  "message",
+  "thinking",
+  "tool",
+  "notice",
+  "system",
+  "hook",
+  "-system:attachment",
+];
 
 export interface Selection {
   /** Whether an item of this type is kept. */
   readonly keeps: (type: string) => boolean;
-  readonly ids: boolean;
+  /** The selection as applied: presets expanded and exclusions in place, which
+   * is what the dump file repeats so it says on its own what was left out. */
+  readonly elements: readonly string[];
 }
 
 /** What a dump was asked to keep.
@@ -74,7 +76,7 @@ export function selection(ask: Ask, presets: readonly DumpPreset[]): Selection {
       cache.set(type, kept);
       return kept;
     },
-    ids: decide(IDS, elements),
+    elements,
   };
 }
 
@@ -91,7 +93,7 @@ function decide(type: string, elements: readonly string[]): boolean {
 }
 
 function reaches(name: string, type: string): boolean {
-  return name === EVERYTHING || type === name || type.startsWith(`${name}:`);
+  return type === name || type.startsWith(`${name}:`);
 }
 
 /** A preset named in a selection, put where it was named.

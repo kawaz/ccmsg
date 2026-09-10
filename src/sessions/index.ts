@@ -1,5 +1,5 @@
 export * from "./classify.ts";
-export { DUMPS, dumpWrite } from "./dump.ts";
+export { DUMP_SUFFIX, DUMPS, dumpWrite } from "./dump.ts";
 export { forkOrigin } from "./fork.ts";
 export * from "./harness.ts";
 export { sessionCapabilities, sessionHandlers, type SessionOpsDeps } from "./handlers.ts";

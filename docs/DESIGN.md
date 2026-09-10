@@ -256,7 +256,7 @@ directory would create a place to keep it and a way to recover it — two things
 against §1.1.
 
 The state directory holds one more thing: `dumps/`. `session_dump_write` reads a transcript and
-writes `<state dir>/dumps/<sid>[-agent-<agent id>]-<generated_at>.json`, answering with that
+writes `<state dir>/dumps/<sid>[-agent-<agent id>]-<written_at>.dump.json`, answering with that
 path. This is none of the 5 kinds above, and it is not persistence in this section's sense: the
 instance never reads the file back, and nothing breaks if it is gone.
 
@@ -288,10 +288,16 @@ place (recursively). Absent keeps everything but `system:attachment`. Presets li
 property of the wire. A cycle, or a preset name nobody configured, is **refused when the config is
 read** — finding it per request would be finding it far too late. `daemon add` writes five
 examples into the shared file's `defaults` as a starting point to edit, and `dump_presets_read`
-lists them. The older `no_thinking` / `no_agent` mean `["-thinking"]` and
+lists them. **The file's own shape is the contract's too** (`SessionDumpFile`): the reply names a
+path rather than carrying the items, so a successor session handed that path would otherwise be
+reading a format nothing states. It is `{sid, agent_id?, written_at, types, items, ids}`, where
+`types` is **the selection as applied** — presets expanded, exclusions in place — because a file
+outlives the request that made it and has to say on its own what it is a dump of and what was
+left out. The `ids` ledger is not a type and is never selected away. The older `no_thinking` / `no_agent` mean `["-thinking"]` and
 `["-message:sub", "-tool:Agent"]`, and are applied last.
 
-There are **no text components per type yet**: a dump file is typed JSON. Where the classifying
+There are **no text components per type yet**: a dump file is typed JSON of the contract's shape.
+Where the classifying
 belongs is still open (DS-Q3); should it move to the contract package, `src/transcript/items/` is
 the unit that moves. What the op adds over
 reading the transcript is a durable artifact whose path can be handed to a successor session

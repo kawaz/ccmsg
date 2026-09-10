@@ -231,7 +231,7 @@ id が state と一緒に動くことがそれらを無効にしない唯一の�
 管理対象が生まれ、§1.1 に反する。
 
 state dir にはもう 1 つ、`dumps/` がある。`session_dump_write` が transcript を読んで
-`<state dir>/dumps/<sid>[-agent-<agent id>]-<generated_at>.json` に書き、応答としてその path を返す。これは上の
+`<state dir>/dumps/<sid>[-agent-<agent id>]-<written_at>.dump.json` に書き、応答としてその path を返す。これは上の
 5 種のどれでもなく、本節の意味での永続化でもない: instance はこの file を読み返さず、消えても
 何も壊れない。
 
@@ -257,9 +257,12 @@ worker を主語にすると `message:user:in` は親が渡した指示書 (= �
 preset は契約に焼かず config の `dump.presets` に置く (名前が指すのは「関心の切り方」であって wire の性質ではない)。
 循環参照と未定義の preset 名は **config 読み込み時に拒否**する (dump のたびに落ちるのでは遅い)。
 `daemon add` は編集の出発点として 5 つの例を shared file の `defaults` に書く。一覧は `dump_presets_read` で引く。
+**file の形も契約が持つ** (`SessionDumpFile`)。path だけを返して本文は file にあるので、path を渡された後継セッションが読む形は契約の側で決まっていないと読めない。file は
+`{sid, agent_id?, written_at, types, items, ids}` で、`types` は **展開・除外適用後の選択そのもの**である
+(file は要求より長生きするので、何の dump で何を落としたかを file 自身が言えなければならない)。`ids` 台帳は型ではないので選択で落ちない。
 既存の `no_thinking` / `no_agent` は `["-thinking"]` / `["-message:sub", "-tool:Agent"]` と同義で、最後に適用される。
 
-型ごとのテキスト表示コンポーネントは**まだ無い** (dump file は型付き JSON まで)。分類の置き場は
+型ごとのテキスト表示コンポーネントは**まだ無い** (dump file は契約どおりの型付き JSON まで)。分類の置き場は
 DS-Q3 が未裁定で、契約 package 側へ移す判断になれば `src/transcript/items/` がそのまま移送単位になる。op が transcript の読み出しに足しているのは「path を後継セッションに渡せる
 耐久性のある成果物」であって (本文を client 経由で外に出してまた入れ直す代わりに)、path は
 呼び出し側が渡さないので封じ込めの判定対象も無い。state dir の下に置くのは、instance ごとの

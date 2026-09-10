@@ -3,6 +3,7 @@ import { join } from "node:path";
 import type {
   DumpPreset,
   InstanceId,
+  SessionDumpFile,
   SessionDumpWriteArgs,
   SessionDumpWriteResult,
 } from "@ccmsg/protocol";
@@ -14,6 +15,12 @@ import type { TranscriptFiles } from "../transcript/index.ts";
  * after the config home it answers for like every other per-instance path
  * (§8.1). The caller never supplies a path, so there is none to contain. */
 export const DUMPS = "dumps";
+
+/** What a dump file is called. Two extensions rather than one so that a reader
+ * knows both that it is JSON and that it is JSON of a shape the contract
+ * states — the file travels by its path, outliving the request that made it,
+ * and is opened by whoever was handed that path. */
+export const DUMP_SUFFIX = ".dump.json";
 
 export interface DumpDeps {
   readonly self: InstanceId;
@@ -67,21 +74,23 @@ export function dumpWrite(args: SessionDumpWriteArgs, deps: DumpDeps): SessionDu
   );
   const { items, entries } = select(within(classify(text.split("\n")), args), keep);
   const ids = ledger(items);
-  const generated_at = Date.now();
-  const document = {
+  const written_at = Date.now();
+  // The file repeats what it was asked for. A dump outlives the request that
+  // made it and is read by whoever was handed the path, so it has to say on
+  // its own what it is a dump of and what was left out — which is why the
+  // selection is written as applied, with the presets already expanded.
+  const document: SessionDumpFile = {
     sid: args.sid,
     ...(args.agent_id === undefined ? {} : { agent_id: args.agent_id }),
-    instance: deps.self,
-    source: file,
-    generated_at,
-    entries,
+    written_at,
+    types: [...keep.elements],
     items,
-    ...(keep.ids ? { ids } : {}),
+    ids,
   };
   const dir = join(deps.stateDir, DUMPS);
   mkdirSync(dir, { recursive: true });
   const named = args.agent_id === undefined ? args.sid : `${args.sid}-agent-${args.agent_id}`;
-  const path = join(dir, `${named}-${generated_at}.json`);
+  const path = join(dir, `${named}-${written_at}${DUMP_SUFFIX}`);
   const body = `${JSON.stringify(document, undefined, 2)}\n`;
   writeFileSync(path, body);
   return { path, instance: deps.self, entries, ids, bytes: Buffer.byteLength(body) };

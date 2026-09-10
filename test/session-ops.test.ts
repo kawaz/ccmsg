@@ -9,6 +9,7 @@ import {
   opAttributes,
   type PeerInfo,
   type Role,
+  SessionDumpFile,
   type Sid,
   TranscriptItem,
   validationErrors,
@@ -175,8 +176,15 @@ interface DumpedItem {
   readonly [field: string]: unknown;
 }
 
-function dumpAt(path: string): { items: DumpedItem[]; ids?: unknown } {
-  return JSON.parse(readFileSync(path, "utf8")) as { items: DumpedItem[]; ids?: unknown };
+interface Dumped {
+  readonly types: string[];
+  readonly items: DumpedItem[];
+  readonly ids: { kind: string; id: string }[];
+  readonly [field: string]: unknown;
+}
+
+function dumpAt(path: string): Dumped {
+  return JSON.parse(readFileSync(path, "utf8")) as Dumped;
 }
 
 /** A config home with a harness `sessions/` directory, a `projects/` tree and
@@ -697,6 +705,64 @@ describe("session_dump_write", () => {
     // a bound by record keep a turn whole.
     expect(document.items[1]?.uuid).toBe("a1");
     expect(document.items[2]?.uuid).toBe("a1");
+  });
+
+  test("the file is the shape the contract states, and says what it left out", async () => {
+    const { configHome, handlers } = ops({
+      presets: [{ name: "file", opts: { types: ["tool:Read", "tool:Bash"] } }],
+    });
+    writeTranscript(configHome, SID, BUSY_TRANSCRIPT);
+    const written = await run("session_dump_write", handlers.session_dump_write, {
+      sid: SID,
+      preset: "file",
+      types: ["-tool:Read"],
+    });
+    const path = written["path"] as string;
+    // Two extensions: JSON, and JSON of a shape the contract states. The file
+    // travels by its path and is opened by whoever was handed it.
+    expect(path.endsWith(".dump.json")).toBe(true);
+    const document = dumpAt(path);
+    expect(validationErrors(SessionDumpFile, document)).toEqual([]);
+    expect(document["sid"]).toBe(SID);
+    expect(document["agent_id"]).toBeUndefined();
+    expect(document["written_at"]).toBeNumber();
+    // The selection as applied, so the file states what it holds without the
+    // instance's config having to be read beside it.
+    expect(document.types).toEqual(["tool:Read", "tool:Bash", "-tool:Read"]);
+    expect(document.items.map((item) => item.type)).toEqual(["tool:Bash", "tool:Bash"]);
+  });
+
+  test("a dump of nothing is still a file that says what it is a dump of", async () => {
+    const { configHome, handlers } = ops();
+    writeTranscript(configHome, SID, BUSY_TRANSCRIPT);
+    const written = await run("session_dump_write", handlers.session_dump_write, {
+      sid: SID,
+      types: ["ids"],
+    });
+    const document = dumpAt(written["path"] as string);
+    expect(validationErrors(SessionDumpFile, document)).toEqual([]);
+    expect(written["entries"]).toEqual({});
+    expect(document.items).toEqual([]);
+    // The ledger is not a type and is never selected away: an id says how to
+    // point at something rather than what a line is.
+    expect(document.ids).toEqual([]);
+  });
+
+  test("the file of an agent's dump names the agent it is of", async () => {
+    const { configHome, handlers } = ops();
+    const file = writeTranscript(configHome, SID);
+    mkdirSync(join(dirname(file), SID, "subagents"), { recursive: true });
+    writeFileSync(
+      join(dirname(file), SID, "subagents", "agent-acounter-9f.jsonl"),
+      AGENT_TRANSCRIPT,
+    );
+    const written = await run("session_dump_write", handlers.session_dump_write, {
+      sid: SID,
+      agent_id: "acounter-9f",
+    });
+    const document = dumpAt(written["path"] as string);
+    expect(validationErrors(SessionDumpFile, document)).toEqual([]);
+    expect(document["agent_id"]).toBe("acounter-9f");
   });
 
   test("every item written passes the contract's own shape", async () => {

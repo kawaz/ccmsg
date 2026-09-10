@@ -30,6 +30,9 @@ function answered(uuid: string, blocks: unknown[], over: Record<string, unknown>
   };
 }
 
+/** One element of a selection, as the contract spells it. */
+const SELECTOR = /^-?(?:@[A-Za-z0-9][A-Za-z0-9_-]*|[a-z]+(?::[A-Za-z0-9_.-]+)*)$/;
+
 function typesOf(items: readonly Item[]): string[] {
   return items.map((item) => item.type);
 }
@@ -436,10 +439,27 @@ describe("selecting which items a dump keeps", () => {
     expect(entries).toEqual({ "tool:Bash": 1, "tool:Read": 1 });
   });
 
-  test("the ledger is asked for the way a type is, and is not one", () => {
-    expect(selection({ types: ["thinking"] }, []).ids).toBe(false);
-    expect(selection({ types: ["thinking", "ids"] }, []).ids).toBe(true);
-    expect(selection({}, []).ids).toBe(true);
+  test("the default is stated in the vocabulary a person writes in, not a wildcard", () => {
+    // The dump file repeats the selection it was written under, and a reader of
+    // that file has only the one vocabulary to read it in.
+    for (const element of selection({}, []).elements) {
+      expect([element, SELECTOR.test(element)]).toEqual([element, true]);
+    }
+  });
+
+  test("what the selection came to is what the file will say it was", () => {
+    const presets = [
+      { name: "file", opts: { types: ["tool:Read", "tool:Bash"] } },
+      { name: "howto", opts: { types: ["thinking", "@file"] } },
+    ];
+    // Presets expanded and exclusions left where they stood, so the file states
+    // what it holds without the instance's config having to be read beside it.
+    expect(selection({ types: ["@howto", "-tool:Read"] }, presets).elements).toEqual([
+      "thinking",
+      "tool:Read",
+      "tool:Bash",
+      "-tool:Read",
+    ]);
   });
 });
 
