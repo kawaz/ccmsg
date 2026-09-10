@@ -36,6 +36,14 @@ Codex は承認待ち / 入力待ちをファイルに残さない (rollout の�
 - [ ] a: 検出しないまま (増やさない。待ちは hyoui の端末リンクで見る)
 - [ ] b: instance が Codex の app-server を購読して waiting を拾う (上流の種類が 1 つ増える。Claude の gateway と同じ「push で来る証拠」の扱いにする)
 
+### CM-Q1 config のマージ規則をどこに書くか
+
+調査: [research/2026-09-10-config-merge-policy.md](research/2026-09-10-config-merge-policy.md)。現行 `settingsFor()` は **トップレベルの浅いマージ** (`{...defaults, ...instance}`): `entry` / `upstream` / `peers` は instance 側にあればフィールド丸ごと置換、入れ子の不足分は defaults から継承しない。DESIGN §8.2 はこの粒度を明記していない。先行事例 (Kubernetes strategic merge / RFC 7396 / Helm / systemd drop-in / Nix modules / .gitattributes 等) の比較表は research にある。
+
+- [ ] a: **schema 側にフィールドパス別の規則を持つ** (推し。object は field merge、scalar / array は replace を既定、set 的な配列だけ `merge: set` のように宣言。規則は `daemon config --help` 等で利用者に見える。`peers` は「完成済み一覧」の意味から replace のまま)
+- [ ] b: 値側で操作を書く (`{"$replace": [...]}` / `null` で削除、RFC 7396 系)
+- [ ] c: 現行の浅いマージのまま、DESIGN §8.2 に「トップレベル置換」と明記するだけ
+
 ## 確認待ち
 
 (なし)
