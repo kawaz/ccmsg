@@ -3,7 +3,7 @@ title: service start after register does not bootstrap the unit
 status: open
 category: bug
 created: 2026-09-10T13:08:48+09:00
-last_read:
+last_read: 2026-09-10T13:09:26+09:00
 open_entered: 2026-09-10T13:08:48+09:00
 wip_entered:
 blocked_entered:
