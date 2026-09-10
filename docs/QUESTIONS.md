@@ -20,27 +20,9 @@
 
 ## 裁定待ち
 
-### DS-Q1 dump に worker (subagent) の発話をどう出すか
+### DS-Q1 dump のタイプ大分類 (起草中)
 
-現行 Claude Code は worker の記録を `<sid>/subagents/agent-<id>.jsonl` に分離しており、`session_dump_write` は main しか読まないので worker の応答は dump に一切出ない ([findings](findings/2026-09-10-transcript-sidechain-format.md)、[issue](issue/2026-09-10-dump-sidechain-rows-placement.md))。
-
-- [ ] a: 統括の turn に畳む (誰が判断したかが消える)
-- [ ] b: Agent 呼び出しの子として 1 段インデント、thinking は含めず response だけ (推し。日記の「私」は統括のまま、頼んだ相手の答えとして読める)
-- [ ] c: worker を除外する (判断材料が消える)
-
-### TL-Q1 mesh の TLS は caddy 終端で足りるとして issue を閉じるか
-
-[issue mesh-tls-trust-root](issue/2026-09-09-mesh-tls-trust-root.md) は daemon 自身に証明書を持たせる前提で書かれたが、本運用は caddy が TLS 終端し peers は `https://ccmsg-{xxx}.<host>/` で wss 到達済み。
-
-- [ ] a: caddy 終端が正、daemon は plain ws のまま (issue を close、DESIGN に「TLS は前段の責務」と明記)
-- [ ] b: daemon にも証明書設定を持たせる (caddy 無し構成を想定する場合)
-
-### XR-Q1 cross ルート 6 本の path 名
-
-`ccmsg2.<host>/` から各 instance へ振り分ける cross ルート (3 instance × 人 / gateway) の path 名を指定してほしい。現状は `/{personal,emrd,bare}/` だけ。
-
-- [ ] a: 現状の `/{xxx}/` で足りる (追加不要)
-- [ ] b: 別名にする → 名前を自由記述で
+kawaz 指示 (2026-09-10): 用途 (完了済みセッションの日記 / rewind 後の引き継ぎ 等) ごとに条件をオプションで指定できるよう、まずタイプの大分類を行う。`docs/design/dump-kinds.md` を起草中で、上がったら本節を大分類の妥当性 / preset 名 / 既定値の問いに差し替える。
 
 ## 確認待ち
 
