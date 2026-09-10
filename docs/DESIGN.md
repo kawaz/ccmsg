@@ -296,6 +296,13 @@ guessed from what came back. `parent_tool_use_id` is always carried, so a reader
 by joining it against the `tool_use_id` of the calls it holds. The shape is the generic result
 (`{result}` plus `parent_tool_use_id`).
 
+**Two of the harness's names for one thing arrive under one type.** The tool that starts an agent
+has been written as both `Agent` and `Task`, read the same way and meaning the same thing, so the
+type is normalised to `tool:Agent` — the same item under two names would stand in the vocabulary
+twice, and a selection asking for it would have to know which spelling this transcript happened to
+use. The spelling the record used stays on the call as `harness_name`, for a reader matching what
+it sees against what it ran.
+
 **A call that has no way of coming back is drawn apart from one still waiting.** Writing to an
 agent with `SendMessage` is one direction of a correspondence: the reply arrives whenever that
 agent chooses to send one, as its own message, under nothing that names this call. The

@@ -58,8 +58,20 @@ const NOT_ITEMS = new Set([
 
 /** The tools that start an agent, in the spellings the harness has used for
  * the one thing. Both are read the same way: the call is also a brief, and
- * what comes back is also an answer. */
+ * what comes back is also an answer.
+ *
+ * They arrive under one type. Two names for one thing would put the same item
+ * in the vocabulary twice, and a selection asking for the tool that starts an
+ * agent would have to know which spelling this transcript happened to use. The
+ * spelling the harness wrote stays on the item as `harness_name`, for a reader
+ * matching what it sees against what it ran. */
 const SPAWNS = new Set(["Agent", "Task"]);
+
+/** The name an item is typed under, which is the harness's own except where
+ * two of its names are one thing. */
+function typedAs(name: string): string {
+  return SPAWNS.has(name) ? "Agent" : name;
+}
 
 /** How many calls awaiting an answer one reading holds. Reached only by calls
  * that are never answered, since an answered one is let go where it is
@@ -246,9 +258,11 @@ export class Classification {
     const id = str(block["id"]) ?? "";
     const input = row(block["input"]) ?? {};
     const fields = useFields(name, input);
-    const tool = make(`tool:${segment(name)}`, {
+    const called = typedAs(name);
+    const item = make(`tool:${segment(called)}`, {
       role: "use",
       tool_use_id: id,
+      ...(called === name ? {} : { harness_name: name }),
       ...(fields ?? { input }),
     });
     let message: Draft | undefined;
@@ -288,7 +302,7 @@ export class Classification {
       const oldest = this.#calls.keys().next();
       if (oldest.done !== true) this.#calls.delete(oldest.value);
     }
-    this.#calls.set(id, { tool, name, ...optional("message", message) });
+    this.#calls.set(id, { tool: item, name: called, ...optional("message", message) });
   }
 
   #user(record: Row, make: Make): void {

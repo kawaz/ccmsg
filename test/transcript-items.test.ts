@@ -227,11 +227,24 @@ describe("classifying a transcript", () => {
         }),
       ),
     );
-    // The type keeps whichever name the record used: a reader matches what it
-    // sees against what it ran.
-    expect(typesOf(items)).toEqual(["tool:Task", "message:sub:out", "tool:Task", "message:sub:in"]);
+    // Two of the harness's names for one thing arrive under one type: the same
+    // item under two names would be in the vocabulary twice, and a selection
+    // asking for the tool that starts an agent would have to know which
+    // spelling this transcript happened to use.
+    expect(typesOf(items)).toEqual([
+      "tool:Agent",
+      "message:sub:out",
+      "tool:Agent",
+      "message:sub:in",
+    ]);
+    // The spelling the record used stays on the call, for a reader matching
+    // what it sees against what it ran.
+    expect(of(items[0])["harness_name"]).toBe("Task");
     expect(of(only(items, "message:sub:out"))["prompt"]).toBe("count the lines");
     expect(of(only(items, "message:sub:in"))["text"]).toBe("there were three");
+    for (const item of items) {
+      expect([item.type, validationErrors(TranscriptItem, item)]).toEqual([item.type, []]);
+    }
   });
 
   test("an agent is both a call and a message, and the answer arrives as a notification", () => {
