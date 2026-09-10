@@ -115,6 +115,10 @@ describe("classifying a transcript", () => {
     expect(of(call)["result_item"]).toBe(answer?.id ?? "");
     expect(of(answer)["parent_item"]).toBe(call?.id ?? "");
     expect(of(answer)["stdout"]).toBe("3\n");
+    // Both sides also carry the key the harness paired them with, which is
+    // what ties them together for a reader that has only one of the two.
+    expect(of(call)["tool_use_id"]).toBe("t1");
+    expect(of(answer)["parent_tool_use_id"]).toBe("t1");
   });
 
   test("a call that has not come back names no result", () => {
@@ -162,6 +166,10 @@ describe("classifying a transcript", () => {
     expect(of(reply)["duration_ms"]).toBe(4000);
     expect(of(reply)["parent_item"]).toBe(brief?.id ?? "");
     expect(of(brief)["result_item"]).toBe(reply?.id ?? "");
+    // The exchange seen as a message carries the harness's key too: the brief
+    // is a call and what came back names the call it answers.
+    expect(of(brief)["tool_use_id"]).toBe("t1");
+    expect(of(reply)["parent_tool_use_id"]).toBe("t1");
   });
 
   test("an agent started in the background answers much later, and the launch is not an answer", () => {
@@ -556,6 +564,31 @@ describe("classifying a transcript", () => {
         said("u4", [{ type: "tool_result", tool_use_id: "t3", is_error: true }], {
           toolUseResult: "refused",
         }),
+        // The exchanges with another mind, which are a call and a message at
+        // once: an agent that was started and answered, and a line written to
+        // one that is answered nowhere this file names.
+        answered("a2", [
+          {
+            type: "tool_use",
+            id: "t4",
+            name: "Agent",
+            input: { prompt: "count them again", subagent_type: "worker" },
+          },
+          {
+            type: "tool_use",
+            id: "t5",
+            name: "SendMessage",
+            input: { to: "counter", message: "carry on" },
+          },
+        ]),
+        said("u5", [{ type: "tool_result", tool_use_id: "t4" }], {
+          toolUseResult: {
+            agentId: "acounter-9f",
+            status: "completed",
+            content: [{ type: "text", text: "three again" }],
+          },
+        }),
+        said("u6", [{ type: "tool_result", tool_use_id: "t5" }], { toolUseResult: "sent" }),
       ),
     );
     for (const item of items) {

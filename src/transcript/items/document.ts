@@ -44,7 +44,15 @@ export function document(file: SessionDumpFile, view: DumpView = {}): string {
     if (paired.folded.has(at)) continue;
     const item = items[at] as Item;
     const child = paired.child.get(at);
-    lines.push(...draw(item, child === undefined ? undefined : (items[child] as Item), view), "");
+    lines.push(
+      ...draw(
+        item,
+        child === undefined ? undefined : (items[child] as Item),
+        view,
+        paired.parent.get(at),
+      ),
+      "",
+    );
   }
   lines.push(...ledger(file.ids));
   return `${lines.join("\n").trimEnd()}\n`;
@@ -72,12 +80,12 @@ function heading(file: SessionDumpFile, view: DumpView): string[] {
  * A call keeps its own heading and the answer's words are put at the end of
  * it, so `→` reads as "and this came back". An answer drawn where it arrived
  * points the other way, at a call the reader has already gone past. */
-function draw(item: Item, child: Item | undefined, view: DumpView): string[] {
+function draw(item: Item, child: Item | undefined, view: DumpView, parent?: string): string[] {
   const own = fragment(item);
   const answer = child === undefined ? undefined : fragment(child);
   const nested = child !== undefined && child.type.startsWith("message:sub");
   const link = isResult(item)
-    ? arrow("←", fields(item)["parent_item"])
+    ? arrow("←", parent)
     : (arrow("→", fields(item)["result_item"]) ?? waiting(item));
   const head = isResult(item)
     ? words(prefix(item), link, own.head, clock(item))
@@ -185,27 +193,49 @@ function cell(text: string): string {
   return text.replace(/\|/g, "\\|").replace(/\n/g, " ");
 }
 
-/** Which answer belongs to which call, and which of those are drawn together.
+/** Which answer belongs to which call, which call each answer points back at,
+ * and which of those pairs are drawn together.
  *
  * An answer names the call it answers, so the matching is a lookup: no two
  * calls in one record are confused for one another, and a tool and an agent
  * are paired by the same rule rather than by the ids each of them happens to
- * carry. */
+ * carry. An answer read where its call was not says instead which key the
+ * harness paired them by, and the call that names that key is the one it
+ * belongs to. */
 function pair(items: readonly Item[]): {
   child: Map<number, number>;
   folded: Set<number>;
+  parent: Map<number, string>;
 } {
   const child = new Map<number, number>();
   const folded = new Set<number>();
+  const parent = new Map<number, string>();
   const where = new Map<string, number>();
-  for (let at = 0; at < items.length; at += 1) where.set((items[at] as Item).id, at);
+  const called = new Map<string, string>();
+  for (let at = 0; at < items.length; at += 1) {
+    const item = items[at] as Item;
+    where.set(item.id, at);
+    const key = fields(item)["tool_use_id"];
+    if (fields(item)["role"] === "use" && typeof key === "string" && key !== "") {
+      called.set(joined(item, key), item.id);
+    }
+  }
   for (let at = 0; at < items.length; at += 1) {
     const item = items[at] as Item;
     // Which half of an exchange this is, which the contract calls an item's
     // role and nothing here confuses with who is allowed to ask for one.
     if (fields(item)["role"] !== "result") continue;
-    const parent = fields(item)["parent_item"];
-    const call = typeof parent === "string" ? where.get(parent) : undefined;
+    const named = fields(item)["parent_item"];
+    const key = fields(item)["parent_tool_use_id"];
+    const to =
+      typeof named === "string"
+        ? named
+        : typeof key === "string"
+          ? called.get(joined(item, key))
+          : undefined;
+    if (to === undefined) continue;
+    parent.set(at, to);
+    const call = where.get(to);
     if (call === undefined) continue;
     // A pair the reader would have to scroll between is left where each half
     // happened, unless it is an agent's: what an agent was asked and what it
@@ -214,5 +244,14 @@ function pair(items: readonly Item[]): {
     child.set(call, at);
     folded.add(at);
   }
-  return { child, folded };
+  return { child, folded, parent };
+}
+
+/** The key an exchange is joined on. One call the harness gave a key to is two
+ * items where it started an agent — the call and the brief beside it — so the
+ * side of the exchange goes into the key: a tool's answer belongs to the call
+ * and an agent's to the brief, and the harness's key alone would not say
+ * which. */
+function joined(item: Item, key: string): string {
+  return `${item.type.startsWith("message:sub") ? "sub" : "tool"}\n${key}`;
 }

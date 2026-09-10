@@ -125,7 +125,7 @@ describe("a call and what came back", () => {
   const answered = {
     ...item("18d6f2c9", "tool:Bash", {
       role: "result",
-      tool_use_id: "t1",
+      parent_tool_use_id: "t1",
       parent_item: "07c5e1b8:0",
       stdout: "3",
     }),
@@ -160,6 +160,7 @@ describe("a call and what came back", () => {
   test("an agent's answer is drawn under the brief, however far apart they are", () => {
     const brief = item("b7e41d09", "message:sub:out", {
       role: "use",
+      tool_use_id: "t1",
       agent_id: "a471372f2",
       subagent_type: "opus5-worker-high",
       prompt: "docs を書き直す。",
@@ -169,6 +170,7 @@ describe("a call and what came back", () => {
     const back = item("c2d80f16", "message:sub:in", {
       role: "result",
       parent_item: "b7e41d09:0",
+      parent_tool_use_id: "t1",
       agent_id: "a471372f2",
       status: "ok",
       duration_ms: 252_000,
@@ -199,13 +201,49 @@ describe("a call and what came back", () => {
     });
     const back = item("r3", "tool:Read", {
       role: "result",
-      tool_use_id: "t2",
+      parent_tool_use_id: "t2",
       parent_item: "r1:0",
       lines: 12,
     });
     // The answer carries the id the harness pairs calls with, so it lands on
     // the second call rather than on whichever one came first.
     expect(drawn(first, second, back)).toContain("[r1:0] tool:Read  b.ts  → r3:0  12 行");
+  });
+
+  test("an answer that never read its call is tied to it by the key the harness paired them with", () => {
+    const { parent_item: _unread, ...orphan } = answered as Record<string, unknown>;
+    // The call is in front of it here, so what the drawing has to do is find
+    // it by the key rather than by a pointer the answer could not carry.
+    expect(drawn(bash, orphan as unknown as Item))
+      .toBe(`[07c5e1b8:0] tool:Bash  行を数える  → 18d6f2c9:0  00:01:02
+  $ wc -l < f
+  stdout  3`);
+  });
+
+  test("an agent's answer and the tool call beside it are told apart by which side asked", () => {
+    // One key, two calls: the harness gives `Agent` a single id, and the brief
+    // and the call it stands beside both name it. An answer belongs to the one
+    // on its own side of the exchange.
+    const call = item("s1", "tool:Agent", {
+      role: "use",
+      tool_use_id: "t7",
+      prompt: "docs を書き直す。",
+    });
+    const brief = item("s1", "message:sub:out", {
+      role: "use",
+      tool_use_id: "t7",
+      prompt: "docs を書き直す。",
+    });
+    const back = item("s2", "message:sub:in", {
+      role: "result",
+      parent_tool_use_id: "t7",
+      text: "書き直しました。",
+    });
+    const page = drawn(call, brief, back);
+    // Under the brief, indented as an agent's answer is, and the tool call is
+    // left standing with nothing back.
+    expect(page).toContain("  [s2:0] message:sub:in  00:01:02");
+    expect(page).toContain("[s1:0] tool:Agent  (未着)");
   });
 });
 

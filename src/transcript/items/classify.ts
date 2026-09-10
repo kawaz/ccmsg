@@ -255,6 +255,7 @@ export class Classification {
     if (SPAWNS.has(name)) {
       message = make("message:sub:out", {
         role: "use",
+        tool_use_id: id,
         prompt: str(input["prompt"]) ?? "",
         ...optional("subagent_type", str(input["subagent_type"])),
         ...optional("name", str(input["name"])),
@@ -265,7 +266,7 @@ export class Classification {
       // A sid is the harness's own uuid; anything else is a name, and a name
       // is how an agent below this session is addressed.
       make(addressed(to) ? "message:session:out" : "message:sub:out", {
-        ...(addressed(to) ? {} : { role: "use" }),
+        ...(addressed(to) ? {} : { role: "use", tool_use_id: id }),
         ...(addressed(to)
           ? { text: text(input["message"]) ?? "", to }
           : // Writing to an agent is one direction of a correspondence, not a
@@ -331,7 +332,7 @@ export class Classification {
     const item = make(`tool:${segment(call.name)}`, {
       role: "result",
       parent_item: call.tool.id,
-      tool_use_id: id,
+      parent_tool_use_id: id,
       ...(fields ?? { result: genericResult(answer) }),
     });
     call.tool["result_item"] = item.id;
@@ -357,6 +358,7 @@ export class Classification {
     const reply = make("message:sub:in", {
       role: "result",
       parent_item: call.message.id,
+      parent_tool_use_id: id,
       text: said,
       ...optional("agent_id", agent),
       ...optional("status", str(result["status"])),
@@ -452,6 +454,7 @@ export class Classification {
       const item = make("message:sub:in", {
         role: "result",
         parent_item: asked.id,
+        parent_tool_use_id: key,
         text: answer,
         ...optional("agent_id", str(asked["agent_id"]) ?? tagged(said, "task-id")),
         ...optional("status", tagged(said, "status")),
