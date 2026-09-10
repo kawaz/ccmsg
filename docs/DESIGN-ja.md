@@ -864,9 +864,11 @@ daemon が受け取る identity の形も揃わないためで、前段は透過
 
 ### 11.1 契約の fixture を共有する
 
-protocol リポが持つ「実 wire の JSON が schema を通る」fixture を、daemon のテストも読む。
-daemon が返す frame をその fixture と同じ検証器に通すことで、**契約違反が daemon のテストでも
-落ちる**。daemon 側に期待値の JSON を書き写さない (写すと契約が 2 箇所になる)。
+protocol リポが持つ「実 wire の JSON が schema を通る」fixture を、daemon のテストも読む。契約は `@ccmsg/protocol/fixtures` から op ごとの `{request, response}` (`OP_FIXTURES`)、topic ごとの frame (`TOPIC_FIXTURES`)、それらが名乗る id と時刻 (`FIXTURE_IDS` / `FIXTURE_NOW`) を export する。
+
+- daemon に投げる request frame は `OP_FIXTURES[op].request` を起点にする。daemon の都合で差し替えるのは、その値が daemon の判断対象そのものである場合だけ (例: 宛先を dispatch に決めさせる sweep では `to_instance` を落とす)
+- daemon が返す frame (op の response、topic の snapshot / event) は契約の schema に通す。期待値の JSON を daemon 側に書き写さない (写すと契約が 2 箇所になる)
+- テストが名乗る session / instance / endpoint は `FIXTURE_IDS` を使う。daemon が組み立てた frame と契約が述べる frame が同じ id を指す
 
 ### 11.2 認可境界は必ず直接テストする
 

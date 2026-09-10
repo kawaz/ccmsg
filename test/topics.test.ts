@@ -9,23 +9,19 @@ import {
   type TopicKind,
   validationErrors,
 } from "@ccmsg/protocol";
+import { KV_FRAME, NOTIFY_FRAME } from "@ccmsg/protocol/fixtures";
 import { Glob } from "bun";
 import { dispatch, type DispatchDeps, type Handlers } from "../src/dispatch/index.ts";
 import { topicHandlers, type TopicValue, Topics } from "../src/topics/index.ts";
-import { connAs, frameFor, OTHER_INSTANCE, SELF, SID, TestConn } from "./frames.ts";
+import { connAs, frameFor, OTHER_INSTANCE, OTHER_SID, SELF, SID, TestConn } from "./frames.ts";
 
-const NOTIFICATION: Notification = {
-  sid: SID,
-  sid_label: "a session",
-  text: "hi",
-  sent_at: 1_757_000_000_000,
-};
+const NOTIFICATION = NOTIFY_FRAME.data as Notification;
 
 /** A topic that holds a value, and one payload the contract accepts for it.
  * The cases about snapshots and suppression need a topic there is something to
  * snapshot and repeat — which `notify`, alone among the topics here, is not. */
 const KV = "kv:ui";
-const ENTRIES = { entries: [{ key: "layout", value: 1, updated_at: 1_757_000_000_000 }] };
+const ENTRIES = KV_FRAME.data;
 
 const ALL_CAPABILITIES: ReadonlySet<Capability> = new Set<Capability>(["llm_events", "llm_status"]);
 
@@ -369,7 +365,7 @@ describe("subscription is what drives the resource behind a topic (§6.3)", () =
   test("the resource is per topic name, not per kind", () => {
     const { hub, started } = counting();
     hub.subscribe(connAs("user"), TRANSCRIPT);
-    hub.subscribe(connAs("user"), "transcript:0e9d8c7b-6a5f-4e3d-9c2b-1a0f9e8d7c6b");
+    hub.subscribe(connAs("user"), `transcript:${OTHER_SID}`);
     expect(started).toHaveLength(2);
   });
 

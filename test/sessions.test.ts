@@ -34,7 +34,7 @@ import {
   type TerminalReader,
 } from "../src/sessions/index.ts";
 import { NO_FACTS, type TranscriptFacts } from "../src/transcript/index.ts";
-import { connAs, greeting, SELF, SID, OTHER_SID, TestConn } from "./frames.ts";
+import { connAs, greeting, OTHER_SID, SELF, SELF_ENDPOINT, SID, TestConn } from "./frames.ts";
 
 /** A throwaway config home under the OS temp dir, which is where the harness's
  * `sessions/` and this instance's state directory both hang. */
@@ -205,7 +205,7 @@ function sessions(
       logged.push({ message, fields });
     },
     self: SELF,
-    endpoint: "https://host.example.ts.net/ccmsg/personal/",
+    endpoint: SELF_ENDPOINT,
     configHome: dirs.root,
     stateDir: dirs.stateDir,
     capabilities: [],
@@ -237,7 +237,7 @@ function sessions(
 function restart(context: { root: string; stateDir: string }): Sessions {
   const domain = new Sessions({
     self: SELF,
-    endpoint: "https://host.example.ts.net/ccmsg/personal/",
+    endpoint: SELF_ENDPOINT,
     configHome: context.root,
     stateDir: context.stateDir,
     capabilities: [],
@@ -918,7 +918,7 @@ describe("last_live", () => {
 
     const domain = new Sessions({
       self: SELF,
-      endpoint: "https://host.example.ts.net/ccmsg/personal/",
+      endpoint: SELF_ENDPOINT,
       configHome: root,
       stateDir,
       capabilities: [],

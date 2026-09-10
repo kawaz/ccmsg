@@ -29,7 +29,7 @@ import {
 } from "../src/messaging/index.ts";
 import { classify, Sessions, type SessionInputs } from "../src/sessions/index.ts";
 import { Topics } from "../src/topics/index.ts";
-import { connAs, OTHER_SID, SELF, SID, TestConn } from "./frames.ts";
+import { connAs, OTHER_SID, SELF, SELF_ENDPOINT, SID, TestConn } from "./frames.ts";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -439,7 +439,7 @@ describe("the sessions a message can be addressed to", () => {
     );
     const domain = new Sessions({
       self: SELF,
-      endpoint: "https://host.example.ts.net/ccmsg/personal/",
+      endpoint: SELF_ENDPOINT,
       configHome: home,
       stateDir: stateDir(),
       capabilities: [],
@@ -483,7 +483,7 @@ describe("the sessions a message can be addressed to", () => {
     mkdirSync(join(home, "sessions"));
     const domain = new Sessions({
       self: SELF,
-      endpoint: "https://host.example.ts.net/ccmsg/personal/",
+      endpoint: SELF_ENDPOINT,
       configHome: home,
       stateDir: stateDir(),
       capabilities: [],

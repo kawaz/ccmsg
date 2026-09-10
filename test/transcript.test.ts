@@ -22,7 +22,7 @@ import {
   Transcripts,
   readSlice,
 } from "../src/transcript/index.ts";
-import { connAs, greeting, SELF, SID, TestConn } from "./frames.ts";
+import { connAs, greeting, SELF, SELF_ENDPOINT, SID, TestConn } from "./frames.ts";
 
 const TOPIC = `transcript:${SID}`;
 /** Fast enough that a test can wait for the backstop rather than the watch,
@@ -457,7 +457,7 @@ describe("what the fold settles reaches the sessions domain (§5.1)", () => {
     };
     const sessions = new Sessions({
       self: SELF,
-      endpoint: "https://host.example.ts.net/ccmsg/personal/",
+      endpoint: SELF_ENDPOINT,
       configHome: root,
       stateDir: join(root, "state"),
       capabilities: [],

@@ -982,10 +982,11 @@ what they may do afterwards is still the uid and the file permissions.
 
 ### 11.1 Share the contract's fixtures
 
-The daemon's tests also read the "real wire JSON passes the schema" fixtures held by the
-protocol repo. By running the frames the daemon returns through the same validator as those
-fixtures, **a contract violation fails in the daemon's tests too**. The daemon side never
-transcribes expected-value JSON (transcribing it would create two copies of the contract).
+The daemon's tests also read the "real wire JSON passes the schema" fixtures held by the protocol repo. The contract exports, from `@ccmsg/protocol/fixtures`, one `{request, response}` per op (`OP_FIXTURES`), one frame per topic (`TOPIC_FIXTURES`), and the ids and instant they are built from (`FIXTURE_IDS` / `FIXTURE_NOW`).
+
+- A request frame sent to the daemon starts from `OP_FIXTURES[op].request`. A field is replaced only where that field is what the daemon is being asked about (for example, a sweep that lets dispatch choose the destination drops `to_instance`)
+- The frames the daemon returns — an op's response, a topic's snapshot or event — go through the contract's schema. The daemon side never transcribes expected-value JSON (transcribing it would create two copies of the contract)
+- The session, instance and endpoint a test names come from `FIXTURE_IDS`, so a frame the daemon builds and a frame the contract states name the same things
 
 ### 11.2 Always test authorization boundaries directly
 
