@@ -127,6 +127,7 @@ class CodexThreads implements OwnSessions {
  * so the watch is what the subscription drives, and no answer waits on it. */
 export class HarnessSessions implements OwnSessions {
   readonly #watch: DirectoryWatch;
+  readonly #lastComplete = new Map<string, AgentInfo>();
 
   constructor(
     private readonly dir: string,
@@ -174,16 +175,32 @@ export class HarnessSessions implements OwnSessions {
    * uid's own config home (M6) — a syscall or two per session, not a wait. */
   scan(): ReadonlyMap<Sid, AgentInfo> {
     const rows = new Map<Sid, AgentInfo>();
-    for (const name of this.#watch.names()) {
-      if (!STATE_FILE.test(name)) continue;
+    const names = this.#watch.names().filter((name) => STATE_FILE.test(name));
+    const present = new Set(names);
+    for (const name of names) {
       let document: unknown;
       try {
         document = JSON.parse(readFileSync(join(this.dir, name), "utf8"));
       } catch {
+        const previous = this.#lastComplete.get(name);
+        if (previous !== undefined) rows.set(previous.sid, previous);
         continue;
       }
-      const row = toRow(document, this.dir, this.instance);
-      if (row !== undefined) rows.set(row.sid, row);
+      const result = toRow(document, this.dir, this.instance);
+      if (!result.complete) {
+        const previous = this.#lastComplete.get(name);
+        if (previous !== undefined) rows.set(previous.sid, previous);
+        continue;
+      }
+      if (result.row === undefined) {
+        this.#lastComplete.delete(name);
+        continue;
+      }
+      this.#lastComplete.set(name, result.row);
+      rows.set(result.row.sid, result.row);
+    }
+    for (const name of this.#lastComplete.keys()) {
+      if (!present.has(name)) this.#lastComplete.delete(name);
     }
     return rows;
   }
@@ -248,6 +265,14 @@ export function isWaiting(row: AgentInfo): boolean {
   return row.status === WAITING;
 }
 
+/** A syntactically complete state document, and the row it states when its
+ * process is still alive. A complete document for a dead process is distinct
+ * from a document caught between truncate and write: only the latter keeps the
+ * last complete row while the writer finishes. */
+type RowResult =
+  | { readonly complete: false }
+  | { readonly complete: true; readonly row?: AgentInfo };
+
 /** The conversion of one upstream document into the contract's spelling
  * (§3.5): renamed to snake_case, instants in Unix ms, and nothing carried over
  * that the contract does not name.
@@ -255,30 +280,33 @@ export function isWaiting(row: AgentInfo): boolean {
  * A row whose process is gone is dropped: the file outlives a session that did
  * not clean up after itself, and "the session exists" is what this input is
  * for. */
-function toRow(document: unknown, configDir: string, instance: InstanceId): AgentInfo | undefined {
-  if (typeof document !== "object" || document === null) return undefined;
+function toRow(document: unknown, configDir: string, instance: InstanceId): RowResult {
+  if (typeof document !== "object" || document === null) return { complete: false };
   const raw = document as Record<string, unknown>;
   const sid = text(raw["sessionId"]);
   const pid = raw["pid"];
   const cwd = text(raw["cwd"]);
   const kind = text(raw["kind"]);
   const startedAt = raw["startedAt"];
-  if (sid === undefined || cwd === undefined || kind === undefined) return undefined;
-  if (typeof pid !== "number" || typeof startedAt !== "number") return undefined;
-  if (!alive(pid)) return undefined;
+  if (sid === undefined || cwd === undefined || kind === undefined) return { complete: false };
+  if (typeof pid !== "number" || typeof startedAt !== "number") return { complete: false };
+  if (!alive(pid)) return { complete: true };
   return {
-    sid,
-    instance,
-    pid,
-    cwd,
-    kind,
-    started_at: startedAt,
-    config_dir: configDir,
-    ...optional("name", text(raw["name"])),
-    ...optional("status", text(raw["status"])),
-    ...optional("waiting_for", text(raw["waitingFor"])),
-    ...optional("state", text(raw["state"])),
-    ...optional("background_id", text(raw["backgroundId"])),
+    complete: true,
+    row: {
+      sid,
+      instance,
+      pid,
+      cwd,
+      kind,
+      started_at: startedAt,
+      config_dir: configDir,
+      ...optional("name", text(raw["name"])),
+      ...optional("status", text(raw["status"])),
+      ...optional("waiting_for", text(raw["waitingFor"])),
+      ...optional("state", text(raw["state"])),
+      ...optional("background_id", text(raw["backgroundId"])),
+    },
   };
 }
 

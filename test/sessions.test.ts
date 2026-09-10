@@ -682,6 +682,24 @@ describe("the harness's sessions directory", () => {
     expect(context.domain.agents().agents.map((agent) => agent.sid)).toEqual([OTHER_SID]);
   });
 
+  test("an in-place state write keeps the last complete row until its replacement is complete", () => {
+    const dir = harnessDir("ccmsg-partial-state-");
+    const harness = new HarnessSessions(dir, SELF, () => undefined);
+    const file = join(dir, `${process.pid}.json`);
+    writeState(dir, process.pid, SID, { status: "idle" });
+    expect(harness.scan().get(SID)?.status).toBe("idle");
+
+    writeFileSync(file, "");
+    expect(harness.scan().get(SID)?.status).toBe("idle");
+    writeFileSync(file, JSON.stringify({ pid: process.pid, sessionId: SID }));
+    expect(harness.scan().get(SID)?.status).toBe("idle");
+
+    writeState(dir, process.pid, SID, { status: "waiting", waitingFor: "permission" });
+    expect(harness.scan().get(SID)?.status).toBe("waiting");
+    rmSync(file);
+    expect(harness.scan().has(SID)).toBe(false);
+  });
+
   /** The two routes of §5.1, each pinned by what it alone is answerable for.
    *
    * A watch on a directory may simply not report a change: on macOS the event

@@ -642,6 +642,8 @@ this is the same shape the old daemon adopted for transcript tail based on measu
 the rationale for the interval is "catch changes that the watch dropped before the user
 notices," not the primary acquisition route.
 
+A rewrite can leave `sessions/<pid>.json` temporarily empty or incomplete. While the file still exists, the daemon retains the last row read completely from that file and does not publish an incomplete read as the session's disappearance. It removes the row immediately when a complete document names a process that is gone or when the file itself disappears. The watch is a resource that announces possible change; an intermediate representation is not evidence of a new current value.
+
 **The gateway's events count only for sids we know.** The gateway stands above every config
 home and its events name nothing but a sid, so "the gateway saw it" is not by itself evidence
 about *this* instance's sessions — a sid belonging to another config home would classify as
