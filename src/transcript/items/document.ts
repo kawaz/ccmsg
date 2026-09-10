@@ -1,0 +1,214 @@
+import type { DumpIdEntry, SessionDumpFile } from "@ccmsg/protocol";
+import type { Item } from "./item.ts";
+import { elapsed, fragment, words } from "./render.ts";
+
+/** A whole dump as one document.
+ *
+ * What the file holds is items in the order the transcript had them, and what
+ * a person reads is that same order with the pairs put back together: a call
+ * and the answer that came straight back read as one thing, and an answer that
+ * arrived twenty turns later reads where it arrived, saying which call it
+ * belongs to. Folding is decided here rather than in the classification,
+ * because it is a fact about how far apart two items ended up in this
+ * particular selection and not about what either of them is.
+ *
+ * An agent is the exception: its answer is drawn under the brief that asked
+ * for it however many turns apart they are. The pair is a conversation with
+ * somebody else, and a conversation split across the page is one nobody can
+ * follow. */
+
+/** What the file cannot say about itself: which instance wrote it, and the
+ * bounds the request was made with. The file states the selection because the
+ * selection decides what is inside it; a bound decides only where it stops,
+ * and a reader who wants it is told here. */
+export interface DumpView {
+  readonly instance?: string;
+  readonly since?: string;
+  readonly until?: string;
+  /** How much of one item's body is drawn before the rest is reported by its
+   * length. Nothing is cut when nobody says: a dump is read to find out what
+   * was actually written, and the reader who wants less is the one who knows
+   * how much less. */
+  readonly max_chars?: number;
+}
+
+const INDENT = "  ";
+
+export function document(file: SessionDumpFile, view: DumpView = {}): string {
+  const items = file.items as unknown as Item[];
+  const paired = pair(items);
+  const lines: string[] = [...heading(file, view)];
+  lines.push("## items", "");
+  if (items.length === 0) lines.push("(なし)", "");
+  for (let at = 0; at < items.length; at += 1) {
+    if (paired.folded.has(at)) continue;
+    const item = items[at] as Item;
+    const child = paired.child.get(at);
+    lines.push(...draw(item, child === undefined ? undefined : (items[child] as Item), view), "");
+  }
+  lines.push(...ledger(file.ids));
+  return `${lines.join("\n").trimEnd()}\n`;
+}
+
+/** What this is a dump of, before anything that happened in it. */
+function heading(file: SessionDumpFile, view: DumpView): string[] {
+  const subject = file.agent_id === undefined ? file.sid : `${file.sid}/agent-${file.agent_id}`;
+  const lines = [`# dump ${subject}`, ""];
+  lines.push(`- 対象: \`${subject}\``);
+  if (view.instance !== undefined) lines.push(`- instance: \`${view.instance}\``);
+  lines.push(`- 書き出し: ${new Date(file.written_at).toISOString()}`);
+  lines.push(`- types: ${file.types.map((one) => `\`${one}\``).join(" ") || "(既定)"}`);
+  const bounds = words(
+    view.since === undefined ? undefined : `since=${view.since}`,
+    view.until === undefined ? undefined : `until=${view.until}`,
+  );
+  if (bounds !== "") lines.push(`- 範囲: ${bounds}`);
+  lines.push(`- items: ${String(file.items.length)}`, "");
+  return lines;
+}
+
+/** One item, with whatever was folded into it.
+ *
+ * A call keeps its own heading and the answer's words are put at the end of
+ * it, so `→` reads as "and this came back". An answer drawn where it arrived
+ * points the other way, at a call the reader has already gone past. */
+function draw(item: Item, child: Item | undefined, view: DumpView): string[] {
+  const own = fragment(item);
+  const answer = child === undefined ? undefined : fragment(child);
+  const nested = child !== undefined && child.type.startsWith("message:sub");
+  const link = isResult(item)
+    ? arrow("←", item["parent_item"])
+    : (arrow("→", item["result_item"]) ?? (item["role"] === "use" ? "(未着)" : undefined));
+  const head = isResult(item)
+    ? words(prefix(item), link, own.head, clock(item))
+    : words(
+        prefix(item),
+        own.head,
+        link,
+        nested || answer === undefined ? undefined : answer.head,
+        clock(item),
+      );
+  const under = [
+    ...body(own.body, view),
+    ...(answer === undefined || nested ? [] : body(answer.body, view)),
+  ];
+  const lines = [head, ...under.map((line) => `${INDENT}${line}`)];
+  if (!nested || child === undefined || answer === undefined) return lines;
+  // The agent's answer, under the brief that asked for it. It keeps a heading
+  // of its own — it has its own instant, and often a status the brief could
+  // not have known — and is indented to say whose answer it is.
+  lines.push(`${INDENT}${words(prefix(child), answer.head, clock(child))}`);
+  for (const line of body(answer.body, view)) lines.push(`${INDENT}${INDENT}${line}`);
+  return lines;
+}
+
+/** `[uuid8] type`, which is how an item is pointed at: the id is what a reader
+ * goes back to the transcript with, and the type is what it was read as. */
+function prefix(item: Item): string {
+  return `[${item.uuid.slice(0, 8)}] ${item.type}`;
+}
+
+function clock(item: Item): string {
+  const at = new Date(item.at);
+  const time = `${two(at.getHours())}:${two(at.getMinutes())}:${two(at.getSeconds())}`;
+  return item.turn === undefined ? time : `${time} turn ${String(item.turn)}`;
+}
+
+function two(value: number): string {
+  return String(value).padStart(2, "0");
+}
+
+function arrow(mark: string, id: unknown): string | undefined {
+  return typeof id === "string" && id !== "" ? `${mark} ${id.slice(0, 8)}` : undefined;
+}
+
+function isResult(item: Item): boolean {
+  return item["role"] === "result";
+}
+
+/** The lines under a heading, cut only where a reader asked for a cut. */
+function body(source: readonly string[], view: DumpView): string[] {
+  const limit = view.max_chars;
+  if (limit === undefined || limit <= 0) return [...source];
+  const kept: string[] = [];
+  let held = 0;
+  for (const line of source) {
+    if (held + line.length <= limit) {
+      kept.push(line);
+      held += line.length + 1;
+      continue;
+    }
+    const room = Math.max(0, limit - held);
+    const rest = source.join("\n").length - held - room;
+    if (room > 0) kept.push(line.slice(0, room));
+    kept.push(`… (残り ${String(Math.max(rest, 0))} 文字)`);
+    break;
+  }
+  return kept;
+}
+
+/** The ids the items carried, which is what a reader descends by: the agent
+ * that did the thing worth copying is named here, and dumping it is the same
+ * request with that id as its subject. */
+function ledger(ids: readonly DumpIdEntry[]): string[] {
+  const lines = ["## ids", ""];
+  if (ids.length === 0) return [...lines, "(なし)"];
+  lines.push("| kind | id | label | status |", "|---|---|---|---|");
+  for (const entry of ids) {
+    const status = words(entry.status, elapsed(entry.duration_ms));
+    lines.push(
+      `| ${cell(entry.kind)} | \`${cell(entry.id)}\` | ${cell(entry.label ?? "")} | ${cell(status)} |`,
+    );
+  }
+  return lines;
+}
+
+function cell(text: string): string {
+  return text.replace(/\|/g, "\\|").replace(/\n/g, " ");
+}
+
+/** Which answer belongs to which call, and which of those are drawn together.
+ *
+ * A tool's two halves are matched on the id the harness pairs them with, so
+ * two calls in the same record are never confused for one another. An agent's
+ * are matched on the record the brief was written in and the agent that
+ * answered, which is what the classification filled in once the agent had
+ * started. */
+function pair(items: readonly Item[]): {
+  child: Map<number, number>;
+  folded: Set<number>;
+} {
+  const child = new Map<number, number>();
+  const folded = new Set<number>();
+  const waiting = new Map<string, number[]>();
+  for (let at = 0; at < items.length; at += 1) {
+    const item = items[at] as Item;
+    // Which half of an exchange this is, which the contract calls an item's
+    // role and nothing here confuses with who is allowed to ask for one.
+    const half = item["role"];
+    if (half === "use") {
+      const queue = waiting.get(key(item, false));
+      if (queue === undefined) waiting.set(key(item, false), [at]);
+      else queue.push(at);
+      continue;
+    }
+    if (half !== "result") continue;
+    const call = waiting.get(key(item, true))?.shift();
+    if (call === undefined) continue;
+    // A pair the reader would have to scroll between is left where each half
+    // happened, unless it is an agent's: what an agent was asked and what it
+    // answered are one exchange whatever fell between them.
+    if (!item.type.startsWith("message:sub") && call !== at - 1) continue;
+    child.set(call, at);
+    folded.add(at);
+  }
+  return { child, folded };
+}
+
+function key(item: Item, result: boolean): string {
+  const call = item["tool_use_id"];
+  if (typeof call === "string" && call !== "") return `${item.type} ${call}`;
+  const record = result ? item["parent_item"] : item.uuid;
+  const agent = item["agent_id"];
+  return `sub ${String(record)} ${typeof agent === "string" ? agent : ""}`;
+}
