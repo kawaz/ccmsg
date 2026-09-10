@@ -410,14 +410,13 @@ every process it starts, another harness included; Codex names its thread only t
 of its own turn, and the narrower claim is the truer one. The reverse nesting — a Claude Code
 session started from a Codex turn — reads as Codex, and `--sid` is what says otherwise.
 
-**Sending from a Codex session depends on Codex naming its thread, which is unverified.**
-`ccmsg post`, `reply` and `peers` take their own sid from the variables above. What was measured
-is that the `SessionStart` hook's environment carries only `CODEX_HOME`; **whether Codex passes
-`CODEX_THREAD_ID` to the commands a tool runs was not observed** (0.153.4 sends no `tools` in the
-Responses request, so a mock model cannot make it run a shell command). If it does, a Codex
-session sends as itself with nothing further. If it does not, `--sid <thread-id>` is the only
-way, and the sending side is unsupported. Either way, a send from a Codex session is never
-attributed to the parent Claude Code session, because Codex's claim is read first.
+**Codex names its thread to the commands a tool runs.** Both `CODEX_THREAD_ID` and
+`CODEX_SESSION_ID` are set, and each carries the thread UUID, which is the sid (measured,
+0.153.4). So `ccmsg post`, `reply` and `peers` send from a Codex session as it stands. The
+`SessionStart` hook's environment does not carry them — there the `session_id` on standard input
+names the session. A send from a Codex session is never attributed to the parent Claude Code
+session, because Codex's claim is read first. The thread UUID is a UUIDv7, and the contract's
+`Sid` does not name a version, so it passes as it is.
 
 **A route that names the config home does not go through that inference.** Where the caller has
 decided the home — `daemon <sub> <dir>`, `plugin install <agent>` — the paths are derived

@@ -202,7 +202,9 @@ upstream (`codex-rs/rollout/src/writer_lock.rs`) では lock は flock (`try_loc
 - `CODEX_HOME` (起動側が指定した値)
 - `CLAUDE_CONFIG_DIR`、`CLAUDE_CODE_SESSION_ID`、`CLAUDE_CODE_MESSAGING_SOCKET` 等、親 Claude Code セッションのもの一式
 
-**hook の環境に thread id は入らない**。入っていたのは `CODEX_HOME` だけで、`CODEX_THREAD_ID` / `CODEX_SESSION_ID` は無かった。両者の名前は codex 本体のバイナリ内に存在するが、実行コマンド向けの環境注入を観測できていない (0.153.4 は Responses request に `tools` を送らないため、mock model から shell tool を呼ばせられなかった)。
+**hook の環境に thread id は入らない**。入っていたのは `CODEX_HOME` だけで、`CODEX_THREAD_ID` / `CODEX_SESSION_ID` は無かった。hook が thread を知る経路は stdin の `session_id` である。
+
+**ツール実行の環境には入る**。本物の Codex セッションでコマンドを走らせると `CODEX_THREAD_ID` と `CODEX_SESSION_ID` の両方が立ち、値はどちらも同じ thread UUID (= `SessionStart.session_id` と同じ形、UUIDv7) だった。
 
 ## 一次資料
 

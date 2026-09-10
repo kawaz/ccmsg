@@ -11,7 +11,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { InboxMessage, InstanceId, Sid } from "@ccmsg/protocol";
+import { type InboxMessage, type InstanceId, Sid, validationErrors } from "@ccmsg/protocol";
 import { add, harnessFor } from "../src/daemon/index.ts";
 import { currentSession } from "../src/harness/index.ts";
 import { DEFAULT_CONFIG, loadShared, parseConfig } from "../src/instance/config.ts";
@@ -537,5 +537,52 @@ describe("which session a process is inside", () => {
     expect(await ran.exited).toBe(0);
     expect(said[0]).toBe(home);
     expect(said[1]).toBe("unset");
+  });
+});
+
+describe("a Codex thread id is a sid", () => {
+  /** What Codex names a thread, as a real session hands it to the commands a
+   * tool runs (measured, codex-cli 0.153.4): a UUIDv7, so the third block
+   * opens with a `7` that no UUIDv4 ever carries. */
+  const THREAD_ID = "01a08a1e-b0d7-78c1-a9e2-d61560138fac";
+
+  test("the contract takes it, so a Codex session is addressable as it stands", () => {
+    expect(validationErrors(Sid, THREAD_ID)).toEqual([]);
+  });
+
+  test("every place ccmsg reads a sid out of a name takes it too", () => {
+    const home = codexHome();
+    const file = rollout(home, "2026/09/10", `rollout-2026-09-10T15-10-23-${THREAD_ID}.jsonl`);
+    const files = new TranscriptFiles({
+      harness: "codex",
+      configHome: home,
+      announced: () => undefined,
+    });
+    expect(files.path(THREAD_ID as Sid)).toBe(file);
+
+    mkdirSync(join(home, "thread-writer-locks"), { recursive: true });
+    writeFileSync(join(home, "thread-writer-locks", `${THREAD_ID}.lock`), "");
+    const domain = new Sessions({
+      harness: "codex",
+      self: "3f9c1a7b5e2d48069c1a7b5e2d480691" as InstanceId,
+      configHome: home,
+      stateDir: temp("ccmsg-codex-state-"),
+      capabilities: [],
+      version: "0.0.1",
+      startedAt: 1_757_000_000_000,
+      publish: () => {},
+      pollMs: 50,
+    });
+    running.push(domain);
+    expect(domain.classify(THREAD_ID as Sid)).toBe("live_unmanaged");
+  });
+
+  test("it is what a session running under Codex says it is", () => {
+    expect(currentSession({ CODEX_THREAD_ID: THREAD_ID })).toEqual({
+      harness: "codex",
+      sid: THREAD_ID,
+    });
+    // Both variables carry the same thread UUID, so either answers.
+    expect(currentSession({ CODEX_SESSION_ID: THREAD_ID })?.sid).toBe(THREAD_ID);
   });
 });

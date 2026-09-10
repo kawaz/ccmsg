@@ -367,14 +367,13 @@ config home はそれを名乗った harness の側から引く — 「自分は
 コマンドに対してだけで、狭い主張の方が真である。逆の入れ子 (Codex の turn から起動した
 Claude Code のセッション) は Codex として読まれ、`--sid` がそれを覆す。
 
-**Codex から送る側は、Codex が thread を名乗ることに依存している (未確認)。** `ccmsg post` /
-`reply` / `peers` は自分の sid を上の変数から取る。実測できたのは「`SessionStart` hook の環境には
-`CODEX_HOME` しか入らない」ところまでで、**Codex がツール実行のコマンドに `CODEX_THREAD_ID` を
-渡すかは未観測**である (0.153.4 は Responses request に `tools` を送らないので、mock model から
-shell を呼ばせられない)。渡していれば Codex のセッションからそのまま送れる。渡していなければ
-`--sid <thread-id>` を明示する以外に手が無く、その場合は「Codex から送る側は未対応」である。
-どちらであっても、**Codex から送ったつもりが親 Claude Code セッションとして送られることは無い**
-(継承した `CLAUDE_CODE_SESSION_ID` より Codex の主張が先に見られるため)。
+**Codex はツール実行の環境に thread を名乗る。** `CODEX_THREAD_ID` と `CODEX_SESSION_ID` の
+両方が入り、値はどちらも thread UUID = sid である (0.153.4 実測)。よって `ccmsg post` /
+`reply` / `peers` は Codex のセッションからそのまま送れる。`SessionStart` hook の環境には
+入らない (そちらは stdin の `session_id` が名乗る)。継承した `CLAUDE_CODE_SESSION_ID` より
+Codex の主張が先に見られるので、**Codex から送ったつもりが親 Claude Code セッションとして
+送られることは無い**。thread UUID は UUIDv7 だが、契約の `Sid` は version を問わないので
+そのまま通る。
 
 **config home を明示した経路はこの推定を通さない**。`daemon <sub> <dir>` や
 `plugin install <agent>` のように呼び出し側が config home を決めている場合、path はその値から
