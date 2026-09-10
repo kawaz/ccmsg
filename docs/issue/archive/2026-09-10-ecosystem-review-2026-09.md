@@ -1,6 +1,6 @@
 ---
 title: エコシステム外部レビュー (2026-09) の指摘への対応検討
-status: open
+status: resolved
 category: task
 created: 2026-09-10T14:46:04+09:00
 last_read:
@@ -9,10 +9,10 @@ wip_entered:
 blocked_entered:
 pending_entered:
 discarded_entered:
-resolved_entered:
+resolved_entered: 2026-09-10T15:14:59+09:00
 discard_reason:
 pending_reason:
-close_reason:
+close_reason: ["done:採用済み7(C-4,C-5,C-6,P-35,P-24,BE-BS,trusted_proxies)","done:採用1(C-3はdesign-doc-reflow-after-v2-settlesの受け入れ条件に追加、新規起票なし)","discarded:却下2(P-23,P-43)","pending:裁定待ち2(C-1=契約リポissue、C-4配置=dump-sidechain-rows-placement)","done:P-45は既にgreen規範を満たす","done:P-12/14/15/16/27/28/30/31/32/34/48は反映先rules-personalで本リポ作業なし"]
 blocked_by:
 origin: kawaz 依頼 (2026-09-10、claude-rules-personal セッション経由)
 ---

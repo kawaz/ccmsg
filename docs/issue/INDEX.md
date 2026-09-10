@@ -27,7 +27,6 @@ wire の契約は [kawaz/ccmsg-protocol](https://github.com/kawaz/ccmsg-protocol
 
 | date | category | status | slug | 概要 |
 |---|---|---|---|---|
-| 2026-09-10 | task | open | [ecosystem-review-2026-09](./2026-09-10-ecosystem-review-2026-09.md) | エコシステム外部レビュー (2026-09) の指摘への対応検討 |
 | 2026-09-10 | task | open | [design-doc-reflow-after-v2-settles](./2026-09-10-design-doc-reflow-after-v2-settles.md) | `docs/DESIGN-ja.md` / `docs/DESIGN.md` (と契約リポの DESIGN、README-ja) は v2 の構築中に節を足し続… |
 | 2026-09-10 | design | open | [dump-sidechain-rows-placement](./2026-09-10-dump-sidechain-rows-placement.md) | session_dump_write が出力する日記に、subagent (sidechain) の発話をどう配置するかを裁定する。 |
 | 2026-09-09 | design | open | [codex-plugin-delivery-via-thread-queue](./2026-09-09-codex-plugin-delivery-via-thread-queue.md) | codex plugin: 配送は `codex queue --thread <sid>`、hello でハーネス種別を名乗る |
