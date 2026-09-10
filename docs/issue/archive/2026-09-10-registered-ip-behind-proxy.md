@@ -12,7 +12,7 @@ discarded_entered:
 resolved_entered: 2026-09-10T13:44:07+09:00
 discard_reason:
 pending_reason:
-close_reason: ["done: entry.trusted_proxies (CIDR) を追加し、接続元が含まれる時だけ X-Forwarded-For を右から読んで最初の非信頼 hop を client ip として採用","done: DESIGN §3.1 に多段 proxy の採り方と「IP は手がかりであって認証材料ではない」旨を明記","done: 契約 1.8.0 で AuthRotateArgs に reason/ip/user_agent を追加、rotate 転送でも発行者の last_refresh に反映","done: CIDR 判定 (v4/v6/境界/mapped)・trusted/untrusted・多段・rotate 転送のテスト追加 (ccmsg v0.2.11)"]
+close_reason: ["done: entry.trusted_proxies (CIDR) を追加し、接続元が含まれる時だけ X-Forwarded-For を右から読んで最初の非信頼 hop を client ip として採用","done: DESIGN §3.1 に多段 proxy の採り方と「IP は手がかりであって認証材料ではない」旨を明記","done: 契約 1.8.0 で AuthRotateArgs に reason/ip/user_agent を追加、rotate 転送でも発行者の last_refresh に反映","done: CIDR 判定 (v4/v6/境界/mapped)・trusted/untrusted・多段・rotate 転送のテスト追加 (ccmsg v0.2.11)","note: 受け入れ条件が指す source_ips は起票時の古い文で、kawaz 裁定節の entry.trusted_proxies が正 (入口の許可 source_ips とは別項目)"]
 blocked_by:
 origin: 自リポ TODO
 ---
