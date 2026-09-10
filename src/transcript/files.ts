@@ -1,18 +1,58 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import type { Sid } from "@ccmsg/protocol";
+import { type Harness, HARNESS } from "../harness/index.ts";
 import { OpError } from "../dispatch/index.ts";
 
-/** Where the harness keeps transcripts under a config home: one directory per
- * working directory, one `<sid>.jsonl` in it. */
-const PROJECTS = "projects";
 const SUFFIX = ".jsonl";
 
-/** A session id as the harness names files by. Validated before it is joined
+/** Where one harness keeps transcripts under its config home, and how a file
+ * there says which session it belongs to (§3.7).
+ *
+ * Two facts, because the two harnesses file the same thing differently. Claude
+ * Code keeps one directory per working directory and names the file after the
+ * session; Codex keeps one directory per date and names the file after the
+ * thread with the moment it started in front. The `depth` is how many
+ * directories stand between the root and a file, which is what the walk needs
+ * and what the naming does not say.
+ *
+ * A Codex rollout that was reverted carries a second id after the thread's own,
+ * separated by `_`: the thread is the same and the file is a new one, so the
+ * name still answers "which session" and that is what is read out of it. */
+interface TranscriptLayout {
+  readonly depth: number;
+  /** The session a file belongs to, or nothing when the name is not one this
+   * harness writes. */
+  readonly sidOf: (name: string) => Sid | undefined;
+  /** What that session's file is called, where the name follows from the sid.
+   * Absent where it does not, which is what makes the walk the only way in. */
+  readonly nameOf?: (sid: Sid) => string;
+}
+
+/** A session id as Claude Code names files by. Validated before it is joined
  * to a path, so a sid is a name rather than a route: no separator and no dot
  * can appear in it, which makes traversal unrepresentable rather than
  * unlikely. */
 const SID = /^[0-9a-fA-F-]{8,64}$/;
+
+/** A Codex rollout, as its recorder writes the name: the moment it opened, the
+ * thread UUID, and the rollout's own id after it when the thread was reverted.
+ * The thread UUID is what a sid is here (measured against codex-cli 0.153.4). */
+const ROLLOUT =
+  /^rollout-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-([0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12})(?:_[0-9a-fA-F-]{36})?\.jsonl$/;
+
+const LAYOUTS: Record<Harness, TranscriptLayout> = {
+  claude: {
+    depth: 1,
+    sidOf: (name) => {
+      if (!name.endsWith(SUFFIX)) return undefined;
+      const sid = name.slice(0, -SUFFIX.length);
+      return SID.test(sid) ? sid : undefined;
+    },
+    nameOf: (sid) => `${sid}${SUFFIX}`,
+  },
+  codex: { depth: 3, sidOf: (name) => ROLLOUT.exec(name)?.[1] },
+};
 
 /** The agent id and run id shapes the harness writes under a session's own
  * directory, and the name a teammate is addressed by. Each is validated on the
@@ -30,6 +70,8 @@ const TEAMMATE = /^[A-Za-z0-9_-]{1,64}$/;
  * (M6) — nothing searches for another one. */
 export interface TranscriptFilesDeps {
   readonly configHome: string;
+  /** Which harness's tree is under it (§3.7). */
+  readonly harness: Harness;
   /** Where a connected session said its transcript is (§5.1). A session that
    * never greeted has none, and the walk below answers for it. */
   readonly announced: (sid: Sid) => string | undefined;
@@ -42,10 +84,10 @@ export class TranscriptFiles {
    *
    * Two ways to the one file, in the order of what each is good for: what the
    * session announced is exact and costs no search, and the walk finds the
-   * file by the identity it carries in its name (`<sid>.jsonl`) for a session
-   * that never greeted or is no longer running. Both stay inside this
-   * instance's `projects/` — the announced path because it was taken only if
-   * it was inside it, the walk because that tree is what it walks (M6). */
+   * file by the identity it carries in its name for a session that never
+   * greeted or is no longer running. Both stay inside this harness's own
+   * transcript tree — the announced path because it was taken only if it was
+   * inside it, the walk because that tree is what it walks (M6). */
   path(sid: Sid): string | undefined {
     const announced = this.deps.announced(sid);
     if (announced !== undefined && isFile(announced)) return announced;
@@ -117,21 +159,23 @@ export class TranscriptFiles {
    * the file and what a `stat` already said about it, so neither has to stat
    * again to decide whether to open it. */
   all(): TranscriptFile[] {
+    const layout = LAYOUTS[this.deps.harness];
     const found: TranscriptFile[] = [];
-    const projects = join(this.deps.configHome, PROJECTS);
-    for (const project of names(projects)) {
-      const dir = join(projects, project);
+    for (const dir of directories(this.#root(), layout.depth)) {
       for (const entry of names(dir)) {
-        if (!entry.endsWith(SUFFIX)) continue;
-        const sid = entry.slice(0, -SUFFIX.length);
-        if (!SID.test(sid)) continue;
+        const sid = layout.sidOf(entry);
+        if (sid === undefined) continue;
         const file = join(dir, entry);
         const stat = statOf(file);
         if (stat === undefined) continue;
         found.push({
           sid,
           file,
-          project,
+          // Only a layout that files by working directory has one to state,
+          // and the field is a prefilter: a tree that says nothing about where
+          // a session ran narrows nothing, and the transcript's own `cwd`
+          // decides as it already does.
+          ...(this.deps.harness === "claude" ? { project: basename(dir) } : {}),
           size: stat.size,
           created_at: Math.round(stat.birthtimeMs || stat.ctimeMs),
           updated_at: Math.round(stat.mtimeMs),
@@ -142,15 +186,50 @@ export class TranscriptFiles {
     return found;
   }
 
+  /** The root of this harness's transcript tree, which is the boundary every
+   * path below is inside of (M6). */
+  #root(): string {
+    return join(this.deps.configHome, HARNESS[this.deps.harness].transcripts);
+  }
+
+  /** The session's file, found by the identity its name carries.
+   *
+   * A layout whose name follows from the sid is joined rather than searched,
+   * which is one `stat` per directory instead of a listing; one whose name
+   * carries more than the sid is walked, because the rest of the name is
+   * exactly what this does not know. */
   private find(sid: Sid): string | undefined {
-    if (!SID.test(sid)) return undefined;
-    const projects = join(this.deps.configHome, PROJECTS);
-    for (const project of names(projects)) {
-      const file = join(projects, project, `${sid}${SUFFIX}`);
-      if (isFile(file)) return file;
+    const layout = LAYOUTS[this.deps.harness];
+    const dirs = directories(this.#root(), layout.depth);
+    const nameOf = layout.nameOf;
+    if (nameOf !== undefined) {
+      if (!SID.test(sid)) return undefined;
+      for (const dir of dirs) {
+        const file = join(dir, nameOf(sid));
+        if (isFile(file)) return file;
+      }
+      return undefined;
+    }
+    for (const dir of dirs) {
+      for (const entry of names(dir)) {
+        if (layout.sidOf(entry) === sid && isFile(join(dir, entry))) return join(dir, entry);
+      }
     }
     return undefined;
   }
+}
+
+/** Every directory transcripts sit in, at the depth the layout files them at.
+ *
+ * Names are read rather than dates computed: what is there is what the harness
+ * wrote, and a tree with a directory nobody expected is one whose files are
+ * still found. */
+function directories(root: string, depth: number): string[] {
+  let level = [root];
+  for (let step = 0; step < depth; step += 1) {
+    level = level.flatMap((dir) => names(dir).map((entry) => join(dir, entry)));
+  }
+  return level;
 }
 
 export interface AgentNames {
@@ -165,8 +244,10 @@ export interface TranscriptFile {
   readonly file: string;
   /** The project directory's name, which is the working directory flattened.
    * A lossy spelling — separators and dots all become dashes — so it prefilters
-   * a search and never decides it. */
-  readonly project: string;
+   * a search and never decides it. Absent where the harness files transcripts
+   * by something other than the working directory, which leaves nothing to
+   * prefilter on. */
+  readonly project?: string;
   readonly size: number;
   readonly created_at: number;
   readonly updated_at: number;

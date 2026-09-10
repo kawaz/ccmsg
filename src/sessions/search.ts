@@ -239,11 +239,11 @@ function says(text: string, clauses: readonly Clause[]): boolean {
 
 /** Whether the project directory could be the working directory asked for.
  *
- * The harness flattens a working directory into one name, and the flattening
- * is lossy — separators, dots and underscores all become dashes — so this only
+ * A harness that files by working directory flattens it into one name, and the
+ * flattening is lossy — separators, dots and underscores all become dashes — so this only
  * narrows what is opened. What decides a hit is the transcript's own `cwd`. */
-function looksLike(project: string, words: readonly string[]): boolean {
-  if (words.length === 0) return true;
+function looksLike(project: string | undefined, words: readonly string[]): boolean {
+  if (words.length === 0 || project === undefined) return true;
   const flat = flatten(project);
   return words.every((word) => flat.includes(flatten(word)));
 }
