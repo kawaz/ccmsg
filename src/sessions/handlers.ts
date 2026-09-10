@@ -17,6 +17,8 @@ import {
   type SessionSearchArgs,
   type Sid,
   TITLE_MAX_CHARS,
+  type TranscriptItemsReadArgs,
+  type TranscriptItemsReadResult,
   type TranscriptReadArgs,
   type TranscriptReadResult,
 } from "@ccmsg/protocol";
@@ -25,6 +27,7 @@ import { sees, type Viewer } from "../files/index.ts";
 import { readSlice, type TranscriptFiles } from "../transcript/index.ts";
 import { dumpWrite } from "./dump.ts";
 import { forkOrigin } from "./fork.ts";
+import { itemsRead } from "./items.ts";
 import type { SessionProcesses } from "./processes.ts";
 import { search } from "./search.ts";
 
@@ -143,6 +146,19 @@ export function sessionHandlers(deps: SessionOpsDeps) {
       }
       const file = deps.files.locate(args.sid, args);
       return readSlice(args.sid, file, args.before, args.max_bytes);
+    },
+
+    /** The same transcript, as the items it was read into.
+     *
+     * The role narrows it the way it narrows the raw read: what a role may see
+     * is one rule whatever is being read, and a caller that cannot see a
+     * session cannot see it in either vocabulary. */
+    transcript_items_read: (input: HandlerInput): TranscriptItemsReadResult => {
+      const args = input.args as unknown as TranscriptItemsReadArgs;
+      if (!sees(args.sid, viewer(input))) {
+        throw new OpError("not_found", `no transcript is known for ${args.sid}`);
+      }
+      return itemsRead(args, { files: deps.files, presets: deps.presets });
     },
   };
 }

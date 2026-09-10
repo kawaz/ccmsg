@@ -537,6 +537,9 @@ export class Instance {
     this.#topics.attach("inbox", this.#delivery);
     this.#topics.attach("notify", this.#notify);
     this.#topics.attach("transcript", this.#transcripts);
+    // One tail feeds both: the bytes as they are appended, and what those
+    // bytes were read as.
+    this.#topics.attach("transcript_items", this.#transcripts);
     this.#topics.attach("session_status", this.#status);
     this.#topics.attach("session_errors", this.#status);
     this.#topics.attach("llm_requests", this.#gateway.requests);
