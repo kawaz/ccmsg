@@ -616,6 +616,7 @@ export class Instance {
           hostProcessDeps(() => this.#sessions.rowsNow(), config.upstream.terminal_gateway),
         ),
         forget: (sid) => this.#sessions.forget(sid),
+        presets: config.dump.presets,
       }),
       // The sandbox ops answer only where an origin is configured. Without one
       // there is nothing to serve a minted URL, and dispatch already refuses

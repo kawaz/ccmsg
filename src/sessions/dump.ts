@@ -1,8 +1,14 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { InstanceId, SessionDumpWriteArgs, SessionDumpWriteResult } from "@ccmsg/protocol";
+import type {
+  DumpPreset,
+  InstanceId,
+  SessionDumpWriteArgs,
+  SessionDumpWriteResult,
+} from "@ccmsg/protocol";
 import { OpError } from "../dispatch/index.ts";
-import { readRecord, type TranscriptFiles, type TranscriptRecord } from "../transcript/index.ts";
+import { classify, type Item, ledger, select, selection } from "../transcript/items/index.ts";
+import type { TranscriptFiles } from "../transcript/index.ts";
 
 /** Where dumps land: one directory under this instance's own state, named
  * after the config home it answers for like every other per-instance path
@@ -13,13 +19,22 @@ export interface DumpDeps {
   readonly self: InstanceId;
   readonly stateDir: string;
   readonly files: TranscriptFiles;
+  /** The selections this instance is configured with, which is what a `preset`
+   * name and an `@name` inside a selection are resolved against. */
+  readonly presets: readonly DumpPreset[];
 }
 
 /** Write a session's dump and answer with where it went.
  *
  * What this adds over reading the transcript is a durable artifact whose path
  * can be handed to a successor session, rather than a payload that would
- * travel out through a client and back in again. */
+ * travel out through a client and back in again.
+ *
+ * The subject is the session, or one agent below it when the request names
+ * one. Every item type is read from wherever the subject stands — an agent's
+ * `message:user:in` is the brief its parent gave it — so one selection carries
+ * unchanged down a chain of agents, which is what makes the ledger's agent ids
+ * a way to descend rather than just a list. */
 export function dumpWrite(args: SessionDumpWriteArgs, deps: DumpDeps): SessionDumpWriteResult {
   if (args.since_at !== undefined && args.since_uuid !== undefined) {
     throw new OpError("invalid_args", "a lower bound is a time or a record, not both");
@@ -27,79 +42,93 @@ export function dumpWrite(args: SessionDumpWriteArgs, deps: DumpDeps): SessionDu
   if (args.until_at !== undefined && args.until_uuid !== undefined) {
     throw new OpError("invalid_args", "an upper bound is a time or a record, not both");
   }
-  const file = deps.files.session(args.sid);
+  const preset = presetFor(args.preset, deps.presets);
+  const file = deps.files.locate(
+    args.sid,
+    args.agent_id === undefined ? {} : { agent_id: args.agent_id },
+  );
   let text: string;
   try {
     text = readFileSync(file, "utf8");
   } catch {
     throw new OpError("not_found", `the transcript of ${args.sid} could not be read`);
   }
-  const entries = collect(text, args);
+  // The whole file is classified before the range is applied, so a result
+  // inside the range still names the call that fell before it. Cutting first
+  // would leave `parent_item` pointing at something the reader never saw.
+  const keep = selection(
+    {
+      ...(args.types === undefined ? {} : { types: args.types }),
+      ...(preset === undefined ? {} : { preset }),
+      ...(args.no_thinking === undefined ? {} : { no_thinking: args.no_thinking }),
+      ...(args.no_agent === undefined ? {} : { no_agent: args.no_agent }),
+    },
+    deps.presets,
+  );
+  const { items, entries } = select(within(classify(text.split("\n")), args), keep);
+  const ids = ledger(items);
+  const generated_at = Date.now();
   const document = {
     sid: args.sid,
+    ...(args.agent_id === undefined ? {} : { agent_id: args.agent_id }),
     instance: deps.self,
     source: file,
-    generated_at: Date.now(),
+    generated_at,
     entries,
+    items,
+    ...(keep.ids ? { ids } : {}),
   };
   const dir = join(deps.stateDir, DUMPS);
   mkdirSync(dir, { recursive: true });
-  const path = join(dir, `${args.sid}-${document.generated_at}.json`);
+  const named = args.agent_id === undefined ? args.sid : `${args.sid}-agent-${args.agent_id}`;
+  const path = join(dir, `${named}-${generated_at}.json`);
   const body = `${JSON.stringify(document, undefined, 2)}\n`;
   writeFileSync(path, body);
-  return {
-    path,
-    instance: deps.self,
-    entries: entries.length,
-    bytes: Buffer.byteLength(body),
-  };
+  return { path, instance: deps.self, entries, ids, bytes: Buffer.byteLength(body) };
 }
 
-/** One record of a dump: what was said, by whom, when.
+/** The named selection a request asked for.
  *
- * The fields are the record's own, taken from the type that reads a transcript
- * line rather than restated here — a dump reports what was read, and a second
- * spelling of those fields would be a second interpretation of the file. */
-type DumpEntry = Pick<TranscriptRecord, "uuid" | "said_at" | "said_by" | "text" | "thinking">;
+ * A name this instance does not have is refused rather than ignored: a dump
+ * silently wider than what was asked for is the failure a selection exists to
+ * prevent. */
+function presetFor(
+  name: string | undefined,
+  presets: readonly DumpPreset[],
+): DumpPreset | undefined {
+  if (name === undefined) return undefined;
+  const found = presets.find((one) => one.name === name);
+  if (found === undefined) throw new OpError("invalid_args", `no preset is configured as ${name}`);
+  return found;
+}
 
-/** The records within the bounds, in the order the transcript holds them.
+/** The items within the bounds, in the order the transcript holds them.
  *
  * A record bound cuts at that record's position rather than at its clock, so
  * records sharing an instant stay on their own side of the cut — which is the
- * whole reason the contract offers both kinds of bound. */
-function collect(text: string, args: SessionDumpWriteArgs): DumpEntry[] {
-  const entries: DumpEntry[] = [];
-  // A lower bound by record starts the dump closed: it opens at the record it
-  // names, which is included.
+ * whole reason the contract offers both kinds of bound. Every item a record
+ * became carries that record's id, so a bound by record keeps a turn's
+ * thinking, words and calls together. */
+function within(items: readonly Item[], args: SessionDumpWriteArgs): Item[] {
+  const kept: Item[] = [];
+  // A lower bound by record starts closed: it opens at the record it names,
+  // which is included.
   let open = args.since_uuid === undefined;
-  for (const line of text.split("\n")) {
-    if (line === "") continue;
-    const record = readRecord(line);
-    if (record === undefined) continue;
+  for (let at = 0; at < items.length; at += 1) {
+    const item = items[at];
+    if (item === undefined) continue;
     if (!open) {
-      if (record.uuid !== args.since_uuid) continue;
+      if (item.uuid !== args.since_uuid) continue;
       open = true;
     }
-    if (args.since_at !== undefined && (record.said_at ?? 0) < args.since_at) continue;
-    if (args.until_at !== undefined && (record.said_at ?? 0) > args.until_at) break;
-    // The machinery of in-process agents: their turns interleave into the
-    // session's own file, and a successor resuming the session is resuming the
-    // session rather than them.
-    if (args.no_agent === true && record.sidechain) {
-      if (record.uuid !== undefined && record.uuid === args.until_uuid) break;
-      continue;
+    if (args.since_at !== undefined && item.at < args.since_at) continue;
+    if (args.until_at !== undefined && item.at > args.until_at) break;
+    kept.push(item);
+    // An upper bound by record is inclusive and cuts after the last item that
+    // record became, so the rest of the same record is still let through.
+    if (args.until_uuid !== undefined && item.uuid === args.until_uuid) {
+      if (items[at + 1]?.uuid !== item.uuid) break;
     }
-    entries.push({
-      ...(record.uuid === undefined ? {} : { uuid: record.uuid }),
-      ...(record.said_at === undefined ? {} : { said_at: record.said_at }),
-      ...(record.said_by === undefined ? {} : { said_by: record.said_by }),
-      ...(record.text === undefined ? {} : { text: record.text }),
-      ...(args.no_thinking === true || record.thinking === undefined
-        ? {}
-        : { thinking: record.thinking }),
-    });
-    // An upper bound by record is inclusive, so the cut is after it.
-    if (record.uuid !== undefined && record.uuid === args.until_uuid) break;
   }
-  return entries;
+  return kept;
 }

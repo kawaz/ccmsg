@@ -1,5 +1,7 @@
 import {
   type Capability,
+  type DumpPreset,
+  type DumpPresetsReadResult,
   type InstanceId,
   type SessionDumpWriteArgs,
   type SessionEnvReadArgs,
@@ -57,9 +59,11 @@ export interface SessionOpsDeps {
    * instance last saw them. The sessions domain owns the list; this op only
    * asks it to forget a row. */
   readonly forget: (sid: Sid) => boolean;
+  /** The named selections this instance is configured with (§3.6). */
+  readonly presets: readonly DumpPreset[];
 }
 
-/** The eight ops that observe and operate on sessions.
+/** The ops that observe and operate on sessions.
  *
  * None of them decides who may call it: dispatch has settled that from the
  * attribute table. The one that narrows by role is `transcript_read`, and it
@@ -104,7 +108,16 @@ export function sessionHandlers(deps: SessionOpsDeps) {
         self: deps.self,
         stateDir: deps.stateDir,
         files: deps.files,
+        presets: deps.presets,
       }),
+
+    /** Which selections a dump may be asked for by name.
+     *
+     * Nothing else states them, so a client without this could only offer a
+     * free-text field and let the instance refuse. A preset that references
+     * another is answered as written: the expansion, and the refusal of a
+     * cycle, happen where the config is read. */
+    dump_presets_read: (): DumpPresetsReadResult => ({ presets: [...deps.presets] }),
 
     session_fork_origin: (input: HandlerInput): SessionForkOriginResult => {
       const args = input.args as unknown as SessionForkOriginArgs;

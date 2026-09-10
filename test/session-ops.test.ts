@@ -1,14 +1,16 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
+  type DumpPreset,
   type OpName,
   OP_SCHEMAS,
   opAttributes,
   type PeerInfo,
   type Role,
   type Sid,
+  TranscriptItem,
   validationErrors,
 } from "@ccmsg/protocol";
 import { type HandlerInput, OpError } from "../src/dispatch/index.ts";
@@ -64,6 +66,118 @@ const RENAMED = record({
   customTitle: "a titled session",
 });
 const TRANSCRIPT = SAID_BY_PERSON + SAID_BY_AGENT + RENAMED;
+
+/** A session that did things: a shell call, an agent started and answered, a
+ * file read. The structure is the harness's own — a call in an assistant
+ * record, its answer in a later user record, an agent reporting through a
+ * notification long after it was asked — and the words are invented. */
+const BUSY_TRANSCRIPT =
+  record({
+    type: "user",
+    uuid: "p1",
+    timestamp: "2026-09-01T00:00:00.000Z",
+    cwd: CWD,
+    message: { role: "user", content: "count the lines please" },
+  }) +
+  record({
+    type: "assistant",
+    uuid: "a1",
+    timestamp: "2026-09-01T00:00:01.000Z",
+    message: {
+      role: "assistant",
+      content: [
+        { type: "thinking", thinking: "wc will do" },
+        {
+          type: "tool_use",
+          id: "tb1",
+          name: "Bash",
+          input: { command: "wc -l < f", description: "count" },
+        },
+        {
+          type: "tool_use",
+          id: "ta1",
+          name: "Agent",
+          input: { prompt: "count the lines", name: "count-lines", subagent_type: "worker" },
+        },
+      ],
+    },
+  }) +
+  record({
+    type: "user",
+    uuid: "r1",
+    timestamp: "2026-09-01T00:00:02.000Z",
+    message: { role: "user", content: [{ type: "tool_result", tool_use_id: "tb1" }] },
+    toolUseResult: { stdout: "3\n", stderr: "", interrupted: false },
+  }) +
+  record({
+    type: "user",
+    uuid: "r2",
+    timestamp: "2026-09-01T00:00:03.000Z",
+    message: { role: "user", content: [{ type: "tool_result", tool_use_id: "ta1" }] },
+    toolUseResult: { agentId: "acounter-9f", status: "running", name: "count-lines" },
+  }) +
+  record({
+    type: "assistant",
+    uuid: "a2",
+    timestamp: "2026-09-01T00:00:04.000Z",
+    message: {
+      role: "assistant",
+      content: [{ type: "tool_use", id: "tr1", name: "Read", input: { file_path: "/x/y.ts" } }],
+    },
+  }) +
+  record({
+    type: "user",
+    uuid: "r3",
+    timestamp: "2026-09-01T00:00:05.000Z",
+    message: { role: "user", content: [{ type: "tool_result", tool_use_id: "tr1" }] },
+    toolUseResult: { type: "text", file: { filePath: "/x/y.ts", content: "a\nb\n", numLines: 2 } },
+  }) +
+  record({
+    type: "user",
+    uuid: "n1",
+    timestamp: "2026-09-01T00:01:00.000Z",
+    origin: { kind: "task-notification" },
+    message: {
+      role: "user",
+      content:
+        "<task-notification>\n<task-id>acounter-9f</task-id>\n<tool-use-id>ta1</tool-use-id>\n<status>completed</status>\n<result>there were three</result>\n</task-notification>",
+    },
+  });
+
+/** The agent's own file, which is where what it actually did is written. Its
+ * first record is the brief its parent gave it, which is what nothing else in
+ * the file is a reply to. */
+const AGENT_TRANSCRIPT =
+  record({
+    type: "user",
+    uuid: "w1",
+    parentUuid: null,
+    isSidechain: true,
+    agentId: "acounter-9f",
+    timestamp: "2026-09-01T00:00:03.000Z",
+    message: { role: "user", content: "count the lines" },
+  }) +
+  record({
+    type: "assistant",
+    uuid: "w2",
+    parentUuid: "w1",
+    isSidechain: true,
+    agentId: "acounter-9f",
+    timestamp: "2026-09-01T00:00:50.000Z",
+    message: { role: "assistant", content: [{ type: "text", text: "there were three" }] },
+  });
+
+/** One item as it was written to the dump file, read back with only the two
+ * fields every item has spelled out — the rest belong to its type. */
+interface DumpedItem {
+  readonly uuid: string;
+  readonly type: string;
+  readonly [field: string]: unknown;
+}
+
+function dumpAt(path: string): { items: DumpedItem[]; ids?: unknown } {
+  return JSON.parse(readFileSync(path, "utf8")) as { items: DumpedItem[]; ids?: unknown };
+}
 
 /** A config home with a harness `sessions/` directory, a `projects/` tree and
  * a state directory — everything one instance derives from a config home
@@ -121,7 +235,13 @@ interface Signalled {
 /** The session ops over one config home, with every effect on a process
  * injected. What is not injected is the resolution itself: the pid comes from
  * that config home's own `sessions/` and from nowhere else (M6). */
-function ops(over: Partial<ProcessDeps> & { typed?: string[][]; lastLive?: Sid[] } = {}) {
+function ops(
+  over: Partial<ProcessDeps> & {
+    typed?: string[][];
+    lastLive?: Sid[];
+    presets?: DumpPreset[];
+  } = {},
+) {
   const configHome = home();
   const stateDir = join(configHome, "state");
   const published: { topic: string; data: unknown }[] = [];
@@ -181,6 +301,7 @@ function ops(over: Partial<ProcessDeps> & { typed?: string[][]; lastLive?: Sid[]
     }),
     processes,
     forget: (sid) => domain.forget(sid),
+    presets: over.presets ?? [],
   });
   return { configHome, stateDir, domain, handlers, published, signalled, typed };
 }
@@ -552,18 +673,143 @@ describe("session_dump_write", () => {
     expect(path.startsWith(join(stateDir, "dumps"))).toBe(true);
     expect(readdirSync(join(stateDir, "dumps")).length).toBe(1);
     expect(written["instance"]).toBe(SELF);
-    expect(written["entries"]).toBe(3);
     expect(written["bytes"]).toBe(Buffer.byteLength(readFileSync(path)));
+  });
 
-    const document = JSON.parse(readFileSync(path, "utf8")) as {
-      entries: { said_by?: string; thinking?: string }[];
-    };
-    expect(document.entries.map((entry) => entry.said_by)).toEqual(["user", "agent", undefined]);
-    expect(document.entries[1]?.thinking).toBe("a haystack");
+  test("what was written is counted by type, and one turn is more than one item", async () => {
+    const { configHome, handlers } = ops();
+    writeTranscript(configHome, SID);
+    const written = await run("session_dump_write", handlers.session_dump_write, { sid: SID });
+    // The assistant's one record is the thinking it did and the words it said,
+    // which are two items and two things a selection can ask for apart.
+    expect(written["entries"]).toEqual({
+      "message:user:in": 1,
+      thinking: 1,
+      "message:user:out": 1,
+    });
+    const document = dumpAt(written["path"] as string);
+    expect(document.items.map((item) => item.type)).toEqual([
+      "message:user:in",
+      "thinking",
+      "message:user:out",
+    ]);
+    // Every item a record became carries that record's id, which is what makes
+    // a bound by record keep a turn whole.
+    expect(document.items[1]?.uuid).toBe("a1");
+    expect(document.items[2]?.uuid).toBe("a1");
+  });
+
+  test("every item written passes the contract's own shape", async () => {
+    const { configHome, handlers } = ops();
+    writeTranscript(configHome, SID, BUSY_TRANSCRIPT);
+    const written = await run("session_dump_write", handlers.session_dump_write, { sid: SID });
+    const document = dumpAt(written["path"] as string);
+    expect(document.items.length).toBeGreaterThan(5);
+    for (const item of document.items) {
+      expect([item.type, validationErrors(TranscriptItem, item)]).toEqual([item.type, []]);
+    }
+  });
+
+  test("a selection reads left to right, so a prefix comes in and one member goes back out", async () => {
+    const { configHome, handlers } = ops();
+    writeTranscript(configHome, SID, BUSY_TRANSCRIPT);
+    const written = await run("session_dump_write", handlers.session_dump_write, {
+      sid: SID,
+      types: ["tool", "-tool:Read"],
+    });
+    const kinds = Object.keys(written["entries"] as Record<string, number>).sort();
+    expect(kinds).toEqual(["tool:Agent", "tool:Bash"]);
+  });
+
+  test("a preset is the ground the types are applied over", async () => {
+    const { configHome, handlers } = ops({
+      presets: [
+        { name: "file", opts: { types: ["tool:Read"] } },
+        { name: "howto", opts: { types: ["thinking", "@file"] } },
+      ],
+    });
+    writeTranscript(configHome, SID, BUSY_TRANSCRIPT);
+    const written = await run("session_dump_write", handlers.session_dump_write, {
+      sid: SID,
+      preset: "howto",
+      types: ["-thinking", "tool:Bash"],
+    });
+    expect(Object.keys(written["entries"] as Record<string, number>).sort()).toEqual([
+      "tool:Bash",
+      "tool:Read",
+    ]);
+  });
+
+  test("a preset nobody configured is refused rather than widening the dump", async () => {
+    const { configHome, handlers } = ops();
+    writeTranscript(configHome, SID);
+    expect(
+      await refusalOf(() =>
+        run("session_dump_write", handlers.session_dump_write, { sid: SID, preset: "journal" }),
+      ),
+    ).toBe("invalid_args");
+  });
+
+  test("a call and its result point at each other, however far apart they were written", async () => {
+    const { configHome, handlers } = ops();
+    writeTranscript(configHome, SID, BUSY_TRANSCRIPT);
+    const written = await run("session_dump_write", handlers.session_dump_write, {
+      sid: SID,
+      types: ["tool:Bash"],
+    });
+    const items = dumpAt(written["path"] as string).items;
+    const call = items.find((item) => item["role"] === "use");
+    const answer = items.find((item) => item["role"] === "result");
+    expect(call?.["result_item"]).toBe(answer?.uuid);
+    expect(answer?.["parent_item"]).toBe(call?.uuid);
+    expect(answer?.["stdout"]).toBe("3\n");
+  });
+
+  test("an agent's brief and its answer are the two halves of one message", async () => {
+    const { configHome, handlers } = ops();
+    writeTranscript(configHome, SID, BUSY_TRANSCRIPT);
+    const written = await run("session_dump_write", handlers.session_dump_write, {
+      sid: SID,
+      types: ["message:sub"],
+    });
+    const items = dumpAt(written["path"] as string).items;
+    const asked = items.find((item) => item.type === "message:sub:out");
+    const answered = items.find((item) => item.type === "message:sub:in");
+    expect(asked?.["prompt"]).toBe("count the lines");
+    expect(asked?.["agent_id"]).toBe("acounter-9f");
+    expect(answered?.["parent_item"]).toBe(asked?.uuid);
+    expect(answered?.["text"]).toBe("there were three");
+    // The ledger is what a reader descends by: the agent named here is the
+    // subject of the next dump.
+    expect(written["ids"]).toContainEqual({
+      kind: "agent",
+      id: "acounter-9f",
+      label: "count-lines",
+      status: "completed",
+    });
+  });
+
+  test("the subject moves to an agent, and the brief it was given reads as what it was told", async () => {
+    const { configHome, handlers } = ops();
+    const file = writeTranscript(configHome, SID);
+    mkdirSync(join(dirname(file), SID, "subagents"), { recursive: true });
+    writeFileSync(
+      join(dirname(file), SID, "subagents", "agent-acounter-9f.jsonl"),
+      AGENT_TRANSCRIPT,
+    );
+    const written = await run("session_dump_write", handlers.session_dump_write, {
+      sid: SID,
+      agent_id: "acounter-9f",
+    });
+    expect(written["entries"]).toEqual({ "message:user:in": 1, "message:user:out": 1 });
+    const document = dumpAt(written["path"] as string);
+    expect(document.items[0]?.["text"]).toBe("count the lines");
+    expect(document.items[1]?.["text"]).toBe("there were three");
+    expect((written["path"] as string).includes(`${SID}-agent-acounter-9f-`)).toBe(true);
   });
 
   test("a bound by record cuts at that record, and thinking can be left out", async () => {
-    const { configHome, stateDir, handlers } = ops();
+    const { configHome, handlers } = ops();
     writeTranscript(configHome, SID);
     const written = await run("session_dump_write", handlers.session_dump_write, {
       sid: SID,
@@ -571,12 +817,9 @@ describe("session_dump_write", () => {
       until_uuid: "a1",
       no_thinking: true,
     });
-    expect(written["entries"]).toBe(1);
-    const document = JSON.parse(
-      readFileSync(join(stateDir, "dumps", readdirSync(join(stateDir, "dumps"))[0] ?? ""), "utf8"),
-    ) as { entries: { uuid: string; thinking?: string }[] };
-    expect(document.entries[0]?.uuid).toBe("a1");
-    expect(document.entries[0]?.thinking).toBeUndefined();
+    expect(written["entries"]).toEqual({ "message:user:out": 1 });
+    const document = dumpAt(written["path"] as string);
+    expect(document.items[0]?.uuid).toBe("a1");
   });
 
   test("a session with no transcript has nothing to dump", async () => {
@@ -584,6 +827,22 @@ describe("session_dump_write", () => {
     expect(
       await refusalOf(() => run("session_dump_write", handlers.session_dump_write, { sid: SID })),
     ).toBe("not_found");
+  });
+});
+
+describe("dump_presets_read", () => {
+  test("the selections a dump may be asked for by name are the configured ones, in order", async () => {
+    const presets: DumpPreset[] = [
+      { name: "file", description: "reads and writes", opts: { types: ["tool:Read"] } },
+      { name: "howto", opts: { types: ["thinking", "@file"] } },
+    ];
+    const { handlers } = ops({ presets });
+    expect(await run("dump_presets_read", handlers.dump_presets_read, {})).toEqual({ presets });
+  });
+
+  test("an instance configured with none says so rather than inventing any", async () => {
+    const { handlers } = ops();
+    expect(await run("dump_presets_read", handlers.dump_presets_read, {})).toEqual({ presets: [] });
   });
 });
 
