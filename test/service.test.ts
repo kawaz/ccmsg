@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, readFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { ENTRY } from "../src/daemon/registry.ts";
 import {
   LAUNCHD_LABEL,
   type Run,
@@ -8,6 +10,7 @@ import {
   serviceLogFile,
   SYSTEMD_UNIT,
 } from "../src/service/index.ts";
+import { durable, registeredProgram, supervisorProgram } from "../src/service/program.ts";
 import { Host } from "./harness.ts";
 
 const hosts: Host[] = [];
@@ -81,6 +84,7 @@ describe("launchd", () => {
       registered: true,
       running: true,
       pid: 4242,
+      program: { path: expect.any(String), durable: true, exists: true },
       service: { state: "running", loaded: true, running: true, pid: 4242, last_exit: 0 },
     });
 
@@ -92,6 +96,7 @@ describe("launchd", () => {
     expect(loadedOnly).toEqual({
       registered: true,
       running: false,
+      program: { path: expect.any(String), durable: true, exists: true },
       service: { state: "not running", loaded: true, running: false, pid: null, last_exit: 1 },
     });
 
@@ -145,6 +150,7 @@ describe("systemd", () => {
       registered: true,
       running: true,
       pid: 771,
+      program: { path: expect.any(String), durable: true, exists: true },
       service: { state: "active", loaded: true, running: true, pid: 771, last_exit: 0 },
     });
 
@@ -154,6 +160,7 @@ describe("systemd", () => {
     expect(await service.state(dead.run)).toEqual({
       registered: true,
       running: false,
+      program: { path: expect.any(String), durable: true, exists: true },
       service: { state: "failed", loaded: true, running: false, pid: null, last_exit: 2 },
     });
   });
@@ -186,5 +193,62 @@ describe("where the supervisor's own output is read from", () => {
 describe("a host with neither", () => {
   test("there is nothing to register with, and it says so rather than writing a file", () => {
     expect(() => serviceFor(host().env, "win32")).toThrow("win32");
+  });
+});
+
+describe("the path a unit is told to run", () => {
+  test("a ccmsg on PATH that leads back here is preferred over the runtime's own path", () => {
+    const at = host();
+    const bin = join(at.root, "bin");
+    mkdirSync(bin, { recursive: true });
+    const wrapper = join(bin, "ccmsg");
+    // What an installed ccmsg is on a machine that runs it from a checkout: a
+    // couple of lines naming the script, which is what makes it this ccmsg
+    // rather than another one.
+    writeFileSync(wrapper, `#!/bin/sh\nexec bun ${ENTRY} "$@"\n`);
+    chmodSync(wrapper, 0o755);
+
+    const program = supervisorProgram({ PATH: bin });
+    expect(program).toEqual({ command: [wrapper, "daemon", "supervise"], durable: true });
+    // The wrapper supplies the script, so the unit does not name it twice.
+    expect(program.command).not.toContain(ENTRY);
+  });
+
+  test("with nothing on PATH the process's own path is used, and a versioned one says so", () => {
+    const program = supervisorProgram({ PATH: "" });
+    expect(program.command[0]).toBe(process.execPath);
+    expect(program.durable).toBe(durable(process.execPath));
+  });
+
+  test("a path through a version's own directory is not one to write down", () => {
+    expect(durable("/nix/store/47hb-bun-1.3.13/bin/bun")).toBe(false);
+    expect(durable("/opt/homebrew/Cellar/bun/1.3.13/bin/bun")).toBe(false);
+    expect(durable("/opt/homebrew/bin/bun")).toBe(true);
+  });
+
+  test("status says when the program the unit names is no longer there", async () => {
+    const at = host();
+    const service = serviceFor(at.env, "darwin");
+    await service.register(recorder().run);
+
+    const named = registeredProgram(service.unitFile, "launchd");
+    expect(named).toEqual({
+      path: supervisorProgram().command[0] as string,
+      durable: true,
+      exists: true,
+    });
+
+    // A runtime upgrade takes the directory the unit names away. Nothing else
+    // about the registration changes, which is why the missing file is the
+    // only thing that can say so.
+    writeFileSync(
+      service.unitFile,
+      readFileSync(service.unitFile, "utf8").replace(named?.path as string, join(at.root, "gone")),
+    );
+    expect(registeredProgram(service.unitFile, "launchd")).toEqual({
+      path: join(at.root, "gone"),
+      durable: true,
+      exists: false,
+    });
   });
 });

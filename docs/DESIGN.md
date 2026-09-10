@@ -853,7 +853,12 @@ The supervisor belongs to no single config home, so its output is the one except
 (on systemd a unit's output goes to the journal, so `ccmsg service log` reads that instead).
 `ccmsg service status` puts ccmsg's own reading (registered / running) beside **the init
 system's** (`service`: loaded / running / pid / last exit) — so that a disagreement, such as a
-file that exists while launchd has never heard of it, is visible rather than smoothed over
+file that exists while launchd has never heard of it, is visible rather than smoothed over.
+What the unit names as its program is registered as a path that outlives an upgrade — a
+`ccmsg` on `PATH` that leads back to this build, rather than the runtime's own versioned
+path, which the next upgrade takes away — and `service status` reads that path back out of
+the unit (`program`: path / durable / exists), because a supervisor whose program has moved
+looks, from every other field, exactly like one that was never started
 
 The reason is that mesh cannot tell the difference. With lazy startup, an instance we cannot
 dial could be either "just sleeping (wakes on a call)" or "down," and there is no way to tell

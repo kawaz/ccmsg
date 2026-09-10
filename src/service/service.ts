@@ -2,8 +2,8 @@ import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { CommandError } from "../daemon/link.ts";
-import { ENTRY } from "../daemon/registry.ts";
 import { type Env, resolveStateRoot } from "../instance/paths.ts";
+import { type RegisteredProgram, registeredProgram, supervisorProgram } from "./program.ts";
 
 /** What the host's init system was asked, and what it said.
  *
@@ -34,6 +34,13 @@ export interface ServiceState {
   readonly registered: boolean;
   readonly running: boolean;
   readonly pid?: number;
+  /** The program the registered unit names, and whether anything is at that
+   * path now. `null` when nothing is registered, so there is no unit to read.
+   *
+   * Here rather than left to be worked out by a reader: a supervisor that
+   * cannot start because its program moved with a runtime upgrade looks, from
+   * every other field, exactly like one that was never started. */
+  readonly program: RegisteredProgram | null;
   /** What the init system itself says, or `null` when it could not be asked.
    *
    * Beside the two fields above rather than folded into them: those are ccmsg's
@@ -101,7 +108,7 @@ export type LogSource =
  * registered from a shell where these were exported and started without them
  * would quietly manage a different set of instances. */
 function supervisorCommand(): string[] {
-  return [process.execPath, ENTRY, "daemon", "supervise"];
+  return supervisorProgram().command;
 }
 
 const CARRIED = [
@@ -211,6 +218,13 @@ class LaunchdService implements Service {
   }
 
   async state(run: Run): Promise<ServiceState> {
+    return {
+      ...(await this.#report(run)),
+      program: registeredProgram(this.unitFile, this.kind),
+    };
+  }
+
+  async #report(run: Run): Promise<Omit<ServiceState, "program">> {
     const registered = existsSync(this.unitFile);
     const printed = await run(["launchctl", "print", `${this.#domain}/${LAUNCHD_LABEL}`]);
     // A non-zero exit is launchd saying it has no such service, which is not
@@ -306,6 +320,13 @@ class SystemdService implements Service {
   }
 
   async state(run: Run): Promise<ServiceState> {
+    return {
+      ...(await this.#report(run)),
+      program: registeredProgram(this.unitFile, this.kind),
+    };
+  }
+
+  async #report(run: Run): Promise<Omit<ServiceState, "program">> {
     const registered = existsSync(this.unitFile);
     const shown = await run([
       "systemctl",

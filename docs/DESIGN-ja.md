@@ -747,7 +747,12 @@ instance を持つか」は個々の instance が自分について答えられ�
 出力は journal に行くので、`ccmsg service log` はそちらを読む)。`ccmsg service status` は
 ccmsg 側の読み (registered / running) と **init system 側の読み** (`service`: loaded /
 running / pid / last exit) を並べる — file はあるのに launchd が知らない、のような食い違いを
-潰さずに見せるためである
+潰さずに見せるためである。unit に書く program の path は、**版に依存しない安定パス**を
+解決して登録する (この build へ辿り着く PATH 上の `ccmsg` を優先し、版付きディレクトリを
+含む runtime 自身の path は避ける。次の upgrade でその path ごと消えるため)。`ccmsg service
+status` は登録済み unit からその path を読み戻して出す (`program`: path / durable / exists)
+— program が移動した監督者は、他のどのフィールドから見ても「一度も起動していない監督者」と
+区別が付かないからである
 
 理由は mesh から見た区別が付かないこと。lazy だと、dial できない instance が
 「寝ているだけ (呼べば起きる)」なのか「落ちている」のかを外から判別できない。判別できないまま
