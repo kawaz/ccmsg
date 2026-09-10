@@ -37,7 +37,7 @@ WS の入口は entry token (state ディレクトリの 0600 file) で守って
 
 ### 2.3 RP ID は endpoint のホスト
 
-WebAuthn の RP ID は origin ではなく domain で、passkey は「今開いているページの effective domain か、その registrable suffix」でしか作成・利用できない。`rp_id` は登録時の endpoint のホストで、webui はその endpoint と同じホストから配られる (通常形)。`clientDataJSON.origin` の検査は credential の `rp_id` だけで束縛する (origin のホストが `rp_id` と一致するかその配下であること。authenticator が `rpIdHash` に署名し、ブラウザが rp_id をページの domain かその suffix にしか許さないので、別途の origin 許可リストは情報を足さない)。config に origin の一覧は持たない。同じ endpoint の下にパスが複数あっても (`https://h.example/` と `https://h.example/personal`) credential は 1 つで足りる。
+WebAuthn の RP ID は origin ではなく domain で、passkey は「今開いているページの effective domain か、その registrable suffix」でしか作成・利用できない。`rp_id` は登録時の endpoint のホストで、webui はその endpoint と同じホストから配られる (通常形)。`clientDataJSON.origin` の検査は credential の `rp_id` だけで束縛する (origin のホストが `rp_id` と一致するかその配下であること。authenticator が `rpIdHash` に署名し、ブラウザが rp_id をページの domain かその suffix にしか許さないので、別途の origin 許可リストは情報を足さない)。config に origin の一覧は持たない。認証は record の `endpoint` (base URL 全体、パス prefix 込み) に束ねる: `clientDataJSON.origin` が endpoint の origin と一致し、request が届いた URL のパス prefix が endpoint のパスと一致すること。`https://h.example/` と `https://h.example/personal/` は別の endpoint で、それぞれ登録する (mesh-peer-auth の `iss` / `aud` が origin でなく URL 完全一致なのと同じ粒度)。
 
 ### 2.4 token は record に紐づく opaque 値、family は単一 writer
 
@@ -79,7 +79,7 @@ tombstone: `passkey remove` は sub 単位の tombstone を credential と全 fa
 - mesh のルート (`<endpoint>/mesh/probe`、`<endpoint>/mesh/jwk/<kid>`) は自分の endpoint のパス配下 (§6.3 の鍵空間の分離)
 - **人と gateway の入口** (`/ws`、`/auth/*`、`/webhook/<source>`) は **パスの末尾で照合**し、prefix を問わない。proxy は prefix を剥がさずそのまま渡し、cookie の Path は request のパスから取る。これで alias endpoint (`https://alias.example/…`) や LB (同じパスで複数 instance を束ねる) が `self` と無関係に成立する
 - LB で束ねる instance 群は、人の入口のパスが同じで endpoint のホストが違う。`peers` に LB の名前は入れない
-- 自分の endpoint は §7.1 の probe で確定する (mesh-self-identification のとおり。proxy / alias 越しでも probe は Host を見ずに「自分に届いたか」だけで決まるので成立する)。config に `self` は持たない (「どれが自分か知らずに同じリストを配れる」性質を壊さないため)。到達しなかった peer は一致数から外し、一致 0 / 2 以上で起動失敗。WS の dial 先は `<endpoint>/ws` (scheme は https → wss)
+- 自分の endpoint は §7.1 の probe で確定する (mesh-self-identification のとおり。proxy / alias 越しでも probe は Host を見ずに「自分に届いたか」だけで決まるので成立する)。config に `self` は持たない (「どれが自分か知らずに同じリストを配れる」性質を壊さないため)。到達しなかった peer は一致数から外し、一致 0 / 2 以上で起動失敗。WS の dial 先も `<endpoint>ws` のまま (`https:` の URL に対する HTTP upgrade。`wss:` への書き換えはしない)
 - 確定した自分の endpoint と一致しない URL で来た mesh の `hello` は `aud` 不一致で拒否する。人の入口は `self` を名乗らないので、どの FQDN 経由でも token だけで判定する。challenge に埋める発行者は instance id で、endpoint の URL は未認証の相手に見せない
 
 ### 2.8 entry token の廃止
