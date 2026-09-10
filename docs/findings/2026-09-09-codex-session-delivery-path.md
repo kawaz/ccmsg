@@ -228,6 +228,8 @@ thread history の sqlite (`thread_history_1.sqlite`) は turn ごとに status 
 
 ## 一次資料
 
+0.154.0 について書いた観測 (対話プロンプトと非対話の `codex queue`) は手元の実機を読んだものであり、対応する tag の source は参照していない。以下の照合は 0.153.4 のものである。
+
 実機 0.153.4 に最も近い公開 tag として `rust-v0.153.0`、commit `41e22fee981a63b3698df7ed36bad393cda24715` を参照した。0.153.0 から 0.153.4 の patch 差は未観測だが、この文書で引用した CLI help、hook payload、notify payload、queue failure は 0.153.4 実機でも一致した。
 
 - [Codex CLI top-level commands (`queue`)](https://github.com/openai/codex/blob/rust-v0.153.0/codex-rs/cli/src/main.rs)

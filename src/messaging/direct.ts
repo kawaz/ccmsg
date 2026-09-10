@@ -383,13 +383,21 @@ const runCodex: RunCodex = async (args, env) => {
     // message goes by route (b) and nothing about it is lost (§4.1).
     return { code: 127 };
   }
-  const deadline = Bun.sleep(QUEUE_MS).then(() => "late" as const);
-  const finished = await Promise.race([spawned.exited, deadline]);
-  if (finished === "late") {
-    spawned.kill();
-    return { code: 124 };
+  // The timer is held so it can be cleared: a send that answered in a
+  // millisecond must not leave the loop something to wake up for ten seconds
+  // later, which is what an instance shutting down would then wait on.
+  const late = Promise.withResolvers<"late">();
+  const timer = setTimeout(() => late.resolve("late"), QUEUE_MS);
+  try {
+    const finished = await Promise.race([spawned.exited, late.promise]);
+    if (finished === "late") {
+      spawned.kill();
+      return { code: 124 };
+    }
+    return { code: finished };
+  } finally {
+    clearTimeout(timer);
   }
-  return { code: finished };
 };
 
 export interface QueueRouteOptions {
