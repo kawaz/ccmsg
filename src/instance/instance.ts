@@ -3,7 +3,6 @@ import { join } from "node:path";
 import {
   type AuthRecord,
   type Capability,
-  type Endpoint,
   type InstanceId,
   type InstancePingResult,
   type NetOnlineEvent,
@@ -182,10 +181,10 @@ export async function start(options: StartOptions = {}): Promise<StartOutcome> {
     const id = instanceIdentity(paths.instanceIdFile);
     // 5. the endpoint list, for an instance that has a mesh.
     //
-    // `self` is configured, so nothing has to be settled; what the probe does
-    // is check it, and it has to arrive at a listener — so the WebSocket is
-    // bound here and handed to the instance. A `self` that answers as somebody
-    // else ends the start.
+    // Which entry of it is this instance is settled by the probe, and the probe
+    // has to arrive at a listener — so the WebSocket is bound here and handed
+    // to the instance. A list that names this instance no times, or twice, ends
+    // the start.
     const mesh = meshFor(id, config, log, options.meshTiming);
     const wiring = mesh === undefined ? undefined : await bindForMesh(config, mesh);
     // 6-8 are the instance's own construction and listen.
@@ -222,12 +221,9 @@ function meshFor(
   log: Log,
   timing?: MeshTiming,
 ): Mesh | undefined {
-  if (config.peers.length === 0 || config.entry === undefined || config.self === undefined) {
-    return undefined;
-  }
+  if (config.peers.length === 0 || config.entry === undefined) return undefined;
   return new Mesh({
     id,
-    self: config.self,
     peers: config.peers,
     conns: new ConnRegistry(),
     log: (msg, fields) => {
@@ -250,7 +246,7 @@ export interface MeshWiring {
   attach(instance: Instance): void;
 }
 
-/** Bind the WebSocket, settle `self` against the peer list, and hand both on.
+/** Bind the WebSocket, settle which endpoint this instance is, and hand both on.
  *
  * The listener answers the two pre-authentication routes from the moment it is
  * up — the probe of self-identification and the key of mesh-peer-auth §6 — and
@@ -275,7 +271,7 @@ async function bindForMesh(config: InstanceConfig, mesh: Mesh): Promise<MeshWiri
     },
   });
   try {
-    await mesh.verify();
+    await mesh.identify();
   } catch (cause) {
     // The listener is bound before the endpoint list is checked, so it is this
     // function's to release when the check refuses — nothing else holds it yet,
@@ -424,7 +420,7 @@ export class Instance {
     // 6. `last_live` and the inbox, read as the domains are constructed.
     this.#sessions = new Sessions({
       self: this.self,
-      endpoint: selfEndpoint(config),
+      ...(this.#mesh === undefined ? {} : { endpoint: this.#mesh.self }),
       authExpiresAt: (conn) => this.#auth.expiresAt(conn),
       configHome: paths.configHome,
       stateDir: paths.stateDir,
@@ -525,7 +521,7 @@ export class Instance {
       self: this.self,
       records,
       origins: () => config.entry?.origins ?? [],
-      endpoint: () => selfEndpoint(config),
+      endpoint: () => this.#mesh?.self,
       unit: paths.key,
       ...(this.#mesh === undefined
         ? {}
@@ -916,21 +912,6 @@ export class Instance {
     // already pointed it at itself (§8.5).
     await this.#transport.close();
   }
-}
-
-/** Where this instance says it is reached, or nothing when it is reached by
- * no URL at all.
- *
- * The config's `self` when there is one, which is the answer for anything with
- * a mesh. Without one the bound address stands in, and an instance serving only
- * the unix socket has neither — so it states no endpoint rather than a URL that
- * reaches nothing (DR-0001 §2.1). A client on the unix socket already has the
- * instance it is talking to. */
-export function selfEndpoint(config: InstanceConfig): Endpoint | undefined {
-  if (config.self !== undefined) return config.self;
-  const entry = config.entry;
-  if (entry === undefined || entry.port === 0) return undefined;
-  return `ws://${entry.host}:${entry.port}`;
 }
 
 /** Who may reach the WebSocket at all (§3.1): an Origin the operator named and

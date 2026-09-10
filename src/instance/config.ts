@@ -87,18 +87,10 @@ export interface UpstreamConfig {
 }
 
 export interface InstanceConfig {
-  /** Where other instances reach this one (§7.1). Stated rather than
-   * discovered: an instance may be reached through a proxy or an alias, so the
-   * URL a peer is to dial is not a thing the process can read off its own
-   * socket. Required of an instance that has a mesh.
-   *
-   * Its `ws(s)://` form is what the mesh handshake compares as `aud`; the
-   * `http(s)://` URL with the same host and path is where the mesh's own
-   * routes hang. */
-  readonly self?: Endpoint;
-  /** Mesh endpoints to dial (§7.2). The same list goes to every instance, and
-   * it may name this one: an instance takes itself out of the list it dials,
-   * so one file can be copied to every host unchanged (§8.2). */
+  /** Every mesh endpoint, this instance's own among them (§7.1). The same list
+   * goes to every instance and names none of them in particular: which entry is
+   * this one is settled at startup by the probe, so one file can be copied to
+   * every host unchanged (§8.2). */
   readonly peers: readonly Endpoint[];
   /** Absent when this instance serves the unix socket only. */
   readonly entry?: EntryConfig;
@@ -236,8 +228,7 @@ export function settingsFor(shared: SharedConfig, dir: string): Record<string, u
 
 /** One instance's settings, read at the shape the instance uses them. */
 export function parseConfig(file: string, fields: Record<string, unknown>): InstanceConfig {
-  const config = {
-    ...(fields["self"] === undefined ? {} : { self: endpointOf(file, "self", fields["self"]) }),
+  return {
     peers: peersOf(file, fields["peers"]),
     ...(fields["entry"] === undefined ? {} : { entry: entryOf(file, fields["entry"]) }),
     upstream: upstreamOf(file, fields["upstream"]),
@@ -249,13 +240,6 @@ export function parseConfig(file: string, fields: Record<string, unknown>): Inst
     ),
     fork_origin: flagOf(file, "fork_origin", fields["fork_origin"], DEFAULT_CONFIG.fork_origin),
   };
-  // A mesh instance is dialled by its peers, and where they dial it is the one
-  // thing it cannot work out for itself. Refused here rather than at the first
-  // handshake, for the reason any broken setting is (DV-Q9).
-  if (config.self === undefined && config.peers.length > 0 && config.entry !== undefined) {
-    throw new ConfigError(file, "self must name this instance's endpoint URL when peers are set");
-  }
-  return config;
 }
 
 function flagOf(file: string, at: string, raw: unknown, fallback: boolean): boolean {

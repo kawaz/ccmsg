@@ -18,8 +18,8 @@ import {
   homeFor,
   leasePort,
   reachable,
+  proxyTo,
   release,
-  rewriteSelf,
   startAt,
   withFakePeer,
 } from "./cluster.ts";
@@ -50,8 +50,8 @@ describe("the addresses a test hands out", () => {
   });
 });
 
-describe("`self` and the peer list (§7.1)", () => {
-  test("a `self` that answers here starts, and the peers are what is left", async () => {
+describe("which endpoint this instance is (§7.1)", () => {
+  test("the list settles onto this instance, and the peers are what is left", async () => {
     const lease = leasePort();
     const asleep = endpoint(deadPort());
     // The list names this instance too, which is what §8.2 says one file going
@@ -59,9 +59,23 @@ describe("`self` and the peer list (§7.1)", () => {
     const instance = await startAt(homeFor(lease, [endpoint(lease.port), asleep]));
     expect(endpointOf(instance)).toBe(endpoint(lease.port));
     expect(instance.mesh?.peers).toEqual([asleep]);
-    // Unreachable now is not unreachable for good: it stays a peer to dial
-    // (DV-Q11).
+    // A peer that did not answer is left out of the count rather than refused,
+    // which is what let this start happen at all; unreachable now is not
+    // unreachable for good, so it stays a peer to dial (DV-Q11).
     expect(reachable(instance, asleep)).toBe(false);
+  });
+
+  test("two instances given one list each settle on their own endpoint", async () => {
+    const [a, b] = [leasePort(), leasePort()];
+    const peers = [endpoint(a.port), endpoint(b.port)];
+    // The same file, byte for byte, to both homes: neither is told which entry
+    // is its own and each finds out from the probe that came back to it.
+    const [first, second] = await Promise.all([
+      startAt(homeFor(a, peers), { reconnectMinMs: 20 }),
+      startAt(homeFor(b, peers), { reconnectMinMs: 20 }),
+    ]);
+    expect(endpointOf(first)).toBe(endpoint(a.port));
+    expect(endpointOf(second)).toBe(endpoint(b.port));
   });
 
   test("an id is what the instance is called, and it is not the endpoint", async () => {
@@ -71,12 +85,11 @@ describe("`self` and the peer list (§7.1)", () => {
     expect(instance.self).not.toBe(endpointOf(instance));
   });
 
-  test("a `self` nothing answers at ends the start (§7.1)", async () => {
-    // `self` names an address this process does not serve, so the probe it
-    // sends itself never comes back and the setting is wrong.
+  test("a list that does not name this instance ends the start (§7.1)", async () => {
+    // Every entry is somewhere else, so no probe comes back here and there is
+    // nothing to be. Q2 of self-identification, refused at startup.
     const lease = leasePort();
-    const env = homeFor(lease, [endpoint(lease.port)]);
-    rewriteSelf(env, endpoint(deadPort()));
+    const env = homeFor(lease, [endpoint(deadPort())]);
     // `start` binds the address this home names, so the lease on it is given up
     // here rather than by `startAt`, which is what does it for a start expected
     // to run.
@@ -84,24 +97,34 @@ describe("`self` and the peer list (§7.1)", () => {
     expect(await refusal(start({ env, echoLog: false }))).toBeInstanceOf(SelfEndpointError);
   });
 
-  test("a `self` that answers as somebody else ends the start (§7.1)", async () => {
-    // Another listener holds the address `self` names. It answers the probe,
-    // but the token is not one this instance sent itself.
+  test("a list naming only a live stranger ends the start (§7.1)", async () => {
+    // The endpoint answers the probe, but the token does not come back here:
+    // answering is not being us.
     const lease = leasePort();
     const stranger = leasePort();
-    const env = homeFor(lease, [endpoint(lease.port)]);
-    rewriteSelf(env, endpoint(stranger.port));
+    const env = homeFor(lease, [endpoint(stranger.port)]);
+    await lease.release();
+    expect(await refusal(start({ env, echoLog: false }))).toBeInstanceOf(SelfEndpointError);
+  });
+
+  test("two URLs that both reach this instance end the start (§7.1)", async () => {
+    // A proxy in front of the instance, listed beside the address it forwards
+    // to. Both probes land here, so two entries are this instance and neither
+    // can be preferred: which of the two names a peer should compare as `aud`
+    // is not something the protocol can decide, so the start is refused.
+    const lease = leasePort();
+    const alias = proxyTo(endpoint(lease.port));
+    const env = homeFor(lease, [endpoint(lease.port), alias]);
     await lease.release();
     expect(await refusal(start({ env, echoLog: false }))).toBeInstanceOf(SelfEndpointError);
   });
 
   test("a refused start leaves its port bound to nobody (§7.1)", async () => {
     const lease = leasePort();
-    const env = homeFor(lease, [endpoint(lease.port)]);
-    rewriteSelf(env, endpoint(deadPort()));
+    const env = homeFor(lease, [endpoint(deadPort())]);
     await lease.release();
     expect(await refusal(start({ env, echoLog: false }))).toBeInstanceOf(SelfEndpointError);
-    // The entry listener is up before the endpoint list is checked, so the
+    // The entry listener is up before the endpoint list is settled, so the
     // refusal has to give the port back: binding it again is what says it did.
     const after = Bun.serve({
       hostname: "127.0.0.1",
@@ -118,7 +141,7 @@ describe("`self` and the peer list (§7.1)", () => {
     // a probe arriving from elsewhere is.
     probe.accept("00".repeat(16));
     const dead = endpoint(deadPort());
-    expect(await refusal(probe.verify(dead, [dead]))).toBeInstanceOf(SelfEndpointError);
+    expect(await refusal(probe.identify([dead]))).toBeInstanceOf(SelfEndpointError);
   });
 
   test("the table is gone once the run is over (§7.3)", async () => {
@@ -129,7 +152,7 @@ describe("`self` and the peer list (§7.1)", () => {
     // it would have been matched against no longer exists.
     probe.accept("11".repeat(16));
     const dead = endpoint(deadPort());
-    expect(await refusal(probe.verify(dead, [dead]))).toBeInstanceOf(SelfEndpointError);
+    expect(await refusal(probe.identify([dead]))).toBeInstanceOf(SelfEndpointError);
   });
 });
 

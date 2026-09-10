@@ -119,8 +119,8 @@ own.
 **A person's and a gateway's entry points (`/ws`, `/auth/*`, `/webhook/<source>`) are matched by
 the end of the path, and the prefix is not asked about** (DR-0001 §2.7). A proxy may pass the
 path through with its prefix intact, which is what lets an alias endpoint, or a load balancer
-putting several instances behind one origin, hold without any relation to `self`. **Only the
-mesh's routes (`/mesh/probe`, `/mesh/jwk/<kid>`) stay under `self`'s path**: that tie is itself
+putting several instances behind one origin, hold without any relation to this instance's own
+endpoint. **Only the mesh's key (`/mesh/jwk/<kid>`) stays under that endpoint's path**: the tie is
 the boundary keeping two instances on one origin from answering for each other's keys
 (mesh-peer-auth §6.3), and a person's entry has no such key space.
 
@@ -602,18 +602,26 @@ same topic name.
 
 ### 7.1 Endpoint and id
 
-**`self` — the endpoint URL other instances dial this one at — is given in config** (§8.2,
-DR-0001 §2.7). The URL of an instance sitting behind a proxy or an alias is not a value the
-process can read off its own socket.
+**All config carries is `peers` — every mesh endpoint, this instance's own among them — and
+which of them is this instance is settled at startup by the probe** (mesh-self-identification,
+§8.2, DR-0001 §2.7). The URL of an instance sitting behind a proxy or an alias is not a value
+the process can read off its own socket, but the probe never reads the URL a request came in
+on: it turns only on whether the probe arrived here, so it holds through a proxy or an alias
+alike.
 
-The startup probe remains. What it settles is not an identity but whether the setting is right
-and which peers can be reached: a token-carrying probe goes to `self` and to every peer, and
-**the probe sent to `self` has to come back here**. If it does not, `self` names somebody else
-or nobody at all, and startup is failed the same way a broken config is (§8.3). A peer that did
-not answer is recorded rather than refused — one machine being powered off or asleep is the
-normal state of this mesh (DV-Q11) — and remains a dial target under §7.2. If `peers` names this
-instance's own URL or an alias of it, that probe comes back here too, and those entries are not
-dialled (§8.2).
+**The procedure**: a probe carrying a token minted per destination goes to every endpoint in
+`peers`, and the token that arrives at this instance's own listener is matched against the
+table. The one URL it matches is this instance's endpoint. The probe to ourselves must not be
+left out of the send — it is the one that always arrives, so a peer echoing a stolen token back
+makes two matches and fails rather than being believed (mesh-self-identification §4.2).
+
+**No match, or more than one, fails startup**. None means `peers` does not name this instance,
+or names a URL nobody answers at; more than one means two URLs reaching one instance (an alias,
+a load balancer), and since neither can be preferred as the proper name, startup is failed the
+same way a broken config is (§8.3). A peer that did not answer is left out of the count and
+recorded rather than refused — one machine being powered off or asleep is the normal state of
+this mesh (DV-Q11) — and remains a dial target under §7.2. The settled endpoint is not dialled
+(§8.2).
 
 **The instance id is a separate thing from the endpoint.** The id is a fixed value held in the
 state directory (§3.6) and the endpoint is a URL that configuration can change; the
@@ -712,8 +720,7 @@ home.** A CLI within a session looks up its own instance from `CLAUDE_CONFIG_DIR
 | Item | Content |
 |---|---|
 | Own config home | The single config home this instance sees (M6) |
-| self | This instance's endpoint URL. Required on a configuration that has a mesh (§7.1) |
-| peers | A list of mesh endpoint URLs. **The same list can be distributed to every instance** (it may include one's own URL; the reader takes itself out, §7.1) |
+| peers | A list of mesh endpoint URLs. **The same list, this instance's own URL included, can be distributed to every instance** (which entry is this one is settled by the startup probe, and the reader takes itself out, §7.1) |
 | Entry-point permission | bind, source IP, Origin |
 | upstream | gateway's URL and webhook source, terminal gateway, launcher (roots and recipes), translation helper, sandbox origin |
 
@@ -746,8 +753,8 @@ answer about itself. A config home that `instances[]` does not list, run with
    0), the file is taken over and the lock contended for again
 3. Load config. **A broken config fails startup** (DV-Q9). Continuing to start with the
    feature disabled would carry the state of "a feature you thought you configured is silently
-   not working" through to runtime. As with a failed peer verification in §7.1, a
-   misconfiguration is failed at startup. What the config names is resolved here too, and fails
+   not working" through to runtime. As with a failure to settle this instance's endpoint in §7.1,
+   a misconfiguration is failed at startup. What the config names is resolved here too, and fails
    for the same reason: a gateway webhook secret that cannot be read, and a translation helper
    that cannot be run, are each exactly the state of a configured feature silently not working
 4. **Read the instance id** (generating it here when the state directory has none, §3.6). It
@@ -755,14 +762,14 @@ answer about itself. A config home that `instances[]` does not list, run with
    keyed by that id, so there is nothing that may be built while it does not exist. A config
    home the shared file's `instances[]` does not list, started with `ccmsg daemon run`, gets
    its first id here too (DR-0001 §2.1)
-5. **Verify the endpoint list** (§7.1). On a configuration with mesh, **the WebSocket is bound
-   first**: what the check consists of is the probe sent to `self` arriving at this instance's
-   own listener, so it cannot come before listen. In that window the listener answers only the
-   two pre-authentication routes — the probe and the key of mesh-peer-auth §6 — and refuses
-   everything else until the instance exists (a window of one round of probes). A `self` that
-   answers as somebody else fails startup; a peer that did not answer is recorded and left as a
-   dial target. A configuration without mesh is never dialled, so it names itself after the
-   address it listens on (the config home's key when there is none)
+5. **Settle this instance's endpoint** (§7.1). On a configuration with mesh, **the WebSocket is
+   bound first**: what settles it is the probe this instance sent arriving at its own listener,
+   so it cannot come before listen. In that window the listener answers only the two
+   pre-authentication routes — the probe and the key of mesh-peer-auth §6 — and refuses
+   everything else until the instance exists (a window of one round of probes). No match, or
+   more than one, fails startup; a peer that did not answer is recorded and left as a dial
+   target. A configuration without mesh is never dialled, so it has no endpoint and states none
+   in `hello`
 6. Load `last_live` and the inbox. These come after step 4 because every entry of both carries
    the instance id as its `instance` — nothing derived from the id exists before the id does
 7. listen. Record the pid → prepare the socket dir and sweep the real paths whose pid is
@@ -953,6 +960,9 @@ In addition, as daemon-specific tests:
   succeeds after recovery
 - A disconnected instance's full value set is not dropped, is replaced on reconnection, and is
   discarded once the retention window passes (§7.5)
+- Two instances handed the same `peers` each settle on their own endpoint (§7.1)
+- No match (`peers` does not name this instance) and more than one (two URLs reaching one
+  instance) each fail startup (§7.1)
 - Startup succeeds with an unreachable peer present, and that peer stays on the dial list
   (§7.1, DV-Q11)
 - A hello naming an id already bound to another endpoint closes the newcomer (§7.1)
@@ -971,9 +981,9 @@ Lead's ruling (2026-09-08). The relevant sections of the body text are written i
 | DV-Q6 | Polling `claude agents` | **Replaced**. Read via watching our own config home's `sessions/` plus a low-frequency confirmation poll; no subprocess is kept | §5.1 |
 | DV-Q7 | transcript's fold | **A single one** (M5). No light/heavy two-tier setup | §3.3 |
 | DV-Q8 | Reflecting config | **Unified to once, at startup**. No hot reload | §8.2 |
-| DV-Q9 | A broken config | **Startup fails** (fail-fast, the same treatment as a failed peer verification) | §8.3 |
+| DV-Q9 | A broken config | **Startup fails** (fail-fast, the same treatment as a failure to settle this instance's endpoint) | §8.3 |
 | DV-Q10 | Startup timing | **Long-running (resident)** (`ccmsg daemon supervise` keeps it up; `ccmsg service register` registers that with the OS). Lazy startup is not adopted | §8.4 |
-| DV-Q11 | A peer that cannot be reached | **Does not stop startup**. What decides startup is only whether the probe sent to `self` came back here; a peer that did not answer is recorded and left as a dial target | §7.1 |
+| DV-Q11 | A peer that cannot be reached | **Does not stop startup**. A peer that did not answer is left out of the count, recorded, and left as a dial target; startup fails only on no match or more than one | §7.1 |
 | DV-Q12 | A disconnected instance's full value set | **Kept until reconnection, discarded after 7 days** (the same window as inbox / last_live) | §7.5 |
 
 ### 12.1 Changes that went into the contract side

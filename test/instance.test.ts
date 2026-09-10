@@ -162,10 +162,9 @@ describe("config", () => {
     expect(() => loadShared(file)).toThrow(ConfigError);
   });
 
-  test("the five things config carries (§8.2)", () => {
+  test("the four things config carries (§8.2)", () => {
     const { root, env, home } = disposable();
     const file = shared(root, {
-      self: "wss://here.example/ccmsg",
       peers: ["wss://elsewhere.example/ccmsg"],
       entry: { host: "127.0.0.1", port: 0, source_ips: ["127.0.0.1"], origins: ["http://ui"] },
       upstream: { gateway_url: "https://gateway.example" },
@@ -174,28 +173,9 @@ describe("config", () => {
     // The config home is the fifth, and it is the environment's rather than
     // the file's: an instance is the config home it was started in (A2).
     expect(resolvePaths(env).configHome).toBe(home);
-    expect(config.self).toBe("wss://here.example/ccmsg");
     expect(config.peers).toEqual(["wss://elsewhere.example/ccmsg"]);
     expect(config.entry?.origins).toEqual(["http://ui"]);
     expect(config.upstream.gateway_url).toBe("https://gateway.example");
-  });
-
-  test("a mesh instance has to be told where it is reached (§8.2)", () => {
-    const { root, home } = disposable();
-    // Peers to dial and an address they could dial back, and no statement of
-    // which URL that is: the one thing an instance cannot work out for itself,
-    // so the start is refused rather than the first handshake (DV-Q9).
-    const file = shared(root, {
-      peers: ["wss://elsewhere.example/ccmsg"],
-      entry: { host: "127.0.0.1", port: 0 },
-    });
-    expect(() => loadConfig(file, home)).toThrow(ConfigError);
-    // Peers with no entry is a setting with no effect rather than a mesh, and
-    // an entry with no peers is an instance nobody dials. Neither needs one.
-    expect(loadConfig(shared(root, { peers: ["wss://a.example"] }), home).self).toBeUndefined();
-    expect(
-      loadConfig(shared(root, { entry: { host: "127.0.0.1", port: 0 } }), home).self,
-    ).toBeUndefined();
   });
 
   test("an instance's own entry wins over the defaults, key by key", () => {

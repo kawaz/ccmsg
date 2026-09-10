@@ -135,8 +135,8 @@ export interface MeshHost {
 export interface MeshDeps {
   /** This instance's id, which is what it is called on the wire. */
   readonly id: InstanceId;
-  /** Where peers reach this instance, from config (DR-0001 §2.7). */
-  readonly self: Endpoint;
+  /** Every mesh endpoint, this instance's own among them. Which one that is is
+   * settled by `identify`, not configured (DR-0001 §2.7). */
   readonly peers: readonly Endpoint[];
   readonly conns: ConnRegistry;
   readonly log?: (msg: string, fields?: Record<string, unknown>) => void;
@@ -260,10 +260,9 @@ export class Mesh {
   readonly #retries = new Map<Endpoint, ReturnType<typeof setTimeout>>();
   readonly #backoff = new Map<Endpoint, number>();
   readonly #probe = new PeerProbe();
-  /** The configured endpoints that turned out to be this instance, filled in by
-   * `verify`. `self` is always among them; an alias of it that a peer list also
-   * names joins it there, and none of them is dialled. */
-  readonly #ours = new Set<Endpoint>();
+  /** Which of the configured endpoints is this instance, settled by `identify`
+   * before anything is dialled and fixed from then on (§5.5). */
+  #self: Endpoint | undefined;
   /** The authenticated endpoint-to-id mapping (DR-0001 §2.1), in both
    * directions: a handshake writes it, `to_instance` reads it to find the link
    * to dial down, and a disconnection leaves it standing so a peer that is out
@@ -294,11 +293,6 @@ export class Mesh {
   readonly relay: Relay;
 
   constructor(private readonly deps: MeshDeps) {
-    // The table opens with the one binding this instance did not have to learn:
-    // its own. That is what makes "an id already answering elsewhere" cover the
-    // case of a peer claiming to be us — which is what the instance at a moved
-    // instance's old URL looks like from the new one.
-    this.#bind(deps.self, deps.id);
     this.relay = new Relay({
       publish: (topic, data, instance) => {
         this.#host?.publish(topic, data, instance);
@@ -335,15 +329,23 @@ export class Mesh {
   /** The peers this instance dials: the configured list without itself.
    *
    * The list is the same on every instance, which is what lets one file be
-   * distributed to all of them (§8.2) — and it may name this instance, so
-   * removing ourselves is the reader's job rather than the writer's. `verify`
-   * is what found which entries are ours, the configured `self` among them. */
+   * distributed to all of them (§8.2) — and it names this instance too, so
+   * removing ourselves is the reader's job rather than the writer's. `identify`
+   * is what found which entry that is. */
   get peers(): Endpoint[] {
-    return this.deps.peers.filter((peer) => !this.#ours.has(peer));
+    const self = this.self;
+    return this.deps.peers.filter((peer) => peer !== self);
   }
 
+  /** Where peers reach this instance, as the probe settled it (§7.1).
+   *
+   * Asked only after `identify`: everything that reads it — the handshake's
+   * `aud`, the mesh's own routes, what `hello` reports — happens on an instance
+   * that has already started, and a start where the probe did not settle ends
+   * instead. */
   get self(): Endpoint {
-    return this.deps.self;
+    if (this.#self === undefined) throw new Error("this mesh has not identified itself yet");
+    return this.#self;
   }
 
   get id(): InstanceId {
@@ -364,7 +366,7 @@ export class Mesh {
    * peer whose link is down, which is the one a reader is looking for. */
   instances(): InstanceInfo[] {
     return [
-      { id: this.deps.id, endpoint: this.deps.self, host: hostname(), reachable: true },
+      { id: this.deps.id, endpoint: this.self, host: hostname(), reachable: true },
       ...this.peers.map((peer) => {
         const id = this.#idOf.get(peer);
         return {
@@ -578,15 +580,21 @@ export class Mesh {
     else conn.send(frame);
   }
 
-  /** Check the endpoint list against reality before anything is dialled (§7.1).
+  /** Settle which configured endpoint is this instance, before anything is
+   * dialled (§7.1).
    *
-   * Run once the listener is up, because the probe this instance sends to its
-   * own `self` has to arrive somewhere — and that probe is the whole test: a
-   * `self` that answers as somebody else ends the start, while a peer that is
-   * merely asleep is recorded and dialled later. */
-  async verify(): Promise<PeerReport> {
-    const report = await this.#probe.verify(this.deps.self, this.deps.peers);
-    for (const ours of report.ours) this.#ours.add(ours);
+   * Run once the listener is up, because the probe this instance sends itself
+   * has to arrive somewhere. A list that reaches this instance no times or
+   * more than once ends the start; a peer that is merely asleep is recorded
+   * and dialled later. */
+  async identify(): Promise<PeerReport> {
+    const report = await this.#probe.identify(this.deps.peers);
+    this.#self = report.self;
+    // The table opens with the one binding this instance did not have to learn:
+    // its own. That is what makes "an id already answering elsewhere" cover the
+    // case of a peer claiming to be us — which is what the instance at a moved
+    // instance's old URL looks like from the new one.
+    this.#bind(report.self, this.deps.id);
     return report;
   }
 
@@ -606,7 +614,7 @@ export class Mesh {
    * that fails any step throws, which is what leaves the connection anonymous
    * (§3.2 step 7). */
   async greet(conn: Requester, claim: MeshClaim): Promise<void> {
-    const self = this.deps.self;
+    const self = this.self;
     // 1-3 of §5.7, asked before the key is fetched: the cheap comparisons come
     // first because the fetch reaches out to another host.
     if (claim.ver !== MESH_VER) {
@@ -770,15 +778,19 @@ export class Mesh {
   /** Answer the two requests that are served before anything is proven, or
    * nothing when the request is not one of them. */
   async route(request: Request): Promise<Response | undefined> {
-    // Below `self` and nowhere else. The mesh's routes are the one part of the
-    // surface that stays tied to the configured endpoint, because that tie is
-    // what keeps two instances on one origin from answering for each other's
-    // keys (mesh-peer-auth §6.3). The person's entry is matched by the end of
-    // the path instead (DR-0001 §2.7).
     const pathname = new URL(request.url).pathname;
-    const base = this.deps.self;
-    if (isProbePath(pathname, base)) return await this.#answerProbe(request);
-    const kid = kidOfPath(pathname, base);
+    // The probe is matched by the end of the path, because it is what settles
+    // which endpoint this instance is: while one is arriving there is no
+    // endpoint to hang it under.
+    if (isProbePath(pathname)) return await this.#answerProbe(request);
+    // The key is below this instance's own endpoint and nowhere else, which is
+    // what keeps two instances on one origin from answering for each other's
+    // keys (mesh-peer-auth §6.3); the person's entry is matched by the end of
+    // the path instead (DR-0001 §2.7). The probe has settled that endpoint by
+    // the time any key is asked for: a request arriving before then belongs to
+    // no handshake, since nothing has been dialled yet.
+    if (this.#self === undefined) return undefined;
+    const kid = kidOfPath(pathname, this.#self);
     if (kid !== undefined) return await this.#serveKey(kid, request);
     return undefined;
   }
@@ -824,7 +836,7 @@ export class Mesh {
     // one. The two meet at the `kid`.
     const claim = {
       ver: MESH_VER,
-      iss: this.deps.self,
+      iss: this.self,
       aud: minted.aud,
       challenge: asked.challenge,
       exp: Math.floor((Date.now() + PROOF_LIFETIME_MS) / 1000),
@@ -853,7 +865,7 @@ export class Mesh {
 
   async #dial(peer: Endpoint): Promise<void> {
     if (this.#stopping || this.#links.has(peer)) return;
-    const self = this.deps.self;
+    const self = this.self;
     const key = new EphemeralKey();
     const minted: Minted = { key, aud: peer };
     this.#minted.set(key.kid, minted);
@@ -968,7 +980,7 @@ export class Mesh {
    * Both connections are verified before either is dropped, so whichever
    * survives is one that was proven (§8.1). */
   #hold(peer: Endpoint, conn: Requester, dialledByUs: boolean): void {
-    const self = this.deps.self;
+    const self = this.self;
     const held = this.#links.get(peer);
     if (held !== undefined) {
       if (held.conn === conn) return;

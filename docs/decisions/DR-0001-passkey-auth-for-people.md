@@ -20,7 +20,7 @@ WS の入口は entry token (state ディレクトリの 0600 file) で守って
 
 ### 2.2 登録はローカルからしかできない
 
-`ccmsg daemon passkey add <unit> [endpoint]` で登録用の一意 URL を 1 つ発行する。認証の単位は **登録時の endpoint URL** で、別のホスト (alias / LB 名) から入りたければその endpoint で登録し直す (passkey を複数ホストで使い回す構成は持たない)。`unit` は instance (= config home) の名前。`endpoint` は省略で `self`、指定すれば利用者が proxy で用意した任意の URL (別名の追加登録用)。
+`ccmsg daemon passkey add <unit> [endpoint]` で登録用の一意 URL を 1 つ発行する。認証の単位は **登録時の endpoint URL** で、別のホスト (alias / LB 名) から入りたければその endpoint で登録し直す (passkey を複数ホストで使い回す構成は持たない)。`unit` は instance (= config home) の名前。`endpoint` は省略で起動時に確定した自分の endpoint、指定すれば利用者が proxy で用意した任意の URL (別名の追加登録用)。mesh を持たない instance は endpoint を持たないので、指定が要る。
 
 - URL は `<endpoint>#register=<jwt>` (webui は endpoint の直下に配られている)。claims は `{ iss (instance id), sub, unit, endpoint, rp_id, exp (10 分), jti }`。`sub` は利用者の識別子で既定は `<unit>-<連番>`
 - 署名は **登録ごとの乱数 secret による HMAC** (検証者 = 発行者なので公開鍵は要らない)。secret は発行 instance のメモリにだけ置き `exp` で破棄する。永続鍵は持たない
@@ -121,6 +121,6 @@ WebAuthn の検証は library を入れずに書く。要るのは小さな CBOR
 
 ## 4. 影響
 
-- 契約 major (世代 3): `instance` の意味、`endpoint`、auth 経路 / op / topic → daemon (instance id の生成と保存、`self` の config 化、ルートの末尾照合、CLI `passkey add|list|remove`、`/auth/*`、WebAuthn 検証、cookie、family、`auth_records` の複製、entry token 削除) → webui (登録画面、passkey 認証、refresh、token をメモリに)
+- 契約 major (世代 3): `instance` の意味、`endpoint`、auth 経路 / op / topic → daemon (instance id の生成と保存、自分の endpoint の probe による確定、ルートの末尾照合、CLI `passkey add|list|remove`、`/auth/*`、WebAuthn 検証、cookie、family、`auth_records` の複製、entry token 削除) → webui (登録画面、passkey 認証、refresh、token をメモリに)
 - 設計 §3.1 (WS の entry token → passkey)、§3.6 (永続化に instance id / credential record / token family を足す。id は資源ハンドルでなく identity、auth records は kv と同じく派生値でない。§11.3 の「増やさない」検査もこれに合わせる)、§7.1 (probe による自己識別はそのまま。id を名乗る手順を足す)、§8.2 (`peers` に自分の URL を含める = 全 instance 同じリスト)、§9 (人の認証は本 DR) を書き換える
 - `docs/issue/2026-09-09-mesh-tls-trust-root.md` は「TLS 終端は proxy、daemon の listener は plain のまま」で扱いが変わる (別途更新)

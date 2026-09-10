@@ -5,4 +5,4 @@
 
 ## Active
 
-- [DR-0001](DR-0001-passkey-auth-for-people.md) — 人の認証は passkey、token は record に紐づく opaque 値、鍵は持たない (entry token の廃止、`self` の config 化)
+- [DR-0001](DR-0001-passkey-auth-for-people.md) — 人の認証は passkey、token は record に紐づく opaque 値、鍵は持たない (entry token の廃止、自分の endpoint は probe で確定)

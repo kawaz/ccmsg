@@ -6,15 +6,14 @@ import { probeEndpoint, type ProbeBody } from "./wire.ts";
  *
  * An endpoint that does not answer is either asleep or misconfigured, and
  * waiting longer tells the two apart no better. It bounds startup rather than
- * deciding correctness: only the probe this instance sends itself decides
- * anything. */
+ * deciding correctness: only the probe that lands back here decides anything. */
 export const PROBE_TIMEOUT_MS = 3_000;
 
-/** The configured endpoints do not describe this instance.
+/** The configured endpoints do not say which instance this is.
  *
  * Its own class so startup can refuse the same way a broken config does (§8.3,
- * DV-Q9): `self` is a setting, and one that does not reach this process is a
- * setting that is wrong. */
+ * DV-Q9): a list that names this instance zero times, or twice, is a list that
+ * cannot be acted on. */
 export class SelfEndpointError extends Error {
   constructor(msg: string) {
     super(msg);
@@ -22,12 +21,10 @@ export class SelfEndpointError extends Error {
   }
 }
 
-/** What one round of probes found. */
+/** What one round of probes settled. */
 export interface PeerReport {
-  /** The configured endpoints that turned out to be this instance — `self`,
-   * and any alias of it a peer list happens to name. They are not dialled: a
-   * link to ourselves is not a link. */
-  readonly ours: readonly Endpoint[];
+  /** The one configured endpoint that turned out to be this instance. */
+  readonly self: Endpoint;
   /** The endpoints that did not answer. Recorded and not refused: a peer that
    * is asleep is the normal state of this mesh (§7.1, DV-Q11). */
   readonly unreachable: readonly Endpoint[];
@@ -35,13 +32,17 @@ export interface PeerReport {
 
 /** The probes in flight, and the endpoint each was sent to.
  *
- * Since `self` is configured (DR-0001 §2.7), this no longer settles an identity:
- * it checks the setting. The probe to `self` has to come back here, which is
- * what catches a `self` that names somebody else, and the rest of the list is
- * probed to record what can be reached before anything is dialled.
+ * This is where an instance learns which of the configured endpoints it is
+ * (mesh-self-identification §5). A `token` is minted per endpoint and sent
+ * there; the one that arrives back at this process was sent to this process,
+ * and the endpoint it was addressed to is therefore this instance's own.
+ *
+ * Every endpoint is probed, this instance's own included: the probe to
+ * ourselves is the one that always lands, which is what makes a peer echoing
+ * a stolen token show up as two matches rather than as a wrong answer (§4.2).
  *
  * The table is destroyed when the run finishes: what the exercise leaves behind
- * is the report and nothing else (§7.3). */
+ * is the settled endpoint and nothing else (§7.3). */
 export class PeerProbe {
   #sent = new Map<string, Endpoint>();
   readonly #matched = new Set<Endpoint>();
@@ -54,10 +55,14 @@ export class PeerProbe {
     if (sentTo !== undefined) this.#matched.add(sentTo);
   }
 
-  /** Ask `self` and every peer who answers there, and refuse to start if the
-   * endpoint this instance calls its own is somebody else's. */
-  async verify(self: Endpoint, peers: readonly Endpoint[]): Promise<PeerReport> {
-    const targets = [...new Set([self, ...peers])];
+  /** Probe every configured endpoint and settle which one is this instance.
+   *
+   * An endpoint that did not answer is left out of the count rather than
+   * refused, so a mesh whose other host is asleep still starts (DV-Q11): the
+   * count only ever decides on endpoints that answered, and the probe to
+   * ourselves always does. */
+  async identify(peers: readonly Endpoint[]): Promise<PeerReport> {
+    const targets = [...new Set(peers)];
     this.#sent = new Map(targets.map((target) => [randomId(), target]));
     const unreachable: Endpoint[] = [];
     await Promise.all(
@@ -65,17 +70,17 @@ export class PeerProbe {
         if (!(await this.#probe(target, token))) unreachable.push(target);
       }),
     );
-    const ours = [...this.#matched];
+    const matched = [...this.#matched];
     this.#sent = new Map();
     this.#matched.clear();
-    if (!ours.includes(self)) {
+    if (matched.length !== 1) {
       throw new SelfEndpointError(
-        unreachable.includes(self)
-          ? `self is ${self}, which did not answer this instance's probe`
-          : `self is ${self}, which answers as another instance`,
+        matched.length === 0
+          ? `none of the configured endpoints reached this instance: ${targets.join(", ")}`
+          : `several configured endpoints reach this instance: ${matched.join(", ")}`,
       );
     }
-    return { ours, unreachable };
+    return { self: matched[0] as Endpoint, unreachable };
   }
 
   /** Whether the endpoint answered. What it answered does not matter: the

@@ -80,10 +80,17 @@ async function post(
   });
 }
 
+/** Where a page this instance serves is reached, as a registration has to be
+ * told. An instance with no mesh has settled no endpoint of its own (§7.1), so
+ * the URL is the caller's to state. */
+function servedAt(at: { instance: Instance }): `ws://${string}` {
+  return `ws://${at.instance.http[0] as string}`;
+}
+
 /** The whole of what a person does the first time: take the URL and the code
  * off the terminal, make a credential, and be signed in. */
 async function registered(at: { instance: Instance; origin: string }) {
-  const issued = at.instance.auth.issue({});
+  const issued = at.instance.auth.issue({ endpoint: servedAt(at) });
   const authenticator = new SoftAuthenticator(issued.rp_id);
   const challenge = (await (await post(at, "challenge", {})).json()) as {
     challenge: string;
@@ -106,7 +113,7 @@ async function registered(at: { instance: Instance; origin: string }) {
 describe("registering a passkey (§2.2)", () => {
   test("the URL and the code are two halves, and only both together register", async () => {
     const at = await serving();
-    const issued = at.instance.auth.issue({ endpoint: `ws://${at.instance.http[0] as string}` });
+    const issued = at.instance.auth.issue({ endpoint: servedAt(at) });
     // The code is not in the URL: a leaked URL is not a registration.
     expect(issued.url).not.toContain(issued.code);
     expect(issued.url).toContain("#register=");
@@ -442,7 +449,7 @@ describe("what a registration or an assertion is refused for", () => {
     for (const attestation of ["oWNmbXQ", "AAAAAAAA", "_____w"]) {
       // A URL apiece: the first attempt spends the one it was made for, which
       // is what §2.2 asks of a registration URL.
-      const issued = at.instance.auth.issue({});
+      const issued = at.instance.auth.issue({ endpoint: servedAt(at) });
       const token = issued.url.slice(issued.url.indexOf("#register=") + "#register=".length);
       const challenge = (await (await post(at, "challenge", {})).json()) as { challenge: string };
       const client = Buffer.from(
@@ -494,7 +501,7 @@ describe("what a registration or an assertion is refused for", () => {
     // Chromium writes the field on every message. Reading its presence as a
     // refusal would turn away every credential those browsers make (C1).
     const at = await serving();
-    const issued = at.instance.auth.issue({});
+    const issued = at.instance.auth.issue({ endpoint: servedAt(at) });
     const authenticator = new SoftAuthenticator(issued.rp_id, { crossOrigin: false });
     const challenge = (await (await post(at, "challenge", {})).json()) as { challenge: string };
     const token = issued.url.slice(issued.url.indexOf("#register=") + "#register=".length);
@@ -514,7 +521,7 @@ describe("what a registration or an assertion is refused for", () => {
     // with no mesh there is nobody to ask, so it is refused — and nothing is
     // spent: the real URL still works afterwards.
     const at = await serving();
-    const issued = at.instance.auth.issue({});
+    const issued = at.instance.auth.issue({ endpoint: servedAt(at) });
     const authenticator = new SoftAuthenticator(issued.rp_id);
     const token = issued.url.slice(issued.url.indexOf("#register=") + "#register=".length);
     const [header, body, signature] = token.split(".");
@@ -762,9 +769,11 @@ describe("the user handle a subject is known by (§2.2)", () => {
   test("a second URL for one subject reuses the handle that subject already has", async () => {
     const at = await serving();
     const { issued } = await registered(at);
-    expect(at.instance.auth.issue({ sub: issued.sub }).user_id).toBe(issued.user_id);
+    expect(at.instance.auth.issue({ endpoint: servedAt(at), sub: issued.sub }).user_id).toBe(
+      issued.user_id,
+    );
     // A different subject gets one of its own.
-    expect(at.instance.auth.issue({}).user_id).not.toBe(issued.user_id);
+    expect(at.instance.auth.issue({ endpoint: servedAt(at) }).user_id).not.toBe(issued.user_id);
   });
 });
 

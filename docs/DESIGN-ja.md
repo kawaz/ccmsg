@@ -108,9 +108,9 @@ persistence 落ちて上がっても失われては困るものだけを書く
 
 **人と gateway の入口 (`/ws`、`/auth/*`、`/webhook/<source>`) はパスの末尾で照合し、
 prefix を問わない** (DR-0001 §2.7)。proxy は prefix を剥がさずそのまま渡してよく、
-別名の endpoint や、1 つの origin の裏に複数 instance を束ねる LB が `self` と無関係に
-成立する。**`self` のパス配下に固定するのは mesh のルート (`/mesh/probe`、
-`/mesh/jwk/<kid>`) だけ**である: 同じ origin に居る 2 つの instance が互いの鍵に
+別名の endpoint や、1 つの origin の裏に複数 instance を束ねる LB が自分の endpoint と
+無関係に成立する。**自分の endpoint のパス配下に固定するのは mesh の鍵
+(`/mesh/jwk/<kid>`) だけ**である: 同じ origin に居る 2 つの instance が互いの鍵に
 答えないための境界がこの対応関係そのものだからで (mesh-peer-auth §6.3)、人の入口には
 そのような鍵空間が無い。
 
@@ -533,17 +533,23 @@ topic の仕組みに内蔵するので「この topic には抑制がない」�
 
 ### 7.1 endpoint と id
 
-**`self` (他 instance が dial する自分の endpoint URL) は config で与える** (§8.2、
-DR-0001 §2.7)。proxy や別名の裏に居る instance の URL は、プロセスが自分の socket から
-読み取れる値ではない。
+**config が持つのは `peers` (自分の分を含む全 endpoint の一覧) だけで、そのどれが自分かは
+起動時の probe で確定する** (mesh-self-identification、§8.2、DR-0001 §2.7)。proxy や別名の
+裏に居る instance の URL は、プロセスが自分の socket から読み取れる値ではないが、probe は
+どの URL 経由で来たかを読まず「自分に届いたか」だけで決まるので、proxy / alias 越しでも
+成立する。
 
-起動時の probe は残る。決めるのは identity ではなく設定の正しさと peer の到達性である:
-`self` と全 peer に token 付きの probe を送り、**`self` に送った probe が自分に返ることを
-確認する**。返らなければ `self` は他人を指しているか誰も居ない URL であり、壊れた config と
-同じ扱いで起動を止める (§8.3)。答えなかった peer は記録するだけで起動を止めず (片方の PC が
-電源断・スリープ中であることは、この mesh では常態である。DV-Q11)、§7.2 の dial 対象として
-残る。`peers` に自分の URL や別名が入っていれば probe はそこからも自分に返るので、その分は
-dial しない (§8.2)。
+**手順**: `peers` の各 endpoint に宛先ごとに違う token を付けた probe を送り、自分の listener
+に届いた token を対応表と照合する。一致した 1 つの URL が自分の endpoint である。自分宛を
+送信対象から外してはならない — 自分宛の 1 通は必ず自分に届くので、token を盗んだ peer が
+それを送り返しても一致が 2 つになって失敗に落ちる (mesh-self-identification §4.2)。
+
+**一致 0 / 2 以上は起動失敗**。0 は `peers` に自分が居ないか誰も居ない URL を書いた場合、
+2 以上は同じ instance に届く URL が 2 つ (別名・LB) 書かれた場合で、どちらを正式な名前と
+するか決められない以上、壊れた config と同じ扱いで起動を止める (§8.3)。答えなかった peer は
+一致数の計算から外し、記録するだけで起動を止めない (片方の PC が電源断・スリープ中で
+あることは、この mesh では常態である。DV-Q11)。§7.2 の dial 対象としては残る。確定した
+自分の endpoint は dial しない (§8.2)。
 
 **instance id は endpoint と別のものである。** id は state に持つ固定値 (§3.6)、endpoint は
 設定で変わりうる URL で、両者の対応は handshake が作る: `MeshHello` が id を名乗り、proof が
@@ -627,8 +633,7 @@ socket path / HTTP の bind / state dir / data dir / ログ。**すべて config
 | 項目 | 中身 |
 |---|---|
 | 自 config home | この instance が見る唯一の config home (M6) |
-| self | この instance の endpoint URL。mesh を持つ構成では必須 (§7.1) |
-| peers | mesh の endpoint URL 一覧。**全 instance に同じものを配れる** (自分の URL を含めてよい。読む側が自分を除く、§7.1) |
+| peers | mesh の endpoint URL 一覧。**自分の分を含めた同じものを全 instance に配れる** (どれが自分かは起動時の probe で確定し、読む側が自分を除く、§7.1) |
 | 入口の許可 | bind、source IP、Origin |
 | upstream | gateway の URL と webhook source、terminal gateway、launcher (root と テンプレ)、translate helper、sandbox origin |
 
@@ -665,13 +670,12 @@ instance を持つか」は個々の instance が自分について答えられ�
    id が無いうちに作ってよいものが 1 つも無い。共有ファイルの `instances[]` に無い
    config home を `ccmsg daemon run` で起こした場合も、初回の id はここで持つ
    (DR-0001 §2.1)
-5. **peers の検証** (§7.1)。mesh を持つ構成では **WS を先に bind してから**行う:
-   検証の中身は `self` に送った probe が自分の listener に届くことなので、listen の前には
+5. **自分の endpoint の確定** (§7.1)。mesh を持つ構成では **WS を先に bind してから**行う:
+   確定の中身は自分が送った probe が自分の listener に届くことなので、listen の前には
    置けない。この間 listener が答えるのは probe と mesh-peer-auth §6 の鍵の 2 経路だけで、
-   それ以外の要求は instance ができるまで断る (窓は probe 1 往復分)。`self` が他人を指して
-   いれば起動失敗、答えなかった peer は記録して dial 対象に残す。mesh を持たない構成は
-   dial される側にならないので、listen する address (無ければ config home の key) から
-   自分を名乗る
+   それ以外の要求は instance ができるまで断る (窓は probe 1 往復分)。一致 0 / 2 以上なら
+   起動失敗、答えなかった peer は記録して dial 対象に残す。mesh を持たない構成は dial
+   される側にならないので endpoint を持たず、`hello` でも名乗らない
 6. `last_live` と inbox の読み込み。4 の後に置くのは、どちらの entry も `instance` として
    instance id を持つから — id から導かれるものは id より前に存在しない
 7. listen。pid の記録 → socket dir の用意と、実 path のうち pid が既に死んでいるものの掃除
@@ -843,6 +847,8 @@ mesh-peer-auth §10 / mesh-self-identification §7 のテスト表をそのま�
 - instance 断絶中の `instance-local` op が `instance_unreachable` になり、復帰後に成功する
 - 断絶した instance の分の全量が消えず、復帰時に置き換わり、保持窓を過ぎたら破棄される (§7.5)
 - 到達しない peer がある状態で起動でき、その peer は dial 対象に残る (§7.1、DV-Q11)
+- 同じ `peers` を配った 2 instance が、それぞれ自分の endpoint に確定する (§7.1)
+- 一致 0 (`peers` に自分が居ない) / 一致 2 以上 (同じ instance に届く URL が 2 つ) で起動失敗する (§7.1)
 - 別の endpoint に束縛済みの id を名乗る hello が、新しく来た側を close する (§7.1)
 
 ## 12. 確定した判断
@@ -859,9 +865,9 @@ mesh-peer-auth §10 / mesh-self-identification §7 のテスト表をそのま�
 | DV-Q6 | `claude agents` の poll | **置換する**。自 config home の `sessions/` を監視 + 低頻度の確認 poll で読み、subprocess は持たない | §5.1 |
 | DV-Q7 | transcript の fold | **1 本** (M5)。軽 / 重の 2 段は持たない | §3.3 |
 | DV-Q8 | config の反映 | **起動時 1 回に統一**。無再起動反映は持たない | §8.2 |
-| DV-Q9 | 壊れた config | **起動失敗** (fail-fast、peers 検証の失敗と同じ扱い) | §8.3 |
+| DV-Q9 | 壊れた config | **起動失敗** (fail-fast、endpoint の確定に失敗した時と同じ扱い) | §8.3 |
 | DV-Q10 | 起動タイミング | **常駐** (`ccmsg daemon supervise` が面倒を見て、`ccmsg service register` が OS に登録する)。lazy 起動は採らない | §8.4 |
-| DV-Q11 | 到達しない peer | **起動を止めない**。起動可否を決めるのは `self` に送った probe が自分に返るかどうかだけで、答えなかった peer は記録して dial 対象に残す | §7.1 |
+| DV-Q11 | 到達しない peer | **起動を止めない**。答えなかった peer は一致数の計算から外して記録し、dial 対象に残す。起動失敗は一致 0 / 2 以上に限る | §7.1 |
 | DV-Q12 | 断絶 instance の全量 | **再接続まで保持し、7 日で破棄** (inbox / last_live と同じ窓) | §7.5 |
 
 ### 12.1 契約側に入った変更

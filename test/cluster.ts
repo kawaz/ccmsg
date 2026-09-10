@@ -6,7 +6,7 @@
  * travels over it once there is one — and a second copy of "how an instance is
  * started" would let the two drift into testing different deployments. */
 import { expect } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type Endpoint, type InstanceId, PROTOCOL_VERSION } from "@ccmsg/protocol";
@@ -83,6 +83,32 @@ export function endpoint(port: number): Endpoint {
   return `ws://127.0.0.1:${port}`;
 }
 
+/** A second URL that reaches the instance at `target`: what an alias, or a
+ * proxy in front of one instance, looks like from the peer list.
+ *
+ * It forwards the path it was asked for, which is all a probe needs — the
+ * receiver never reads the URL the request came in on, so a probe through here
+ * lands as though it had been sent to the address directly (§4.2). */
+export function proxyTo(target: Endpoint): Endpoint {
+  const to = new URL(target);
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch: async (request) => {
+      const path = new URL(request.url).pathname;
+      return await fetch(`http://${to.host}${path}`, {
+        method: request.method,
+        headers: request.headers,
+        body: request.method === "GET" ? undefined : await request.text(),
+      });
+    },
+  });
+  closing.push(() => {
+    void server.stop(true);
+  });
+  return endpoint(server.port as number);
+}
+
 /** An instance id of the shape the contract spells: sixteen random bytes as
  * hex. What a real instance keeps in its state directory, made here for a
  * double that has no state directory. */
@@ -98,13 +124,12 @@ export function instanceId(): InstanceId {
  * handover: the home is what pairs the two. */
 const leaseOf = new WeakMap<Env, PortLease>();
 
-/** One instance's disposable home, configured to listen, to know where it is
- * reached, and to know the peers.
+/** One instance's disposable home, configured to listen and to know the peers.
  *
  * The peer list is the same for every instance in a test, itself included,
  * which is exactly what §8.2 says a peer list is: one file that can go to all
- * of them. `self` is the one setting that differs per home, because it is the
- * one thing an instance cannot read off the shared list. */
+ * of them. Nothing here says which entry this home is: that is what the probe
+ * settles at startup (§7.1). */
 export function homeFor(lease: PortLease, peers: readonly Endpoint[]): Env {
   const port = lease.port;
   const root = mkdtempSync(join(tmpdir(), "ccmsg-mesh-"));
@@ -116,7 +141,6 @@ export function homeFor(lease: PortLease, peers: readonly Endpoint[]): Env {
     join(configDir, "config.json"),
     JSON.stringify({
       defaults: {
-        self: endpoint(port),
         peers,
         // The page this instance serves, so the `/auth/*` routes have an origin
         // to compare against (DR-0001 §2.3).
@@ -131,18 +155,6 @@ export function homeFor(lease: PortLease, peers: readonly Endpoint[]): Env {
   };
   leaseOf.set(env, lease);
   return env;
-}
-
-/** Point a home's `self` at another endpoint, for the cases about a `self`
- * that is wrong. The config is read once at startup, so rewriting the file
- * before `start` is the whole of setting it. */
-export function rewriteSelf(env: Env, self: Endpoint): void {
-  const file = join(env["CCMSG_CONFIG_DIR"] as string, "config.json");
-  const config = JSON.parse(readFileSync(file, "utf8")) as {
-    defaults: Record<string, unknown>;
-  };
-  config.defaults["self"] = self;
-  writeFileSync(file, JSON.stringify(config));
 }
 
 export interface Timing {
@@ -166,7 +178,7 @@ export async function startAt(env: Env, timing: Timing = NO_RETRY): Promise<Inst
   return outcome;
 }
 
-/** Where this instance is reached, as its own config states it.
+/** Where this instance is reached, as the probe settled it.
  *
  * Apart from `instance.self`, which is the id: a test writes endpoints into the
  * config and reads ids back off the wire, and the two are not interchangeable
