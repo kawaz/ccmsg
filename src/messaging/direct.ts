@@ -336,15 +336,33 @@ type Env = Record<string, string>;
 
 /** What the CLI must not inherit from the daemon.
  *
- * An instance is started with the config home it answers for in Claude Code's
- * own variable, whichever harness that home runs (§8.1) — so a Codex CLI that
- * inherited it would be told about a config home this instance is not about,
- * and a session id belonging to whoever started the daemon. The home this
- * route means is passed explicitly, and the rest is dropped (§3.8). */
+ * A daemon carries whatever environment it was started in, which on a host
+ * where somebody works in Claude Code names that config home and that session.
+ * Passed through, they would tell the Codex CLI about a config home this
+ * instance is not about and a session that is not the one being written to.
+ * The home this route means is named explicitly, and the rest is dropped
+ * (§3.8). */
 const DROPPED = HARNESSES.filter((harness) => harness !== "codex").flatMap((harness) => [
   HARNESS[harness].homeEnv,
   ...HARNESS[harness].sessionEnv,
 ]);
+
+/** How long the CLI has to answer before the send is taken as not having gone
+ * this way.
+ *
+ * `codex queue` is a request to a thread store and answers at once: against a
+ * thread nobody has, it failed with the store's own error immediately, in a
+ * config home that had never been used and a directory Codex had never been
+ * told to trust (0.154.0, standard input closed, no terminal). Neither the
+ * update notice nor the directory-trust question is asked on this path — both
+ * belong to the interactive interface.
+ *
+ * The budget is here for what is not being predicted: a child that never
+ * answers would hold `message_send` open for as long as it lived, and route
+ * (b) exists exactly so a route that does not come through costs a message
+ * nothing (§4.1). It is generous next to a call that has been measured to
+ * return at once. */
+export const QUEUE_MS = 10_000;
 
 const runCodex: RunCodex = async (args, env) => {
   let spawned: Bun.Subprocess<"ignore", "ignore", "ignore">;
@@ -354,6 +372,9 @@ const runCodex: RunCodex = async (args, env) => {
     spawned = Bun.spawn({
       cmd: ["codex", ...args],
       env: { ...inherited, ...env } as Record<string, string>,
+      // Nothing is read from us: a child holding the daemon's own standard
+      // input could wait on somebody who is not there.
+      stdin: "ignore",
       stdout: "ignore",
       stderr: "ignore",
     });
@@ -362,7 +383,13 @@ const runCodex: RunCodex = async (args, env) => {
     // message goes by route (b) and nothing about it is lost (§4.1).
     return { code: 127 };
   }
-  return { code: await spawned.exited };
+  const deadline = Bun.sleep(QUEUE_MS).then(() => "late" as const);
+  const finished = await Promise.race([spawned.exited, deadline]);
+  if (finished === "late") {
+    spawned.kill();
+    return { code: 124 };
+  }
+  return { code: finished };
 };
 
 export interface QueueRouteOptions {

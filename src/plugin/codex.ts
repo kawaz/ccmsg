@@ -63,6 +63,15 @@ const EVENTS = [
  * on their own when there is no instance behind it. */
 const HOOK_TIMEOUT_S = 5;
 
+/** What Codex still asks of the person before the hooks fire.
+ *
+ * Both are Codex's own questions, asked in its interface: a hook runs once it
+ * has been reviewed there, and a directory Codex has not been told to trust
+ * does not load project-local hooks at all. Said rather than answered — what
+ * may run on somebody's machine is theirs to decide. */
+const TRUST =
+  "hooks の trust が要ります (codex の hooks 画面で ccmsg の 2 つを trust。作業ディレクトリの信頼確認にも一度答えておく)";
+
 export const HOOKS_FILE = "hooks.json";
 const SKILL_FILE = join("skills", "ccmsg", "SKILL.md");
 
@@ -178,8 +187,8 @@ export async function install(
     commands: [],
     needs:
       enabled === false
-        ? "codex の features.hooks が off です (codex features enable hooks で入れてから、hooks を trust してください)"
-        : "codex 側で hooks の trust が要ります (codex の hooks 画面で ccmsg の 2 つを trust してください)",
+        ? `codex の features.hooks が off です (codex features enable hooks で入れてから、${TRUST})`
+        : `codex 側で ${TRUST}`,
   };
 }
 
