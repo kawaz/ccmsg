@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { basename, isAbsolute, join } from "node:path";
-import { HARNESS } from "../harness/index.ts";
+import { currentSession, HARNESS } from "../harness/index.ts";
 
 /** Every path one instance uses, decided in one place (daemon-v2 §8.1).
  *
@@ -65,17 +65,23 @@ export type Env = Record<string, string | undefined>;
 
 /** The config home this process belongs to.
  *
- * Each harness's own variable is read, in the order they are listed: they are
- * what the harness itself reads, so a session and the instance it talks to
- * agree on which config home they mean without ccmsg naming it separately.
- * Nothing searches for another one (M6).
+ * The session a process runs inside decides, where it says so: the harness
+ * that claimed it names its own config home, and that is the instance this
+ * process belongs to. Reading the config-home variables in a fixed order
+ * instead would send a Codex session's commands to the Claude Code instance,
+ * because a session started from inside another one inherits its whole
+ * environment and so names both homes at once (§3.8).
  *
- * A process inside a session of one harness has that harness's variable set
- * and not the other's, so the order only decides a shell that has set both —
- * where Claude Code's wins because it is what an existing setup has exported
- * for every process, ccmsg's own commands included. The default is Claude
- * Code's home for the same reason (§3.8). */
+ * With no session claiming the process — a person at a terminal — each
+ * harness's own variable is read in turn, and Claude Code's home is the
+ * default, because that is what an existing setup exports and what an
+ * unmarked config home is. Nothing searches for another one (M6). */
 export function resolveConfigHome(env: Env = process.env): string {
+  const inside = currentSession(env);
+  if (inside !== undefined) {
+    const named = env[HARNESS[inside.harness].homeEnv];
+    if (named !== undefined && named !== "" && isAbsolute(named)) return named;
+  }
   for (const facts of Object.values(HARNESS)) {
     const named = env[facts.homeEnv];
     if (named !== undefined && named !== "" && isAbsolute(named)) return named;
@@ -92,7 +98,17 @@ export function resolveConfigHome(env: Env = process.env): string {
  * the state so a temporary directory sweep cannot take the socket out from
  * under a running instance. */
 export function resolvePaths(env: Env = process.env): InstancePaths {
-  const configHome = resolveConfigHome(env);
+  return resolvePathsFor(resolveConfigHome(env), env);
+}
+
+/** Everything one instance uses, for a config home the caller already knows.
+ *
+ * The one to call wherever the config home is decided rather than discovered —
+ * a command naming a directory, an install naming an agent's own home. Going
+ * through the environment instead would have that answer re-derived from
+ * whichever session the process happens to be running inside (§3.8), and a
+ * command that named a directory would silently act on another one. */
+export function resolvePathsFor(configHome: string, env: Env = process.env): InstancePaths {
   const key = instanceKey(configHome);
   const configDir = resolveConfigDir(env);
   const stateDir = appDir(env, "CCMSG_STATE_DIR", "XDG_STATE_HOME", [".local", "state"], key);

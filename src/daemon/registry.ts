@@ -11,7 +11,7 @@ import {
 } from "../instance/config.ts";
 import { instanceIdentity } from "../instance/identity.ts";
 import { alive, lockHolder } from "../instance/lock.ts";
-import { type Env, type InstancePaths, resolvePaths } from "../instance/paths.ts";
+import { type Env, type InstancePaths, resolvePaths, resolvePathsFor } from "../instance/paths.ts";
 import { prepareSocketDir } from "../instance/socket.ts";
 import { connect, greetAsUser } from "./control.ts";
 import { CommandError } from "./link.ts";
@@ -76,7 +76,7 @@ export interface Target {
 }
 
 export function targetFor(env: Env, dir: string): Target {
-  return { dir, paths: resolvePaths({ ...env, CLAUDE_CONFIG_DIR: dir }) };
+  return { dir, paths: resolvePathsFor(dir, env) };
 }
 
 /** The config homes the shared file lists, in the order it lists them. */

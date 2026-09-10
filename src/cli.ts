@@ -24,11 +24,23 @@ import {
   type Target,
   targetFor,
 } from "./daemon/index.ts";
-import { join } from "node:path";
-import { DEFAULT_HARNESS, HARNESSES, isHarness } from "./harness/index.ts";
+import { homedir } from "node:os";
+import { isAbsolute, join } from "node:path";
+import { currentSession, DEFAULT_HARNESS, HARNESS, HARNESSES, isHarness } from "./harness/index.ts";
+
+/** The variables a session is named by, for the help and for the message a
+ * command answers with when it finds none of them. */
+const SESSION_ENV = HARNESSES.flatMap((harness) => [...HARNESS[harness].sessionEnv]);
 import { hookEvent, type StatedMeta, statedMeta } from "./greeting/index.ts";
-import { isRunning, resolveConfigHome, resolvePaths, start } from "./instance/index.ts";
 import {
+  isRunning,
+  resolveConfigHome,
+  resolvePaths,
+  resolvePathsFor,
+  start,
+} from "./instance/index.ts";
+import {
+  type Agent,
   AGENTS,
   install,
   type Outcome,
@@ -37,6 +49,16 @@ import {
 } from "./plugin/index.ts";
 import { type Run, runCommand, serviceFor } from "./service/index.ts";
 import { VERSION } from "./version.ts";
+
+/** The session this process runs inside, as its environment says (§3.8).
+ *
+ * One reading for every command that speaks as a session: which harness
+ * claimed the process settles both who the sender is and which instance it
+ * reaches, and a command that took the two from different places could greet
+ * one instance as a session of the other. */
+function ownSid(): string | undefined {
+  return currentSession(process.env)?.sid;
+}
 
 /** Where a hook event is read from. Named for the same reason a speech binary
  * is: a test drives the two commands a harness fires without a standard input
@@ -269,7 +291,10 @@ const ROOT: Command = {
           name: "install",
           summary: "そのエージェントに ccmsg のプラグインを入れる",
           usage: "ccmsg plugin install <agent>",
-          options: [["", "開いているセッションには /reload-plugins で反映される"]],
+          options: [
+            ["claude", "開いているセッションには /reload-plugins で反映される"],
+            ["codex", "config home に直接置く。hook は codex 側で trust してから効く"],
+          ],
           run: (args) => plugin("install", args[0]),
         },
         {
@@ -294,7 +319,7 @@ const ROOT: Command = {
       options: [
         ["--all", "mesh 越しの instance が言っている分も含める"],
         ["--json", "JSON で答える (既定、この CLI は常に JSON で答える)"],
-        ["--sid <sid>", "自分のセッション ID (既定は CLAUDE_CODE_SESSION_ID)"],
+        ["--sid <sid>", `自分のセッション ID (既定は ${SESSION_ENV.join(" / ")})`],
       ],
       env: sessionEnv(),
       run: (args) => peers(args),
@@ -314,7 +339,7 @@ const ROOT: Command = {
       name: "post",
       summary: "別のセッションへメッセージを送る",
       usage: "ccmsg post <sid> <text> [--sid <自分の sid>]",
-      options: [["--sid <sid>", "自分のセッション ID (既定は CLAUDE_CODE_SESSION_ID)"]],
+      options: [["--sid <sid>", `自分のセッション ID (既定は ${SESSION_ENV.join(" / ")})`]],
       env: sessionEnv(),
       run: (args) => post(args),
     },
@@ -323,7 +348,7 @@ const ROOT: Command = {
       summary: "受け取ったメッセージに返信する",
       usage: "ccmsg reply <mid> <text> [--to <相手の sid>]",
       options: [
-        ["--sid <sid>", "自分のセッション ID (既定は CLAUDE_CODE_SESSION_ID)"],
+        ["--sid <sid>", `自分のセッション ID (既定は ${SESSION_ENV.join(" / ")})`],
         ["--to <sid>", "宛先セッション (封筒の ccmsg-from)。省略すると人への返信"],
       ],
       env: sessionEnv(),
@@ -334,7 +359,7 @@ const ROOT: Command = {
       summary: "見ている人へ一行知らせる (保持されない、返事も来ない)",
       usage: "ccmsg notify <text> [--about <sid>]",
       options: [
-        ["--sid <sid>", "自分のセッション ID (既定は CLAUDE_CODE_SESSION_ID)"],
+        ["--sid <sid>", `自分のセッション ID (既定は ${SESSION_ENV.join(" / ")})`],
         ["--about <sid>", "知らせるセッション (既定は自分)"],
       ],
       env: sessionEnv(),
@@ -346,7 +371,7 @@ const ROOT: Command = {
       usage: "ccmsg stopping [--reason <text>] [--hook]",
       bare: true,
       options: [
-        ["--sid <sid>", "自分のセッション ID (既定は CLAUDE_CODE_SESSION_ID)"],
+        ["--sid <sid>", `自分のセッション ID (既定は ${SESSION_ENV.join(" / ")})`],
         ["--reason <text>", "終わる理由 (表示用、任意)"],
         ["--hook", "harness の hook イベント JSON を標準入力から読む"],
       ],
@@ -359,7 +384,7 @@ const ROOT: Command = {
       usage: "ccmsg hello [--cwd <path>] [--repo <name>] ... [--hook]",
       bare: true,
       options: [
-        ["--sid <sid>", "自分のセッション ID (既定は CLAUDE_CODE_SESSION_ID)"],
+        ["--sid <sid>", `自分のセッション ID (既定は ${SESSION_ENV.join(" / ")})`],
         ["--cwd <path>", "作業ディレクトリ"],
         ["--repo <name>", "リポジトリの表示名"],
         ["--ws <name>", "ワークスペース名"],
@@ -378,7 +403,7 @@ const ROOT: Command = {
       usage: "ccmsg say [say-options] [text...]",
       options: [["", `引数は ${SYSTEM_SAY} へそのまま渡す (単独の --help だけが例外)`]],
       env: [
-        ["CLAUDE_CODE_SESSION_ID", "喋ったセッションの名乗り"],
+        [SESSION_ENV.join(" / "), "喋ったセッションの名乗り"],
         ["CCMSG_SAY_BIN", `発声に使うバイナリ (既定は ${SYSTEM_SAY})`],
       ],
       raw: (args) => say(args),
@@ -387,7 +412,7 @@ const ROOT: Command = {
 };
 
 function sessionEnv(): readonly Doc[] {
-  return [["CLAUDE_CODE_SESSION_ID", "自分のセッション ID"]];
+  return [[SESSION_ENV.join(" / "), "自分のセッション ID"]];
 }
 
 /** Walk the tree, and answer at the level the arguments reach.
@@ -752,7 +777,7 @@ function never(release: () => void): Promise<void> {
  * the same list minus that field. */
 function peers(args: readonly string[]): Promise<unknown> {
   const parsed = options(args, ["sid"], ["all", "json"]);
-  const sid = parsed.named.get("sid") ?? process.env["CLAUDE_CODE_SESSION_ID"];
+  const sid = parsed.named.get("sid") ?? ownSid();
   return topic(
     "peers",
     parsed.flags.has("all"),
@@ -901,7 +926,7 @@ export async function hello(args: readonly string[], read?: Read): Promise<unkno
     ["hook"],
   );
   const event = parsed.flags.has("hook") ? await hookEvent(read) : {};
-  const sid = parsed.named.get("sid") ?? event.sid ?? process.env["CLAUDE_CODE_SESSION_ID"];
+  const sid = parsed.named.get("sid") ?? event.sid ?? ownSid();
   if (sid === undefined || sid === "") return { greeted: false, reason: "no_session_id" };
   const meta = stated(parsed.named, event);
   const paths = resolvePaths();
@@ -953,6 +978,18 @@ function only(field: keyof StatedMeta, value: string | undefined): StatedMeta {
   return value === undefined || value === "" ? {} : { [field]: value };
 }
 
+/** The config home of one agent, as that agent's own variable names it.
+ *
+ * Its own and no other's: the point of naming the agent is to install into the
+ * home that agent reads, and a fallback to somebody else's variable would put
+ * the files where the agent will never look. Unset means the agent's own
+ * default home, which is where that agent looks when nobody says otherwise. */
+function homeOf(agent: Agent): string {
+  const named = process.env[HARNESS[agent].homeEnv];
+  if (named !== undefined && named !== "" && isAbsolute(named)) return named;
+  return join(homedir(), agent === "codex" ? ".codex" : ".claude");
+}
+
 /** `ccmsg plugin <what> <agent>`: what ccmsg installs into an agent, and what
  * it takes back out.
  *
@@ -975,10 +1012,16 @@ async function plugin(
       `使い方: ccmsg plugin ${what} <agent> (今あるのは ${AGENTS.join(", ")})`,
     );
   }
-  const paths = resolvePaths();
-  // `status` with no agent named is the one that answers for the config home
-  // this process belongs to, which is what the instance there runs.
+  // `status` with no agent named answers for the config home this process
+  // belongs to, which is what the instance there runs.
   const which = agent ?? harnessFor(process.env, resolvePaths().configHome);
+  // The config home is that agent's own, and not whichever variable happens to
+  // be set: a Codex session started from a Claude Code session carries both,
+  // and an install that read the wrong one would write Codex's hooks into
+  // Claude Code's config home (§3.8). The marker check is what says the
+  // directory really is that agent's.
+  const home = configHome(homeOf(which), which);
+  const paths = resolvePathsFor(home);
   const outcome: Outcome =
     what === "install"
       ? await install(paths, which, VERSION)
@@ -1029,11 +1072,11 @@ async function call(
   request: Record<string, unknown>,
   meta: StatedMeta = statedMeta(),
 ): Promise<unknown> {
-  const sid = named ?? process.env["CLAUDE_CODE_SESSION_ID"];
+  const sid = named ?? ownSid();
   if (sid === undefined || sid === "") {
     throw new CommandError(
       "invalid_args",
-      "自分のセッション ID が分かりません (--sid か CLAUDE_CODE_SESSION_ID)",
+      `自分のセッション ID が分かりません (--sid か ${SESSION_ENV.join(" / ")})`,
     );
   }
   const paths = resolvePaths();
@@ -1111,7 +1154,7 @@ export async function say(args: readonly string[], spawn: Spawn = spawnSpeech): 
  * contract will not take — a bare `say` reading its text from stdin has none —
  * is nothing to record either. */
 async function posted(text: string): Promise<void> {
-  const sid = process.env["CLAUDE_CODE_SESSION_ID"];
+  const sid = ownSid();
   if (text === "" || sid === undefined || sid === "") return;
   const conn = await connect(resolvePaths().socket);
   if (conn === undefined) return;
