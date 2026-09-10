@@ -20,12 +20,7 @@
 
 ## 裁定待ち
 
-### 👺EP-Q5: 新 webui の静的ファイルの配信先
-
-daemon は webui を配信しない ([DR-0032](https://github.com/kawaz/claude-ccmsg/blob/main/docs/decisions/DR-0032-repo-split-protocol-first.md) §2.1)。caddy の `ccmsg2.<host>/` ルートを `file_server` にする必要がある。
-
-- [ ] a (推奨): canddy-app-proxy の justfile に `webui-build` を足し、`~/.local/share/repos/github.com/kawaz/ccmsg-webui/main` で `bun run build` した `dist/` を caddy の `root` に指す (worktree 直参照、更新は `just webui-build` + reload)
-- [ ] b: webui リポの release で `dist` を tarball 化し、canddy-app-proxy 配下に展開して固定
+(なし)
 
 ## 確認待ち
 
