@@ -30,6 +30,7 @@ import {
 import { classify, Sessions, type SessionInputs } from "../src/sessions/index.ts";
 import { Topics } from "../src/topics/index.ts";
 import { connAs, OTHER_SID, SELF, SELF_ENDPOINT, SID, TestConn } from "./frames.ts";
+import { unthrottled } from "./clock.ts";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -173,7 +174,7 @@ interface Rig {
 function rig(over: { direct?: DirectRoute; dir?: string } = {}): Rig {
   const dir = over.dir ?? stateDir();
   const sessions = new FakeSessions();
-  const topics = new Topics(SELF, new Set());
+  const topics = new Topics(SELF, new Set(), undefined, unthrottled());
   const inbox = new Inbox(inboxPath(dir));
   inbox.load();
   const delivery = new Delivery({
@@ -446,7 +447,7 @@ describe("the sessions a message can be addressed to", () => {
       capabilities: [],
       version: "0.0.1",
       startedAt: 1_757_000_000_000,
-      publish: () => {},
+      publish: () => "ok",
     });
     const inbox = new Inbox(inboxPath(stateDir()));
     inbox.load();
@@ -455,14 +456,14 @@ describe("the sessions a message can be addressed to", () => {
       sessions: domain,
       inbox,
       direct: new StubDirectRoute("delivered"),
-      publish: () => {},
+      publish: () => "ok",
       listeners: () => 0,
     });
     const conn = connAs("session", SID);
 
     const result = await messagingHandlers(
       delivery,
-      new Notify({ self: SELF, label: (sid) => sid, publish: () => {} }),
+      new Notify({ self: SELF, label: (sid) => sid, publish: () => "ok" }),
     ).message_send({
       op: "message_send",
       conn,
@@ -491,7 +492,7 @@ describe("the sessions a message can be addressed to", () => {
       capabilities: [],
       version: "0.0.1",
       startedAt: 1_757_000_000_000,
-      publish: () => {},
+      publish: () => "ok",
       gateway: { activeAt: () => Date.now() },
     });
     const inbox = new Inbox(inboxPath(stateDir()));
@@ -501,7 +502,7 @@ describe("the sessions a message can be addressed to", () => {
       sessions: domain,
       inbox,
       direct: new StubDirectRoute("delivered"),
-      publish: () => {},
+      publish: () => "ok",
       listeners: () => 0,
     });
     const conn = connAs("session", SID);
@@ -513,7 +514,7 @@ describe("the sessions a message can be addressed to", () => {
     expect(
       messagingHandlers(
         delivery,
-        new Notify({ self: SELF, label: (sid) => sid, publish: () => {} }),
+        new Notify({ self: SELF, label: (sid) => sid, publish: () => "ok" }),
       ).message_send({
         op: "message_send",
         conn,

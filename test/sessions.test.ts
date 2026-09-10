@@ -35,6 +35,7 @@ import {
 } from "../src/sessions/index.ts";
 import { NO_FACTS, type TranscriptFacts } from "../src/transcript/index.ts";
 import { connAs, greeting, OTHER_SID, SELF, SELF_ENDPOINT, SID, TestConn } from "./frames.ts";
+import { unthrottled } from "./clock.ts";
 
 /** A throwaway config home under the OS temp dir, which is where the harness's
  * `sessions/` and this instance's state directory both hang. */
@@ -743,7 +744,7 @@ describe("the harness's sessions directory", () => {
 
   test("the watch runs while a subscriber holds either topic, and not otherwise", () => {
     const context = sessions();
-    const hub = new Topics(SELF, new Set());
+    const hub = new Topics(SELF, new Set(), undefined, unthrottled());
     hub.attach("peers", context.domain);
     hub.attach("agents", context.domain);
     expect(context.domain.watching).toBe(false);
@@ -761,7 +762,7 @@ describe("the harness's sessions directory", () => {
 
   test("a subscriber's snapshot is the current value, per topic", () => {
     const context = sessions();
-    const hub = new Topics(SELF, new Set());
+    const hub = new Topics(SELF, new Set(), undefined, unthrottled());
     hub.attach("peers", context.domain);
     helloFrom(context.domain, greeting());
 

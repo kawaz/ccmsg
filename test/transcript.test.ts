@@ -23,6 +23,7 @@ import {
   readSlice,
 } from "../src/transcript/index.ts";
 import { connAs, greeting, SELF, SELF_ENDPOINT, SID, TestConn } from "./frames.ts";
+import { unthrottled } from "./clock.ts";
 
 const TOPIC = `transcript:${SID}`;
 /** Fast enough that a test can wait for the backstop rather than the watch,
@@ -374,7 +375,7 @@ describe("the tail runs while somebody is listening (§6.3)", () => {
   test("subscribing starts it and the last unsubscribe stops it", async () => {
     const file = transcript([prompt("first")]);
     const { transcripts } = domain(file.path);
-    const hub = new Topics(SELF, new Set());
+    const hub = new Topics(SELF, new Set(), undefined, unthrottled());
     hub.attach("transcript", transcripts);
     const watcher = connAs("user");
     const second = connAs("user");
@@ -410,7 +411,7 @@ describe("the tail runs while somebody is listening (§6.3)", () => {
     // frames onto it.
     const file = transcript([prompt("first")]);
     const { transcripts } = domain(file.path);
-    const hub = new Topics(SELF, new Set());
+    const hub = new Topics(SELF, new Set(), undefined, unthrottled());
     hub.attach("transcript", transcripts);
     const watcher = new TestConn({ state: "settled", role: "user", sid: SID });
     hub.subscribe(watcher, TOPIC);

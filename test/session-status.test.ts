@@ -7,6 +7,7 @@ import { SessionStatus } from "../src/sessions/index.ts";
 import { Topics } from "../src/topics/index.ts";
 import { Transcripts } from "../src/transcript/index.ts";
 import { connAs, OTHER_SID, SELF, SID } from "./frames.ts";
+import { unthrottled } from "./clock.ts";
 
 const STATUS = `session_status:${SID}`;
 const ERRORS = "session_errors";
@@ -87,7 +88,7 @@ function domain(sids: Sid[]) {
     release: (sid) => folds.release(sid),
     publish: (topic, data) => published.push({ topic, data: data as Record<string, unknown> }),
   });
-  const hub = new Topics(SELF, new Set());
+  const hub = new Topics(SELF, new Set(), undefined, unthrottled());
   hub.attach("session_status", status);
   hub.attach("session_errors", status);
   return {

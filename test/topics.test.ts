@@ -14,6 +14,7 @@ import { Glob } from "bun";
 import { dispatch, type DispatchDeps, type Handlers } from "../src/dispatch/index.ts";
 import { topicHandlers, type TopicValue, Topics } from "../src/topics/index.ts";
 import { connAs, frameFor, OTHER_INSTANCE, OTHER_SID, SELF, SID, TestConn } from "./frames.ts";
+import { unthrottled } from "./clock.ts";
 
 const NOTIFICATION = NOTIFY_FRAME.data as Notification;
 
@@ -26,7 +27,7 @@ const ENTRIES = KV_FRAME.data;
 const ALL_CAPABILITIES: ReadonlySet<Capability> = new Set<Capability>(["llm_events", "llm_status"]);
 
 function topics(capabilities: ReadonlySet<Capability> = ALL_CAPABILITIES): Topics {
-  return new Topics(SELF, capabilities);
+  return new Topics(SELF, capabilities, undefined, unthrottled());
 }
 
 /** Stands in for whoever owns a topic's values (§3.3): it states the current

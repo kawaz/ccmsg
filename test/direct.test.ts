@@ -373,7 +373,7 @@ describe("delivery over route (a)", () => {
     const conn = connAs("session", SID);
     const result = await messagingHandlers(
       target,
-      new Notify({ self: SELF, label: (sid) => sid, publish: () => {} }),
+      new Notify({ self: SELF, label: (sid) => sid, publish: () => "ok" }),
     ).message_send({
       op: "message_send",
       conn,

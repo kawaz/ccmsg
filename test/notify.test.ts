@@ -11,6 +11,7 @@ import { OpError } from "../src/dispatch/index.ts";
 import { type Delivery, messagingHandlers, Notify } from "../src/messaging/index.ts";
 import { Topics } from "../src/topics/index.ts";
 import { connAs, OTHER_SID, SELF, SID, TestConn } from "./frames.ts";
+import { unthrottled } from "./clock.ts";
 
 /** The labels the instance resolves, written out rather than driven through the
  * sessions domain: what a test here fixes is that the label comes from the
@@ -26,13 +27,11 @@ interface Rig {
 }
 
 function rig(): Rig {
-  const topics = new Topics(SELF, new Set());
+  const topics = new Topics(SELF, new Set(), undefined, unthrottled());
   const notify = new Notify({
     self: SELF,
     label: (sid) => LABELS[sid] ?? sid,
-    publish: (topic, data, instance) => {
-      topics.publish(topic, data, instance);
-    },
+    publish: (topic, data, instance) => topics.publish(topic, data, instance),
   });
   topics.attach("notify", notify);
   // Delivery refuses rather than being absent: none of the three ops here goes
