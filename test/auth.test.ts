@@ -2,11 +2,12 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PROTOCOL_VERSION } from "@ccmsg/protocol";
+import { type CredentialRecord, PROTOCOL_VERSION } from "@ccmsg/protocol";
 import { type Env, type Instance, isRunning, start } from "../src/instance/index.ts";
 import {
   Auth,
   AuthRecords,
+  handleAdmin,
   handleAuth,
   cookieName,
   cookiePath,
@@ -99,9 +100,16 @@ function servedAt(at: { instance: Instance }): `http://${string}/` {
 
 /** The whole of what a person does the first time: take the URL and the code
  * off the terminal, make a credential, and be signed in. */
-async function registered(at: { instance: Instance; origin: string }) {
+async function registered(
+  at: { instance: Instance; origin: string },
+  options: { backup?: { eligible: boolean; state: boolean } } = {},
+) {
   const issued = at.instance.auth.issue({ endpoint: servedAt(at) });
   const authenticator = new SoftAuthenticator(issued.rp_id);
+  if (options.backup !== undefined) {
+    authenticator.backupEligible = options.backup.eligible;
+    authenticator.backupState = options.backup.state;
+  }
   const challenge = (await (await post(at, "challenge", {})).json()) as {
     challenge: string;
   };
@@ -159,6 +167,31 @@ describe("registering a passkey (§2.2)", () => {
     expect(record?.sub).toBe(issued.sub);
     expect(record?.device_label).toBe("the laptop");
     expect(record?.registered_user_agent === undefined).toBe(false);
+  });
+
+  test("what the authenticator said about backing the credential up is on the line the person reads", async () => {
+    const at = await serving();
+    // Two keys, which is the whole point of keeping the flags: one that syncs
+    // across the person's devices, and one that exists only on the stick it was
+    // made on. Removing the second costs them the key; removing the first does
+    // not, and nothing else on the line says which is which.
+    await registered(at, { backup: { eligible: true, state: true } });
+    await registered(at, { backup: { eligible: false, state: false } });
+    const answer = handleAdmin(at.instance.auth, {
+      admin: "passkey_list",
+      request_id: "asking",
+    });
+    expect(answer.kind).toBe("reply");
+    const listed = (answer as unknown as { response: { credentials: CredentialRecord[] } }).response
+      .credentials;
+    // By what each line says rather than by their order: two registrations a
+    // moment apart are sorted by a timestamp they may well share.
+    expect(listed.length).toBe(2);
+    expect(listed.filter((record) => record.backup_eligible && record.backup_state).length).toBe(1);
+    expect(
+      listed.filter((record) => record.backup_eligible === false && record.backup_state === false)
+        .length,
+    ).toBe(1);
   });
 
   test("the registration URL is spent, so the same one cannot register twice", async () => {
@@ -257,6 +290,59 @@ describe("authenticating and the tokens that follow (§2.4, §2.5)", () => {
     // with it, standing token included.
     expect((await post(at, "refresh", {}, { cookie: zero })).status).toBe(401);
     expect((await post(at, "refresh", {}, { cookie: standing })).status).toBe(401);
+  });
+
+  test("a refresh states why it was asked for, and the family keeps the last one", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ccmsg-auth-why-"));
+    const self = "0".repeat(32);
+    const records = new AuthRecords({ dir, self, publish: () => {} });
+    const auth = new Auth({
+      self,
+      records,
+      endpoint: () => "https://ui.example.com/",
+      unit: "unit",
+    });
+    auth.issue({});
+    const minted = auth.mint("someone");
+    const name = cookieName(self, "someone");
+
+    const refresh = async (value: string, body: unknown) =>
+      await handleAuth(
+        new Request("https://ui.example.com/auth/refresh", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            origin: "https://ui.example.com",
+            "user-agent": "a browser",
+            cookie: `${name}=${value}`,
+          },
+          body: JSON.stringify(body),
+        }),
+        { auth, self },
+        { ip: "203.0.113.7" },
+      );
+
+    const one = await refresh(minted.refresh.value, { reason: "reload" });
+    expect(one?.status).toBe(200);
+    const first = mintedCookie(one as Response, name).slice(name.length + 1);
+    const [held] = records.families();
+    expect(held?.body.last_refresh?.reason).toBe("reload");
+    expect(held?.body.last_refresh?.ip).toBe("203.0.113.7");
+    expect(held?.body.last_refresh?.user_agent).toBe("a browser");
+    expect(typeof held?.body.last_refresh?.at).toBe("number");
+
+    // Only the rotation that stands is kept, so the next one takes its place.
+    const two = await refresh(first, { reason: "reconnect" });
+    expect(two?.status).toBe(200);
+    expect(records.families()[0]?.body.last_refresh?.reason).toBe("reconnect");
+
+    // A caller that says nothing is as good a refresh as any, and leaves the
+    // family saying only that it rotated.
+    const second = mintedCookie(two as Response, name).slice(name.length + 1);
+    expect((await refresh(second, {}))?.status).toBe(200);
+    const last = records.families()[0]?.body.last_refresh;
+    expect(last?.reason).toBeUndefined();
+    expect(last?.ip).toBe("203.0.113.7");
   });
 
   test("an origin that is none of this instance's endpoints is refused before anything else", async () => {

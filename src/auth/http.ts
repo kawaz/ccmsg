@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import {
   type AuthAssertArgs,
+  type AuthRefreshTokenArgs,
   type AuthRegisterArgs,
   type ErrorCode,
   type InstanceId,
@@ -196,7 +197,12 @@ export async function handleAuth(
         if (held === undefined) {
           return refusal("auth_invalid", "この要求には refresh token がありません", cors);
         }
-        const minted = await deps.auth.refreshToken(held);
+        const { reason } = args as unknown as AuthRefreshTokenArgs;
+        const minted = await deps.auth.refreshToken(held, {
+          ...(reason === undefined ? {} : { reason }),
+          ...(seen.ip === undefined ? {} : { ip: seen.ip }),
+          ...(seen.userAgent === undefined ? {} : { userAgent: seen.userAgent }),
+        });
         return answer(minted.session, cors, setCookie(deps, url.pathname, minted));
       }
     }

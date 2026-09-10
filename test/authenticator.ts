@@ -23,6 +23,11 @@ export class SoftAuthenticator {
    * `userVerification: "required"` always says yes; one that says no is what a
    * relying party has to turn away. */
   userVerified = true;
+  /** The BE and BS flags. A key that lives on the single device that made it
+   * says no to both, which is what these default to; a synced passkey says yes
+   * to BE and, once it has been copied out, to BS as well. */
+  backupEligible = false;
+  backupState = false;
   /** The `user.id` the credential was created against, which a resident
    * credential answers with. */
   userHandle: string | undefined;
@@ -122,7 +127,11 @@ export class SoftAuthenticator {
     const rpIdHash = new Uint8Array(createHash("sha256").update(this.rpId).digest());
     const head = new Uint8Array(37);
     head.set(rpIdHash, 0);
-    head[32] = (attested ? 0x41 : 0x01) | (this.userVerified ? 0x04 : 0x00);
+    head[32] =
+      (attested ? 0x41 : 0x01) |
+      (this.userVerified ? 0x04 : 0x00) |
+      (this.backupEligible ? 0x08 : 0x00) |
+      (this.backupState ? 0x10 : 0x00);
     new DataView(head.buffer).setUint32(33, this.signCount);
     if (!attested || cose === undefined) return head;
     const tail = new Uint8Array(18 + this.credentialId.length + cose.length);

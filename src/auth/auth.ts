@@ -5,6 +5,7 @@ import type {
   AuthChallengeResult,
   AuthRecord,
   AuthRefreshArgs,
+  AuthRefreshReason,
   AuthRefreshResult,
   AuthRegisterArgs,
   AuthResolveArgs,
@@ -143,6 +144,18 @@ export interface AuthDeps {
 export interface MintedSession {
   readonly session: AuthSession;
   readonly refresh: { readonly value: Base64Url; readonly expires_at: Timestamp };
+}
+
+/** What is known about the client that asked for a refresh: its own word for
+ * why, and what the carrier observed of it.
+ *
+ * Kept on the family as `last_refresh` and read by nobody but the person whose
+ * sessions they are — a run of `reconnect` at an hour they were asleep is
+ * something to recognise. Nothing here is checked, so nothing may turn on it. */
+export interface RefreshFrom {
+  readonly reason?: AuthRefreshReason;
+  readonly ip?: string;
+  readonly userAgent?: string;
 }
 
 /** What a registration URL is, as the command that made it prints it. */
@@ -455,6 +468,11 @@ export class Auth {
       endpoint: claims.endpoint,
       rp_id: claims.rp_id,
       sign_count: verified.signCount,
+      // What the authenticator said about backing this credential up, kept
+      // because it decides what removing the line costs the person and nothing
+      // else: neither flag is ever read to admit or refuse an exchange.
+      backup_eligible: verified.backupEligible,
+      backup_state: verified.backupState,
       ...(claims.issued_label === undefined ? {} : { issued_label: claims.issued_label }),
       ...(args.device_label === undefined ? {} : { device_label: args.device_label }),
       registered_at: at,
@@ -656,7 +674,7 @@ export class Auth {
    * a family minted elsewhere is carried there rather than done here — two
    * instances rotating one family in parallel would merge by last write and
    * read exactly like a stolen token being replayed (§2.4). */
-  async refreshToken(value: Base64Url): Promise<MintedSession> {
+  async refreshToken(value: Base64Url, from: RefreshFrom = {}): Promise<MintedSession> {
     const held = this.deps.records.byRefresh(value);
     if (held === undefined) {
       // Not the standing generation, nor the one before it. Either it never was
@@ -666,12 +684,16 @@ export class Auth {
       throw new OpError("auth_invalid", "この refresh token は使えません");
     }
     if (held.body.iss !== this.deps.self) {
+      // What the client said about this refresh stays here: `auth_rotate`
+      // carries the value and nothing else, and the address the issuer would
+      // see is this instance's rather than the person's. The issuer records
+      // that the family rotated, which is the part it can vouch for.
       const answer = (await this.#atIssuer(held.body.iss, "auth_rotate", {
         refresh_token: value,
       } satisfies AuthRotateArgs)) as AuthRotateResult;
       return { session: { sub: answer.sub, access: answer.access }, refresh: answer.refresh };
     }
-    const rotated = this.rotate(value);
+    const rotated = this.rotate(value, from);
     return { session: { sub: rotated.sub, access: rotated.access }, refresh: rotated.refresh };
   }
 
@@ -703,7 +725,7 @@ export class Auth {
 
   /** Rotate a family this instance minted. The one writer's own operation, and
    * what `auth_rotate` runs on its behalf. */
-  rotate(value: Base64Url): AuthRotateResult {
+  rotate(value: Base64Url, from: RefreshFrom = {}): AuthRotateResult {
     const held = this.deps.records.byRefresh(value);
     if (held === undefined) {
       this.#failReused(value);
@@ -732,6 +754,16 @@ export class Auth {
       iss: this.deps.self,
       access,
       refresh: { value: token(), expires_at: at + REFRESH_TTL_MS },
+      // Written by this instance because it is the family's `iss`, and only for
+      // the rotation that just happened — the caller's word about why, and
+      // where it was asked from, are a hint for the person reading their own
+      // sessions back and are never checked (contract, `TokenFamily`).
+      last_refresh: {
+        at,
+        ...(from.reason === undefined ? {} : { reason: from.reason }),
+        ...(from.ip === undefined ? {} : { ip: from.ip }),
+        ...(from.userAgent === undefined ? {} : { user_agent: from.userAgent }),
+      },
       previous_refresh: { value: held.body.refresh.value, expires_at: at + PREVIOUS_GRACE_MS },
       // The value going out of service is remembered as a digest for as long as
       // it would have been accepted, so that presenting it later is recognised

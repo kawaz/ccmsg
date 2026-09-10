@@ -9,11 +9,15 @@ import { type CborValue, decodeCbor, decodeCborWhole, mapEntry } from "./cbor.ts
  * log; nothing branches on it. */
 export class WebAuthnError extends Error {}
 
-/** The flags of the authenticator data (L2 §6.1). Only two are read: that a
- * person was present, and that they were verified — the registration asks for
- * `userVerification: "required"`, so both have to hold on every exchange. */
+/** The flags of the authenticator data (L2 §6.1). Two of them decide whether an
+ * exchange is admitted: that a person was present, and that they were verified
+ * — the registration asks for `userVerification: "required"`, so both have to
+ * hold on every exchange. The two backup flags decide nothing; they are read at
+ * registration and kept as a hint for the person reading their own list. */
 const FLAG_USER_PRESENT = 0x01;
 const FLAG_USER_VERIFIED = 0x04;
+const FLAG_BACKUP_ELIGIBLE = 0x08;
+const FLAG_BACKUP_STATE = 0x10;
 const FLAG_ATTESTED_CREDENTIAL = 0x40;
 
 export function base64UrlDecode(value: string): Uint8Array {
@@ -131,6 +135,12 @@ export interface VerifiedRegistration {
   readonly credentialId: Base64Url;
   readonly publicKey: Base64Url;
   readonly signCount: number;
+  /** The BE flag: whether the authenticator may back this credential up, which
+   * is what separates a synced passkey from one that lives on a single device. */
+  readonly backupEligible: boolean;
+  /** The BS flag: whether it was backed up at this moment. Eligible and not yet
+   * backed up is an ordinary state on a device that has just made the key. */
+  readonly backupState: boolean;
 }
 
 /** Check a registration (L2 §7.1) and answer what is worth keeping.
@@ -180,6 +190,8 @@ export function verifyRegistration(
     credentialId: base64UrlEncode(data.credentialId),
     publicKey: base64UrlEncode(data.publicKey),
     signCount: data.signCount,
+    backupEligible: (data.flags & FLAG_BACKUP_ELIGIBLE) !== 0,
+    backupState: (data.flags & FLAG_BACKUP_STATE) !== 0,
   };
 }
 
