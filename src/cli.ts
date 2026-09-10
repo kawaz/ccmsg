@@ -34,11 +34,22 @@ const SESSION_ENV = HARNESSES.flatMap((harness) => [...HARNESS[harness].sessionE
 import { hookEvent, type StatedMeta, statedMeta } from "./greeting/index.ts";
 import {
   isRunning,
+  MERGE_RULES,
   resolveConfigHome,
   resolvePaths,
   resolvePathsFor,
   start,
 } from "./instance/index.ts";
+
+/** The merge rules as the help prints them: one line per field path, in the
+ * order the schema declares them, so the table a person reads is the table the
+ * merge runs on. */
+const MERGE_DOCS: readonly Doc[] = Object.entries(MERGE_RULES).map(([path, rule]) => [
+  path,
+  rule === "merge"
+    ? "instances[] 側にある field だけを defaults に重ねる"
+    : "instances[] 側にあれば丸ごと置換する (追加・和にはならない)",
+]);
 import {
   type Agent,
   AGENTS,
@@ -98,6 +109,10 @@ interface Command {
   readonly usage?: string;
   readonly options?: readonly Doc[];
   readonly env?: readonly Doc[];
+  /** Anything else this level has to state as a list of names, under a title of
+   * its own. Options and environment are the two every level shares; this is
+   * for what only one of them has. */
+  readonly notes?: readonly { readonly title: string; readonly docs: readonly Doc[] }[];
   readonly children?: readonly Command[];
   readonly run?: (args: readonly string[]) => Promise<unknown>;
   /** Whether running it with nothing after it is a command rather than a
@@ -147,6 +162,13 @@ const ROOT: Command = {
               "--harness <種別>",
               `config home が動かすもの: ${HARNESSES.join(" | ")} (既定 ${DEFAULT_HARNESS})`,
             ],
+          ],
+          notes: [
+            {
+              title:
+                "共通 config で instances[] の値が defaults に重なる規則 (掲載の無いパスは丸ごと置換):",
+              docs: MERGE_DOCS,
+            },
           ],
           run: (args) => added(args),
         },
@@ -488,6 +510,7 @@ function help(path: readonly Command[]): string {
     }
     lines.push("");
   }
+  for (const note of at.notes ?? []) section(lines, note.title, note.docs);
   section(lines, "このレベルのオプション:", at.options);
   section(lines, "グローバルオプション:", GLOBAL_OPTIONS);
   section(lines, "環境変数:", [...(at.env ?? []), ...GLOBAL_ENV]);
