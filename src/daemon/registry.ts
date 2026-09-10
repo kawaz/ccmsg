@@ -3,7 +3,9 @@ import { basename, isAbsolute, join, resolve } from "node:path";
 import type { Endpoint, InstanceId, InstancePingResult } from "@ccmsg/protocol";
 import { DEFAULT_HARNESS, type Harness, HARNESS, isHarness } from "../harness/index.ts";
 import {
+  type InstanceConfig,
   type InstanceEntry,
+  loadConfig,
   loadShared,
   saveShared,
   settingsFor,
@@ -61,6 +63,14 @@ export interface InstanceRow {
 /** One row of `daemon status`: the list's row, plus what the instance itself
  * says when there is one to ask. */
 export interface StatusRow extends InstanceRow {
+  /** What this config home's instance is configured with, after the shared
+   * file's defaults and its own entry are merged (§8.2).
+   *
+   * Answered whether or not anything is running, and read from the file rather
+   * than asked of the instance: this is what a restart would apply, which is
+   * the question an operator who just edited the file has. It carries no
+   * secret — the gateway's token is named by the path it is kept at. */
+  readonly config: InstanceConfig;
   readonly version?: string;
   readonly network?: InstancePingResult["network"];
   /** The other instances this one names, each with where it is dialled: the id
@@ -155,7 +165,7 @@ export function list(env: Env): InstanceRow[] {
 /** Ask one instance how it is. A config home with nothing behind it answers the
  * list's row and nothing more: not running is a state, not a failure. */
 export async function status(target: Target): Promise<StatusRow> {
-  const row = rowFor(target);
+  const row = { ...rowFor(target), config: loadConfig(target.paths.configFile, target.dir) };
   const conn = await connect(target.paths.socket);
   if (conn === undefined) return row;
   try {

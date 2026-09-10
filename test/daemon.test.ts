@@ -21,7 +21,7 @@ import {
   tailOf,
   targetFor,
 } from "../src/daemon/index.ts";
-import { loadShared } from "../src/instance/index.ts";
+import { DEFAULT_CONFIG, loadShared } from "../src/instance/index.ts";
 import { resolvePaths } from "../src/instance/paths.ts";
 import { endpoint, leasePort } from "./cluster.ts";
 import { capture, Host, json, reapOrphans } from "./harness.ts";
@@ -134,6 +134,9 @@ describe("the round trip against real processes", () => {
       // No mesh configured, so the only instance it knows of is itself and the
       // list of others is empty rather than absent.
       expect(row.peers).toEqual([]);
+      // What a restart would apply, answered from the file: nothing was
+      // configured here, so it is the built-ins (§8.2).
+      expect(row.config).toEqual(DEFAULT_CONFIG);
     }
 
     const stopped = (await ask({ op: "supervise_stop", all: true })) as { stopped: boolean }[];
