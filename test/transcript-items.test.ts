@@ -104,6 +104,104 @@ describe("classifying a transcript", () => {
     expect(items[0]?.["result_item"]).toBeUndefined();
   });
 
+  test("an agent that was waited on answers in the call's own result", () => {
+    const items = classify(
+      lines(
+        answered("a1", [
+          {
+            type: "tool_use",
+            id: "t1",
+            name: "Agent",
+            input: { prompt: "count the lines", subagent_type: "worker" },
+          },
+        ]),
+        said("u1", [{ type: "tool_result", tool_use_id: "t1" }], {
+          toolUseResult: {
+            agentId: "acounter-9f",
+            agentType: "worker",
+            status: "completed",
+            content: [{ type: "text", text: "there were three" }],
+            totalDurationMs: 4000,
+          },
+        }),
+      ),
+    );
+    expect(typesOf(items)).toEqual([
+      "tool:Agent",
+      "message:sub:out",
+      "tool:Agent",
+      "message:sub:in",
+    ]);
+    const brief = only(items, "message:sub:out");
+    const reply = only(items, "message:sub:in");
+    expect(reply?.["text"]).toBe("there were three");
+    expect(reply?.["duration_ms"]).toBe(4000);
+    expect(reply?.["parent_item"]).toBe(brief?.uuid ?? "");
+    expect(brief?.["result_item"]).toBe(reply?.uuid ?? "");
+  });
+
+  test("an agent started in the background answers much later, and the launch is not an answer", () => {
+    const launch = [
+      answered("a1", [
+        { type: "tool_use", id: "t1", name: "Agent", input: { prompt: "count the lines" } },
+      ]),
+      // What comes straight back says only that it was launched. Reading that
+      // as an answer of no words would claim the agent had finished.
+      said("u1", [{ type: "tool_result", tool_use_id: "t1" }], {
+        toolUseResult: {
+          agentId: "acounter-9f",
+          isAsync: true,
+          status: "async_launched",
+          outputFile: "/tmp/whatever",
+        },
+      }),
+    ];
+    const waiting = classify(lines(...launch));
+    expect(typesOf(waiting)).toEqual(["tool:Agent", "message:sub:out", "tool:Agent"]);
+    expect(only(waiting, "message:sub:out")?.["result_item"]).toBeUndefined();
+
+    const items = classify(
+      lines(
+        ...launch,
+        answered("a2", [{ type: "text", text: "meanwhile, something else" }]),
+        said(
+          "u2",
+          "<task-notification>\n<task-id>acounter-9f</task-id>\n<tool-use-id>t1</tool-use-id>\n<status>completed</status>\n<result>there were three</result>\n</task-notification>",
+          { origin: { kind: "task-notification" } },
+        ),
+      ),
+    );
+    const brief = only(items, "message:sub:out");
+    const reply = only(items, "message:sub:in");
+    // Turns fell between them, and the brief still names what came back.
+    expect(brief?.["result_item"]).toBe(reply?.uuid ?? "");
+    expect(reply?.["parent_item"]).toBe(brief?.uuid ?? "");
+    expect(reply?.["text"]).toBe("there were three");
+    expect(reply?.["agent_id"]).toBe("acounter-9f");
+  });
+
+  test("Task is the older name for the tool that starts an agent, and reads the same", () => {
+    const items = classify(
+      lines(
+        answered("a1", [
+          { type: "tool_use", id: "t1", name: "Task", input: { prompt: "count the lines" } },
+        ]),
+        said("u1", [{ type: "tool_result", tool_use_id: "t1" }], {
+          toolUseResult: {
+            agentId: "acounter-9f",
+            status: "completed",
+            content: [{ type: "text", text: "there were three" }],
+          },
+        }),
+      ),
+    );
+    // The type keeps whichever name the record used: a reader matches what it
+    // sees against what it ran.
+    expect(typesOf(items)).toEqual(["tool:Task", "message:sub:out", "tool:Task", "message:sub:in"]);
+    expect(only(items, "message:sub:out")?.["prompt"]).toBe("count the lines");
+    expect(only(items, "message:sub:in")?.["text"]).toBe("there were three");
+  });
+
   test("an agent is both a call and a message, and the answer arrives as a notification", () => {
     const items = classify(
       lines(

@@ -43,6 +43,11 @@ const NOT_ITEMS = new Set([
   "summary",
 ]);
 
+/** The tools that start an agent, in the spellings the harness has used for
+ * the one thing. Both are read the same way: the call is also a brief, and
+ * what comes back is also an answer. */
+const SPAWNS = new Set(["Agent", "Task"]);
+
 /** What an item is under construction: the contract's shape, before it is
  * settled. A call learns the id of what answered it only when the answer
  * arrives, which is why these are written to after they are made. */
@@ -184,7 +189,7 @@ class Classification {
       ...(fields ?? { input }),
     });
     let message: Draft | undefined;
-    if (name === "Agent") {
+    if (SPAWNS.has(name)) {
       message = make("message:sub:out", {
         role: "use",
         prompt: str(input["prompt"]) ?? "",
@@ -247,10 +252,25 @@ class Classification {
     call.tool["result_item"] = item.uuid;
     // An agent's id is known only once it has started, so the message that
     // asked for it learns its own id from the answer.
-    const result = row(answer);
-    const agent =
-      result === undefined ? undefined : (str(result["agentId"]) ?? str(result["agent_id"]));
-    if (call.message !== undefined && agent !== undefined) call.message["agent_id"] = agent;
+    const result = row(answer) ?? {};
+    const agent = str(result["agentId"]) ?? str(result["agent_id"]);
+    if (call.message === undefined) return;
+    if (agent !== undefined) call.message["agent_id"] = agent;
+    // An agent that was waited on answers here, in the call's own result. One
+    // started in the background answers much later in a notification of its
+    // own, and this result then says only that it was launched — so what
+    // decides is whether an answer came back, not which tool was called.
+    const said = answered(result["content"]);
+    if (said === undefined) return;
+    const reply = make("message:sub:in", {
+      role: "result",
+      parent_item: call.message.uuid,
+      text: said,
+      ...optional("agent_id", agent),
+      ...optional("status", str(result["status"])),
+      ...optional("duration_ms", count(result["totalDurationMs"])),
+    });
+    call.message["result_item"] = reply.uuid;
   }
 
   /** A `type: "user"` line whose content is words rather than a tool's answer.
@@ -383,6 +403,15 @@ function segment(name: string): string {
 /** An attribute of one of the harness's envelope tags. */
 function attribute(said: string, name: string): string | undefined {
   return new RegExp(`${name}="([^"]*)"`).exec(said)?.[1] || undefined;
+}
+
+/** What an agent handed back, which the harness writes as the blocks of a
+ * message. Nothing back is not an answer of no words: a launch says only that
+ * the agent started, and reading that as an empty answer would claim it had
+ * finished. */
+function answered(raw: unknown): string | undefined {
+  const said = text(raw)?.trim();
+  return said === undefined || said === "" ? undefined : said;
 }
 
 /** A content field that is sometimes a string and sometimes the blocks of

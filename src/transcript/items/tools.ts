@@ -196,6 +196,12 @@ const RESULT: Record<string, (result: unknown, failed: boolean) => Record<string
   },
 };
 
+/** `Task` is the harness's older name for the tool that starts an agent. The
+ * type keeps whichever name the record used — a reader matches what it sees
+ * against what it ran — and both are read the same way. */
+USE["Task"] = USE["Agent"] as Reader;
+RESULT["Task"] = RESULT["Agent"] as (result: unknown, failed: boolean) => Record<string, unknown>;
+
 function matches(result: unknown): Record<string, unknown> {
   const fields = row(result);
   if (fields === undefined) return {};

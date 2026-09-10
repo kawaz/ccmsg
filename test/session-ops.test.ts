@@ -115,7 +115,12 @@ const BUSY_TRANSCRIPT =
     uuid: "r2",
     timestamp: "2026-09-01T00:00:03.000Z",
     message: { role: "user", content: [{ type: "tool_result", tool_use_id: "ta1" }] },
-    toolUseResult: { agentId: "acounter-9f", status: "running", name: "count-lines" },
+    toolUseResult: {
+      agentId: "acounter-9f",
+      isAsync: true,
+      status: "async_launched",
+      name: "count-lines",
+    },
   }) +
   record({
     type: "assistant",
