@@ -17,6 +17,7 @@ import {
   FOLD_TAIL_BYTES,
   NO_FACTS,
   type TranscriptFacts,
+  TranscriptFiles,
   TranscriptFold,
   Transcripts,
   readSlice,
@@ -1002,5 +1003,36 @@ describe("reading a slice by byte offset (§3.3)", () => {
       [lines[2]],
     );
     expect(readSlice(SID, file.path, slice.start).lines).toEqual([lines[0], lines[1]]);
+  });
+});
+
+describe("where a sid's transcript is (§5.1)", () => {
+  /** A config home with one project directory under it. */
+  function configHome() {
+    const root = mkdtempSync(join(tmpdir(), "ccmsg-home-"));
+    roots.push(root);
+    mkdirSync(join(root, "projects", "a-project"), { recursive: true });
+    return root;
+  }
+
+  test("what the session announced is what is read", () => {
+    const root = configHome();
+    const announced = join(root, "projects", "a-project", `${SID}.jsonl`);
+    writeFileSync(announced, "");
+    const files = new TranscriptFiles({ configHome: root, announced: () => announced });
+    expect(files.path(SID)).toBe(announced);
+  });
+
+  test("a sid nobody announced is found by the name the file carries", () => {
+    const root = configHome();
+    const written = join(root, "projects", "a-project", `${SID}.jsonl`);
+    writeFileSync(written, "");
+    const files = new TranscriptFiles({ configHome: root, announced: () => undefined });
+    expect(files.path(SID)).toBe(written);
+  });
+
+  test("a sid with no file under this config home has none", () => {
+    const files = new TranscriptFiles({ configHome: configHome(), announced: () => undefined });
+    expect(files.path(SID)).toBeUndefined();
   });
 });

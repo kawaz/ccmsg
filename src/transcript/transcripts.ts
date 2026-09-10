@@ -5,8 +5,10 @@ import { type Appended, TranscriptTail } from "./tail.ts";
 
 export interface TranscriptsDeps {
   readonly self: InstanceId;
-  /** Where a session's transcript is, as the session announced it (§5.1). A
-   * sid with no path is one that never said, and nothing is guessed for it. */
+  /** Where a session's transcript is: what it announced when it greeted
+   * (§5.1), or the `<sid>.jsonl` under this instance's `projects/` that
+   * carries its name. A sid neither names nor is named by a file there has
+   * none, and nothing is guessed for it. */
   readonly pathOf: (sid: Sid) => string | undefined;
   /** The one way a value reaches subscribers (§6.1). */
   readonly publish: (topic: string, data: unknown) => void;

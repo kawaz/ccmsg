@@ -413,13 +413,23 @@ export class Instance {
       },
     });
 
+    // Which transcript a sid means. Only this instance's config home is ever
+    // looked in (M6): a session that greeted said where its transcript is, and
+    // one that never greeted is looked for under that home and nowhere else.
+    // Both the ops that read a transcript and the tails that follow one ask
+    // here, so a sid resolves to the same file whichever way it is reached.
+    const transcriptFiles = new TranscriptFiles({
+      configHome: paths.configHome,
+      announced: (sid) => this.#sessions.transcriptPath(sid),
+    });
+
     // The transcript tails and their folds. Built before the sessions domain
     // and reading from it lazily: the fold is one of the sessions domain's
     // inputs (§5.1) while the path to follow is one of its outputs, and the
     // two meet at the moment a tail starts rather than at construction.
     this.#transcripts = new Transcripts({
       self: this.self,
-      pathOf: (sid) => this.#sessions.transcriptPath(sid),
+      pathOf: (sid) => transcriptFiles.path(sid),
       publish: (topic, data) => {
         this.#topics.publish(topic, data);
       },
@@ -445,6 +455,9 @@ export class Instance {
       transcript: this.#transcripts,
       gateway: this.#gateway,
       terminals: hostTerminalReader(),
+      log: (msg, fields) => {
+        this.log.write(msg, fields);
+      },
       ...(this.#mesh === undefined ? {} : { mesh: this.#mesh }),
       onChanged: () => {
         this.#status.refresh();
@@ -568,15 +581,6 @@ export class Instance {
       },
     });
     const origin = config.upstream.sandbox_origin;
-
-    // Which transcript an op means, for the ops that read one rather than
-    // follow one. Only this instance's config home is ever looked in (M6): a
-    // session that greeted said where its transcript is, and one that never
-    // greeted is looked for under that home and nowhere else.
-    const transcriptFiles = new TranscriptFiles({
-      configHome: paths.configHome,
-      announced: (sid) => this.#sessions.transcriptPath(sid),
-    });
 
     this.#handlers = completeHandlers({
       hello: this.#sessions.hello,

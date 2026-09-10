@@ -371,6 +371,24 @@ process.stdin.on("end", () => process.exit(0));
     // The snapshot that follows the acknowledgement.
     expect((await client.next())["snapshot"]).toBe(true);
   });
+
+  test("a transcript nobody announced is found by its name and stated (§6.2)", async () => {
+    // A session that is over, or one this instance never heard greet: nothing
+    // announced where its transcript is, and the file carries the sid in its
+    // name. The subscriber is told where the file ends, which is where a read
+    // of it goes back from.
+    const { env, home } = disposable();
+    mkdirSync(join(home, "projects", "a-project"), { recursive: true });
+    const line = `${JSON.stringify({ type: "system", subtype: "init" })}\n`;
+    writeFileSync(join(home, "projects", "a-project", `${SID}.jsonl`), line);
+    const instance = await startAt(env);
+    const client = await greet(instance);
+    client.send({ op: "topic_subscribe", request_id: "sub", topic: `transcript:${SID}` });
+    expect((await client.next())["ok"]).toBe(true);
+    const snapshot = await client.next();
+    expect(snapshot["snapshot"]).toBe(true);
+    expect(snapshot["data"]).toEqual({ sid: SID, size: Buffer.byteLength(line) });
+  });
 });
 
 describe("the stop order (§8.5)", () => {

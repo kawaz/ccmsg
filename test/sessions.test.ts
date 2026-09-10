@@ -199,7 +199,11 @@ function sessions(
   const dirs = home();
   const published: Published[] = [];
   const waiters: (() => void)[] = [];
+  const logged: { message: string; fields: Record<string, unknown> }[] = [];
   const domain = new Sessions({
+    log: (message, fields = {}) => {
+      logged.push({ message, fields });
+    },
     self: SELF,
     endpoint: "https://host.example.ts.net/ccmsg/personal/",
     configHome: dirs.root,
@@ -225,7 +229,7 @@ function sessions(
     }
     return published;
   };
-  return { ...dirs, domain, published, until };
+  return { ...dirs, domain, published, logged, until };
 }
 
 /** The same instance again: a new daemon over the same config home and state
@@ -402,6 +406,38 @@ describe("hello", () => {
     expect(context.domain.transcriptPath(SID)).toBe(
       join(realpathSync(join(context.root, "projects")), "-not-created-yet", "b.jsonl"),
     );
+  });
+
+  test("nor does projects/ itself have to exist yet", () => {
+    // A config home whose first session is greeting: the harness has written
+    // nothing under it, so the tree the boundary is drawn around is a name and
+    // not yet a directory. It is still the boundary.
+    const context = sessions();
+    rmSync(join(context.root, "projects"), { recursive: true, force: true });
+    greetWith(context.domain, {
+      transcript_path: join(context.root, "projects", "a", "b.jsonl"),
+    });
+    expect(context.domain.transcriptPath(SID)).toBe(
+      join(realpathSync(context.root), "projects", "a", "b.jsonl"),
+    );
+  });
+
+  test("a path that is not taken says in the log why", () => {
+    // The greeting is answered `ok` and the field is simply absent from what
+    // `peers` says, so where the reason is is the daemon's log.
+    const context = sessions();
+    const elsewhere = mkdtempSync(join(tmpdir(), "ccmsg-other-home-"));
+    homes.push(elsewhere);
+    greetWith(context.domain, { transcript_path: join(elsewhere, "b.jsonl") });
+    expect(context.domain.transcriptPath(SID)).toBeUndefined();
+    expect(context.logged).toContainEqual({
+      message: "transcript_path not taken",
+      fields: {
+        sid: SID,
+        path: join(elsewhere, "b.jsonl"),
+        refused: "outside this config home's projects tree",
+      },
+    });
   });
 
   test("an unwritten path that climbs back out of the tree is refused", () => {

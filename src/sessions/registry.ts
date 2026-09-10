@@ -67,6 +67,13 @@ export interface SessionsDeps {
   readonly onChanged?: () => void;
   /** How often the confirmation poll runs, for a test that cannot wait. */
   readonly pollMs?: number;
+  /** Where this domain says what it declined to act on. A greeting whose
+   * `transcript_path` this instance will not read is answered `ok` all the
+   * same — the field is simply absent from what `peers` says of the session —
+   * and the reason it is absent is operational rather than contractual, so it
+   * is written here for `ccmsg daemon log` to answer with. Absent where
+   * nothing collects it. */
+  readonly log?: (message: string, fields?: Record<string, unknown>) => void;
   /** How the terminal a session runs in is read from its process. Absent on a
    * host where no process's environment can be read, where every row's
    * terminal stays unknown — which is a state the classification has. */
@@ -245,7 +252,7 @@ export class Sessions implements UpstreamResource {
     const expiresAt = this.deps.authExpiresAt?.(input.conn);
     const sid = requiredSid(args);
     if (sid !== undefined) {
-      this.register(sid, args, this.deps.configHome);
+      this.register(sid, args);
       input.conn.onClose(() => this.release(sid));
     }
     return {
@@ -503,10 +510,15 @@ export class Sessions implements UpstreamResource {
    * silence for a retraction would let each of them erase what the last one
    * knew, and the session would be described by whichever process spoke most
    * recently rather than by everything it has said. */
-  private register(sid: Sid, args: HelloArgs, configHome: string): void {
+  private register(sid: Sid, args: HelloArgs): void {
     const now = Date.now();
     const held = this.#connected.get(sid);
-    const meta = { ...this.#stated.get(sid), ...metaOf(args, configHome) };
+    const meta = {
+      ...this.#stated.get(sid),
+      ...metaOf(args, this.deps.configHome, (refused) => {
+        this.deps.log?.("transcript_path not taken", { sid, path: args.transcript_path, refused });
+      }),
+    };
     this.#connected.set(sid, {
       sid,
       connected_at: held?.connected_at ?? now,
@@ -689,15 +701,22 @@ export class Sessions implements UpstreamResource {
  * else — a session naming a file elsewhere is a session that named nothing,
  * which is what a session that stayed silent already is (M6). It is not an
  * error: how a session describes itself is its own business, and the instance
- * simply does not act on a description it cannot stand behind. */
-function metaOf(args: HelloArgs, configHome: string): SessionMeta {
+ * simply does not act on a description it cannot stand behind. Why a path was
+ * not taken is told to `refused`, which is the operator's answer to a field
+ * that is simply absent from what `peers` says. */
+function metaOf(
+  args: HelloArgs,
+  configHome: string,
+  refused: (reason: string) => void,
+): SessionMeta {
   const meta: Record<string, string> = {};
   for (const field of META_FIELDS) {
     const value = args[field];
     if (value === undefined) continue;
     if (field === "transcript_path") {
-      const path = ownTranscript(value, configHome);
-      if (path !== undefined) meta[field] = path;
+      const taken = ownTranscript(value, configHome);
+      if (typeof taken === "string") meta[field] = taken;
+      else refused(taken.refused);
       continue;
     }
     meta[field] = value;
@@ -721,19 +740,33 @@ function metaOf(args: HelloArgs, configHome: string): SessionMeta {
  * symlink and one spelled directly are the same path, and a link anywhere
  * along it that leads out of the tree lands outside and is refused. What is
  * already there must be a file: a directory by that name is not a transcript.
- */
-function ownTranscript(named: string, configHome: string): string | undefined {
-  if (!isAbsolute(named)) return undefined;
-  let projects: string;
+ *
+ * `projects/` itself is settled the same way, so a config home whose first
+ * session has yet to write anything is a boundary all the same: the directory
+ * that is there is followed, the part that is not is taken as spelled, and the
+ * comparison is between two paths resolved by one rule. The config home is not
+ * treated that way — an instance answers for a home it is running out of, and
+ * one that is not there names no tree to be inside of. */
+function ownTranscript(named: string, configHome: string): string | Refused {
+  if (!isAbsolute(named)) return { refused: "not an absolute path" };
+  let projects: string | undefined;
   try {
-    projects = realpathSync(join(configHome, "projects"));
+    projects = resolveAsFarAsItGoes(join(realpathSync(configHome), "projects"));
   } catch {
-    return undefined;
+    return { refused: "the config home is not there" };
   }
   const settled = resolveAsFarAsItGoes(named);
-  if (settled === undefined || !within(settled, projects)) return undefined;
+  if (projects === undefined || settled === undefined || !within(settled, projects)) {
+    return { refused: "outside this config home's projects tree" };
+  }
   const stat = statSync(settled, { throwIfNoEntry: false });
-  return stat === undefined || stat.isFile() ? settled : undefined;
+  if (stat !== undefined && !stat.isFile()) return { refused: "not a file" };
+  return settled;
+}
+
+/** Why a stated path was not taken, in the words the log states it in. */
+interface Refused {
+  readonly refused: string;
 }
 
 /** The path with every segment of it that exists resolved.

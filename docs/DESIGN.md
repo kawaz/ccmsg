@@ -571,6 +571,28 @@ time the human typed input" (the sort order) in two separate places. v2 **makes 
 the type level that these are two values for two different purposes**, and decides in one
 place which one drives the sort order. They are never held under the same name.
 
+### 5.4 The two routes from a sid to its transcript
+
+The file a sid names is reached by **two routes: what was announced, and the walk**. The
+`transcript_path` a `hello` stated comes first — it is exact and costs no search. A sid that
+announced nothing (a session that never greeted this instance, or one that is over) is found
+by walking `projects/**/<sid>.jsonl`, reaching the same file through **the identity the
+filename carries**. The op that reads one (`transcript_read`) and the side that follows one
+(the tail behind `transcript:<sid>`) both ask the same way, so **one sid resolves to one file
+whichever way it is reached**.
+
+Both routes share a single boundary: **nothing outside this config home's `projects/` tree is
+ever looked at** (M6). An announced path was taken only because it was inside that tree, and
+the walk is a walk of that tree. What decides acceptance is **where the file goes, not whether
+it is there**: at the moment a session-start hook states the path the harness has created
+neither the file nor its directory, and a config home whose first session is greeting may not
+have `projects/` yet either. The part of the path that exists is resolved, the part that does
+not is kept as spelled, and the whole is compared against the tree — so a path that climbs out
+through `..` or a symlink is refused however far inside it is spelled. A path that is not taken
+simply leaves that field absent from the session's `peers` row, and `hello` still answers `ok`
+(the contract is unchanged) — **the reason goes to the daemon's log as one line**, which makes
+it the operator's answer rather than the contract's.
+
 ## 6. Implementing topics
 
 The contract defines only one shape: "immediately after `topic_subscribe`, a frame with
@@ -599,6 +621,12 @@ suppression" can never happen.
 | Element add / update | `inbox` / `kv:<ns>` |
 | Append (byte offset) | `transcript:<sid>` |
 | Event (no value held) | `notify` |
+
+The snapshot of `transcript:<sid>` is **the file's current end (`size`) and nothing else**;
+what is appended flows after it. It is stated for any file the two routes of §5.4 reach, so
+**even a past session that will never be appended to again says where to page back from**. The
+subscriber reads back from that size with `transcript_read`, and anything appended stitches
+onto the same offsets.
 
 **Suppression applies to the two full-replacement granularities only** (`whole` /
 `per_instance_whole`). Sending the same full value again leaves the subscriber holding what it

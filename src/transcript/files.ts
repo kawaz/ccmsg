@@ -38,11 +38,24 @@ export interface TranscriptFilesDeps {
 export class TranscriptFiles {
   constructor(private readonly deps: TranscriptFilesDeps) {}
 
-  /** The session's own transcript. */
-  session(sid: Sid): string {
+  /** The session's own transcript, or nothing where this instance holds none.
+   *
+   * Two ways to the one file, in the order of what each is good for: what the
+   * session announced is exact and costs no search, and the walk finds the
+   * file by the identity it carries in its name (`<sid>.jsonl`) for a session
+   * that never greeted or is no longer running. Both stay inside this
+   * instance's `projects/` — the announced path because it was taken only if
+   * it was inside it, the walk because that tree is what it walks (M6). */
+  path(sid: Sid): string | undefined {
     const announced = this.deps.announced(sid);
     if (announced !== undefined && isFile(announced)) return announced;
-    const found = this.find(sid);
+    return this.find(sid);
+  }
+
+  /** The session's own transcript, for an op that has nothing to answer
+   * without one. */
+  session(sid: Sid): string {
+    const found = this.path(sid);
     if (found === undefined) throw new OpError("not_found", `no transcript is held for ${sid}`);
     return found;
   }

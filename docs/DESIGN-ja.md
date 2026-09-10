@@ -505,6 +505,23 @@ Disappeared  = last_live にあり stopped_at が無い
 「人間が入力した時刻」(並び順) の 2 つを別の場所に持っていた。v2 は**用途が違う 2 つの値
 であることを型で明示**し、どちらを並びに使うかを 1 箇所で決める。同じ名前で 2 つ持たない。
 
+### 5.4 sid から transcript を引く 2 経路
+
+sid が指すファイルは **announce と walk の 2 経路**で引く。hello が名乗った `transcript_path`
+が第一で、正確かつ探索コストが無い。名乗りが無い sid (この instance に hello していない、
+既に終わったセッション) は `projects/**/<sid>.jsonl` を歩いて、**ファイル名が持つ identity**
+から同じファイルに辿り着く。読む op (`transcript_read`) も追う側 (tail、`transcript:<sid>`)
+も同じ経路を使うので、**同じ sid はどちらから来ても同じファイルに解決する**。
+
+2 経路とも境界は 1 つで、**自 config home の `projects/` ツリーの中しか見ない** (M6)。
+announce された path は「そのツリー内にあったから受理された」もので、walk はそのツリーを
+歩くものだからである。受理の判定は **ファイルの有無ではなく置き場所**: session-start hook が
+名乗る時点では harness はファイルもディレクトリも作っていないし、`projects/` 自体が
+未作成の config home (初回セッション) もありうる。存在する区間は realpath で辿り、
+無い区間は綴りのまま繋いだ上でツリー内か比べるので、`..` や symlink で外へ出る path は
+綴りが内側でも受理されない。受理しなかった path は `peers` の行からその field が消えるだけで、
+hello は `ok` のまま (契約は変えない) — **理由は daemon の log に 1 行出す**運用側の責務とする。
+
 ## 6. topic の実装
 
 契約は「`topic_subscribe` の直後に `snapshot: true` の frame が 1 回、以後は同型の delta」
@@ -531,6 +548,11 @@ topic の仕組みに内蔵するので「この topic には抑制がない」�
 | 要素の追加・更新 | `inbox` / `kv:<ns>` |
 | 追記 (byte offset) | `transcript:<sid>` |
 | event (値を保持しない) | `notify` |
+
+`transcript:<sid>` の snapshot は **ファイルの現在の末尾 (`size`) だけ**で、追記はその後から
+流れる。§5.4 の 2 経路で引けるファイルには常に返るので、**追記が二度と起きない過去セッション
+でも「どこから遡るか」は snapshot から分かる**。購読者は size を起点に `transcript_read` で
+遡り、追記が来ればそのまま繋がる。
 
 **抑制がかかるのは全量置換の 2 粒度だけ** (`whole` / `per_instance_whole`)。同じ全量を
 もう一度送っても購読側は既に持っている値を持ち続けるので、送る意味が無い。
