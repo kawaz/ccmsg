@@ -22,9 +22,9 @@ branches of its own.
 - Separate privileges, or mesh with an instance of a different uid / config home — that boundary is the OS's uid and file permissions
 - Re-derive an upstream judgment (the gateway's severity, Claude Code's permission decisions) or observe another config home
 - Carry validation of its own, or serve v1 alongside — the contract's validator is called, and the new lineage stands as a separate instance
-- Authenticating a person is not on this list: the daemon answers "who came" itself, with a passkey
 
-[docs/DESIGN.md](./docs/DESIGN.md) §9 carries the reason each of these ties back to.
+Authenticating a person is not on that list: the daemon answers "who came" itself, with a
+passkey. [docs/DESIGN.md](./docs/DESIGN.md) §9 carries the reason each of these ties back to.
 
 ## Documentation
 

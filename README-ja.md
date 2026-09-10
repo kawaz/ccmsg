@@ -22,8 +22,8 @@ wire の契約は [`@ccmsg/protocol`](https://github.com/kawaz/ccmsg-protocol) �
 - 権限分離を持たず、別 uid / 別 config home の instance とも mesh を張らない。その境界は OS の uid とファイル権限
 - 上流の判定 (gateway の severity、Claude Code の permission 判定) をやり直さず、他 config home も観測しない
 - 契約の検証ロジックを自前で持たず (protocol リポの検証器を呼ぶ)、v1 と両受けもしない (新系は別 instance として横に立つ)
-- 人の認証はここに入らない。「誰が来たか」には daemon 自身が passkey で答える
 
+人の認証はこの一覧に入らない。「誰が来たか」には daemon 自身が passkey で答える。
 それぞれが目的のどこに紐づくかは [docs/DESIGN-ja.md](./docs/DESIGN-ja.md) §9 にある。
 
 ## ドキュメント
