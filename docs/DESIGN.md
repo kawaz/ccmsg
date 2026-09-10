@@ -972,12 +972,39 @@ holds
   "instances": [ { "dir": "<config home>", ...overrides for this instance alone... } ] }
 ```
 
-and each of an instance's settings resolves in the order `instances[].<key>` →
-`defaults.<key>` → the built-in default. There is no file per config home because both of the
+and each of an instance's settings resolves in the order `instances[].<path>` →
+`defaults.<path>` → the built-in default. There is no file per config home because both of the
 things this one carries are facts about the set — the same peer list can go to every instance
 (§7.1), and "which config homes have an instance" is not a question a single instance can
 answer about itself. A config home that `instances[]` does not list, run with
 `ccmsg daemon run`, is `defaults` plus the built-in defaults.
+
+**What combines is a field path, not a top-level key**, and **the rule for each path is
+declared by the schema**. Objects and arrays are the only place where "combine" could mean
+more than one thing, so which it is here is written down rather than guessed from the shape of
+the value. A path that is not declared replaces, which is what a scalar can do and what an
+array does until some field declares itself a set.
+
+| field path | Rule |
+|---|---|
+| `peers` | Replace. The same finished list goes to every instance (§7.1), so an instance that writes its own means to run with that one and no other |
+| `entry` | Merged field by field |
+| `entry.source_ips`, `entry.trusted_proxies` | Replace |
+| `upstream` | Merged field by field |
+| `upstream.launcher` | Merged field by field |
+| `upstream.launcher.root_dirs`, `templates`, `clean_env`, `keep_env` | Replace |
+| Any path not above (every scalar) | Replace |
+
+There is no delete sentinel. **Leaving a field out inherits the defaults' value, and writing
+`[]` or `""` is that value**: the two are already told apart, so there is no reason to pay for
+telling them apart by making `null` unusable as a real value. When a field genuinely has to be
+added to and subtracted from as a set, that field gets a `set` rule and an explicit removal
+operation, designed together.
+
+The table has one source in the implementation (`MERGE_RULES`), and `ccmsg daemon add --help`
+prints the same one. The effective config a merge produces is what `ccmsg daemon status`
+answers with — for a config home with nothing running too, read from the file as the value a
+restart would apply.
 
 ### 8.3 Startup order
 

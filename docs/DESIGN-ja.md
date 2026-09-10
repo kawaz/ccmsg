@@ -853,11 +853,34 @@ config を変えたら instance を再起動する、が唯一の反映手順に
   "instances": [ { "dir": "<config home>", ...この instance だけの上書き... } ] }
 ```
 
-を置き、instance の各項目は `instances[].<key>` → `defaults.<key>` → 組み込み既定 の順に
+を置き、instance の各項目は `instances[].<パス>` → `defaults.<パス>` → 組み込み既定 の順に
 解決する。config home ごとに別ファイルを持たないのは、この 2 つがどちらも「集合についての
 事実」だからである — peers は全 instance に同じものを配れる (§7.1) し、「どの config home が
 instance を持つか」は個々の instance が自分について答えられる問いではない。`instances[]` に
 無い config home を `ccmsg daemon run` した場合は `defaults` + 組み込み既定になる。
+
+**重なる単位はトップレベルの key ではなく field path** であり、**規則はパスごとに schema
+側が宣言する**。object と array は「重ねる」が一通りに決まらない唯一の場所なので、どちらで
+あるかを値の形から推測せず表に書く。宣言の無いパスは置換で、これは scalar にできる唯一の
+ことであり、array がどれかの field を集合として扱うと宣言するまで array のふるまいでもある。
+
+| field path | 規則 |
+|---|---|
+| `peers` | 置換。完成済みの同じ一覧を全 instance に配る (§7.1) ので、自分の分を書いた instance はそれだけで動く意思表示になる |
+| `entry` | field ごとに重ねる |
+| `entry.source_ips`、`entry.trusted_proxies` | 置換 |
+| `upstream` | field ごとに重ねる |
+| `upstream.launcher` | field ごとに重ねる |
+| `upstream.launcher.root_dirs`、`templates`、`clean_env`、`keep_env` | 置換 |
+| 上に無いパス (scalar 全部) | 置換 |
+
+削除の sentinel は持たない。**書かない = defaults を継ぐ、`[]` や `""` を書く = その値**で
+両者は区別が付き、`null` を実値にできなくする代償を払う理由がない。集合として足し引きしたい
+field が実際に出てきたときに、その field に `set` 規則と明示的な除去操作を一緒に設計する。
+
+この表は実装の 1 か所 (`MERGE_RULES`) が正本で、`ccmsg daemon add --help` が同じものを出す。
+マージ後の実効 config は `ccmsg daemon status` が答える (動いていない instance の分も、再起動
+したら効く値としてファイルから読んで返す)。
 
 ### 8.3 起動の順序
 
