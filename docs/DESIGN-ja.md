@@ -338,6 +338,7 @@ instance の属性であり、**契約には出さない**。`ccmsg daemon add -
 | 何が | claude | codex |
 |---|---|---|
 | config home を指す環境変数 | `CLAUDE_CONFIG_DIR` | `CODEX_HOME` |
+| セッションを名乗る環境変数 | `CLAUDE_CODE_SESSION_ID` | `CODEX_THREAD_ID` / `CODEX_SESSION_ID` |
 | config home だと言う file | `settings.json` | `config.toml` |
 | セッションが在ることの証拠 | `sessions/<pid>.json` (pid・cwd・status を持つ) | `thread-writer-locks/<thread-id>.lock` (thread id しか持たない) |
 | transcript の置き場と名前 | `projects/<cwd を潰した名前>/<sid>.jsonl` | `sessions/<年>/<月>/<日>/rollout-<開始時刻>-<thread-id>.jsonl` |
@@ -354,10 +355,42 @@ sid は両者とも harness 自身が名乗る値をそのまま使う。codex �
 持たない。よって codex の instance は `agents` に**何も出さない**。セッションがどこで動いて
 いるか・何という名前かは hello が言ったことで、それは harness に依らず registry が持つ。
 
-**stale lock**: 正常に終わった thread の lock は消える。プロセスが即殺された場合は残り
-(実測)、lock は pid を持たないので「まだ誰か掴んでいるか」を ccmsg から問う手段が無い。
-その thread は Codex 自身が stale lock を掃除するまで生存として読まれる。Claude Code の
-state file が残る場合と向きは同じで、違うのは pid で確かめられないことである。
+**どちらのセッションの中に居るかは、環境変数の並び順で決めない。** セッションから起動された
+セッションは親の環境をそのまま継承するので、**両方の config home が同時に名乗られる**
+(Claude Code のセッションから起動した Codex の hook 環境に `CLAUDE_CONFIG_DIR` と
+`CLAUDE_CODE_SESSION_ID` が立っていることを実測)。決めるのは**セッションを名乗る変数**で、
+config home はそれを名乗った harness の側から引く — 「自分は誰か」と「どの instance に
+話すか」を 1 つの答えから引くので、両者がずれることが無い。
+
+複数が名乗った時は **Codex を先に見る**。Claude Code は自分の session id を配下のプロセス
+すべて (別 harness を含む) へ export するのに対し、Codex が thread を名乗るのは自分の turn の
+コマンドに対してだけで、狭い主張の方が真である。逆の入れ子 (Codex の turn から起動した
+Claude Code のセッション) は Codex として読まれ、`--sid` がそれを覆す。
+
+**Codex から送る側は、Codex が thread を名乗ることに依存している (未確認)。** `ccmsg post` /
+`reply` / `peers` は自分の sid を上の変数から取る。実測できたのは「`SessionStart` hook の環境には
+`CODEX_HOME` しか入らない」ところまでで、**Codex がツール実行のコマンドに `CODEX_THREAD_ID` を
+渡すかは未観測**である (0.153.4 は Responses request に `tools` を送らないので、mock model から
+shell を呼ばせられない)。渡していれば Codex のセッションからそのまま送れる。渡していなければ
+`--sid <thread-id>` を明示する以外に手が無く、その場合は「Codex から送る側は未対応」である。
+どちらであっても、**Codex から送ったつもりが親 Claude Code セッションとして送られることは無い**
+(継承した `CLAUDE_CODE_SESSION_ID` より Codex の主張が先に見られるため)。
+
+**config home を明示した経路はこの推定を通さない**。`daemon <sub> <dir>` や
+`plugin install <agent>` のように呼び出し側が config home を決めている場合、path はその値から
+直に引く (`resolvePathsFor`)。環境から引き直すと、どのセッションの中で走らせたかで宛先が
+変わってしまう。
+
+**ccmsg が置く hook script は、他 harness の変数を落としてから `ccmsg` を呼ぶ**
+(`env -u CLAUDE_CONFIG_DIR -u CLAUDE_CODE_SESSION_ID CODEX_HOME=…`)。hook は自分が発火した
+セッションの代弁者であって、それを起動した誰かの代弁者ではない。同じ理由で、経路 (a) が
+`codex queue` を起動する時も daemon から継承した他 harness の変数を落とす。
+
+**stale lock**: 正常に終わった thread の lock は消える。プロセスが即殺された場合は残る
+(実測)。upstream の thread store は lock を flock で持ち、次に誰かが thread を書き始める時に
+「flock が取れる = 誰も掴んでいない」lock を掃除するので、残った lock はその時点まで残る。
+flock を試せば stale 判定は可能だが、Node 標準に flock が無いので採らない。よってその thread は
+掃除されるまで生存として読まれる。
 
 **hooks の trust**: Codex は一度人が確認した hook しか実行しない。`plugin install codex` は
 file を置き、trust が要ることを `needs` として答えるだけで、trust 自体は書かない

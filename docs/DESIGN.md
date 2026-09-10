@@ -378,6 +378,7 @@ The differences are these six and nothing else reads the harness.
 | What | claude | codex |
 |---|---|---|
 | Environment variable naming the config home | `CLAUDE_CONFIG_DIR` | `CODEX_HOME` |
+| Environment variable naming the session | `CLAUDE_CODE_SESSION_ID` | `CODEX_THREAD_ID` / `CODEX_SESSION_ID` |
 | The file that says "this is a config home" | `settings.json` | `config.toml` |
 | Evidence that a session is there | `sessions/<pid>.json` (carries pid, cwd, status) | `thread-writer-locks/<thread-id>.lock` (carries only the thread id) |
 | Where transcripts live, and their names | `projects/<flattened cwd>/<sid>.jsonl` | `sessions/<year>/<month>/<day>/rollout-<start>-<thread-id>.jsonl` |
@@ -396,11 +397,44 @@ file carries none of them. So a Codex instance reports **nothing** on `agents`. 
 runs and what it is called is what its greeting said, and the registry holds that for every
 harness alike.
 
+**Which session a process is inside is not decided by the order of environment variables.** A
+session started from another session inherits its whole environment, so **both config homes are
+named at once** (measured: the hook environment of a Codex session started from a Claude Code
+session carries `CLAUDE_CONFIG_DIR` and `CLAUDE_CODE_SESSION_ID`). What decides is the
+**session variables**, and the config home is read from whichever harness claimed the process —
+one answer for both "who am I" and "which instance do I speak to", so the two can never
+disagree.
+
+Where more than one claims it, **Codex is asked first**. Claude Code exports its session id into
+every process it starts, another harness included; Codex names its thread only to the commands
+of its own turn, and the narrower claim is the truer one. The reverse nesting — a Claude Code
+session started from a Codex turn — reads as Codex, and `--sid` is what says otherwise.
+
+**Sending from a Codex session depends on Codex naming its thread, which is unverified.**
+`ccmsg post`, `reply` and `peers` take their own sid from the variables above. What was measured
+is that the `SessionStart` hook's environment carries only `CODEX_HOME`; **whether Codex passes
+`CODEX_THREAD_ID` to the commands a tool runs was not observed** (0.153.4 sends no `tools` in the
+Responses request, so a mock model cannot make it run a shell command). If it does, a Codex
+session sends as itself with nothing further. If it does not, `--sid <thread-id>` is the only
+way, and the sending side is unsupported. Either way, a send from a Codex session is never
+attributed to the parent Claude Code session, because Codex's claim is read first.
+
+**A route that names the config home does not go through that inference.** Where the caller has
+decided the home — `daemon <sub> <dir>`, `plugin install <agent>` — the paths are derived
+straight from that value (`resolvePathsFor`). Re-deriving from the environment would make the
+target depend on which session the command happened to be run inside.
+
+**The hook script ccmsg lays down drops the other harness's variables before calling `ccmsg`**
+(`env -u CLAUDE_CONFIG_DIR -u CLAUDE_CODE_SESSION_ID CODEX_HOME=…`). A hook speaks for the
+session it fired for, not for whoever started that session. For the same reason, route (a) drops
+those variables when it runs `codex queue`.
+
 **Stale locks**: a thread that ends normally takes its lock with it. A process killed outright
-leaves it behind (measured), and a lock carries no pid, so ccmsg has no way to ask whether
-anybody still holds it. That thread reads as present until Codex sweeps the stale lock itself.
-This runs in the same direction as a Claude Code state file left behind; what differs is that
-there is no pid to check it against.
+leaves it behind (measured). The upstream thread store holds the lock with flock and, when
+somebody next starts writing a thread, sweeps the locks it can take — "takeable" meaning nobody
+holds it — so a leftover lock stands until then. Testing it with flock would settle staleness,
+but Node has no flock, so that is not taken. The thread therefore reads as present until the
+sweep.
 
 **Hook trust**: Codex will not run a command hook a person has not reviewed. `plugin install
 codex` lays the files down and answers that trust is required in `needs`; it does not write the
