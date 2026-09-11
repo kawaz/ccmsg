@@ -1,6 +1,7 @@
 import { chmodSync, mkdirSync, unlinkSync } from "node:fs";
 import { dirname } from "node:path";
 import { type Env, resolveSupervisorSocket } from "../instance/paths.ts";
+import { WriteQueue } from "../transport/index.ts";
 import { CommandError, type SuperviseRequest } from "./link.ts";
 import {
   awaitGone,
@@ -194,11 +195,27 @@ export class Supervisor {
     }
     const handle = (frame: Record<string, unknown>): Promise<unknown> =>
       this.handle(frame as unknown as SuperviseRequest);
-    this.#listener = Bun.listen<{ buffer: string }>({
+    this.#listener = Bun.listen<ControlState>({
       unix: path,
       socket: {
         open(socket) {
-          socket.data = { buffer: "" };
+          // Every answer goes through the queue, because `socket.write` takes
+          // what fits in the socket buffer and returns a short count for the
+          // rest: an answer longer than that — `status --all` on a host with
+          // several instances — would otherwise arrive without its newline and
+          // leave the caller waiting for a line that never ends.
+          const queue = new WriteQueue<Uint8Array>({
+            encode: (line) => new TextEncoder().encode(line),
+            write(chunk) {
+              const written = socket.write(chunk);
+              if (written < 0) return undefined; // closing: nothing more will go
+              return written === chunk.length ? undefined : chunk.subarray(written);
+            },
+            flush: () => {
+              socket.flush();
+            },
+          });
+          socket.data = { buffer: "", queue };
         },
         data(socket, chunk) {
           socket.data.buffer += new TextDecoder().decode(chunk);
@@ -207,8 +224,11 @@ export class Supervisor {
             const line = socket.data.buffer.slice(0, at);
             socket.data.buffer = socket.data.buffer.slice(at + 1);
             if (line.trim() === "") continue;
-            void answer(socket, line, handle);
+            void answer(socket.data.queue, line, handle);
           }
+        },
+        drain(socket) {
+          socket.data.queue.drain();
         },
       },
     });
@@ -489,9 +509,16 @@ export class Supervisor {
   }
 }
 
+/** What one control connection holds: the half-read line, and the answers
+ * waiting for a socket that is not taking them all at once. */
+interface ControlState {
+  buffer: string;
+  queue: WriteQueue<Uint8Array>;
+}
+
 /** Answer one line, in the shape a command reads: the result, or the error. */
 async function answer(
-  socket: Bun.Socket<{ buffer: string }>,
+  queue: WriteQueue<Uint8Array>,
   line: string,
   handle: (frame: Record<string, unknown>) => Promise<unknown>,
 ): Promise<void> {
@@ -499,18 +526,18 @@ async function answer(
   try {
     frame = JSON.parse(line) as Record<string, unknown>;
   } catch {
-    socket.write(
+    queue.push(
       `${JSON.stringify({ ok: false, error: { code: "bad_request", msg: "not valid JSON" } })}\n`,
     );
     return;
   }
   try {
-    socket.write(`${JSON.stringify({ ok: true, result: await handle(frame) })}\n`);
+    queue.push(`${JSON.stringify({ ok: true, result: await handle(frame) })}\n`);
   } catch (cause) {
     const error =
       cause instanceof CommandError
         ? { code: cause.code, msg: cause.message }
         : { code: "internal_error", msg: String(cause) };
-    socket.write(`${JSON.stringify({ ok: false, error })}\n`);
+    queue.push(`${JSON.stringify({ ok: false, error })}\n`);
   }
 }

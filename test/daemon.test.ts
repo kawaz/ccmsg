@@ -646,6 +646,24 @@ describe("the supervisor", () => {
   });
 });
 
+describe("an answer longer than the socket will take at once", () => {
+  test("it arrives whole, however many instances it is about", async () => {
+    const at = host();
+    // The socket buffer is 8 KiB on this platform, and one `status` row is a
+    // good fraction of a KiB: a host with a few instances answers `--all` with
+    // more than the socket takes in one call. What the kernel would not take is
+    // written when it says it has room, so what arrives is one whole line.
+    for (const name of ["one", "two", "three", "four", "five", "six"]) {
+      await register(at.home(name));
+    }
+    const supervisor = await supervising();
+    const answered = (await ask({ op: "supervise_status", all: true })) as StatusRow[];
+    expect(answered.map((row) => row.name)).toEqual(["one", "two", "three", "four", "five", "six"]);
+    expect(JSON.stringify(answered).length).toBeGreaterThan(8_192);
+    await supervisor.stop();
+  }, 120_000);
+});
+
 describe("what a command answers with", () => {
   test("every answer is JSON, and so is every refusal", async () => {
     const at = host();
