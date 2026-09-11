@@ -36,3 +36,7 @@ WebAuthn の検証を自前 (`src/auth/webauthn.ts` 401 行 + `cbor.ts` 150 行�
 - [ ] 自前と `@simplewebauthn/server` に同じ入力を与えて結果 (accept / reject) が一致することを差分テストで確認 (dev dependency として入れてテストだけで使う)
 - [ ] 決めること: 差分テストを恒久的に持つか、比較の時だけか (決めた結果をここに追記する)
 - [ ] 上記が揃った時点で既存ライブラリを改めて調査・比較し、書き直す/自前を仕上げ直すの判断を記録する
+
+## 先例
+
+kawaz 2026-09-12: cache-warden の Touch ID 実装 (`cache-warden/docs/decisions/draft-DR-0031-custom-touchid-dialog.md`) は、自前かライブラリかの技術調査と PoC をやれるだけやった上でライブラリを使う判断をしたケース。今回の WebAuthn はその逆 (自前を選び、テストをやり切ってから比較する) だが、「比較を実際にやって記録する」作法は同じ。比較の結果は DR-0001 の追記 (または supersede) として残す。
