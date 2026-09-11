@@ -1,6 +1,6 @@
 ---
 title: design-doc-reflow-after-v2-settles
-status: wip
+status: resolved
 category: task
 created: 2026-09-10T14:35:49+09:00
 last_read:
@@ -9,10 +9,10 @@ wip_entered: 2026-09-12T06:54:40+09:00
 blocked_entered:
 pending_entered:
 discarded_entered:
-resolved_entered:
+resolved_entered: 2026-09-12T08:07:32+09:00
 discard_reason:
 pending_reason:
-close_reason:
+close_reason: ["done:DESIGN 日英を§1目的〜§9テスト方針の順にreflow、hard-wrap全廃(ja1351→743行、en1589→758行)","done:不採用表・確定判断表・裁定ラベル・v1比較をDR-0002〜0014(13本)へ移管、本文DR参照は11箇所に整理","done:src の § 参照全件に文書名ラベル(DESIGN/DR-00NN/mesh-peer-auth)を前置","done:mesh-peer-auth.md をdocs/design/へ取り込み、mesh-self-identification はprobe廃止に伴い削除","done:契約リポのDESIGN/READMEも同様に正本化(1.22.1)、push gate(翻訳鮮度)通過"]
 blocked_by:
 origin: 自リポ TODO
 ---
