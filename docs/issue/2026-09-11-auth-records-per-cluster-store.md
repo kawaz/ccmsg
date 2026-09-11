@@ -1,5 +1,5 @@
 ---
-title: passkey (credential/token family) の保管を instance 複製から cluster 単位へ
+title: auth (passkey / token family) の claim に cluster を含める
 status: open
 category: design
 created: 2026-09-11T14:05:46+09:00
@@ -17,42 +17,49 @@ blocked_by: multiple-clusters-per-host (TS config の cluster 構造の確定形
 origin: 自リポ TODO
 ---
 
-# passkey (credential/token family) の保管を instance 複製から cluster 単位へ
+# auth (passkey / token family) の claim に cluster を含める
 
 ## 概要
 
-passkey (credential / token family) の保管方式を、instance ごとの複製から
-cluster 単位 (同ホストの cluster ごとに 1 部、`$CCMSG_STATE_DIR/clusters/<cluster_id>/`
-配下) に変える。権限の単位は cluster なので、保管もそこに揃える。
+passkey / token family の保管は **instance ごとのまま変えない**。iss + sub で
+発行元が一意に決まり、読み書きの責務がその instance に閉じているため、共有
+ファイルにすると単一書き手の性質が壊れる (instance 複製から cluster 単位の
+共有ストアへ寄せる旧方針は不採用)。
 
-同ホストの n instance が 1 部を共有することで、instance の remove で記録が
-消えない、ホスト内で見え方がずれない、`passkey list --cluster X` が
-instance 経由でなく読めるようになる。ホスト間の複製は従来通り `auth.records`
-の複製 (cluster 内の mesh) のまま変えない。
+代わりに **iss / sub / aud に cluster を含める**。記録に cluster が付くこと
+で、複数 cluster に属する instance は同じ state dir に両方の cluster 分の
+記録を持てて cluster で引ける。`auth.records` の複製は記録の cluster を見て
+その cluster の mesh にだけ流す (topic のパラメータ化か frame 内の cluster
+判定かは実装判断)。token 検証は aud の cluster で「別 cluster の token は
+通らない」が claim レベルで効くようになる。
 
 ## 背景
 
-kawaz r303 m20/m21 (2026-09-11) での判断。現状は instance ごとに passkey を
-複製しており、instance を remove すると記録が消えたり、同ホスト内の instance
-間で見え方がずれたりする問題がある。
+kawaz r303 m23 (2026-09-11) での再裁定。旧方針 (r303 m20/m21) の instance
+複製 → cluster 単位共有ストア案は、共有ファイルが単一書き手の性質を壊すため
+撤回し、claim に cluster を含める方式に変更した。
 
 ## 決めること
 
-1. 複数 instance プロセスの同一ファイル書き込みの排他 (lock + atomic rename)
-   と、更新を同ホストの他 instance に伝える手段 (ファイル監視 / 監督者経由)
-2. リモートへの複製を誰が流すか — 各 instance がそのまま流し record id で
-   重複排除する案を推す
-3. 契約 `auth.records` の説明文を「instance の複製」から「ホスト内 cluster
-   複製」に変える (型は不変の見込み)
-4. `daemon remove` は state dir を消さない (人が消す) を推す
+1. 既存の記録 (cluster 無し) の移行 — 初回起動時に唯一の cluster を付けて
+   書き直す 1 回限りの処理
+2. claim の形 (iss = `<cluster_id>/<instance_id>` か、aud = cluster か等) は
+   契約 issue `token-family-bound-to-endpoint` と一緒に決める
+3. `passkey add|list|remove --cluster` の帰属は cluster で、発行は cluster
+   内の任意の instance
 
 ## 受け入れ条件
 
-- [ ] cluster 単位の passkey store のファイルレイアウトと排他方式が決定される
-- [ ] 同ホスト内 instance 間の更新伝達手段が決定・実装される
-- [ ] リモート複製の送信元方針 (各 instance が流し record id で重複排除) が実装される
-- [ ] 契約 `auth.records` の説明文が更新される
-- [ ] `daemon remove` が state dir を消さない挙動になっている (または既にそうなっていることを確認)
+- [ ] iss / sub / aud への cluster の含め方 (claim の形) が決定される
+- [ ] 既存記録 (cluster 無し) の移行処理 (初回起動時 1 回限り) が実装される
+- [ ] `auth.records` の複製が記録の cluster を見てその cluster の mesh にだけ
+      流れるようになる
+- [ ] token 検証で aud の cluster が一致しない token が拒否される
+- [ ] `passkey add|list|remove --cluster` が実装される
+
+## 着手条件
+
+cluster 構造 (`multiple-clusters-per-host`) が入ってから。
 
 ## TODO
 

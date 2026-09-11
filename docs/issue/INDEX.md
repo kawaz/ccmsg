@@ -25,7 +25,7 @@ wire の契約は [kawaz/ccmsg-protocol](https://github.com/kawaz/ccmsg-protocol
 
 | date | category | status | slug | 概要 |
 |---|---|---|---|---|
-| 2026-09-11 | design | open | [auth-records-per-cluster-store](./2026-09-11-auth-records-per-cluster-store.md) | passkey (credential / token family) の保管を instance ごとの複製から cluster 単位に変える… |
+| 2026-09-11 | design | open | [auth-records-per-cluster-store](./2026-09-11-auth-records-per-cluster-store.md) | passkey / token family の保管は instance ごとのまま、iss/sub/aud に cluster を含めて複製・検証を cluster… |
 | 2026-09-11 | design | open | [multiple-clusters-per-host](./2026-09-11-multiple-clusters-per-host.md) | kawaz の想定 (2026-09-11 r303m11): 1 ホストに複数クラスタ (本人 / 家族 / ホームエージェント等)… |
 | 2026-09-11 | task | open | [ts-config-loader](./2026-09-11-ts-config-loader.md) | config を JSON + マージ規則から TS に移す。裁定: CM-Q1 (2026-09-10 r298m35) = TS で書く。defaults… |
 | 2026-09-11 | bug | open | [daemon-restart-all-leaves-supervisor-on-old-build](./2026-09-11-daemon-restart-all-leaves-supervisor-on-old-build.md) | `ccmsg daemon restart --all` は子 instance だけを新コードで起動し直し、launchd 配下の監督者 (`c… |
