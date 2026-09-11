@@ -1,10 +1,16 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import type { Sid } from "@ccmsg/protocol";
+import type { Sid, TranscriptSubject } from "@ccmsg/protocol";
 import { type Harness, HARNESS } from "../harness/index.ts";
 import { OpError } from "../dispatch/index.ts";
 
 const SUFFIX = ".jsonl";
+
+/** What the harness names an agent's transcript with, and what it calls the
+ * kind of task a teammate is. Both are its own words, read where they are
+ * written rather than mirrored anywhere. */
+const AGENT_PREFIX = "agent-";
+const TEAMMATE_TASK = "in_process_teammate";
 
 /** Where one harness keeps transcripts under its config home, and how a file
  * there says which session it belongs to (§3.8).
@@ -124,6 +130,37 @@ export class TranscriptFiles {
       return existing(join(under, `agent-${name(names.agent_id, AGENT_ID, "agent_id")}${SUFFIX}`));
     }
     return this.teammate(under, name(names.teammate ?? "", TEAMMATE, "teammate"));
+  }
+
+  /** Which standing a transcript was written from, which every item read out
+   * of it states (§3.6).
+   *
+   * The file itself does not say whether an agent was a teammate or an errand:
+   * both are marked as sidechains and both are briefed the same way. What says
+   * so is the harness's own note beside the file — the same note a teammate is
+   * found by name in — and `taskKind` on it is the harness stating which kind
+   * of task it started. An envelope in the opening brief looks like the same
+   * answer and is not one: it is text somebody wrote, and an errand handed a
+   * quoted message carries it too.
+   *
+   * A note that is missing or unreadable leaves the question unanswered, and
+   * the answer then is `sub`: an errand is the standing that claims the least —
+   * nothing goes on standing, nobody is addressed by name — so a teammate read
+   * as one loses a name it might have been drawn under, where the reverse would
+   * have a reader write back to something that is already gone. */
+  subjectOf(file: string): TranscriptSubject {
+    const name = basename(file);
+    if (!name.startsWith(AGENT_PREFIX) || !name.endsWith(SUFFIX)) return "main";
+    let note: unknown;
+    try {
+      note = JSON.parse(
+        readFileSync(join(dirname(file), `${name.slice(0, -SUFFIX.length)}.meta.json`), "utf8"),
+      );
+    } catch {
+      return "sub";
+    }
+    const kind = (note as { taskKind?: unknown } | null)?.taskKind;
+    return kind === TEAMMATE_TASK ? "team" : "sub";
   }
 
   /** A teammate's transcript, found by the name it is addressed by.

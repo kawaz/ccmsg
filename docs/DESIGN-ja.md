@@ -314,6 +314,20 @@ message として届く。使い捨ての agent は 1 度答えて終わるの�
 そこで **sidechain な file の封筒なし user 行は一律 `message:parent:in`** とする。誤って `user` と
 名乗るより、親から来たと言うほうが実態に近い (teammate の指示は実際に親から来る)。
 
+**どの立場の transcript から読んだかは、file を開いた側が決めてアイテムに載せる (`subject`)。**
+file の中に印が無いのは上のとおりなので、分類器は record を嗅がずに**告げられた立場で読む**。
+告げる側の一次情報はハーネスが file の隣に書く `agent-<id>.meta.json` の `taskKind` で、
+`in_process_teammate` なら `team`、それ以外の note なら `sub`、セッション本体の file なら `main`。
+teammate を名前で引く経路が既に同じ note を読んでおり (§5.4)、新しい入力源は増えない。
+開始行の封筒を根拠にしないのは、封筒が**アイテムの中身 = 誰でも書ける文字列**だからで、
+実測では meta のある 8,223 本のうち 24 本 (0.29%) が食い違う (大半は依頼文が封筒を引用した worker)。
+
+**note が無い・壊れている file は `sub` に倒す。** 判別不能をどちらに倒すかは、誤ったときに読み手が
+何をするかで決める: `team` と誤ると「まだ立っている相手」として書き戻す先を提示してしまい、`sub` と
+誤ると名前で描けないだけで済む。meta を持たない transcript は実測 11,012 本中 2,789 本 (いずれも
+古いセッション) あり、ここは一律 `sub` になる。なお `main` として開いた file に sidechain な record が
+現れた場合も `sub` に落とす — 立場は**狭まる方向にしか動かさない**。
+
 **teammate 名は `ids` 台帳に載せない。** 台帳は「読み手が次に掘る対象」の一覧で、載る id は dump の
 主語にできるものに限る。teammate 名は `DumpIdKind` のどれでもなく、名前では dump を引けない。
 teammate の `agent_id` は起動の答えで判るので、そちらが `agent` として載り、`harness_name` が `label` になる。

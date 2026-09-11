@@ -1,3 +1,4 @@
+import type { TranscriptSubject } from "@ccmsg/protocol";
 import type { Item } from "./item.ts";
 import {
   count,
@@ -84,6 +85,7 @@ const OUTSTANDING_CALLS = 4096;
 type Draft = Record<string, unknown> & {
   id: string;
   uuid: string;
+  subject: TranscriptSubject;
   source: { offset: number; bytes: number };
   type: string;
   at: number;
@@ -96,8 +98,8 @@ type Draft = Record<string, unknown> & {
  * apart the harness wrote them. Reading the whole file before any range is
  * applied is what makes `parent_item` answerable: a result inside the range
  * whose call fell before it still names the call. */
-export function classify(records: Iterable<Located>): Item[] {
-  const state = new Classification();
+export function classify(records: Iterable<Located>, subject: TranscriptSubject = "main"): Item[] {
+  const state = new Classification(subject);
   return state.readAll(records);
 }
 
@@ -117,17 +119,24 @@ export class Classification {
   #turn = 0;
   /** The last slash command invoked, which is what its output belongs to. */
   #slash: string | undefined;
-  /** Whose file this is, which decides who is at the other end of a plain
-   * line. A session's own transcript has a person there; a file written for an
-   * agent has whoever started it, and calling that `user` would have a reader
-   * take a machine for a person.
+  /** Whose file this is, which every item states and which decides who is at
+   * the other end of a plain line. A session's own transcript has a person
+   * there; a file written for an agent has whoever started it, and calling that
+   * `user` would have a reader take a machine for a person.
    *
-   * The file says so itself — every record of an agent's transcript is marked
-   * as one — so nothing has to be passed in beside it. It is remembered once
-   * seen rather than read per record: a file is one subject's throughout, and a
-   * record that omitted the mark would otherwise change who the subject is
-   * mid-read. */
-  #subject: "session" | "agent" = "session";
+   * It is told rather than read out of the records, because what tells a
+   * teammate from an errand is not in the transcript at all: the harness states
+   * it beside the file, and whoever opened the file has already read that (§3.6).
+   *
+   * A record marked as a sidechain inside a file opened as a session's own says
+   * the file is an agent's after all, and the reading moves to `sub` — the
+   * standing that claims the least. It only ever narrows: a reading told which
+   * agent's file it has is not talked out of it by the records. */
+  #subject: TranscriptSubject;
+
+  constructor(subject: TranscriptSubject = "main") {
+    this.#subject = subject;
+  }
 
   /** The records of one chunk as the items they were read as, oldest first.
    *
@@ -158,7 +167,7 @@ export class Classification {
   read(record: Row, source: { offset: number; bytes: number }): void {
     const type = str(record["type"]);
     if (type === undefined || NOT_ITEMS.has(type)) return;
-    if (record["isSidechain"] === true) this.#subject = "agent";
+    if (record["isSidechain"] === true && this.#subject === "main") this.#subject = "sub";
     // A record the harness wrote without an id of its own still happened, and
     // an item is pointed at by the record it came from — so where the record
     // stands in the file stands in for the id it lacks. The `@` says which of
@@ -174,6 +183,7 @@ export class Classification {
       const draft: Draft = {
         id: `${uuid}:${String(index)}`,
         uuid,
+        subject: this.#subject,
         source,
         type: kind,
         at,
@@ -255,7 +265,7 @@ export class Classification {
         // them is the answer it was started for, and the ones before are what
         // it hands back mid-flight. No call carries them, which is why
         // `parent:out` is prose as well as a call.
-        const kind = this.#subject === "agent" ? "message:parent:out" : "message:user:out";
+        const kind = this.#subject === "main" ? "message:user:out" : "message:parent:out";
         if (said !== undefined && said !== "") make(kind, { text: said });
         continue;
       }
@@ -473,9 +483,9 @@ export class Classification {
     // stands, being told what to do is not the same as being written to.
     if (record["parentUuid"] === null) {
       this.#turn += 1;
-      make(this.#subject === "agent" ? "message:parent:in" : "message:user:in", {
+      make(this.#subject === "main" ? "message:user:in" : "message:parent:in", {
         text: said,
-        ...(this.#subject === "agent" ? envelope(said) : {}),
+        ...(this.#subject === "main" ? {} : envelope(said)),
       });
       return;
     }

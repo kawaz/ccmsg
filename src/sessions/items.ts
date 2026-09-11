@@ -68,7 +68,7 @@ export function itemsRead(
     throw new OpError("not_found", `the transcript of ${args.sid} could not be read`);
   }
   const keep = selection(args.types === undefined ? {} : { types: args.types }, deps.presets);
-  const { items } = select(within(classify(located(text)), args), keep);
+  const { items } = select(within(classify(located(text), deps.files.subjectOf(file)), args), keep);
   const page = paged(items, args.limit, backwards(args));
   return {
     items: page.items,

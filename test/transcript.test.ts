@@ -11,7 +11,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Glob } from "bun";
 import { PROTOCOL_VERSION, TOPIC_SCHEMAS, validationErrors } from "@ccmsg/protocol";
-import { classify, Sessions, sessionStatusOf } from "../src/sessions/index.ts";
+import {
+  isLive, classify, Sessions, sessionStatusOf } from "../src/sessions/index.ts";
 import { Topics } from "../src/topics/index.ts";
 import {
   FOLD_TAIL_BYTES,
@@ -487,7 +488,7 @@ describe("what the fold settles reaches the sessions domain (§5.1)", () => {
 
     expect(sessions.inputs(SID).api_error_stopped).toBe(true);
     expect(sessions.classify(SID)).toBe("waiting");
-    expect(sessions.peers().peers[0]?.last_user_input_at).toBe(NOW - 1000);
+    expect(sessions.peerRows().filter(isLive)[0]?.last_user_input_at).toBe(NOW - 1000);
     expect(sessions.transcriptPath(SID)).toBe(transcript);
   });
 });
@@ -1049,6 +1050,58 @@ describe("where a sid's transcript is (§5.1)", () => {
       announced: () => undefined,
     });
     expect(files.path(SID)).toBeUndefined();
+  });
+});
+
+describe("which standing a transcript was written from (§3.6)", () => {
+  /** A session's transcript with one agent's file beside it, and whatever the
+   * harness noted about that agent. */
+  function written(note?: Record<string, unknown>): { files: TranscriptFiles; agent: string } {
+    const root = mkdtempSync(join(tmpdir(), "ccmsg-subject-"));
+    roots.push(root);
+    const dir = join(root, "projects", "a-project");
+    const under = join(dir, SID, "subagents");
+    mkdirSync(under, { recursive: true });
+    const session = join(dir, `${SID}.jsonl`);
+    writeFileSync(session, "");
+    const agent = join(under, "agent-acounter-9f.jsonl");
+    writeFileSync(agent, "");
+    if (note !== undefined) {
+      writeFileSync(join(under, "agent-acounter-9f.meta.json"), JSON.stringify(note));
+    }
+    return {
+      files: new TranscriptFiles({
+        harness: "claude",
+        configHome: root,
+        announced: () => session,
+      }),
+      agent,
+    };
+  }
+
+  test("a session's own transcript is read from the session", () => {
+    const { files } = written();
+    expect(files.subjectOf(files.session(SID))).toBe("main");
+  });
+
+  test("an agent the harness noted as a teammate is read as one", () => {
+    const { files, agent } = written({ name: "counter", taskKind: "in_process_teammate" });
+    expect(files.subjectOf(agent)).toBe("team");
+  });
+
+  test("an agent noted without that kind of task is an errand", () => {
+    const { files, agent } = written({ name: "counter", agentType: "general-purpose" });
+    expect(files.subjectOf(agent)).toBe("sub");
+  });
+
+  test("an agent the harness noted nothing readable about is an errand", () => {
+    // The standing that claims the least: nothing goes on standing and nobody
+    // is addressed by name, so a reader is not left writing back to something
+    // that has already finished.
+    const { files, agent } = written();
+    expect(files.subjectOf(agent)).toBe("sub");
+    writeFileSync(`${agent.slice(0, -".jsonl".length)}.meta.json`, "{ half a note");
+    expect(files.subjectOf(agent)).toBe("sub");
   });
 });
 

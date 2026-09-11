@@ -525,6 +525,36 @@ describe("classifying a transcript", () => {
     expect(of(items[0])["harness_name"]).toBeUndefined();
   });
 
+  test("every item states the standing the file was read from", () => {
+    // Told rather than read out of the records: what separates a teammate from
+    // an errand is the harness's note beside the file, and the reading is
+    // opened with what that said.
+    const records = () =>
+      lines(
+        said("w1", "count the lines", { parentUuid: null, isSidechain: true }),
+        answered("w2", [{ type: "text", text: "there were three" }], { parentUuid: "w1" }),
+      );
+    for (const standing of ["team", "sub"] as const) {
+      const items = classify(records(), standing);
+      expect(items.map((item) => item.subject)).toEqual([standing, standing]);
+      for (const item of items) expect(validationErrors(TranscriptItem, item)).toEqual([]);
+    }
+    const own = classify(lines(said("u1", "count the lines"), answered("a1", [])), "main");
+    expect(own.map((item) => item.subject)).toEqual(["main"]);
+    expect(typesOf(own)).toEqual(["message:user:in"]);
+  });
+
+  test("a session's file holding a sidechain record is an agent's after all", () => {
+    // The reading only ever narrows: told nothing, it starts at the session's
+    // own and moves to the standing that claims the least when the records say
+    // it is reading an agent.
+    const items = classify(
+      lines(said("w1", "count the lines", { parentUuid: null, isSidechain: true })),
+    );
+    expect(items.map((item) => item.subject)).toEqual(["sub"]);
+    expect(typesOf(items)).toEqual(["message:parent:in"]);
+  });
+
   test("turns are counted from where a person spoke", () => {
     const items = classify(
       lines(

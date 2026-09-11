@@ -75,7 +75,10 @@ export function dumpWrite(args: SessionDumpWriteArgs, deps: DumpDeps): SessionDu
     },
     deps.presets,
   );
-  const { items, entries } = select(within(classify(located(text)), args), keep);
+  const { items, entries } = select(
+    within(classify(located(text), deps.files.subjectOf(file)), args),
+    keep,
+  );
   const ids = ledger(items);
   const written_at = Date.now();
   // The file repeats what it was asked for. A dump outlives the request that

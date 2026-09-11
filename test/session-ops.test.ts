@@ -365,6 +365,11 @@ async function refusalOf(call: () => unknown): Promise<string> {
   throw new Error("the call was expected to be refused");
 }
 
+import { isLive } from "../src/sessions/index.ts";
+
+/** The other half of the same list: the rows the instance has lost. */
+const isLost = (row: { readonly state?: string }): boolean => !isLive(row as { state?: never });
+
 describe("transcript_read (scope: role)", () => {
   test("a person reads a session that is not theirs, a session reads only its own", async () => {
     const { configHome, handlers } = ops();
@@ -588,14 +593,19 @@ describe("session_rename", () => {
 describe("session_last_live_remove", () => {
   test("the entry goes, the `peers` list says so, and asking twice is not an error", async () => {
     const { handlers, domain, published } = ops({ lastLive: [SID] });
-    expect(domain.peers().last_live.map((entry) => entry.sid)).toEqual([SID]);
+    expect(
+      domain
+        .peerRows()
+        .filter(isLost)
+        .map((entry) => entry.sid),
+    ).toEqual([SID]);
 
     published.length = 0;
     const removed = await run("session_last_live_remove", handlers.session_last_live_remove, {
       sid: SID,
     });
     expect(removed["removed"]).toBe(true);
-    expect(domain.peers().last_live).toEqual([]);
+    expect(domain.peerRows().filter(isLost)).toEqual([]);
     // The removal changes a value the `peers` topic carries, so it goes out
     // through the one push path rather than being a silent edit to a file.
     const peers = published.filter((each) => each.topic === "peers").at(-1);
@@ -614,7 +624,7 @@ describe("session_last_live_remove", () => {
     const { configHome, handlers, domain } = ops({ lastLive: [SID] });
     const file = writeTranscript(configHome, SID);
     await run("session_last_live_remove", handlers.session_last_live_remove, { sid: SID });
-    expect(domain.peers().last_live).toEqual([]);
+    expect(domain.peerRows().filter(isLost)).toEqual([]);
     // The session stays reachable by every other route: its transcript is
     // still there and still readable.
     const read = await run("transcript_read", handlers.transcript_read, { sid: SID });
@@ -769,6 +779,37 @@ describe("session_dump_write", () => {
     const document = dumpAt(written["path"] as string);
     expect(validationErrors(SessionDumpFile, document)).toEqual([]);
     expect(document["agent_id"]).toBe("acounter-9f");
+    // Nothing was noted beside the file, so it is read as an errand's — and
+    // every item says so, which is what a client drawing it beside the
+    // session's own items reads the relations from.
+    expect(new Set(document.items.map((item) => item["subject"]))).toEqual(new Set(["sub"]));
+  });
+
+  test("an agent the harness noted as a teammate is dumped as one", async () => {
+    const { configHome, handlers } = ops();
+    const file = writeTranscript(configHome, SID);
+    const under = join(dirname(file), SID, "subagents");
+    mkdirSync(under, { recursive: true });
+    writeFileSync(join(under, "agent-acounter-9f.jsonl"), AGENT_TRANSCRIPT);
+    writeFileSync(
+      join(under, "agent-acounter-9f.meta.json"),
+      JSON.stringify({ name: "counter", taskKind: "in_process_teammate" }),
+    );
+    const written = await run("session_dump_write", handlers.session_dump_write, {
+      sid: SID,
+      agent_id: "acounter-9f",
+    });
+    const document = dumpAt(written["path"] as string);
+    expect(new Set(document.items.map((item) => item["subject"]))).toEqual(new Set(["team"]));
+  });
+
+  test("the session's own items are read from the session", async () => {
+    const { configHome, handlers } = ops();
+    writeTranscript(configHome, SID, BUSY_TRANSCRIPT);
+    const read = await run("transcript_items_read", handlers.transcript_items_read, { sid: SID });
+    const items = read["items"] as DumpedItem[];
+    expect(items.length).toBeGreaterThan(0);
+    expect(new Set(items.map((item) => item["subject"]))).toEqual(new Set(["main"]));
   });
 
   test("every item written passes the contract's own shape", async () => {

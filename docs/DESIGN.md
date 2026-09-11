@@ -354,6 +354,23 @@ files: whether the opening record is an envelope agrees with the harness's own `
 in a sidechain file is `message:parent:in`**. Saying it came from above is nearer the truth than
 claiming a person wrote it — a teammate's instructions do come from above.
 
+**Which standing a transcript was read from is settled by whoever opened the file, and every item
+states it (`subject`).** Nothing in the file separates the two, as above, so the classifier does
+not sniff the records: it reads under the standing it was told. What tells it is the harness's own
+note beside the file, `agent-<id>.meta.json`, whose `taskKind` says `in_process_teammate` for a
+teammate; any other note is an errand, and a session's own file is `main`. The route that finds a
+teammate by name already reads that same note (§5.4), so no new input is taken. The opening
+envelope is not the ground for it because an envelope is **an item's content — text anybody can
+write**: over the 8,223 agent files that have a note, the two disagree on 24 (0.29%), nearly all of
+them errands whose brief quoted a message.
+
+**A file with no note, or an unreadable one, is read as `sub`.** Which way an unanswerable question
+falls is decided by what a reader does when it is wrong: read as `team`, it offers somebody to
+write back to who is no longer standing; read as `sub`, a teammate merely loses the name it might
+have been drawn under. Of 11,012 agent files measured, 2,789 carry no note (all of them older
+sessions) and are read as errands. A file opened as a session's own that turns out to hold
+sidechain records falls to `sub` the same way — the standing only ever narrows.
+
 **A teammate's name is not in the `ids` ledger.** The ledger is what a reader descends by, so what
 it lists is what can be the subject of a dump. A name is none of the `DumpIdKind`s and nothing can
 be dumped by one. A teammate's `agent_id` is known from the answer to the call that started it, so
