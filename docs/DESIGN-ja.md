@@ -401,7 +401,7 @@ M4 とも矛盾しない。M4 が禁じるのは派生値をディスクに置�
 
 正本は DR-0001。ここに置くのは他の層との接続点だけである。
 
-**登録はローカルからしか始まらない。** `ccmsg daemon passkey add [endpoint] [--cluster <id|name>]` が
+**登録はローカルからしか始まらない。** `ccmsg daemon passkey add <unit> [endpoint]` が
 登録用 URL (`<endpoint>#register=<jwt>`) と **6 桁のコード**を 1 組出す。endpoint は instance の
 公開 base URL そのもの (`https://h/personal/`) で、webui はそこに配られるので、URL の組み立てに
 細工は要らない。URL にコードは入らず、コードは端末にしか出ない — 2 つが別経路で browser に届くので、URL が
@@ -1067,37 +1067,33 @@ config は小さく、再起動が安い (状態のほとんどが揮発で、�
 「編集が次のリクエストから効く」ための mtime 監視・再読込・再配線を持つ理由がない。
 config を変えたら instance を再起動する、が唯一の反映手順になる。
 
-**設定は、判断であるところは TypeScript、一覧であるところは JSON**。`${XDG_CONFIG_HOME:-~/.config}/ccmsg/` に:
+**設定は、判断であるところは TypeScript、一覧であるところは JSON。そして人が編集する物と instance が読む物は別**。人が編集するのは `${XDG_CONFIG_HOME:-~/.config}/ccmsg/`:
 
 | ファイル | 中身 |
 |---|---|
 | `config_v2.ts` | `({ builtin, config }) => config` — この host の全 instance の出発点 |
-| `clusters.json` | `{clusters: ["<cluster_id>", …]}` — この host が知る cluster |
-| `clusters/cluster-<cluster_id>.json` | `{name, peers, instances}` — cluster 1 つ、この host が書き留めた姿 |
-| `instances/instance-<instance_id>.ts` | `({ builtin, default, config }) => config` — instance 1 つ分 |
+| `endpoints.json` | `[{id, endpoint}, …]` — mesh の全 instance。この host の分も他 host の分も |
+| `supervisor.json` | `{instances: ["<id>", …]}` — そのうちこの host が起こす分 |
+| `instances/instance-<id>.ts` | `({ builtin, default, config }) => config` — instance 1 つ分 |
 | `ccmsg-config_v2.d.ts` | TypeScript が書く型の宣言。`daemon add` がここに置く |
 
-**3 つの語と、それぞれが何か**。**instance** は config home 1 つ (A2) で、プライバシーと権限が閉じる最小の単位。**cluster** はユーザ 1 人の管理単位 — 複数 instance、mesh 1 つ、DR-0001 §2.6 の認証記録が複製される範囲 1 つ。同じ host に居る別 cluster の instance には関与しない。**mesh** は 1 つの cluster の instance 同士の配線なので、peer の一覧は host ではなく cluster に属する。
+instance と監督者が読むのは `$CCMSG_STATE_DIR/config/` の方である: 読んで検証した結果そのものである `satisfied.json` と、その元になった各ファイルの写し。**検証を通らなかった物はここに来ない**し、二度評価もしない — 動くのは検証したその値であって、それを作ったファイルの読み直しではない。
 
-**読むのは載っているものだけ**。`clusters.json` が cluster を挙げ、各 cluster が自分の instance を挙げ、それ以外は開かない。誰も挙げていないファイルは何も起こさないので、設定ファイルの控えを隣に置いてもそれは控えであって 2 つ目の daemon ではない。逆向きは沈黙ではなく error にする — 挙がっている id のファイルが無ければ読み取りを終わらせる。instance を 1 つ黙って欠いた cluster は、member を 1 つ黙って欠いた mesh だからである。
+**mesh はデータである**。`endpoints.json` は全 host で同じ一覧で、instance は自分の id の行で自分を見つける。その行が自分の endpoint であり、peer が dial する先であり、handshake の `iss` / `aud` であり、人に見せる URL である (§7.1)。一覧が名指ししていない instance は address が無いので拒否する。設定関数にはこの一覧が渡り、読むのは自由だが (他に誰が居るか知りたい instance はこれを読む)、違う一覧を返したら拒否する。mesh は設定関数が述べるものではないからである。他 host の instance は「ここでは起こさない行」であり、`supervisor.json` がこの host の起こす分、そこに載る id は mesh の行であり自分の設定ファイルを持っていなければならない。
 
-**id は何であるか、name は何と呼ぶか**。どちらの id も 16 byte の乱数の hex で、instance の分は `daemon add` が作って state dir に書く — instance が発行した物すべてがその id で引かれる (§3.6) ので、一度外した config home を足し直しても元の id に答える。name はラベルで、既定は id、置き場はファイルの中。改名でファイルは動かず、記録も書き換わらない。
+**id は何であるか、name は何と呼ぶか**。id は 16 byte の乱数の hex で、`daemon add` が作って instance の state dir に書く — instance が発行した物すべてがその id で引かれる (§3.6) ので、一度外した config home を足し直しても元の id に答える。name はラベルで、既定は id、置き場はファイルの中。改名でファイルは動かず、記録も書き換わらない。
 
-**1 つの instance は複数の cluster に属してよい**。各 cluster が同じ id を挙げる。それでも config home 1 つ、プロセス 1 つで、監督者は 1 回だけ起動し、どの cluster に属していて各 cluster の mesh が何かを instance に伝える。その分離が何のためか (記録を cluster ごとに持つ、hello で cluster を名乗る、relay がその境界で止まる) はこの上に作るもので、まだここには無い。
+**起動と reload は同じ 1 本の処理**。全部読み、JSON は JSON として検査し、TypeScript は呼ぶ (設定関数は promise で答えてよいので常に await する)。各ファイルはそれ単体で分かる範囲まで検査するので、間違いはそれを書いた場所で報告される。最後の関門は全体である: 監督者が起こす id は mesh の行を持ち自分のファイルを持つこと、2 つの行が同じ address を持たないこと、2 つの instance が同じ port や同じ config home を持たないこと、どの設定関数も mesh を述べ直していないこと。ここまで通って初めて state 側を書き、起動 / reload する。
 
-`config_v2.ts` には `builtin` (組み込み既定) が、instance のファイルには `builtin` と `default` (`config_v2.ts` が返した値) が渡る。どちらも深く凍結してあり、`config` は 1 段上のコピーなので、渡された物を書き換えて返す。instance のファイルは自分が答える config home の絶対パスを `config.dir` に書く。同じ config home を 2 つのファイルが名乗ったら拒否する — instance とは config home そのものだから。ファイルは `async` でもよい。答えを作るのに何が要るか (秘密を読む、何かに尋ねる) はそのファイルの都合である。
+**通らなかった設定は何も変えない**。state 側は触らず、何が悪いかを log に書き `ccmsg daemon status` が答え、host は前回適用された物で起動する — セッションを抱えている instance は、ファイルの打ち間違いで奪ってよい物ではない。例外は初回だけで、その時は戻る先が無い。`daemon add` / `daemon remove` も編集用を書いた後にこの同じ処理を通る。
 
-**マージ規則は無い。何もマージしないから**である。ファイルは土台の全体を受け取り、動かす値の全体を返す。「この一覧は下の段を置換するのか、足すのか」を読み手が覚えておく必要が無い — `config.dump.presets = […]` なら置換、`.push(…)` なら追加で、どちらのつもりかはファイルが言う。
+**2 つの側を見比べるのが `ccmsg config`**。`list` は各ファイルが何で、何が悪くて、適用済みの写しと違うかを言う。`diff [file]` はその差、`diff --satisfied` は「適用したら全体が何に変わるか」。`show` は編集用を評価して出来上がる `satisfied.json` を表示する (何も書かない)。`revert <file> | --all` は適用済みの写しを書き戻し、上書きする物を `$CCMSG_STATE_DIR/config.rejected/<パス>.<時刻>` に残してその場所を出力する。`show` と `diff --satisfied` は問いに答えるために設定関数を呼ぶので、**設定関数は副作用を持たない前提**である。
 
-**cluster の mesh は書くものではなく導かれるもの** (§7.1)。その cluster が挙げる instance (それぞれ自分のファイルが与えた address) が先、続いてその cluster が知らされた endpoint。TypeScript は `peers` を書かない。書いてあれば無視ではなく拒否する — 書いた人は mesh を述べているのだから、mesh は今どこで述べるのかを答える。
+写すのは上に挙げたファイルだけである。設定ファイルが import する先はそのファイルの都合であり、ここでは控えない — そちらが失われても `satisfied.json` があるので instance は起動する。起動させるのは値であってファイルではないからである。
 
-**`endpoint` は proxy が前に居る時に書く**。待ち受ける address と届く address は別の事実で互いに導けないので、peer が dial できる方を書く。これが probe の確定する self であり、handshake の `iss` / `aud` であり、人に見せる URL である。書かなければ待ち受ける address になる。どちらも無い instance は unix socket だけで serve するので、誰の mesh にも入らない。
-
-**cluster のファイルは、その cluster についてのこの host の記述である**。cluster は host をまたぐので、正本の複製はどこにも無い。各 host が自分の dial する peer と自分が動かす instance を書き留めるだけで、2 台目の host は同じ cluster id を名乗ることで参加する。
+`config_v2.ts` には `builtin` (組み込み既定) が、instance のファイルには `builtin` と `default` (`config_v2.ts` が返した値) が渡る。どちらも深く凍結してあり、`config` は 1 段上のコピーなので、渡された物を書き換えて返す。instance のファイルは自分が答える config home の絶対パスを `config.dir` に書く。**マージ規則は無い。何もマージしないから**である — ファイルは土台の全体を受け取り動かす値の全体を返すので、`config.dump.presets = […]` なら置換、`.push(…)` なら追加で、どちらのつもりかはファイルが言う。
 
 誰も持っていない field を書いた場合は読み取りを終わらせる。例外を投げた場合・設定でない物を返した場合も同じ。綴りを間違えた field は「書いたのに効かない設定」であり、それを黙って落としたまま起動するのは §8.3 が拒否する状態そのものだからである。
-
-実効設定は `ccmsg daemon status` が答える (動いていない instance の分も、再起動したら効く値としてファイルから読んで返す)。
 
 ### 8.3 起動の順序
 
@@ -1151,26 +1147,22 @@ config を変えたら instance を再起動する、が唯一の反映手順に
   `supervise_*` で契約の op と区別する — **これは契約ではない**。ホスト上のプロセスに
   ついての内部プロトコルであって、webui も mesh の相手もここには来ない。
 
-  `ccmsg daemon add <dir> [--cluster <id|name>]` は instance id を発行して
-  `instances/instance-<id>.ts` を書き (ラベルは dir 名から、harness は目印ファイルから、port は
-  登録済みの最大 + 1 の空き)、その id を cluster に載せたうえで監督者にも伝える。cluster を
-  指定しなければ 1 つならそれ、無ければ新規、複数なら指定を求める。この host が知らない id は
-  他所に在る cluster なのでその id で書き留める (2 台目の host はこれで参加する)。
-  `remove <name | id | dir>` は全 cluster から id を外してファイルを消し、state dir は残す —
-  そこの id で instance が発行した物すべてが引かれるからである。`remove` は見るのをやめるだけで
-  **子は止めない** — 一覧の編集は shutdown ではなく、その instance と話しているセッションは
-  そのまま話し続ける。
+  `ccmsg daemon add <dir>` は instance id を発行して `instances/instance-<id>.ts` を書き
+  (ラベルは dir 名から、harness は目印ファイルから、port は登録済みの最大 + 1 の空き)、id と
+  その loopback address を `endpoints.json` に、id を `supervisor.json` に載せ、§8.2 の処理を
+  通してから監督者に伝える。proxy が前に居るかどうかはここからは見えない deployment の事実
+  なので、居る場合はその行を人が直す。`remove <name | id | dir>` は両方のファイルから id を
+  外して設定を消し、state dir は残す — そこの id で instance が発行した物すべてが引かれる
+  からである。`remove` は見るのをやめるだけで**子は止めない** — 一覧の編集は shutdown では
+  なく、その instance と話しているセッションはそのまま話し続ける。
 
   例外は 2 つ。`ccmsg daemon run [dir]` は foreground の単発起動で監督者の管理外
   (`status` にも出ない)。`ccmsg daemon log` はファイルを直接読む — ログは死んだ後に
   読むものなので、監督者が居ないと読めない設計にはしない
-- `ccmsg mesh add | list | remove <endpoint> [--cluster <id|name>]` — cluster が知らされた
-  mesh endpoint (= この host が持たない分、§8.2)。`daemon` の下でなく単独なのは、これがどの
-  instance の物でもないからである (mesh は cluster のもの、§7.1)。host に cluster が 1 つなら
-  指定は要らない。add の反映は次の起動時 (他が
-  再読込しないのと同じ理由、DV-Q8)。remove は書くだけでなく動いている instance にも伝える —
-  一覧から外した endpoint は「この host が話してはいけない相手」であり、次の再起動まで link を
-  張ったままにするのは、今剥奪したその接続を残すことだからである。
+- `ccmsg config list | diff | show | revert` — 書かれている物と適用されている物を見比べる
+  (§8.2)。`daemon` の下でなく単独なのは、対象がファイルであり、ファイルはどれか 1 つの
+  instance の物ではなく host の物だからである: どれが間違っているか、適用したら何が変わるか、
+  通った写しを書き戻す。
 
 - `ccmsg service register` — その監督者を launchd (macOS) / systemd --user (Linux) に
   登録する。ログインを跨いで常駐させるのはこの層の責務であり、`ccmsg plugin install` が

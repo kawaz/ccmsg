@@ -19,7 +19,7 @@ import {
 } from "../src/auth/index.ts";
 import { SoftAuthenticator } from "./authenticator.ts";
 import { connectWs, type LineClient } from "./client.ts";
-import { writeConfigHome } from "./harness.ts";
+import { writeInstanceHome } from "./harness.ts";
 
 /** The person's authentication end to end (DR-0001): a registration URL made
  * on the machine, a credential registered against it, an assertion, the tokens
@@ -52,7 +52,9 @@ async function serving(
   const origin = `http://127.0.0.1:${String(port)}`;
   const root = mkdtempSync(join(tmpdir(), "ccmsg-auth-"));
   mkdirSync(join(root, "home", "sessions"), { recursive: true });
-  writeConfigHome(join(root, "config"), { entry: { host: "127.0.0.1", port } });
+  writeInstanceHome(join(root, "config"), join(root, "home"), {
+    entry: { host: "127.0.0.1", port },
+  });
   const env: Env = {
     CLAUDE_CONFIG_DIR: join(root, "home"),
     CCMSG_STATE_DIR: join(root, "state"),
@@ -693,10 +695,10 @@ describe("what a registration or an assertion is refused for", () => {
     expect(response.status).toBe(200);
   });
 
-  test("a registration URL naming an issuer this instance cannot ask is refused", async () => {
-    // The registration travels to whoever issued the URL (§2.6). On an instance
-    // with no mesh there is nobody to ask, so it is refused — and nothing is
-    // spent: the real URL still works afterwards.
+  test("a registration URL naming an issuer nothing can reach is refused", async () => {
+    // The registration travels to whoever issued the URL (§2.6). An issuer no
+    // entry of the mesh names is one nothing can carry the question to, so it
+    // is refused — and nothing is spent: the real URL still works afterwards.
     const at = await serving();
     const issued = at.instance.auth.issue({ endpoint: servedAt(at) });
     const authenticator = new SoftAuthenticator(issued.rp_id);
@@ -720,8 +722,11 @@ describe("what a registration or an assertion is refused for", () => {
         userId: issued.user_id,
       }),
     });
+    // The mesh is what would have carried it, so the mesh is what answers: an
+    // id it does not name is an instance it cannot reach. (An instance with no
+    // mesh at all has nobody to ask, and says `auth_unknown_issuer`.)
     expect(((await refused.json()) as { error: { code: string } }).error.code).toBe(
-      "auth_unknown_issuer",
+      "instance_unreachable",
     );
 
     // Neither the URL nor one of its five tries was spent.

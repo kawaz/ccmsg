@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { type InstanceId, type InstanceInfo } from "@ccmsg/protocol";
-import { start } from "../src/instance/index.ts";
+import { type Endpoint, type InstanceId, type InstanceInfo } from "@ccmsg/protocol";
+import { readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { ConfigError, type Env, start } from "../src/instance/index.ts";
 import {
   EphemeralKey,
   glareKeepsNew,
@@ -25,6 +27,23 @@ import {
 } from "./cluster.ts";
 
 afterEach(release);
+
+/** Take this instance's own row out of the mesh, leaving the file otherwise
+ * as it was: what a person does by editing `endpoints.json` and forgetting
+ * the instance they are about to start. */
+function unlistEndpoints(env: Env): void {
+  const file = join(env["CCMSG_CONFIG_DIR"] as string, "endpoints.json");
+  writeFileSync(file, `${JSON.stringify([], null, 2)}\n`);
+}
+
+/** Say that a second address reaches this instance, which is what listing a
+ * proxy beside the address it forwards to comes to. */
+function repointEndpoints(env: Env, alias: Endpoint): void {
+  const file = join(env["CCMSG_CONFIG_DIR"] as string, "endpoints.json");
+  const rows = JSON.parse(readFileSync(file, "utf8")) as { id: string; endpoint: string }[];
+  const mine = rows[0] as { id: string; endpoint: string };
+  writeFileSync(file, `${JSON.stringify([mine, { id: mine.id, endpoint: alias }], null, 2)}\n`);
+}
 
 /** The peer list is written before anything binds (§7.1), so between choosing
  * an address and listening on it there is a gap that only the kernel's own
@@ -65,11 +84,11 @@ describe("which endpoint this instance is (§7.1)", () => {
     expect(reachable(instance, asleep)).toBe(false);
   });
 
-  test("two instances given one list each settle on their own endpoint", async () => {
+  test("two instances of one mesh each take their own endpoint", async () => {
     const [a, b] = [leasePort(), leasePort()];
     const peers = [endpoint(a.port), endpoint(b.port)];
-    // The same file, byte for byte, to both homes: neither is told which entry
-    // is its own and each finds out from the probe that came back to it.
+    // The same mesh to both homes, and each is told which entry is its own by
+    // the row carrying its id — which is the one thing the two files differ in.
     const [first, second] = await Promise.all([
       startAt(homeFor(a, peers), { reconnectMinMs: 20 }),
       startAt(homeFor(b, peers), { reconnectMinMs: 20 }),
@@ -85,51 +104,37 @@ describe("which endpoint this instance is (§7.1)", () => {
     expect(instance.self).not.toBe(endpointOf(instance));
   });
 
-  test("a mesh that does not reach this instance ends the start (§7.1)", async () => {
-    // Every entry is somewhere else, so no probe comes back here and there is
-    // nothing to be. Q2 of self-identification, refused at startup. A mesh an
-    // instance is listed in reaches it by construction now, so the way to be
-    // in one and not in it is to be reached at an address that is not yours.
+  test("an instance the mesh does not name ends the start (§7.1)", async () => {
+    // Which entry of the mesh is this instance is the row carrying its own id.
+    // No row is no address: nobody could dial it, and nothing could settle what
+    // a handshake calls it, so it is a config error rather than an instance
+    // that runs unreachable.
     const lease = leasePort();
-    const env = homeFor(lease, [endpoint(deadPort())], endpoint(deadPort()));
-    // `start` binds the address this home names, so the lease on it is given up
-    // here rather than by `startAt`, which is what does it for a start expected
-    // to run.
+    const env = homeFor(lease, []);
+    unlistEndpoints(env);
     await lease.release();
-    expect(await refusal(start({ env, echoLog: false }))).toBeInstanceOf(SelfEndpointError);
+    expect(await refusal(start({ env, echoLog: false }))).toBeInstanceOf(ConfigError);
   });
 
-  test("an endpoint that answers without being us ends the start (§7.1)", async () => {
-    // The address this instance says it is reached at is somebody else's: it
-    // answers the probe, but the token does not come back here, and answering
-    // is not being us. This is the shape a proxy pointed at the wrong instance
-    // arrives in, which is what a stated endpoint can now get wrong.
-    const lease = leasePort();
-    const stranger = leasePort();
-    const env = homeFor(lease, [], endpoint(stranger.port));
-    await lease.release();
-    expect(await refusal(start({ env, echoLog: false }))).toBeInstanceOf(SelfEndpointError);
-  });
-
-  test("two URLs that both reach this instance end the start (§7.1)", async () => {
+  test("two entries at one address end the start (§7.1)", async () => {
     // A proxy in front of the instance, listed beside the address it forwards
-    // to. Both probes land here, so two entries are this instance and neither
-    // can be preferred: which of the two names a peer should compare as `aud`
-    // is not something the protocol can decide, so the start is refused.
+    // to. Whoever dialled that address would have reached both, and which of
+    // the two a peer should compare as `aud` is not something the data can be
+    // read two ways about — so the file is refused where it is written.
     const lease = leasePort();
     const alias = proxyTo(endpoint(lease.port));
     const env = homeFor(lease, [endpoint(lease.port), alias]);
+    repointEndpoints(env, alias);
     await lease.release();
-    expect(await refusal(start({ env, echoLog: false }))).toBeInstanceOf(SelfEndpointError);
+    expect(await refusal(start({ env, echoLog: false }))).toBeInstanceOf(ConfigError);
   });
 
   test("a refused start leaves its port bound to nobody (§7.1)", async () => {
     const lease = leasePort();
-    // Reached at an address nothing answers on: the probe comes back from
-    // nowhere, so no entry of the mesh is this instance.
-    const env = homeFor(lease, [], endpoint(deadPort()));
+    const env = homeFor(lease, []);
+    unlistEndpoints(env);
     await lease.release();
-    expect(await refusal(start({ env, echoLog: false }))).toBeInstanceOf(SelfEndpointError);
+    expect(await refusal(start({ env, echoLog: false }))).toBeInstanceOf(ConfigError);
     // The entry listener is up before the endpoint list is settled, so the
     // refusal has to give the port back: binding it again is what says it did.
     const after = Bun.serve({

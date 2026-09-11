@@ -4,9 +4,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cookieName } from "../src/auth/index.ts";
 import { clientAddress, parseCidr, trusted } from "../src/instance/client.ts";
-import { loadConfig } from "../src/instance/config.ts";
+import { evaluate } from "../src/instance/config.ts";
 import { type Env, type Instance, isRunning, start } from "../src/instance/index.ts";
 import { writeConfigHome } from "./harness.ts";
+
+/** What a config home was refused for, as one string. */
+async function problems(dir: string): Promise<string> {
+  const read = await evaluate(dir);
+  return read.problems.map((one) => `${one.file}: ${one.msg}`).join("; ");
+}
 
 /** Where a request came from when a proxy is in front of the instance (§3.1).
  *
@@ -146,9 +152,16 @@ describe("what the instance keeps (DR-0001 §2.2)", () => {
     const port = (nextPort += 1);
     const root = mkdtempSync(join(tmpdir(), "ccmsg-forwarded-"));
     mkdirSync(join(root, "home", "sessions"), { recursive: true });
-    writeConfigHome(join(root, "config"), {
-      entry: { host: "127.0.0.1", port, source_ips: [], trusted_proxies },
-    });
+    writeConfigHome(
+      join(root, "config"),
+      {},
+      {
+        mine: {
+          dir: join(root, "home"),
+          entry: { host: "127.0.0.1", port, source_ips: [], trusted_proxies },
+        },
+      },
+    );
     const env: Env = {
       CLAUDE_CONFIG_DIR: join(root, "home"),
       CCMSG_STATE_DIR: join(root, "state"),
@@ -209,41 +222,63 @@ describe("what the instance keeps (DR-0001 §2.2)", () => {
     expect(at.instance.auth.records.families()[0]?.body.last_refresh?.ip).toBe("127.0.0.1");
   });
 
-  test("a block that is not one is refused where it is written", () => {
+  test("a block that is not one is refused where it is written", async () => {
     const root = mkdtempSync(join(tmpdir(), "ccmsg-forwarded-config-"));
     const dir = join(root, "config");
-    writeConfigHome(dir, {
-      entry: {
-        host: "127.0.0.1",
-        port: 0,
-        source_ips: [],
-        trusted_proxies: ["10.0.0.0/8", "nope"],
+    writeConfigHome(
+      dir,
+      {},
+      {
+        mine: {
+          dir: root,
+          entry: {
+            host: "127.0.0.1",
+            port: 8643,
+            source_ips: [],
+            trusted_proxies: ["10.0.0.0/8", "nope"],
+          },
+        },
       },
-    });
-    expect(loadConfig(dir, root)).rejects.toThrow(/trusted_proxies/);
+    );
+    expect(await problems(dir)).toMatch(/trusted_proxies/);
   });
 });
 
 describe("upstream.terminal_gateway", () => {
-  function writeUpstream(terminal_gateway: unknown): string {
+  function writeUpstream(terminal_gateway: unknown): { dir: string; home: string } {
     const root = mkdtempSync(join(tmpdir(), "ccmsg-terminal-gateway-config-"));
-    writeConfigHome(join(root, "config"), { upstream: { terminal_gateway } });
-    return join(root, "config");
+    const dir = join(root, "config");
+    writeConfigHome(
+      dir,
+      {},
+      {
+        mine: {
+          dir: root,
+          entry: { host: "127.0.0.1", port: 8643, source_ips: [], trusted_proxies: [] },
+          upstream: { terminal_gateway },
+        },
+      },
+    );
+    return { dir, home: root };
   }
 
   test("a value in the contract's shape is kept", async () => {
-    const dir = writeUpstream("https://terminals.example/gw");
-    const config = await loadConfig(dir, dir);
-    expect(config.upstream.terminal_gateway).toBe("https://terminals.example/gw");
+    const { dir, home } = writeUpstream("https://terminals.example/gw");
+    const read = await evaluate(dir);
+    expect(
+      read.satisfied?.instances.find((one) => one.dir === home)?.config.upstream.terminal_gateway,
+    ).toBe("https://terminals.example/gw");
   });
 
-  test("a trailing slash is refused where it is written", () => {
-    const dir = writeUpstream("https://terminals.example/gw/");
-    expect(loadConfig(dir, dir)).rejects.toThrow(/terminal_gateway/);
+  test("a trailing slash is refused where it is written", async () => {
+    expect(await problems(writeUpstream("https://terminals.example/gw/").dir)).toMatch(
+      /terminal_gateway/,
+    );
   });
 
-  test("a scheme the contract does not accept is refused", () => {
-    const dir = writeUpstream("ftp://terminals.example/gw");
-    expect(loadConfig(dir, dir)).rejects.toThrow(/terminal_gateway/);
+  test("a scheme the contract does not accept is refused", async () => {
+    expect(await problems(writeUpstream("ftp://terminals.example/gw").dir)).toMatch(
+      /terminal_gateway/,
+    );
   });
 });

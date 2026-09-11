@@ -2,7 +2,15 @@ import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { basename, isAbsolute, join } from "node:path";
 import { currentSession, HARNESS } from "../harness/index.ts";
-import { CLUSTERS_DIR, CLUSTERS_FILE, CONFIG_FILE, INSTANCES_DIR } from "./config.ts";
+import {
+  CONFIG_FILE,
+  ENDPOINTS_FILE,
+  INSTANCES_DIR,
+  REJECTED_DIR,
+  SATISFIED_FILE,
+  STATE_CONFIG_DIR,
+  SUPERVISOR_FILE,
+} from "./config.ts";
 
 /** Every path one instance uses, decided in one place (daemon-v2 §8.1).
  *
@@ -23,9 +31,15 @@ export interface InstancePaths {
   readonly configFile: string;
   /** Where the file naming this config home lives, one per instance. */
   readonly instancesDir: string;
-  /** Which clusters this host knows of, and where each one's file is. */
-  readonly clustersFile: string;
-  readonly clustersDir: string;
+  /** The mesh as data, and which of it this host starts. */
+  readonly endpointsFile: string;
+  readonly supervisorFile: string;
+  /** Where what has been read and checked is kept, which is the only thing the
+   * supervisor and the instances read (§8.2). */
+  readonly stateRoot: string;
+  readonly satisfiedFile: string;
+  /** Where a file is put before it is overwritten by the checked copy. */
+  readonly rejectedDir: string;
   readonly stateDir: string;
   /** The address clients connect to. A symlink to whichever `socketReal` is
    * currently serving, so a client's path outlives the process behind it. */
@@ -119,6 +133,7 @@ export function resolvePaths(env: Env = process.env): InstancePaths {
 export function resolvePathsFor(configHome: string, env: Env = process.env): InstancePaths {
   const key = instanceKey(configHome);
   const configDir = resolveConfigDir(env);
+  const stateRoot = resolveStateRoot(env);
   const stateDir = appDir(env, "CCMSG_STATE_DIR", "XDG_STATE_HOME", [".local", "state"], key);
   const socketDir = socketDirFor(stateDir, key);
   return {
@@ -127,8 +142,11 @@ export function resolvePathsFor(configHome: string, env: Env = process.env): Ins
     configDir,
     configFile: join(configDir, CONFIG_FILE),
     instancesDir: join(configDir, INSTANCES_DIR),
-    clustersFile: join(configDir, CLUSTERS_FILE),
-    clustersDir: join(configDir, CLUSTERS_DIR),
+    endpointsFile: join(configDir, ENDPOINTS_FILE),
+    supervisorFile: join(configDir, SUPERVISOR_FILE),
+    stateRoot,
+    satisfiedFile: join(stateRoot, STATE_CONFIG_DIR, SATISFIED_FILE),
+    rejectedDir: join(stateRoot, REJECTED_DIR),
     stateDir,
     socketDir,
     socket: join(socketDir, SOCKET_NAME),

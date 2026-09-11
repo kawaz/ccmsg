@@ -17,6 +17,7 @@ import {
   rowFor,
   FIRST_PORT,
   type StatusRow,
+  status as statusOfTarget,
   stop,
   STOP_TIMEOUT_MS,
   Supervisor,
@@ -24,14 +25,7 @@ import {
   tailOf,
   targetFor,
 } from "../src/daemon/index.ts";
-import {
-  DEFAULT_CONFIG,
-  loadAll,
-  TYPES_FILE,
-  loadClusters,
-  saveCluster,
-  saveClusters,
-} from "../src/instance/index.ts";
+import { applied, DEFAULT_CONFIG, evaluate, TYPES_FILE } from "../src/instance/index.ts";
 import { resolvePaths } from "../src/instance/paths.ts";
 import { leasePort } from "./cluster.ts";
 import { capture, Host, json, reapOrphans, writeConfigHome } from "./harness.ts";
@@ -129,15 +123,12 @@ describe("which config homes there are (daemon add / remove / list)", () => {
     expect(written).toContain(`config.dir = ${JSON.stringify(home)};`);
     expect(written).toContain('config.name = "one";');
     expect(written).not.toContain("harness");
-    // And one cluster holding it, which is what says the instance is run at
-    // all: what is listed is read, and nothing else is.
-    const clusters = loadClusters(paths.configDir);
-    expect(clusters).toMatchObject([{ instances: [added.id] }]);
     // The dump presets go in the shared file: what a preset names is an
     // interest, which this instance has no opinion on, so they are examples in
     // a file to edit rather than a default in the code.
-    const { defaults, instances } = await loadAll(paths.configDir);
-    expect(defaults.dump.presets.map((one) => one.name)).toEqual([
+    const { satisfied } = await evaluate(paths.configDir);
+    const instances = satisfied?.instances ?? [];
+    expect(instances[0]?.config.dump.presets.map((one) => one.name)).toEqual([
       "file",
       "howto",
       "journal",
@@ -145,15 +136,16 @@ describe("which config homes there are (daemon add / remove / list)", () => {
       "audit",
     ]);
     expect(instances).toMatchObject([{ id: added.id, name: "one", dir: home }]);
-    // What the instance runs with is the built-ins, those presets, and the one
-    // thing `add` settled for it: the address it listens on, which is also the
-    // address its peers on this host dial it at.
+    // What the instance runs with is the built-ins, those presets, and the two
+    // things `add` settled for it: the address it binds and the row of the
+    // mesh its peers dial it at.
     const port = instances[0]?.config.entry?.port as number;
     expect(instances[0]?.config).toEqual({
       ...DEFAULT_CONFIG,
-      dump: defaults.dump,
+      dump: instances[0]?.config.dump,
       entry: { host: "127.0.0.1", port, source_ips: [], trusted_proxies: [] },
-      peers: [`http://127.0.0.1:${String(port)}/`],
+      endpoint: `http://127.0.0.1:${String(port)}/`,
+      endpoints: [{ id: added.id, endpoint: `http://127.0.0.1:${String(port)}/` }],
     });
   });
 
@@ -166,7 +158,8 @@ describe("which config homes there are (daemon add / remove / list)", () => {
       "export default ({ config }: { config: { dump: unknown } }) => { config.dump = { presets: [] }; return config; };\n",
     );
     await register(at.home("two"));
-    expect((await loadAll(paths.configDir)).defaults.dump.presets).toEqual([]);
+    const read = await evaluate(paths.configDir);
+    expect(read.satisfied?.instances.map((one) => one.config.dump.presets)).toEqual([[], []]);
   });
 
   test("a directory whose name is not a label is listed under its id", async () => {
@@ -179,57 +172,66 @@ describe("which config homes there are (daemon add / remove / list)", () => {
     expect((await list(process.env)).map((one) => one.name)).toEqual([row.id]);
   });
 
-  test("an instance belongs to a cluster, and a second one is asked for by name", async () => {
-    const at = host();
-    const first = await register(at.home("one"));
-    // With one cluster there is no question which to join.
-    expect(first.cluster_id).toMatch(/^[0-9a-f]{32}$/);
-    const second = await add(process.env, at.home("two"), { cluster: "b".repeat(32) });
-    // An id this host has not met is a cluster that exists elsewhere — a
-    // cluster spans hosts — so it is written down under that id.
-    expect(second.cluster_id).toBe("b".repeat(32));
-    expect(loadClusters(resolvePaths(process.env).configDir).map((one) => one.id)).toEqual([
-      String(first.cluster_id),
-      "b".repeat(32),
-    ]);
-    // And with two of them, which one is no longer something to guess at.
-    expect(add(process.env, at.home("three"))).rejects.toThrow(/--cluster/);
-    // Listed by cluster, one row per membership.
-    const rows = await list(process.env);
-    expect(rows.map((one) => [one.cluster_id, one.name])).toEqual([
-      [first.cluster_id, "one"],
-      ["b".repeat(32), "two"],
-    ]);
-  });
-
-  test("an instance in two clusters is one instance, in the mesh of both", async () => {
+  test("what add writes down is the mesh row and the id to start", async () => {
     const at = host();
     const home = at.home("one");
     const row = await register(home);
     const paths = resolvePaths(process.env);
-    const second = "c".repeat(32);
-    saveCluster(paths.configDir, {
-      id: second,
-      name: "other",
-      peers: ["https://far.example/ccmsg/"],
+    // The two files a person edits afterwards: where this instance is reached,
+    // and which ids this host starts. The address is the loopback one, because
+    // that is the one this host is certainly reached at — a proxy in front of
+    // it is a deployment fact nothing here can see.
+    expect(JSON.parse(readFileSync(paths.endpointsFile, "utf8"))).toEqual([
+      { id: row.id, endpoint: `http://127.0.0.1:${String(row.port)}/` },
+    ]);
+    expect(JSON.parse(readFileSync(paths.supervisorFile, "utf8"))).toEqual({
       instances: [row.id],
     });
-    saveClusters(paths.configDir, [String(row.cluster_id), second]);
-    const { instances } = await loadAll(paths.configDir);
-    // One instance, one process, and one entry in each listing.
-    expect(instances).toHaveLength(1);
-    // A cluster nobody named is listed under its id, which is what a name
-    // defaults to; the one made here was given one.
-    expect(instances[0]?.clusters.map((one) => one.name)).toEqual([
-      String(row.cluster_id),
-      "other",
-    ]);
-    expect(instances[0]?.config.peers).toContain("https://far.example/ccmsg/");
-    expect((await registered(process.env)).map((one) => one.dir)).toEqual([home]);
-    expect((await list(process.env)).map((one) => one.cluster_id)).toEqual([
-      row.cluster_id,
-      second,
-    ]);
+    // And what checked out, which is what the supervisor and the instance read.
+    const standing = applied(paths.stateRoot);
+    expect(standing?.supervisor.instances).toEqual([row.id]);
+    expect(standing?.instances[0]).toMatchObject({ id: row.id, name: "one", dir: home });
+    expect(standing?.endpoints).toHaveLength(1);
+  });
+
+  test("remove takes the id out of both files and leaves the state directory", async () => {
+    const at = host();
+    const home = at.home("one");
+    const row = await register(home);
+    const paths = resolvePaths(process.env);
+    await remove(process.env, "one");
+    expect(JSON.parse(readFileSync(paths.endpointsFile, "utf8"))).toEqual([]);
+    expect(JSON.parse(readFileSync(paths.supervisorFile, "utf8"))).toEqual({ instances: [] });
+    expect(existsSync(join(paths.instancesDir, `instance-${row.id}.ts`))).toBe(false);
+    // The id stays where everything the instance issued is keyed by it, so a
+    // config home that is added again answers to the id it always had.
+    expect(existsSync(targetFor(process.env, home).paths.instanceIdFile)).toBe(true);
+    expect((await register(home)).id).toBe(row.id);
+  });
+
+  test("an edit that does not check out leaves what is applied standing", async () => {
+    const at = host();
+    const home = at.home("one");
+    const row = await register(home);
+    const paths = resolvePaths(process.env);
+    // A port that is not one: the file is what a person just wrote, and the
+    // settings that were checked go on being what runs (§8.3).
+    writeFileSync(
+      join(paths.instancesDir, `instance-${row.id}.ts`),
+      `export default ({ config }: any) => {
+        config.name = "one";
+        config.dir = ${JSON.stringify(home)};
+        config.entry = { host: "127.0.0.1", port: "nope", source_ips: [], trusted_proxies: [] };
+        return config;
+      };\n`,
+    );
+    const rows = await list(process.env);
+    expect(rows.map((one) => one.name)).toEqual(["one"]);
+    expect(rows[0]?.port).toBe(row.port);
+    // And it is said, rather than left to be noticed in a setting that did not
+    // take: what `daemon status` answers carries what was refused.
+    const status = await statusOfTarget(targetFor(process.env, home, "one", row.id));
+    expect(status.config_problems?.[0]?.msg).toMatch(/entry.port/);
   });
 
   test("the port is the next one after what is registered, and the harness is read off the directory", async () => {
@@ -241,7 +243,9 @@ describe("which config homes there are (daemon add / remove / list)", () => {
     const first = await add(process.env, at.home("one"));
     const second = await add(process.env, at.home("two"));
     const paths = resolvePaths(process.env);
-    const ports = (await loadAll(paths.configDir)).instances.map((one) => one.config.entry?.port);
+    const ports = (await evaluate(paths.configDir)).satisfied?.instances.map(
+      (one) => one.config.entry?.port,
+    ) as (number | undefined)[];
     // The range starts at 8643 and each instance after the first takes the next
     // free one: a person adding a second config home states nothing. Where the
     // first one lands depends on what else this machine is running — the search
@@ -251,13 +255,13 @@ describe("which config homes there are (daemon add / remove / list)", () => {
     expect(one).toBeGreaterThanOrEqual(FIRST_PORT);
     expect(two).toBe(one + 1);
     expect([first.name, second.name]).toEqual(["one", "two"]);
-    // And each is in the mesh of this host, at the address the other dials.
-    const { instances } = await loadAll(paths.configDir);
-    expect(instances[0]?.config.peers).toEqual([
+    // And each is an entry of the mesh, at the address the other dials it at.
+    const mesh = (await evaluate(paths.configDir)).satisfied?.endpoints ?? [];
+    expect(mesh.map((row) => row.endpoint)).toEqual([
       `http://127.0.0.1:${String(one)}/`,
       `http://127.0.0.1:${String(two)}/`,
     ]);
-    expect(instances[1]?.config.peers).toEqual(instances[0]?.config.peers);
+    expect([first.id, second.id]).toEqual(mesh.map((row) => row.id));
   });
 });
 
@@ -299,11 +303,12 @@ describe("the round trip against real processes", () => {
       expect(row.running).toBe(true);
       expect(row.version).toBeString();
       expect(row.network).toBeString();
-      // Two config homes on one host are two instances of one mesh (§7.1), so
+      // Two config homes on one host are two entries of one mesh (§7.1), so
       // each names the other and neither names itself.
-      const mine = row.config.entry?.port;
       expect(row.peers?.map((peer) => peer.endpoint)).toEqual(
-        row.config.peers.filter((peer) => !peer.includes(String(mine))),
+        row.config.endpoints
+          .map((entry) => entry.endpoint)
+          .filter((endpoint) => endpoint !== row.config.endpoint),
       );
       // What a restart would apply, answered from the files: the presets
       // `add` seeded, the address it picked, the mesh those addresses make,
@@ -312,7 +317,8 @@ describe("the round trip against real processes", () => {
         ...DEFAULT_CONFIG,
         dump: { presets: row.config.dump.presets },
         entry: row.config.entry,
-        peers: row.config.peers,
+        endpoint: row.config.endpoint,
+        endpoints: row.config.endpoints,
       });
       expect(row.config.entry?.host).toBe("127.0.0.1");
       expect(row.config.dump.presets.map((one) => one.name)).toContain("howto");
@@ -385,7 +391,7 @@ describe("add and remove against a running supervisor", () => {
     const added = await capture(() => main(["daemon", "add", home]));
     expect(added.code).toBe(0);
     expect(json(added.out)).toMatchObject({ dir: home, running: true, supervised: true });
-    expect(await loadAll(resolvePaths(process.env).configDir)).toMatchObject({
+    expect(applied(resolvePaths(process.env).stateRoot)).toMatchObject({
       instances: [{ name: "one", dir: home }],
     });
     expect(supervisor.targets.map((target) => target.dir)).toEqual([home]);
@@ -475,7 +481,7 @@ describe("add and remove against a running supervisor", () => {
     const added = await capture(() => main(["daemon", "add", home]));
     expect(added.code).toBe(0);
     expect(json(added.out)).toMatchObject({ dir: home, running: false, supervised: false });
-    expect((await loadAll(resolvePaths(process.env).configDir)).instances).toBeArrayOfSize(1);
+    expect(applied(resolvePaths(process.env).stateRoot)?.instances).toBeArrayOfSize(1);
   });
 });
 

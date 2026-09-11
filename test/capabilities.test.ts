@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { PROTOCOL_VERSION } from "@ccmsg/protocol";
 import { ConfigError, type Env, type Instance, isRunning, start } from "../src/instance/index.ts";
 import { connectUds, type LineClient } from "./client.ts";
-import { writeConfigHome } from "./harness.ts";
+import { writeInstanceHome } from "./harness.ts";
 
 const running: Instance[] = [];
 const clients: LineClient[] = [];
@@ -24,7 +24,7 @@ function disposable(config: (root: string) => Record<string, unknown> = () => ({
   const root = mkdtempSync(join(tmpdir(), "ccmsg-caps-"));
   mkdirSync(join(root, "home", "sessions"), { recursive: true });
   mkdirSync(join(root, "repos"), { recursive: true });
-  writeConfigHome(join(root, "config"), config(root));
+  writeInstanceHome(join(root, "config"), join(root, "home"), config(root));
   return {
     root,
     env: {

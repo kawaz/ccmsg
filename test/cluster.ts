@@ -6,12 +6,12 @@
  * travels over it once there is one — and a second copy of "how an instance is
  * started" would let the two drift into testing different deployments. */
 import { expect } from "bun:test";
-import { mkdirSync, mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { type Endpoint, type InstanceId, PROTOCOL_VERSION } from "@ccmsg/protocol";
-import { type Env, Instance, isRunning, start } from "../src/instance/index.ts";
-import { reapOrphans, trackRoot, writeConfigHome } from "./harness.ts";
+import { type Env, Instance, isRunning, resolvePathsFor, start } from "../src/instance/index.ts";
+import { idFor, reapOrphans, trackRoot, writeConfigHome } from "./harness.ts";
 import {
   EphemeralKey,
   type MeshJwk,
@@ -143,33 +143,47 @@ export function homeFor(lease: PortLease, peers: readonly Endpoint[], endpoint?:
   const home = join(root, "home");
   mkdirSync(join(home, "sessions"), { recursive: true });
   const configDir = join(root, "config");
-  // Each of these homes is its own config dir holding one instance, so the
-  // other instances of the test cluster are peers this one is told about
-  // rather than ones it finds: that is what a cluster's own peer list is for
-  // (§8.2). Its own address is in the list too, and is taken once.
-  writeConfigHome(
-    configDir,
-    {},
-    {
-      self: {
-        dir: home,
-        // What this instance says peers reach it at, where a test is about an
-        // address that is not the one it binds.
-        ...(endpoint === undefined ? {} : { endpoint }),
-        // The page this instance serves, so the `/auth/*` routes have an
-        // origin to compare against (DR-0001 §2.3).
-        entry: { host: "127.0.0.1", port, origins: [`http://127.0.0.1:${String(port)}`] },
-      },
-    },
-    peers,
-  );
   const env: Env = {
     CLAUDE_CONFIG_DIR: home,
     CCMSG_STATE_DIR: join(root, "state"),
     CCMSG_CONFIG_DIR: configDir,
   };
+  // The instance is an entry of the mesh, at the address it says it is reached
+  // at: its own row is what settles `self` (§7.1), so the id in that row and
+  // the id in the state directory have to be the one id. `daemon add` writes
+  // both; here they are written the same way by hand.
+  const name = `self-${String(port)}`;
+  const id = idFor(name);
+  const mine = endpoint ?? endpointOfPort(port);
+  const rows = [
+    { id, endpoint: mine },
+    // The others of the test cluster, each at the address it will be reached
+    // at. Their ids are their addresses': a test states who is in the mesh by
+    // stating where, and what an id says is which of them is which.
+    ...peers.filter((peer) => peer !== mine).map((peer) => ({ id: idFor(peer), endpoint: peer })),
+  ];
+  writeConfigHome(
+    configDir,
+    {},
+    {
+      [name]: {
+        dir: home,
+        // The page this instance serves, so the `/auth/*` routes have an
+        // origin to compare against (DR-0001 §2.3).
+        entry: { host: "127.0.0.1", port, origins: [`http://127.0.0.1:${String(port)}`] },
+      },
+    },
+    rows,
+  );
+  const idFile = resolvePathsFor(home, env).instanceIdFile;
+  mkdirSync(dirname(idFile), { recursive: true });
+  writeFileSync(idFile, `${id}\n`);
   leaseOf.set(env, lease);
   return env;
+}
+
+function endpointOfPort(port: number): Endpoint {
+  return `http://127.0.0.1:${String(port)}/`;
 }
 
 export interface Timing {

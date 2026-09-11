@@ -7,6 +7,12 @@
 /** ある config home が動かすもの。 */
 export type Harness = "claude" | "codex";
 
+/** mesh の 1 行。endpoint は公開 base URL で、末尾の `/` まで含める。 */
+export interface Endpoint {
+  id: string;
+  endpoint: string;
+}
+
 /** どこで待ち受け、誰からを受けるか。 */
 export interface Entry {
   host: string;
@@ -65,12 +71,12 @@ export interface Dump {
 }
 
 /** 1 instance 分の設定。`config_v2.ts` が返すのも、`instances/instance-<id>.ts` が
- * `dir` を足して返すのも、これ。
- *
- * mesh の相手はここに書かない。この host の instance は `instances/*.ts` の
- * port から、別 host の endpoint は `peers.json` (`ccmsg mesh add`) から入る。 */
+ * `dir` を足して返すのも、これ。 */
 export interface Config {
   harness: Harness;
+  /** mesh の全 instance (自分も含む)。`endpoints.json` が正で、読むのは自由だが
+   * 違う物を返したら config error。自分がどれかは自分の id の行。 */
+  endpoints: Endpoint[];
   /** 無ければ unix socket だけで serve する。 */
   entry?: Entry;
   upstream: Upstream;

@@ -89,7 +89,13 @@ import {
   recordsDir,
 } from "../auth/index.ts";
 import { type Cidr, clientAddress, parseCidr } from "./client.ts";
-import { type EntryConfig, type InstanceConfig, loadConfig } from "./config.ts";
+import {
+  configOf,
+  DEFAULT_CONFIG,
+  type EntryConfig,
+  type InstanceConfig,
+  settle,
+} from "./config.ts";
 import { completeHandlers } from "./handlers.ts";
 import { acquireLock, type Held, isHeldByUs, type Lock } from "./lock.ts";
 import { Log } from "./log.ts";
@@ -176,7 +182,7 @@ export async function start(options: StartOptions = {}): Promise<StartOutcome> {
   try {
     // 3. the config. A broken one ends the start rather than turning the
     // setting it carried silently off (DV-Q9).
-    const config = await loadConfig(paths.configDir, paths.configHome);
+    const config = await configFor(paths, log);
     // What the config says of the gateway, resolved before anything is built
     // from it: a webhook source whose secret cannot be read ends the start
     // here, for the same reason a broken config does (DV-Q9).
@@ -192,12 +198,12 @@ export async function start(options: StartOptions = {}): Promise<StartOutcome> {
     // `daemon run` on one the shared file does not list — gets its id now
     // rather than from an `add` that never happened (DR-0001 §2.1).
     const id = instanceIdentity(paths.instanceIdFile);
-    // 5. the endpoint list, for an instance that has a mesh.
+    // 5. the mesh, for an instance the data names an address for.
     //
-    // Which entry of it is this instance is settled by the probe, and the probe
-    // has to arrive at a listener — so the WebSocket is bound here and handed
-    // to the instance. A list that names this instance no times, or twice, ends
-    // the start.
+    // Which entry of the list is this instance is its own row, so nothing has
+    // to be asked of the network to settle it (§7.1). The WebSocket is still
+    // bound here and handed over, because the instance does not exist yet and
+    // a peer may dial the moment the address is up.
     const mesh = meshFor(id, config, log, options.meshTiming);
     const wiring = mesh === undefined ? undefined : await bindForMesh(config, mesh);
     // 6-8 are the instance's own construction and listen.
@@ -223,6 +229,26 @@ export async function start(options: StartOptions = {}): Promise<StartOutcome> {
   }
 }
 
+/** What this config home runs with: the settings that were read and checked.
+ *
+ * Read and checked here rather than taken on trust, because a start is one of
+ * the two moments a config is applied (the other is a reload) and both go the
+ * same way: everything is read, and if it holds it becomes what is applied. A
+ * config that does not hold leaves the applied one standing and is written to
+ * the log — an instance that was serving a session is not something a typo
+ * should take down (§8.3).
+ *
+ * A config home nothing states settings for runs the built-in ones, which is
+ * the unix socket and no mesh: `daemon run` on a directory nobody registered
+ * is a thing a person may do. */
+async function configFor(paths: InstancePaths, log: Log): Promise<InstanceConfig> {
+  const settled = await settle(paths.configDir, paths.stateRoot);
+  for (const problem of settled.problems) {
+    log.write("config refused", { file: problem.file, problem: problem.msg });
+  }
+  return configOf(settled.satisfied, paths.configHome)?.config ?? DEFAULT_CONFIG;
+}
+
 /** The mesh, on an instance configured for one.
  *
  * Two things have to be true: peers to dial, and an address they can dial back.
@@ -234,10 +260,14 @@ function meshFor(
   log: Log,
   timing?: MeshTiming,
 ): Mesh | undefined {
-  if (config.peers.length === 0 || config.entry === undefined) return undefined;
+  const self = config.endpoint;
+  if (self === undefined || config.endpoints.length === 0 || config.entry === undefined) {
+    return undefined;
+  }
   return new Mesh({
     id,
-    peers: config.peers,
+    self,
+    peers: config.endpoints.map((row) => row.endpoint),
     conns: new ConnRegistry(),
     log: (msg, fields) => {
       log.write(msg, fields);
@@ -284,16 +314,6 @@ async function bindForMesh(config: InstanceConfig, mesh: Mesh): Promise<MeshWiri
       instance?.accepted(conn, info);
     },
   });
-  try {
-    await mesh.identify();
-  } catch (cause) {
-    // The listener is bound before the endpoint list is checked, so it is this
-    // function's to release when the check refuses — nothing else holds it yet,
-    // and a port left bound by a refused start is one the next start cannot
-    // have.
-    await ws.close();
-    throw cause;
-  }
   return {
     conns: mesh.conns,
     ws,
@@ -718,7 +738,7 @@ export class Instance {
       pid: process.pid,
       socket: this.paths.socket,
       http: this.http,
-      peers: this.config.peers.length,
+      peers: this.config.endpoints.length,
     });
   }
 

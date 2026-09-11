@@ -107,8 +107,8 @@ export async function reapOrphans(): Promise<string[]> {
   return leaked.map((one) => one.argv);
 }
 
-/** Settings written as the files a person writes: the shared one, one cluster, and
- * one file per instance under `instances/`.
+/** Settings written as the files a person writes: the shared one, the mesh,
+ * which instances this host starts, and one file per instance.
  *
  * Each instance's file is a function assigning what the test states over what
  * it was handed, which is the plainest thing a config file can be — a test
@@ -118,38 +118,79 @@ export async function reapOrphans(): Promise<string[]> {
  *
  * The instances are keyed by the name they are listed under; their ids are
  * derived from that name so a test can say what it means and still get the
- * fixed-width id the files are named by. */
+ * fixed-width id the files are named by. Each is given an endpoint from the
+ * port it states, which is what `daemon add` would have written; a test that
+ * is about the mesh says `endpoints` instead and gets exactly those rows. */
 export function writeConfigHome(
   configDir: string,
   defaults: Record<string, unknown> | string,
   instances: Readonly<Record<string, Record<string, unknown> | string>> = {},
-  peers: readonly string[] = [],
+  endpoints?: readonly { id: string; endpoint: string }[],
 ): string {
   mkdirSync(configDir, { recursive: true });
   writeFileSync(join(configDir, CONFIG_FILE), configSource(defaults));
   const ids: string[] = [];
+  const rows: { id: string; endpoint: string }[] = [];
   if (Object.keys(instances).length > 0) {
     mkdirSync(join(configDir, "instances"), { recursive: true });
   }
   for (const [name, settings] of Object.entries(instances)) {
     const id = idFor(name);
     ids.push(id);
+    // Every instance is an entry of the mesh, since that is where its own
+    // address comes from: the port it states where it states one, and a name
+    // of its own where a case is not about addresses at all.
+    const port = portOf(settings);
+    rows.push({
+      id,
+      endpoint:
+        port === undefined ? `http://${name}.example/` : `http://127.0.0.1:${String(port)}/`,
+    });
     writeFileSync(
       join(configDir, "instances", `instance-${id}.ts`),
       typeof settings === "string" ? settings : configSource({ name, ...settings }),
     );
   }
-  const cluster = idFor(`cluster:${configDir}`);
-  mkdirSync(join(configDir, "clusters"), { recursive: true });
   writeFileSync(
-    join(configDir, "clusters", `cluster-${cluster}.json`),
-    `${JSON.stringify({ name: "test", peers, instances: ids }, null, 2)}\n`,
+    join(configDir, "endpoints.json"),
+    `${JSON.stringify(endpoints ?? rows, null, 2)}\n`,
   );
   writeFileSync(
-    join(configDir, "clusters.json"),
-    `${JSON.stringify({ clusters: [cluster] }, null, 2)}\n`,
+    join(configDir, "supervisor.json"),
+    `${JSON.stringify({ instances: ids }, null, 2)}\n`,
   );
   return join(configDir, CONFIG_FILE);
+}
+
+/** The port an instance's settings state, read loosely: a test about a port
+ * that is not one still wants its instance to have a row in the mesh, so that
+ * what the test is about is what it is told. */
+function portOf(settings: Record<string, unknown> | string): number | undefined {
+  if (typeof settings === "string") {
+    const said = /port:\s*(\d+)/.exec(settings);
+    return said === null ? undefined : Number(said[1]);
+  }
+  const entry = settings["entry"] as { port?: unknown } | undefined;
+  if (entry === undefined) return undefined;
+  return typeof entry.port === "number" ? entry.port : Number(entry.port) || 0;
+}
+
+/** One config home with one instance in it, which is what a test that starts
+ * an instance and is about something else needs.
+ *
+ * Settings belong to the instance rather than to the shared file, because the
+ * shared file is what every instance starts from and what is started is what a
+ * cluster of files names: a setting nobody's instance carries is a setting
+ * nothing runs with. */
+export function writeInstanceHome(
+  configDir: string,
+  home: string,
+  settings: Record<string, unknown> | string = {},
+  defaults: Record<string, unknown> | string = {},
+): string {
+  return writeConfigHome(configDir, defaults, {
+    mine: typeof settings === "string" ? settings : { dir: home, ...settings },
+  });
 }
 
 /** The id a test's instance is called by: fixed width, and the same every run

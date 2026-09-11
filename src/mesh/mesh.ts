@@ -30,7 +30,7 @@ import {
   randomId,
   verifyProof,
 } from "./keys.ts";
-import { PeerProbe, type PeerReport } from "./probe.ts";
+import { PeerProbe } from "./probe.ts";
 import {
   isProbePath,
   jwkEndpoint,
@@ -135,9 +135,10 @@ export interface MeshHost {
 export interface MeshDeps {
   /** This instance's id, which is what it is called on the wire. */
   readonly id: InstanceId;
-  /** Every mesh endpoint, this instance's own among them. Which one that is is
-   * settled by `identify`, not configured (DR-0001 §2.7). */
+  /** Every mesh endpoint, this instance's own among them. */
   readonly peers: readonly Endpoint[];
+  /** Which of them is this instance, as the data says (§7.1). */
+  readonly self: Endpoint;
   readonly conns: ConnRegistry;
   readonly log?: (msg: string, fields?: Record<string, unknown>) => void;
   /** Something changed about which peers are reachable. */
@@ -260,9 +261,9 @@ export class Mesh {
   readonly #retries = new Map<Endpoint, ReturnType<typeof setTimeout>>();
   readonly #backoff = new Map<Endpoint, number>();
   readonly #probe = new PeerProbe();
-  /** Which of the configured endpoints is this instance, settled by `identify`
+  /** Which of the configured endpoints is this instance, as the data said
    * before anything is dialled and fixed from then on (§5.5). */
-  #self: Endpoint | undefined;
+  readonly #self: Endpoint;
   /** The authenticated endpoint-to-id mapping (DR-0001 §2.1), in both
    * directions: a handshake writes it, `to_instance` reads it to find the link
    * to dial down, and a disconnection leaves it standing so a peer that is out
@@ -293,6 +294,12 @@ export class Mesh {
   readonly relay: Relay;
 
   constructor(private readonly deps: MeshDeps) {
+    this.#self = deps.self;
+    // The one binding this instance did not have to learn: its own. That is
+    // what makes "an id already answering elsewhere" cover the case of a peer
+    // claiming to be us — which is what the instance at a moved instance's old
+    // URL looks like from the new one.
+    this.#bind(deps.self, deps.id);
     this.relay = new Relay({
       publish: (topic, data, instance) => {
         this.#host?.publish(topic, data, instance);
@@ -372,7 +379,6 @@ export class Mesh {
    * that has already started, and a start where the probe did not settle ends
    * instead. */
   get self(): Endpoint {
-    if (this.#self === undefined) throw new Error("this mesh has not identified itself yet");
     return this.#self;
   }
 
@@ -606,24 +612,6 @@ export class Mesh {
     };
     if (afterAck) conn.deferSend(frame);
     else conn.send(frame);
-  }
-
-  /** Settle which configured endpoint is this instance, before anything is
-   * dialled (§7.1).
-   *
-   * Run once the listener is up, because the probe this instance sends itself
-   * has to arrive somewhere. A list that reaches this instance no times or
-   * more than once ends the start; a peer that is merely asleep is recorded
-   * and dialled later. */
-  async identify(): Promise<PeerReport> {
-    const report = await this.#probe.identify(this.deps.peers);
-    this.#self = report.self;
-    // The table opens with the one binding this instance did not have to learn:
-    // its own. That is what makes "an id already answering elsewhere" cover the
-    // case of a peer claiming to be us — which is what the instance at a moved
-    // instance's old URL looks like from the new one.
-    this.#bind(report.self, this.deps.id);
-    return report;
   }
 
   /** Start dialling. Each peer is attempted independently, and a peer that is

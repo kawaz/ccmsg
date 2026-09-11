@@ -11,7 +11,7 @@ import {
 } from "@ccmsg/protocol";
 import { type Env, type Instance, isRunning, start } from "../src/instance/index.ts";
 import { connectUds, type LineClient } from "./client.ts";
-import { writeConfigHome } from "./harness.ts";
+import { writeInstanceHome } from "./harness.ts";
 
 const NOW = 1_800_000_000_000;
 
@@ -103,8 +103,9 @@ function fakeGateway(): { url: string; asked: () => string[] } {
 async function greet(gatewayUrl?: string): Promise<LineClient> {
   const root = mkdtempSync(join(tmpdir(), "ccmsg-llm-"));
   mkdirSync(join(root, "home", "sessions"), { recursive: true });
-  writeConfigHome(
+  writeInstanceHome(
     join(root, "config"),
+    join(root, "home"),
     gatewayUrl === undefined ? {} : { upstream: { gateway_url: gatewayUrl } },
   );
   const env: Env = {

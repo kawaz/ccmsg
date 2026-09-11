@@ -1,23 +1,27 @@
-import { existsSync, mkdirSync, rmSync, watch, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, watch, writeFileSync } from "node:fs";
 import { basename, isAbsolute, join, resolve } from "node:path";
 import type { Endpoint, InstanceId, InstancePingResult } from "@ccmsg/protocol";
 import { DEFAULT_HARNESS, type Harness, HARNESS, HARNESSES } from "../harness/index.ts";
 import {
-  type ClusterInfo,
-  type ClusterSetting,
+  applied,
+  type ConfigProblem,
   CONFIG_FILE,
   CONFIG_NAME,
+  configOf,
+  DEFAULT_CONFIG,
+  type EndpointRow,
+  ENDPOINTS_FILE,
+  evaluate,
   type InstanceConfig,
   instanceFileName,
-  loadAll,
-  loadConfig,
-  loadInstances,
-  saveCluster,
-  saveClusters,
+  type InstanceSetting,
+  type Satisfied,
+  settle,
+  SUPERVISOR_FILE,
   TYPES_FILE,
   writeConfigTypes,
 } from "../instance/config.ts";
-import { ID, instanceIdentity, newId } from "../instance/identity.ts";
+import { instanceIdentity } from "../instance/identity.ts";
 import { alive, lockHolder } from "../instance/lock.ts";
 import { type Env, type InstancePaths, resolvePaths, resolvePathsFor } from "../instance/paths.ts";
 import { prepareSocketDir } from "../instance/socket.ts";
@@ -52,7 +56,38 @@ export function configHome(dir: string, harness: Harness = DEFAULT_HARNESS): str
  * `daemon run` is. */
 export async function harnessFor(env: Env, dir: string): Promise<Harness> {
   const path = isAbsolute(dir) ? dir : resolve(dir);
-  return (await loadConfig(resolvePaths(env).configDir, path)).harness;
+  const found = (await known(env)).instances.find((one) => one.dir === path);
+  return found?.config.harness ?? DEFAULT_HARNESS;
+}
+
+/** What this host runs: the settings that are applied, read again from the
+ * files when they check out.
+ *
+ * Every command goes through the one path — read, check, apply — so what a
+ * command acts on is what a start would run. A config that does not check out
+ * leaves the applied one standing, which is what keeps a command about one
+ * instance working while another instance's file is being edited. */
+export async function known(env: Env): Promise<Satisfied> {
+  const paths = resolvePaths(env);
+  const read = await evaluate(paths.configDir);
+  return read.satisfied ?? applied(paths.stateRoot) ?? EMPTY_SATISFIED;
+}
+
+const EMPTY_SATISFIED: Satisfied = {
+  endpoints: [],
+  supervisor: { instances: [] },
+  instances: [],
+};
+
+/** Read the files, check them, and write down what holds — the one thing a
+ * start, a reload, an `add` and a `remove` all do. */
+export async function reload(env: Env): Promise<{
+  satisfied: Satisfied;
+  problems: readonly ConfigProblem[];
+}> {
+  const paths = resolvePaths(env);
+  const settled = await settle(paths.configDir, paths.stateRoot);
+  return { satisfied: settled.satisfied, problems: settled.problems };
 }
 
 /** One row of `daemon list`: which config home, and whether anything answers
@@ -63,13 +98,10 @@ export interface InstanceRow {
    * defaults to its id. A `daemon run` on a config home no cluster lists has
    * none. */
   readonly name?: string;
-  /** Which cluster this row was read through. An instance in two clusters is
-   * one instance and one process, listed once under each of them. */
-  readonly cluster_id?: string;
-  readonly cluster_name?: string;
   readonly dir: string;
-  /** Where peers reach it, as its file states or as its entry implies. */
+  /** The address it binds, and the one its peers dial (§7.1). */
   readonly port?: number;
+  readonly endpoint?: string;
   readonly running: boolean;
   readonly pid?: number;
 }
@@ -77,6 +109,9 @@ export interface InstanceRow {
 /** One row of `daemon status`: the list's row, plus what the instance itself
  * says when there is one to ask. */
 export interface StatusRow extends InstanceRow {
+  /** What was wrong with the files, where the applied settings are older than
+   * what is written. */
+  readonly config_problems?: readonly ConfigProblem[];
   /** What this config home's instance is configured with, after the shared
    * file's defaults and its own entry are merged (§8.2).
    *
@@ -99,33 +134,23 @@ export interface Target {
   readonly name?: string;
   /** Its id, which is what its file is called. */
   readonly id?: string;
-  /** The clusters it belongs to, as the host writes them down. */
-  readonly clusters?: readonly ClusterInfo[];
   readonly dir: string;
   readonly paths: InstancePaths;
 }
 
-export function targetFor(
-  env: Env,
-  dir: string,
-  name?: string,
-  id?: string,
-  clusters?: readonly ClusterInfo[],
-): Target {
+export function targetFor(env: Env, dir: string, name?: string, id?: string): Target {
   return {
     ...(name === undefined ? {} : { name }),
     ...(id === undefined ? {} : { id }),
-    ...(clusters === undefined ? {} : { clusters }),
     dir,
     paths: resolvePathsFor(dir, env),
   };
 }
 
-/** The config homes this host's clusters list, each once. */
+/** The config homes this host starts, in the order the supervisor lists them. */
 export async function registered(env: Env): Promise<Target[]> {
-  const paths = resolvePaths(env);
-  return (await loadInstances(paths.configDir)).map((entry) =>
-    targetFor(env, entry.dir, entry.name, entry.id, entry.clusters),
+  return (await known(env)).instances.map((entry) =>
+    targetFor(env, entry.dir, entry.name, entry.id),
   );
 }
 
@@ -183,13 +208,6 @@ const STARTING_PRESETS = [
 /** What `daemon add` takes: the config home the instance answers for, and the
  * two settings a person would otherwise open the file to write. */
 export interface AddOptions {
-  /** Which cluster the instance joins, by id or by name. With none said: the
-   * one cluster there is, a new one where there is none, and a refusal where
-   * there are several — the last because which management unit an instance
-   * belongs to is not something to guess at. An id nothing answers to is a
-   * cluster this host has not met yet and is made under that id, which is how
-   * a second host joins one. */
-  readonly cluster?: string;
   readonly harness?: Harness;
   readonly port?: number;
 }
@@ -285,25 +303,23 @@ export async function add(env: Env, dir: string, options: AddOptions = {}): Prom
   const harness = options.harness ?? harnessOf(where);
   const home = configHome(where, harness);
   const paths = resolvePaths(env);
-  const all = await loadAll(paths.configDir);
-  const taken = all.instances.find((one) => one.dir === home);
+  const held = await known(env);
+  const taken = held.instances.find((one) => one.dir === home);
   if (taken !== undefined) {
     throw new CommandError("file_exists", `${home} は既に ${taken.name} として登録されています`);
   }
-  const cluster = clusterFor(all.clusters, options.cluster);
   // The id the state directory already holds, or a new one written there now:
   // a config home that was registered before keeps the id everything it issued
   // is keyed by, and a fresh one gets its id here rather than at its first
   // start (DR-0001 §2.1).
-  const target = targetFor(env, home);
-  const id = instanceIdentity(target.paths.instanceIdFile);
-  // Every instance listens, because an instance is in the mesh of its cluster
-  // (§7.1) and a mesh is reached over the entry: what `--port` settles is which
+  const id = instanceIdentity(targetFor(env, home).paths.instanceIdFile);
+  // Every instance listens, because an instance is an entry of the mesh (§7.1)
+  // and a mesh is reached over the entry: what `--port` settles is which
   // address, not whether there is one.
   const port =
     options.port ??
     (await freePort(
-      all.instances.flatMap((one) =>
+      held.instances.flatMap((one) =>
         one.config.entry === undefined ? [] : [one.config.entry.port],
       ),
     ));
@@ -315,55 +331,63 @@ export async function add(env: Env, dir: string, options: AddOptions = {}): Prom
     join(paths.instancesDir, instanceFileName(id)),
     instanceTemplate(name, home, harness, port),
   );
-  saveCluster(paths.configDir, {
-    ...cluster,
-    instances: cluster.instances.includes(id) ? cluster.instances : [...cluster.instances, id],
-  });
-  saveClusters(
-    paths.configDir,
-    all.clusters.some((one) => one.id === cluster.id)
-      ? all.clusters.map((one) => one.id)
-      : [...all.clusters.map((one) => one.id), cluster.id],
-  );
-  return {
-    ...rowFor(targetFor(env, home, name, id)),
-    cluster_id: cluster.id,
-    cluster_name: cluster.name,
-    port,
-  };
+  // The loopback address, because that is the one this host is certainly
+  // reached at. A proxy in front of it is a deployment fact nothing here can
+  // see, so an operator who has one edits this row (§8.2).
+  saveEndpoints(paths.configDir, [
+    ...readEndpointRows(paths.configDir).filter((row) => row.id !== id),
+    { id, endpoint: `http://127.0.0.1:${String(port)}/` as EndpointRow["endpoint"] },
+  ]);
+  saveSupervisor(paths.configDir, [
+    ...readSupervised(paths.configDir).filter((one) => one !== id),
+    id,
+  ]);
+  const settled = await reload(env);
+  const written = configOf(settled.satisfied, home);
+  if (written === undefined) {
+    throw new CommandError(
+      "internal_error",
+      `${home} を書きましたが設定が通りませんでした: ${settled.problems
+        .map((one) => `${one.file}: ${one.msg}`)
+        .join("; ")}`,
+    );
+  }
+  return rowOf(env, written);
 }
 
-/** The cluster a command is about.
- *
- * Named or not, the answer has to be one cluster: a command that acted on "the
- * clusters" would be deciding for a person which management unit a thing
- * belongs to. An id this host has not met is a cluster that exists elsewhere —
- * a cluster spans hosts — so it is written down under that id rather than
- * refused, which is what lets a second host join one. */
-export function clusterFor(
-  clusters: readonly ClusterSetting[],
-  named: string | undefined,
-): ClusterSetting {
-  if (named !== undefined) {
-    const found = clusters.find((one) => one.id === named || one.name === named);
-    if (found !== undefined) return found;
-    if (!ID.test(named)) {
-      throw new CommandError(
-        "not_found",
-        `${named} という cluster はありません (新しく作るなら id を渡してください)`,
-      );
-    }
-    return { id: named, name: named, peers: [], instances: [] };
+/** The mesh as the file holds it right now, for a command that is about to
+ * edit it. Read as data rather than through the checks, because a command that
+ * adds a row has to be able to fix a file that does not check out yet. */
+function readEndpointRows(configDir: string): EndpointRow[] {
+  try {
+    const parsed = JSON.parse(readFileSync(join(configDir, ENDPOINTS_FILE), "utf8")) as unknown;
+    return Array.isArray(parsed) ? (parsed as EndpointRow[]) : [];
+  } catch {
+    return [];
   }
-  const only = clusters[0];
-  if (clusters.length === 1 && only !== undefined) return only;
-  if (clusters.length === 0) {
-    const id = newId();
-    return { id, name: id, peers: [], instances: [] };
+}
+
+function readSupervised(configDir: string): string[] {
+  try {
+    const parsed = JSON.parse(readFileSync(join(configDir, SUPERVISOR_FILE), "utf8")) as {
+      instances?: unknown;
+    };
+    return Array.isArray(parsed.instances) ? (parsed.instances as string[]) : [];
+  } catch {
+    return [];
   }
-  throw new CommandError(
-    "invalid_args",
-    `cluster が ${String(clusters.length)} 個あります。--cluster <id|name> で選んでください (${clusters.map((one) => one.name).join(", ")})`,
+}
+
+function saveEndpoints(configDir: string, rows: readonly EndpointRow[]): void {
+  mkdirSync(configDir, { recursive: true });
+  writeFileSync(join(configDir, ENDPOINTS_FILE), `${JSON.stringify(rows, null, 2)}\n`);
+}
+
+function saveSupervisor(configDir: string, ids: readonly string[]): void {
+  mkdirSync(configDir, { recursive: true });
+  writeFileSync(
+    join(configDir, SUPERVISOR_FILE),
+    `${JSON.stringify({ instances: ids }, null, 2)}\n`,
   );
 }
 
@@ -378,23 +402,23 @@ export async function remove(
   ref: string,
 ): Promise<{ id: string; name: string; dir: string; removed: boolean }> {
   const paths = resolvePaths(env);
-  const all = await loadAll(paths.configDir);
-  const found = all.instances.find((one) => one.id === ref || one.name === ref || one.dir === ref);
+  const found = (await known(env)).instances.find(
+    (one) => one.id === ref || one.name === ref || one.dir === ref,
+  );
   if (found === undefined) throw new CommandError("not_found", `${ref} は登録されていません`);
-  // Out of every cluster that listed it: a person removing an instance is
-  // removing it from this host, and leaving it in the second cluster would
-  // leave the supervisor starting it.
-  for (const cluster of all.clusters) {
-    if (!cluster.instances.includes(found.id)) continue;
-    saveCluster(paths.configDir, {
-      ...cluster,
-      instances: cluster.instances.filter((one) => one !== found.id),
-    });
-  }
+  saveSupervisor(
+    paths.configDir,
+    readSupervised(paths.configDir).filter((one) => one !== found.id),
+  );
+  saveEndpoints(
+    paths.configDir,
+    readEndpointRows(paths.configDir).filter((row) => row.id !== found.id),
+  );
   rmSync(join(paths.instancesDir, instanceFileName(found.id)), { force: true });
   // The state directory stays, its id with it: what the instance issued is
   // keyed by that id, and re-adding the same config home has to answer to the
   // same one.
+  await reload(env);
   return { id: found.id, name: found.name, dir: found.dir, removed: true };
 }
 
@@ -492,36 +516,35 @@ export function rowFor(target: Target): InstanceRow {
   };
 }
 
-/** What `daemon list` answers: one row per instance per cluster it is in.
- *
- * By cluster because that is the unit a person manages — which mesh, which
- * authentication records — and an instance in two of them is in both listings,
- * as the same id with the same process. */
+/** What `daemon list` answers: the instances this host starts, and whether
+ * anything answers for each right now. */
 export async function list(env: Env): Promise<InstanceRow[]> {
-  const all = await loadAll(resolvePaths(env).configDir);
-  const rows: InstanceRow[] = [];
-  for (const cluster of all.clusters) {
-    for (const id of cluster.instances) {
-      const found = all.instances.find((one) => one.id === id);
-      if (found === undefined) continue;
-      const target = targetFor(env, found.dir, found.name, found.id, found.clusters);
-      rows.push({
-        ...rowFor(target),
-        cluster_id: cluster.id,
-        cluster_name: cluster.name,
-        ...(found.config.entry === undefined ? {} : { port: found.config.entry.port }),
-      });
-    }
-  }
-  return rows;
+  return (await known(env)).instances.map((one) => rowOf(env, one));
+}
+
+function rowOf(env: Env, one: InstanceSetting): InstanceRow {
+  return {
+    ...rowFor(targetFor(env, one.dir, one.name, one.id)),
+    ...(one.config.entry === undefined ? {} : { port: one.config.entry.port }),
+    ...(one.config.endpoint === undefined ? {} : { endpoint: one.config.endpoint }),
+  };
 }
 
 /** Ask one instance how it is. A config home with nothing behind it answers the
  * list's row and nothing more: not running is a state, not a failure. */
 export async function status(target: Target): Promise<StatusRow> {
+  const read = await evaluate(target.paths.configDir);
+  const satisfied = read.satisfied ?? applied(target.paths.stateRoot) ?? EMPTY_SATISFIED;
+  const own = configOf(satisfied, target.dir);
   const row = {
     ...rowFor(target),
-    config: await loadConfig(target.paths.configDir, target.dir),
+    ...(own?.config.entry === undefined ? {} : { port: own.config.entry.port }),
+    ...(own?.config.endpoint === undefined ? {} : { endpoint: own.config.endpoint }),
+    config: own?.config ?? DEFAULT_CONFIG,
+    // What a person has to be told even though the instance is running: an
+    // edit that did not check out is not applied, and the only sign of it
+    // otherwise is a setting that did not take (§8.3).
+    ...(read.problems.length === 0 ? {} : { config_problems: read.problems }),
   };
   const conn = await connect(target.paths.socket);
   if (conn === undefined) return row;

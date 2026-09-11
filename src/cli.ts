@@ -1,6 +1,5 @@
 #!/usr/bin/env bun
 import {
-  type Endpoint,
   type MessageSendArgs,
   type NotifySendArgs,
   PROTOCOL_VERSION,
@@ -27,16 +26,23 @@ import {
   rowFor,
   snapshots,
   type SuperviseOp,
-  clusterFor,
   Supervisor,
   tailOf,
   type Target,
   targetFor,
   targetNamed,
 } from "./daemon/index.ts";
-import { readFileSync, writeFileSync } from "node:fs";
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute, join } from "node:path";
+import { dirname, isAbsolute, join, relative } from "node:path";
 import { document } from "./transcript/items/index.ts";
 import { currentSession, DEFAULT_HARNESS, HARNESS, HARNESSES, isHarness } from "./harness/index.ts";
 
@@ -45,14 +51,18 @@ import { currentSession, DEFAULT_HARNESS, HARNESS, HARNESSES, isHarness } from "
 const SESSION_ENV = HARNESSES.flatMap((harness) => [...HARNESS[harness].sessionEnv]);
 import { hookEvent, type StatedMeta, statedMeta } from "./greeting/index.ts";
 import {
+  applied,
+  configFiles,
+  evaluate,
   isRunning,
-  loadClusters,
+  REJECTED_DIR,
   resolveConfigDir,
   resolveConfigHome,
   resolvePaths,
   resolvePathsFor,
-  saveCluster,
-  saveClusters,
+  SATISFIED_FILE,
+  type Satisfied,
+  STATE_CONFIG_DIR,
   start,
 } from "./instance/index.ts";
 import {
@@ -153,20 +163,16 @@ const ROOT: Command = {
         },
         {
           name: "supervise",
-          summary: "共通 config の instance を子プロセスとして起動し、落ちたら上げる",
+          summary: "検証済みの設定が挙げる instance を子として起動し、落ちたら上げる",
           usage: "ccmsg daemon supervise",
           bare: true,
           run: () => supervise(),
         },
         {
           name: "add",
-          summary: "config home を cluster に足し、instances/instance-<id>.ts を書く",
-          usage: "ccmsg daemon add <dir> [--cluster <id|name>] [--port <番号>] [--harness <種別>]",
+          summary: "config home を instance として書き留め、監督者が居れば起こさせる",
+          usage: "ccmsg daemon add <dir> [--port <番号>] [--harness <種別>]",
           options: [
-            [
-              "--cluster <id|name>",
-              "入れる cluster (既定: 1 つならそれ、無ければ新規。知らない id ならその id で作る)",
-            ],
             ["--port <番号>", "entry の待ち受けポート (既定は登録済みの最大 + 1 の空きポート)"],
             [
               "--harness <種別>",
@@ -198,13 +204,13 @@ const ROOT: Command = {
         },
         {
           name: "remove",
-          summary: "cluster から外して instances/instance-<id>.ts を消す (子は止めない)",
+          summary: "両 JSON から外して instances/instance-<id>.ts を消す (子は止めない)",
           usage: "ccmsg daemon remove <name | id | dir>",
           run: (args) => removed(args[0]),
         },
         {
           name: "list",
-          summary: "cluster ごとに instance と、動いているかを並べる",
+          summary: "この host が起こす instance と、動いているかを並べる",
           usage: "ccmsg daemon list",
           bare: true,
           run: () => listInstances(process.env),
@@ -236,55 +242,31 @@ const ROOT: Command = {
         },
         {
           name: "passkey",
-          summary: "cluster に登録された利用者の passkey を扱う",
-          usage: "ccmsg daemon passkey <subcommand> [--cluster <id|name>]",
-          options: [["--cluster <id|name>", "どの cluster か (既定: cluster が 1 つならそれ)"]],
-          notes: [
-            {
-              title: "passkey は cluster のもの (記録は cluster 内に複製される):",
-              docs: [
-                ["どこへ問うか", "その cluster で動いている instance のどれか (どれでも同じ答え)"],
-                ["動いていない時", "instance を起動してから (登録は動いている instance が行う)"],
-              ],
-            },
-          ],
+          summary: "この config home の instance に登録された passkey を扱う",
+          usage: "ccmsg daemon passkey <subcommand>",
           children: [
             {
               name: "add",
               summary: "登録用 URL と 6 桁コードを 1 組発行する (10 分で失効)",
-              usage: "ccmsg daemon passkey add [endpoint] [--cluster <id|name>] [--name <ラベル>]",
+              usage: "ccmsg daemon passkey add <unit> [endpoint] [--name <ラベル>]",
               options: [
-                [
-                  "[endpoint]",
-                  "登録先の公開 base URL (末尾 /)。既定は答えた instance が確定した endpoint",
-                ],
+                ["[endpoint]", "登録先の公開 base URL (末尾 /)。既定はこの instance の endpoint"],
                 ["--name <ラベル>", "誰宛に発行した URL かの管理ラベル"],
               ],
-              bare: true,
               run: (args) => passkeyAdd(args),
             },
             {
               name: "list",
               summary: "登録済みの credential を、新しい順に並べる",
-              usage: "ccmsg daemon passkey list [--cluster <id|name>]",
+              usage: "ccmsg daemon passkey list [unit]",
               bare: true,
-              run: (args) => passkeyCommand(args, () => ({ admin: "passkey_list" })),
+              run: (args) => passkeyAsk(args[0], { admin: "passkey_list" }),
             },
             {
               name: "remove",
               summary: "利用者を消す (credential と token を失効させ、その WS を切る)",
-              usage: "ccmsg daemon passkey remove <sub> [--cluster <id|name>]",
-              run: (args) =>
-                passkeyCommand(args, (rest) => {
-                  const sub = rest[0];
-                  if (sub === undefined) {
-                    throw new CommandError(
-                      "invalid_args",
-                      "使い方: ccmsg daemon passkey remove <sub> [--cluster <id|name>]",
-                    );
-                  }
-                  return { admin: "passkey_remove", sub };
-                }),
+              usage: "ccmsg daemon passkey remove <sub> [unit]",
+              run: (args) => passkeyRemove(args),
             },
           ],
         },
@@ -299,42 +281,52 @@ const ROOT: Command = {
       ],
     },
     {
-      name: "mesh",
-      summary: "cluster の mesh に別 host の endpoint を出し入れする",
-      usage: "ccmsg mesh <subcommand> [endpoint] [--cluster <id|name>]",
-      options: [["--cluster <id|name>", "どの cluster の mesh か (既定: cluster が 1 つならそれ)"]],
+      name: "config",
+      summary: "設定ファイルの検証と、適用済みとの差を見る",
+      usage: "ccmsg config <subcommand> [file] [options]",
       notes: [
         {
-          title: "cluster 内の instance 同士は自動で mesh に入る (各 TS の endpoint / port):",
+          title: "人が編集するのは config dir、instance が読むのは検証済みの写し:",
           docs: [
             [
-              "cluster の peers",
-              "別 host の endpoint だけを並べる。instance id は handshake で伝わる",
+              "編集用",
+              "$CCMSG_CONFIG_DIR (config_v2.ts / endpoints.json / supervisor.json / instances/)",
             ],
-            ["add の反映", "次に instance が起動した時 (config は起動時に 1 回だけ読む)"],
-            ["remove の反映", "即時。繋がっている相手なら切る"],
+            ["適用用", "$CCMSG_STATE_DIR/config (検証を通った時だけ書かれる写しと satisfied.json)"],
+            ["通らない時", "適用済みのまま起動する。エラーは log と daemon status に出る"],
           ],
         },
       ],
       children: [
         {
-          name: "add",
-          summary: "endpoint を cluster の peer に足す (知らない cluster id ならその id で作る)",
-          usage: "ccmsg mesh add <endpoint> [--cluster <id|name>]",
-          run: (args) => meshPeers("add", args),
-        },
-        {
           name: "list",
-          summary: "cluster の peer を並べる (--cluster 無しで cluster が複数なら全部)",
-          usage: "ccmsg mesh list [--cluster <id|name>]",
+          summary: "設定ファイルごとの検証結果と、適用済みとの差の有無を並べる",
+          usage: "ccmsg config list",
           bare: true,
-          run: (args) => meshPeers("list", args),
+          run: () => configList(),
         },
         {
-          name: "remove",
-          summary: "endpoint を cluster の peer から外し、繋がっていれば切る",
-          usage: "ccmsg mesh remove <endpoint> [--cluster <id|name>]",
-          run: (args) => meshPeers("remove", args),
+          name: "diff",
+          summary: "編集中のファイルと適用済みの写しの差 (--satisfied は適用したら何が変わるか)",
+          usage: "ccmsg config diff [file] | --satisfied",
+          options: [["--satisfied", "今の satisfied.json と、編集中から評価し直した物の差"]],
+          bare: true,
+          run: (args) => configDiff(args),
+        },
+        {
+          name: "show",
+          summary: "編集中を検証・評価して satisfied の形で表示する (書き込まない)",
+          usage: "ccmsg config show [--applied]",
+          options: [["--applied", "今使っている satisfied.json を表示する"]],
+          bare: true,
+          run: (args) => configShow(args),
+        },
+        {
+          name: "revert",
+          summary: "適用済みの写しで編集中を上書きする (壊れた方は退避してパスを出す)",
+          usage: "ccmsg config revert <file> | --all",
+          options: [["--all", "差のあるファイルを全部戻す"]],
+          run: (args) => configRevert(args),
         },
       ],
     },
@@ -736,106 +728,228 @@ async function added(args: readonly string[]): Promise<unknown> {
  * as well as written down: an endpoint taken off the list is one this host is
  * not to be talking to, and leaving a live link up until the next restart would
  * be leaving exactly the connection that was just revoked. */
-async function meshPeers(what: "add" | "list" | "remove", args: readonly string[]) {
-  const parsed = options(args, ["cluster"]);
-  const configDir = resolveConfigDir();
-  const clusters = loadClusters(configDir);
-  if (what === "list" && parsed.named.get("cluster") === undefined && clusters.length !== 1) {
-    // Every cluster's own, because a list of addresses with no cluster beside
-    // them would not say which mesh each belongs to.
-    return {
-      clusters: clusters.map((one) => ({ id: one.id, name: one.name, peers: one.peers })),
-    };
-  }
-  const cluster = clusterFor(clusters, parsed.named.get("cluster"));
-  if (what === "list") {
-    return { cluster_id: cluster.id, cluster_name: cluster.name, peers: cluster.peers };
-  }
-  const given = parsed.rest[0];
-  if (given === undefined) {
-    throw new CommandError(
-      "invalid_args",
-      `使い方: ccmsg mesh ${what} <endpoint> [--cluster <id|name>]`,
-    );
-  }
-  const endpoint = endpointGiven(given);
-  const known = clusters.some((one) => one.id === cluster.id);
-  if (what === "add") {
-    if (cluster.peers.includes(endpoint)) {
-      throw new CommandError("file_exists", `${endpoint} は既に ${cluster.name} の peer です`);
-    }
-    saveCluster(configDir, { ...cluster, peers: [...cluster.peers, endpoint] });
-    if (!known) saveClusters(configDir, [...clusters.map((one) => one.id), cluster.id]);
-    // Said rather than left to be noticed: the running instances read the list
-    // when they started, so the one thing a person wants to know here is that
-    // this peer is not dialled yet.
-    return {
-      cluster_id: cluster.id,
-      cluster_name: cluster.name,
-      endpoint,
-      added: true,
-      restart_needed: (await runningIn(cluster.id)).length > 0,
-    };
-  }
-  if (!cluster.peers.includes(endpoint)) {
-    throw new CommandError("not_found", `${endpoint} は ${cluster.name} の peer ではありません`);
-  }
-  saveCluster(configDir, {
-    ...cluster,
-    peers: cluster.peers.filter((peer) => peer !== endpoint),
-  });
-  const cut: string[] = [];
-  for (const target of await runningIn(cluster.id)) {
-    const answer = (await askInstance(target, { admin: "mesh_forget", endpoint })) as {
-      dropped?: boolean;
-    };
-    if (answer.dropped === true) cut.push(target.name ?? target.dir);
-  }
-  return {
-    cluster_id: cluster.id,
-    cluster_name: cluster.name,
-    endpoint,
-    removed: true,
-    disconnected: cut,
-  };
-}
-
-/** The instances of one cluster that have something answering right now, which
- * are the ones a change to that cluster's mesh has to reach. */
-async function runningIn(cluster: string): Promise<Target[]> {
-  return (await registered(process.env)).filter(
-    (target) => (target.clusters ?? []).some((one) => one.id === cluster) && rowFor(target).running,
-  );
-}
-
-/** An endpoint as the contract spells it, from what a person typed: the base
- * URL of an instance, ending in the slash everything it serves hangs off. The
- * slash is added rather than demanded — a person pasting an address from a
- * browser has one without it, and the two are the same address. */
-function endpointGiven(given: string): Endpoint {
-  const text = given.endsWith("/") ? given : `${given}/`;
-  if (!/^https?:\/\/[^\s?#]*\/$/.test(text)) {
-    throw new CommandError(
-      "invalid_args",
-      `${given} は endpoint になりません (http:// か https:// で始まる base URL)`,
-    );
-  }
-  return text as Endpoint;
-}
-
-/** `ccmsg daemon remove <name>`: take its file away, and stop looking after it.
+/** `ccmsg daemon remove <name | id | dir>`: take its file away, and stop
+ * looking after it.
  *
  * The instance itself is left alone: removing the file is not a shutdown, and a
  * session already talking to that instance keeps it. `daemon stop` is how one
  * is stopped, and keeping the two apart is what makes that true. */
-async function removed(name: string | undefined): Promise<unknown> {
-  if (name === undefined) {
-    throw new CommandError("invalid_args", "使い方: ccmsg daemon remove <name>");
+async function removed(ref: string | undefined): Promise<unknown> {
+  if (ref === undefined) {
+    throw new CommandError("invalid_args", "使い方: ccmsg daemon remove <name | id | dir>");
   }
-  const row = await removeFromConfig(process.env, name);
+  const row = await removeFromConfig(process.env, ref);
   if (!(await reachable())) return { ...row, supervised: false };
   await ask({ op: "supervise_remove", dir: row.dir });
   return { ...row, supervised: false };
+}
+
+async function configList(): Promise<unknown> {
+  const configDir = resolveConfigDir();
+  const stateRoot = resolvePaths().stateRoot;
+  const read = await evaluate(configDir);
+  const ids = (read.satisfied ?? applied(stateRoot))?.supervisor.instances ?? [];
+  const files = configFiles(configDir, ids).map((file) => {
+    const copy = join(stateRoot, STATE_CONFIG_DIR, relative(configDir, file));
+    return {
+      file,
+      present: existsSync(file),
+      // What is wrong with this one, as the check said it: a person reading
+      // this is about to open the file, so the line they need is beside it.
+      problems: read.problems.filter((one) => one.file === file).map((one) => one.msg),
+      applied: existsSync(copy),
+      differs: existsSync(file) && existsSync(copy) ? !same(file, copy) : existsSync(file),
+    };
+  });
+  const rejected = rejectedFiles(stateRoot);
+  return {
+    ok: read.satisfied !== undefined,
+    files,
+    ...(read.problems.length === 0 ? {} : { problems: read.problems }),
+    rejected: {
+      count: rejected.length,
+      ...(rejected[0] === undefined
+        ? {}
+        : { latest: rejected[0].at, dir: join(stateRoot, REJECTED_DIR) }),
+    },
+  };
+}
+
+/** What one edited file and its checked copy differ by, or what applying the
+ * edits would change about the whole. */
+async function configDiff(args: readonly string[]): Promise<unknown> {
+  const parsed = options(args, [], ["satisfied"]);
+  const configDir = resolveConfigDir();
+  const stateRoot = resolvePaths().stateRoot;
+  if (parsed.flags.has("satisfied")) {
+    const read = await evaluate(configDir);
+    if (read.satisfied === undefined) {
+      throw new CommandError(
+        "invalid_args",
+        `設定が通らないので比べられません: ${read.problems.map((one) => `${one.file}: ${one.msg}`).join("; ")}`,
+      );
+    }
+    const standing = applied(stateRoot);
+    return {
+      file: join(stateRoot, STATE_CONFIG_DIR, SATISFIED_FILE),
+      diff: unified(
+        standing === undefined ? "" : `${JSON.stringify(standing, null, 2)}\n`,
+        `${JSON.stringify(read.satisfied, null, 2)}\n`,
+      ),
+    };
+  }
+  const named = parsed.rest[0];
+  const ids =
+    (await evaluate(configDir)).satisfied?.supervisor.instances ??
+    applied(stateRoot)?.supervisor.instances ??
+    [];
+  const wanted =
+    named === undefined
+      ? configFiles(configDir, ids)
+      : [isAbsolute(named) ? named : join(configDir, named)];
+  const diffs = wanted.flatMap((file) => {
+    const copy = join(stateRoot, STATE_CONFIG_DIR, relative(configDir, file));
+    const before = readOr(copy);
+    const after = readOr(file);
+    if (before === after) return [];
+    return [{ file, applied: copy, diff: unified(before, after) }];
+  });
+  return { files: diffs };
+}
+
+async function configShow(args: readonly string[]): Promise<unknown> {
+  const parsed = options(args, [], ["applied"]);
+  const stateRoot = resolvePaths().stateRoot;
+  if (parsed.flags.has("applied")) {
+    const standing = applied(stateRoot);
+    if (standing === undefined) throw new CommandError("not_found", "まだ何も適用されていません");
+    return standing;
+  }
+  // A dry run: the files are read and the settings functions are called, and
+  // nothing is written. They are expected to have no side effects for exactly
+  // this reason (§8.2).
+  const read = await evaluate(resolveConfigDir());
+  if (read.satisfied === undefined) {
+    throw new CommandError(
+      "invalid_args",
+      read.problems.map((one) => `${one.file}: ${one.msg}`).join("; "),
+    );
+  }
+  return read.satisfied as Satisfied;
+}
+
+/** Put the checked copy back over what is being edited.
+ *
+ * What is overwritten is kept, under the time it was taken, and its path is
+ * printed: a person reverting has just lost an edit, and the one thing they
+ * need is where it went. */
+async function configRevert(args: readonly string[]): Promise<unknown> {
+  const parsed = options(args, [], ["all"]);
+  const named = parsed.rest[0];
+  const all = parsed.flags.has("all");
+  if (named === undefined && !all) {
+    throw new CommandError("invalid_args", "使い方: ccmsg config revert <file> | --all");
+  }
+  const configDir = resolveConfigDir();
+  const stateRoot = resolvePaths().stateRoot;
+  const ids = applied(stateRoot)?.supervisor.instances ?? [];
+  const wanted = all
+    ? configFiles(configDir, ids)
+    : [isAbsolute(named as string) ? (named as string) : join(configDir, named as string)];
+  const at = new Date().toISOString().replace(/[:.]/g, "-");
+  const done: { file: string; kept?: string }[] = [];
+  for (const file of wanted) {
+    const copy = join(stateRoot, STATE_CONFIG_DIR, relative(configDir, file));
+    if (!existsSync(copy)) {
+      if (!all) throw new CommandError("not_found", `${file} の検証済みの写しがありません`);
+      continue;
+    }
+    if (readOr(file) === readOr(copy)) continue;
+    let kept: string | undefined;
+    if (existsSync(file)) {
+      kept = join(stateRoot, REJECTED_DIR, `${relative(configDir, file)}.${at}`);
+      mkdirSync(dirname(kept), { recursive: true });
+      copyFileSync(file, kept);
+    }
+    mkdirSync(dirname(file), { recursive: true });
+    copyFileSync(copy, file);
+    done.push({ file, ...(kept === undefined ? {} : { kept }) });
+  }
+  return { reverted: done };
+}
+
+/** What was put aside by a revert, newest first. */
+function rejectedFiles(stateRoot: string): { file: string; at: string }[] {
+  const dir = join(stateRoot, REJECTED_DIR);
+  const found: { file: string; at: string }[] = [];
+  const walk = (at: string): void => {
+    let entries: string[];
+    try {
+      entries = readdirSync(at);
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const path = join(at, entry);
+      if (statSync(path).isDirectory()) walk(path);
+      else found.push({ file: path, at: statSync(path).mtime.toISOString() });
+    }
+  };
+  walk(dir);
+  return found.sort((one, two) => (one.at < two.at ? 1 : -1));
+}
+
+function readOr(file: string): string {
+  try {
+    return readFileSync(file, "utf8");
+  } catch {
+    return "";
+  }
+}
+
+function same(one: string, two: string): boolean {
+  return readOr(one) === readOr(two);
+}
+
+/** A diff a person can read, line by line.
+ *
+ * Written here rather than shelled out to: what this compares is two files
+ * this process already has, and a command that answers in JSON cannot hand its
+ * caller a pager. */
+function unified(before: string, after: string): string[] {
+  const from = before === "" ? [] : before.split("\n");
+  const to = after === "" ? [] : after.split("\n");
+  const lines: string[] = [];
+  let at = 0;
+  let here = 0;
+  while (at < from.length || here < to.length) {
+    const left = from[at];
+    const right = to[here];
+    if (left === right) {
+      at += 1;
+      here += 1;
+      continue;
+    }
+    if (right !== undefined && !from.slice(at).includes(right)) {
+      lines.push(`+ ${right}`);
+      here += 1;
+      continue;
+    }
+    if (left !== undefined && !to.slice(here).includes(left)) {
+      lines.push(`- ${left}`);
+      at += 1;
+      continue;
+    }
+    if (left !== undefined) {
+      lines.push(`- ${left}`);
+      at += 1;
+    }
+    if (right !== undefined) {
+      lines.push(`+ ${right}`);
+      here += 1;
+    }
+  }
+  return lines;
 }
 
 /** The four commands that are requests to the supervisor rather than things
@@ -931,29 +1045,11 @@ async function askInstance(target: Target, request: Record<string, unknown>) {
   }
 }
 
-async function passkeyCommand(
-  args: readonly string[],
-  request: (rest: readonly string[]) => Record<string, unknown>,
-): Promise<unknown> {
-  const parsed = options(args, ["cluster", "name"]);
-  const asked = request(parsed.rest);
-  const cluster = clusterFor(loadClusters(resolveConfigDir()), parsed.named.get("cluster"));
-  const reachable = await runningIn(cluster.id);
-  const target = reachable[0];
-  if (target === undefined) {
-    throw new CommandError(
-      "instance_unreachable",
-      `${cluster.name} で動いている instance がありません (ccmsg daemon start で起こしてください)`,
-    );
-  }
-  // Any one of them: what is registered is replicated across the cluster
-  // (DR-0001 §2.6), so which instance answered is not part of the answer.
-  return {
-    cluster_id: cluster.id,
-    cluster_name: cluster.name,
-    instance: target.name ?? target.dir,
-    ...((await askInstance(target, asked)) as Record<string, unknown>),
-  };
+async function passkeyAsk(unit: string | undefined, request: Record<string, unknown>) {
+  return await askInstance(
+    targetFor(process.env, (await dirOf(unit)) ?? resolveConfigHome()),
+    request,
+  );
 }
 
 /** `ccmsg daemon passkey add`: one registration URL, and the code that goes
@@ -963,16 +1059,28 @@ async function passkeyCommand(
  * anything the instance hands out — so that holding the URL is not enough to
  * register (DR-0001 §2.2). */
 async function passkeyAdd(args: readonly string[]): Promise<unknown> {
-  return await passkeyCommand(args, (rest) => {
-    const endpoint = rest[0];
-    const parsed = options(args, ["cluster", "name"]);
-    const name = parsed.named.get("name");
-    return {
-      admin: "passkey_add",
-      ...(endpoint === undefined ? {} : { endpoint }),
-      ...(name === undefined ? {} : { name }),
-    };
+  const parsed = options(args, ["name"]);
+  const [unit, endpoint] = parsed.rest;
+  if (unit === undefined) {
+    throw new CommandError(
+      "invalid_args",
+      "使い方: ccmsg daemon passkey add <unit> [endpoint] [--name <ラベル>]",
+    );
+  }
+  const name = parsed.named.get("name");
+  return await passkeyAsk(unit, {
+    admin: "passkey_add",
+    ...(endpoint === undefined ? {} : { endpoint }),
+    ...(name === undefined ? {} : { name }),
   });
+}
+
+async function passkeyRemove(args: readonly string[]): Promise<unknown> {
+  const [sub, unit] = args;
+  if (sub === undefined) {
+    throw new CommandError("invalid_args", "使い方: ccmsg daemon passkey remove <sub> [unit]");
+  }
+  return await passkeyAsk(unit, { admin: "passkey_remove", sub });
 }
 
 /** `ccmsg daemon log`: what one instance wrote down, or what all of them did.
