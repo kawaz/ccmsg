@@ -2,12 +2,12 @@ import type { InstanceId } from "@ccmsg/protocol";
 import type { Conn } from "./control.ts";
 import { CommandError } from "./link.ts";
 
-/** One instance's whole value on a topic, as the frame carried it.
+/** What one instance opened a topic with, as the frame carried it.
  *
- * The pair rather than the payload alone, because a cluster topic is a whole
- * value *per instance* (§6.2): two instances state the same topic name, and a
- * payload with the name of its author taken off could not be told from the
- * other's. */
+ * The pair rather than the payload alone, because two instances state the same
+ * topic name: a payload with the name of its author taken off could not be told
+ * from the other's, and which instance said it is half of what a cluster read
+ * answers. */
 export interface Snapshot {
   readonly instance: InstanceId;
   readonly data: unknown;
@@ -46,17 +46,19 @@ interface Greeted {
  * frame is deferred behind the acknowledgement and is therefore already on the
  * wire; the relayed ones are what the budget is for.
  *
- * Later frames are folded in the same way a subscriber would fold them: a
- * second frame from an instance replaces that instance's entry and leaves the
- * others alone. Nothing else is waited for — the first frame from every
- * expected instance ends the read. */
+ * The opening frame is the whole of what its instance holds, whichever kind of
+ * topic it is: a `per_instance_whole` one states that instance's reading
+ * entire, and an `element` one opens with every row it has rather than with the
+ * rows that just changed. So one frame per instance is a complete read, and
+ * nothing after it is waited for — the first frame from every expected instance
+ * ends it. */
 export async function snapshots(
   conn: Conn,
   topic: string,
   expected: readonly InstanceId[],
   budgetMs: number = SNAPSHOT_BUDGET_MS,
 ): Promise<Snapshot[]> {
-  const ack = await conn.ask({ op: "topic_subscribe", topic });
+  const ack = await conn.ask({ op: "topic.subscribe", topic });
   if (ack["ok"] !== true) {
     const error = ack["error"] as { code?: string; msg?: string } | undefined;
     throw new CommandError(
