@@ -294,6 +294,8 @@ agent にとっての親はセッションか別の agent なので、そこを 
 | 判定 | 型 |
 |---|---|
 | record が sidechain (= agent 自身の file) の、返信元を持たない user 行 | `message:parent:in` (封筒があれば `harness_name` も載る) |
+| 以降の封筒なし user 行で、主語がセッション本体か teammate | `message:user:in` (人が直接打った 1 通) |
+| 同上で主語が使い捨ての agent | `message:parent:in` (起動した側が続けて指示している) |
 | 同じ file の assistant text | `message:parent:out` (呼び出しを伴わない散文) |
 | `<teammate-message teammate_id=…>` 封筒で送り手が `main` / `team-lead` | `message:parent:in` |
 | 同上で送り手がそれ以外の名前 | `message:team:in` (呼び出しの答えではない独立した 1 通) |
@@ -308,14 +310,16 @@ teammate の定義である。** 名前を持つ agent は以降も書き足せ�
 message として届く。使い捨ての agent は 1 度答えて終わるので、その往復だけが対になる。判別のつかない
 名前を `team` に倒すのはこのためで、`sub` に倒すと「来ない答えを待っている呼び出し」として描かれる。
 
-**主語が agent のとき、人の直接入力は識別しない。** teammate は人が直接打てる相手なので原理的には
-`message:user:in` が立ちうるが、transcript の上で worker と teammate を分ける印は無い
-(実測 9,573 件: 開始行の封筒の有無は taskKind と 98.9% しか一致せず、`isSidechain` は 9,572 件で立つ)。
-そこで **sidechain な file の封筒なし user 行は一律 `message:parent:in`** とする。誤って `user` と
-名乗るより、親から来たと言うほうが実態に近い (teammate の指示は実際に親から来る)。
+**自分の言葉で書いてくる相手が誰かは、立場から決まる。** teammate は以降も立ち続ける相手で人が直接
+打てるし、セッション本体の file も同じなので、**その途中に現れる封筒なし user 行は `message:user:in`**
+とする。使い捨ての agent に書けるのは起動した側だけなので、**同じ行はその file では `message:parent:in`**
+になる (人の発話ではなく、brief の続き)。開始行はどの立場でも `message:parent:in` のまま —
+指示されることは書き掛けられることとは違う。
 
 **どの立場の transcript から読んだかは、file を開いた側が決めてアイテムに載せる (`subject`)。**
-file の中に印が無いのは上のとおりなので、分類器は record を嗅がずに**告げられた立場で読む**。
+record 自体に teammate と使い捨て worker を分ける印は無いので
+(実測 9,573 件: 開始行の封筒の有無は taskKind と 98.9% しか一致せず、`isSidechain` は 9,572 件で立つ)、
+分類器は record を嗅がずに**告げられた立場で読む**。
 告げる側の一次情報はハーネスが file の隣に書く `agent-<id>.meta.json` の `taskKind` で、
 `in_process_teammate` なら `team`、それ以外の note なら `sub`、セッション本体の file なら `main`。
 teammate を名前で引く経路が既に同じ note を読んでおり (§5.4)、新しい入力源は増えない。

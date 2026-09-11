@@ -544,6 +544,25 @@ describe("classifying a transcript", () => {
     expect(typesOf(own)).toEqual(["message:user:in"]);
   });
 
+  test("who writes in their own words partway through follows from the standing", () => {
+    // A teammate and a session both go on standing and a person can type
+    // straight at either; an errand is written to by nothing but whatever
+    // started it, so the same bare words are its brief continued.
+    const records = () =>
+      lines(
+        said("w1", "count the lines", { parentUuid: null, isSidechain: true }),
+        answered("w2", [{ type: "text", text: "there were three" }], { parentUuid: "w1" }),
+        said("w3", "and the words too", { parentUuid: "w2", isSidechain: true }),
+      );
+    expect(typesOf(classify(records(), "team"))[2]).toBe("message:user:in");
+    expect(typesOf(classify(records(), "sub"))[2]).toBe("message:parent:in");
+    const own = classify(
+      lines(said("u1", "count the lines"), said("u2", "and the words too", { parentUuid: "u1" })),
+      "main",
+    );
+    expect(typesOf(own)).toEqual(["message:user:in", "message:user:in"]);
+  });
+
   test("a session's file holding a sidechain record is an agent's after all", () => {
     // The reading only ever narrows: told nothing, it starts at the session's
     // own and moves to the standing that claims the least when the records say

@@ -513,10 +513,16 @@ export class Classification {
       make("system:unknown", { record });
       return;
     }
-    // A turn begins where a person speaks, which is the only place a dump can
-    // count turns from — the harness numbers nothing.
+    // What is left is somebody writing to the subject in their own words, and
+    // who that can be follows from the standing. A session and a teammate both
+    // go on standing and a person can type straight at either, so there it is
+    // a person speaking; an errand is written to only by whoever started it,
+    // so there the bare words are the parent asking for more.
+    //
+    // A turn begins where the subject is addressed, which is the only place a
+    // dump can count turns from — the harness numbers nothing.
     this.#turn += 1;
-    make("message:user:in", { text: said });
+    make(this.#subject === "sub" ? "message:parent:in" : "message:user:in", { text: said });
   }
 
   /** A background task reporting, or an agent handing back its answer.

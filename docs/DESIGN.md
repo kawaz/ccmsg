@@ -331,6 +331,8 @@ a person and not a relation: an agent's parent is a session or another agent, an
 | what the record says | type |
 |---|---|
 | a user line with nothing it replies to, in a sidechain file (an agent's own) | `message:parent:in` (with `harness_name` when an envelope carried one) |
+| a later envelope-less user line, the subject a session or a teammate | `message:user:in`, a person typing straight at it |
+| the same line, the subject a throwaway agent | `message:parent:in`, whoever started it asking for more |
 | assistant text in that same file | `message:parent:out`, prose with no call behind it |
 | a `<teammate-message teammate_id=…>` envelope written by `main` / `team-lead` | `message:parent:in` |
 | the same envelope written under any other name | `message:team:in`, a message of its own rather than an answer |
@@ -346,17 +348,18 @@ what it says back arrives as its own message; a throwaway one answers the call t
 is done. So a name nothing else identifies is read as `team`: read as `sub` it would be drawn as a
 call waiting for an answer that has no way in.
 
-**With an agent as the subject, a person's own words are not identified.** A teammate is somebody
-a person can type at directly, so `message:user:in` could in principle stand in its file, but
-nothing in a transcript separates a teammate from a throwaway worker (measured over 9,573 agent
-files: whether the opening record is an envelope agrees with the harness's own `taskKind` only
-98.9% of the time, while `isSidechain` is set on 9,572 of them). So **every envelope-less user line
-in a sidechain file is `message:parent:in`**. Saying it came from above is nearer the truth than
-claiming a person wrote it — a teammate's instructions do come from above.
+**Who can write in their own words follows from the standing.** A teammate goes on standing and a
+person can type straight at it, as they can at a session's own file, so **an envelope-less user
+line partway through either is `message:user:in`**. A throwaway agent is written to by nothing but
+whatever started it, so **the same line in its file is `message:parent:in`** — the brief continued
+rather than a person speaking. The opening record stays `message:parent:in` wherever the subject
+stands: being told what to do is not the same as being written to.
 
 **Which standing a transcript was read from is settled by whoever opened the file, and every item
-states it (`subject`).** Nothing in the file separates the two, as above, so the classifier does
-not sniff the records: it reads under the standing it was told. What tells it is the harness's own
+states it (`subject`).** Nothing in the records themselves separates a teammate from a throwaway
+worker (measured over 9,573 agent files: whether the opening record is an envelope agrees with the
+harness's own `taskKind` only 98.9% of the time, while `isSidechain` is set on 9,572 of them), so
+the classifier does not sniff them: it reads under the standing it was told. What tells it is the harness's own
 note beside the file, `agent-<id>.meta.json`, whose `taskKind` says `in_process_teammate` for a
 teammate; any other note is an errand, and a session's own file is `main`. The route that finds a
 teammate by name already reads that same note (§5.4), so no new input is taken. The opening
