@@ -25,6 +25,7 @@ wire の契約は [kawaz/ccmsg-protocol](https://github.com/kawaz/ccmsg-protocol
 
 | date | category | status | slug | 概要 |
 |---|---|---|---|---|
+| 2026-09-11 | design | open | [multiple-clusters-per-host](./2026-09-11-multiple-clusters-per-host.md) | kawaz の想定 (2026-09-11 r303m11): 1 ホストに複数クラスタ (本人 / 家族 / ホームエージェント等)… |
 | 2026-09-11 | task | open | [ts-config-loader](./2026-09-11-ts-config-loader.md) | config を JSON + マージ規則から TS に移す。裁定: CM-Q1 (2026-09-10 r298m35) = TS で書く。defaults… |
 | 2026-09-11 | bug | open | [daemon-restart-all-leaves-supervisor-on-old-build](./2026-09-11-daemon-restart-all-leaves-supervisor-on-old-build.md) | `ccmsg daemon restart --all` は子 instance だけを新コードで起動し直し、launchd 配下の監督者 (`c… |
 | 2026-09-11 | design | open | [dump-raw-jsonl-format](./2026-09-11-dump-raw-jsonl-format.md) | `dump` の出力形式を 3 つにする (kawaz r303 m3/m4、2026-09-11): (1) item JSON (現 `--json`… |
