@@ -114,6 +114,9 @@ export interface GatewayDeps {
   /** The gateway saw something happen for a session, which is an input of the
    * sessions domain (§5.1) rather than of either topic. */
   readonly onActivity?: () => void;
+  /** A session already known to be running was seen again: its clock moved,
+   * and the row that carries it is what says so. */
+  readonly onMoved?: (sid: Sid) => void;
   readonly log?: (msg: string, fields?: Record<string, unknown>) => void;
   /** Replaces the outward read in tests. */
   readonly fetch?: typeof fetch;
@@ -139,6 +142,7 @@ export class Gateway {
       self: deps.self,
       publish: deps.publish,
       ...(deps.onActivity === undefined ? {} : { onActivity: deps.onActivity }),
+      ...(deps.onMoved === undefined ? {} : { onMoved: deps.onMoved }),
     });
     this.status =
       deps.setup.statusUrl === undefined

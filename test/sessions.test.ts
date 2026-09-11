@@ -894,6 +894,39 @@ describe("a frame carries the rows that changed", () => {
     expect(stated(published)[0]?.gateway_active_at).toBe(NOW + 1_000);
   });
 
+  test("a clock that moved is that row restated, and nothing else is read for it", () => {
+    let seen = NOW;
+    const { domain, published } = sessions({
+      gateway: { activeAt: (sid) => (sid === SID ? seen : undefined) },
+    });
+    helloFrom(domain, greeting(), SID);
+    helloFrom(domain, greeting(), OTHER_SID);
+    domain.snapshot("peers");
+
+    published.length = 0;
+    seen = NOW + 1_000;
+    domain.gatewayMoved(SID);
+
+    expect(stated(published)).toHaveLength(1);
+    expect(stated(published)[0]).toMatchObject({ sid: SID, gateway_active_at: NOW + 1_000 });
+  });
+
+  test("a clock that did not move says nothing, and an unknown session has no row to state", () => {
+    const { domain, published } = sessions({
+      gateway: { activeAt: (sid) => (sid === SID ? NOW : undefined) },
+    });
+    helloFrom(domain, greeting(), SID);
+    domain.snapshot("peers");
+
+    published.length = 0;
+    domain.gatewayMoved(SID);
+    // The gateway names sessions of every config home, and one this instance
+    // has no row for must not become a row here.
+    domain.gatewayMoved(OTHER_SID);
+
+    expect(peersOf(published)).toEqual([]);
+  });
+
   test("a recompute that found nothing different says nothing", () => {
     const { domain, published } = sessions();
     helloFrom(domain, greeting());

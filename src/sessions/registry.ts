@@ -536,12 +536,50 @@ export class Sessions implements UpstreamResource {
       ...[...own.present]
         .filter((sid) => !this.#connected.has(sid))
         .map((sid) => this.#unconnected(sid, now, own)),
-      ...this.#lastLive.entries(now).map((entry) => ({
-        ...entry,
-        state: this.classify(entry.sid, now, own) ?? "disappeared",
-        pinned: this.#pinned(entry.sid),
-      })),
+      ...this.#lastLive.entries(now).map((entry) => this.#lost(entry, now, own)),
     ];
+  }
+
+  /** One row of `peers`, for a producer that knows which session moved.
+   *
+   * The same three sources the list is built from, asked about one sid: a
+   * connection here, a session the harness names, an entry among the sessions
+   * this instance has lost. A sid none of them holds is one this instance has
+   * no row for, and it says so rather than inventing one. */
+  #peerRow(sid: Sid, now: Timestamp, own: Own): PeerInfo | undefined {
+    const held = this.#connected.get(sid);
+    if (held !== undefined) return this.#peer(held, now, own);
+    if (own.present.has(sid)) return this.#unconnected(sid, now, own);
+    const entry = this.#lastLive.get(sid);
+    return entry === undefined ? undefined : this.#lost(entry, now, own);
+  }
+
+  /** A session this instance has lost, as a row: what was observed of it,
+   * with the two fields a row derives worked out at read time (M4). */
+  #lost(entry: StoredEntry, now: Timestamp, own: Own): PeerInfo {
+    return {
+      ...entry,
+      state: this.classify(entry.sid, now, own) ?? "disappeared",
+      pinned: this.#pinned(entry.sid),
+    };
+  }
+
+  /** The gateway saw inference for one session again (§5.1).
+   *
+   * What moved is one attribute of one row, so that row is what goes out. The
+   * sessions domain is not recomputed for it: which sessions there are has not
+   * changed, and the whole of that work would be spent to restate a clock.
+   *
+   * A sid this instance has no row for publishes nothing. The gateway sits
+   * above every config home and its events name only a session id, so one
+   * belonging to another config home must not become a row here — the same
+   * narrowing the row's own reading of the gateway makes. */
+  gatewayMoved(sid: Sid): void {
+    const now = Date.now();
+    const row = this.#peerRow(sid, now, this.#own());
+    if (row === undefined) return;
+    const peers = this.#sentPeers.diffRow(row) as PeerElement[];
+    if (peers.length > 0) this.deps.publish("peers", { peers });
   }
 
   /** Every row `agents` states: the harness's own view, as it stated it. */

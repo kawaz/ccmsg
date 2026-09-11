@@ -14,16 +14,23 @@ export interface LlmRequestsDeps {
   /** The one way a value reaches subscribers (§6.1). */
   readonly publish: (topic: string, data: unknown) => void;
   /** An event moved when a session was last seen running inference, which is
-   * an input of the sessions domain (§5.1) and not of this topic. */
+   * an input of the sessions domain (§5.1) and not of this topic. Told when
+   * the window opened, which is the moment the classification can change. */
   readonly onActivity?: () => void;
+  /** The same session seen again inside a window already open: one attribute
+   * of one row moved. Told apart from the above because what it asks for is
+   * that row restated rather than the whole domain recomputed. */
+  readonly onMoved?: (sid: Sid) => void;
 }
 
 /** Which of a session's gateway facts moved.
  *
- * `live` is the only one the sessions domain has to hear: it is the moment the
- * classification of §5.1 can change, because the window either opened or
- * closed. `clock` is the same session seen again inside a window that was
- * already open — the value of an attribute, not a section anything is in. */
+ * `live` is the moment the classification of §5.1 can change, because the
+ * window either opened or closed, and the sessions domain recomputes for it.
+ * `clock` is the same session seen again inside a window that was already open
+ * — the value of an attribute, not a section anything is in — so what it asks
+ * for is that one row restated. Both reach a subscriber; they differ in how
+ * much work is done to say so. */
 type GatewayMove = "live" | "clock" | "none";
 
 /** Series remembered at once. The prune below already holds this near the
@@ -77,7 +84,7 @@ export class LlmRequests implements UpstreamResource {
    * near-ordered in practice, but a redelivery can put an older one after a
    * newer, and a countdown must not walk backwards. */
   record(info: LlmRequestObservation): void {
-    if (this.active(info.sid, info.received_at) === "live") this.deps.onActivity?.();
+    this.moved(info.sid, this.active(info.sid, info.received_at));
     const key = seriesKey(info.sid, info.prefix);
     const held = this.#series.get(key);
     if (held !== undefined && held.info.received_at >= info.received_at) return;
@@ -99,7 +106,13 @@ export class LlmRequests implements UpstreamResource {
    * the window belongs to the request that opened it — and only says the
    * session was still running inference at that instant. */
   note(sid: Sid, at: Timestamp): void {
-    if (this.active(sid, at) === "live") this.deps.onActivity?.();
+    this.moved(sid, this.active(sid, at));
+  }
+
+  /** Tell whoever holds the row what this event moved for that session. */
+  private moved(sid: Sid, move: GatewayMove): void {
+    if (move === "live") this.deps.onActivity?.();
+    else if (move === "clock") this.deps.onMoved?.(sid);
   }
 
   /** When the gateway last saw inference for a session (§5.1). Undefined once
@@ -148,11 +161,10 @@ export class LlmRequests implements UpstreamResource {
 
   /** Note the session was seen, and say what that moved.
    *
-   * A session already inside its window moves its clock and nothing else. The
-   * sessions domain is told about `live` alone, because telling it about every
-   * event would restate the whole of `peers` once per call a session makes:
-   * inference is observed several times a second and the row it lands on
-   * differs only in an attribute (§5.2). */
+   * A session already inside its window moves its clock and nothing else, so
+   * the row it lands on is restated on its own: inference is observed several
+   * times a second, and recomputing the domain for each would spend the whole
+   * of that work on one attribute of one row (§5.2). */
   private active(sid: Sid, at: Timestamp): GatewayMove {
     const held = this.#activeAt.get(sid);
     if (held !== undefined && held >= at) return "none";

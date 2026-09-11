@@ -325,9 +325,11 @@ describe("what the sessions domain is told about inference (§5.1, §5.2)", () =
     subject: LlmRequests;
     frames: () => number;
     woken: () => number;
+    moved: string[];
   } {
     let frames = 0;
     let woken = 0;
+    const moved: string[] = [];
     const subject = new LlmRequests({
       self: SELF,
       publish: () => {
@@ -336,19 +338,26 @@ describe("what the sessions domain is told about inference (§5.1, §5.2)", () =
       onActivity: () => {
         woken += 1;
       },
+      onMoved: (sid) => {
+        moved.push(sid);
+      },
     });
-    return { subject, frames: () => frames, woken: () => woken };
+    return { subject, frames: () => frames, woken: () => woken, moved };
   }
 
-  test("a session seen again inside its window wakes nothing", () => {
-    const { subject, frames, woken } = requests();
+  test("a session seen again inside its window moves its row, not the domain", () => {
+    const { subject, frames, woken, moved } = requests();
     const now = Date.now();
     for (let index = 0; index < 10; index += 1) {
       subject.record(observation(now + index * 100));
       subject.note(SID, now + index * 100 + 50);
     }
-    // The window opened once, and the twenty events after it moved a clock.
+    // The window opened once, which is the one moment the classification can
+    // change and so the one that recomputes the sessions domain.
     expect(woken()).toBe(1);
+    // The nineteen events after it each moved that session's clock, and each
+    // names the session whose row carries it.
+    expect(moved).toEqual(Array.from({ length: 19 }, () => SID));
     // The countdown is still the topic's own value, so each request states it.
     expect(frames()).toBe(10);
   });
@@ -362,13 +371,7 @@ describe("what the sessions domain is told about inference (§5.1, §5.2)", () =
     expect(woken()).toBe(2);
   });
 
-  /** One row without the attribute that moves on its own. */
-  function shape(row: Record<string, unknown> | undefined): string {
-    const { gateway_active_at: _clock, last_activity_at: _seen, ...rest } = row ?? {};
-    return JSON.stringify(rest);
-  }
-
-  test("a run of events leaves `peers` where it was", async () => {
+  test("a run of events reaches a subscriber as that one row, restated", async () => {
     const gateway = fakeGateway();
     const started = await startWith(wiredTo(gateway.url));
     // A session the harness names, so the gateway's word about it lands on a
@@ -394,45 +397,45 @@ describe("what the sessions domain is told about inference (§5.1, §5.2)", () =
       const frame = await nextTopic(client, "peers");
       row = (frame["data"] as { peers: Record<string, unknown>[] }).peers[0];
     }
-    // The session appearing in the harness is a change of its own, and the
-    // watch behind it reports the write in its own time. Counting starts once
-    // that has gone quiet, so what is counted is what the events did.
-    let last = shape(row);
-    let repeats = 0;
-    let counting = false;
-    let quiet: (() => void) | undefined;
+
+    const seen: Record<string, unknown>[][] = [];
     void (async () => {
       for (;;) {
         const frame = await client.next();
         if (frame["ev"] !== "topic" || frame["topic"] !== "peers") continue;
-        const seen = shape((frame["data"] as { peers: Record<string, unknown>[] }).peers[0]);
-        // Frames whose only difference is the clock are the ones a run of
-        // events must not produce. One carrying a structural change is another
-        // matter, and the instance may send that whenever it has one.
-        if (counting && seen === last) repeats += 1;
-        last = seen;
-        quiet?.();
+        seen.push((frame["data"] as { peers: Record<string, unknown>[] }).peers);
       }
     })().catch(() => {});
-    for (;;) {
-      const heard = await new Promise<boolean>((settle) => {
-        quiet = () => settle(true);
-        setTimeout(() => settle(false), 200);
-      });
-      quiet = undefined;
-      if (!heard) break;
-    }
-    counting = true;
 
-    for (let index = 1; index <= 10; index += 1) {
+    const events = 10;
+    for (let index = 1; index <= events; index += 1) {
       await started.post([requestEvent({ ts: now + index, cache_expires_at: now + 3_600_000 })]);
     }
-    await Bun.sleep(150);
-
-    // Each of them moved the row's clock and nothing else.
-    expect(repeats).toBe(0);
+    // The newest clock is what a subscriber ends up holding, and it arrives
+    // without the list around it: every frame carries the one row that moved.
+    await eventually(() => clockOf(seen.at(-1)) === now + events);
+    for (const rows of seen) {
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.["sid"]).toBe(SID);
+    }
   });
 });
+
+/** The clock on the single row a frame carried, or nothing while none has. */
+function clockOf(rows: Record<string, unknown>[] | undefined): number | undefined {
+  return rows?.[0]?.["gateway_active_at"] as number | undefined;
+}
+
+/** Waits for something the instance does on its own, rather than sleeping for
+ * as long as it might take. */
+async function eventually(what: () => boolean, withinMs = 2_000): Promise<void> {
+  const until = Date.now() + withinMs;
+  while (Date.now() < until) {
+    if (what()) return;
+    await Bun.sleep(5);
+  }
+  expect(what()).toBe(true);
+}
 
 describe("the report the gateway is asked for (§6.2, whole value)", () => {
   test("subscribing reads it once, and the frame is the contract's", async () => {

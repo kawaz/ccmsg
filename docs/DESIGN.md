@@ -896,9 +896,12 @@ well. The window is judged at the moment of reading; no timer announces that it 
 
 Because the attribute is not the classification, **the gateway seeing a session again puts
 that one row on `peers` and nothing else**. A frame carries the rows that changed (§6.2), so a
-clock moving on one row is that row's update and no other row is restated. A client that wants
-to watch inference as it happens has `llm_requests`, which is a view of the gateway rather than
-of the list.
+clock moving reaches a subscriber as that row's update and no other row is restated. What
+recomputes the whole sessions domain is **the window opening alone** — the one moment a row can
+change section; seen again inside a window, only that sid's row is rebuilt and stated, since
+inference is observed several times a second and one attribute must not cost a re-reading of
+which sessions there are. A client that wants to watch inference as it happens has
+`llm_requests`, which is a view of the gateway rather than of the list.
 
 ### 5.3 The two kinds of "last activity time"
 

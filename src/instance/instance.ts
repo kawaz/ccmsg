@@ -421,6 +421,9 @@ export class Instance {
       onActivity: () => {
         this.#sessions.refresh();
       },
+      onMoved: (sid) => {
+        this.#sessions.gatewayMoved(sid);
+      },
       log: (msg, fields) => {
         this.log.write(msg, fields);
       },
