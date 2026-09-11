@@ -23,6 +23,7 @@ wire の契約は [`@ccmsg/protocol`](https://github.com/kawaz/ccmsg-protocol) �
 
 - [docs/DESIGN-ja.md](./docs/DESIGN-ja.md) — **今の姿**。目的と増やさないもの、契約との関係と層、認証、状態モデル、transcript と dump、topic と配送、mesh、運用、テスト方針
 - [docs/decisions/](./docs/decisions/INDEX.md) — **判断の記録 (DR)**。なぜそう決めたか、何を捨てたか
+- [docs/ROADMAP.md](./docs/ROADMAP.md) — やる順に並べた束と、3 リポの issue への参照
 - [docs/design/](./docs/design/README.md) — 単体で完結する設計の詳細 (instance 間の認証、dump のアイテム型)
 
 ## ライセンス

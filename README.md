@@ -23,6 +23,7 @@ Authenticating a person is not on that list: the daemon answers "who came" itsel
 
 - [docs/DESIGN.md](./docs/DESIGN.md) — **what it is now**: the purpose and what is not grown, the contract and the layers, authentication, the state model, transcripts and dumps, topics and delivery, the mesh, operation, and how it is tested
 - [docs/decisions/](./docs/decisions/INDEX.md) — **the record of the judgments (DR)**: why something was decided that way, and what was set aside
+- [docs/ROADMAP.md](./docs/ROADMAP.md) — the bundles of work in the order they are taken, pointing at the issues across the three repos
 - [docs/design/](./docs/design/README.md) — the design details that stand on their own (authentication between instances, the item types of a dump)
 
 ## License
