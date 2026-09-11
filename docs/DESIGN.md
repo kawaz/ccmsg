@@ -28,8 +28,6 @@ An instance can only answer for the sessions that belong to its own config home 
 | M5 | **A separate implementation of the same technique** | Writing the same kind of logic (e.g. "serialize the previous value and compare, skip the push if unchanged") in multiple places | Having a separate suppression cache per topic |
 | M6 | **Scanning for `~/.claude*`** | Discovering config homes other than one's own via disk scanning | "It would be convenient to also see sessions from other profiles" leads to polling every config home |
 
-M1 / M2 / M5 explicitly name the biases measured in the old daemon (95 spots of role comparisons, 3 routes for the same information, 3 implementations of push-suppression caches, 3 lineages of transcript-line folding), so as to prevent recurrence. M3 responds to the fact that of 8 kinds of timers, only 2 had their rationale written down.
-
 ### 1.2 The shape derived from the purpose
 
 - Authorization, capability, and forwarding are done in a single function that looks up the contract repo's `OP_ATTRIBUTES` / `TOPIC_ATTRIBUTES`. An op's implementation starts from a state where "the arguments are already validated, and the caller is already confirmed to be allowed to call" (M1)
@@ -53,7 +51,7 @@ None of these decides how often anything is looked at. A window and an expiry on
 
 | # | Condition | If not satisfied |
 |---|---|---|
-| A1 | The wire contract (types, op attribute table, topic attribute table, validators) is owned by the protocol repo | The daemon writes its own validation and drifts out of sync with the webui's interpretation (the old daemon's state) |
+| A1 | The wire contract (types, op attribute table, topic attribute table, validators) is owned by the protocol repo | The daemon writes its own validation and drifts out of sync with the webui's interpretation |
 | A2 | instance = 1 config home. The daemon process is 1:1 with the instance | It becomes undefined which config home's sessions are being answered for |
 | A3 | The runtime is Bun. UDS, child processes, and file watching use Bun's APIs | The premise of startup and distribution (single binary) changes |
 | A4 | daemon, sessions, and webui users are a single uid. No privilege separation | The UDS 0600 and the config home's 0600 key stop being the boundary, requiring authorization to be rebuilt |
@@ -86,7 +84,7 @@ persistence writes only what must not be lost across a crash and restart
 | Entry-point permission | source IP allowlist, mesh peer TLS |
 | Determining identity | binds a role and (for sessions) a sid to the connection as the result of `hello` |
 
-We will not repeat the asymmetry in the old daemon where only the UDS listener was buried inside the startup function. UDS and WS are **two implementations that return the same `Conn`**, and layers above do not distinguish between them. The difference in backpressure handling (UDS `write` may return a short count / WS retransmits) is absorbed at this layer.
+UDS and WS are **two implementations that return the same `Conn`**, and layers above do not distinguish between them. Neither of them is buried inside the startup function while the other is not. The difference in backpressure handling (UDS `write` may return a short count / WS retransmits) is absorbed at this layer.
 
 **A mesh connection is also just one implementation of this layer** (§7). The only difference is that its role is `instance`.
 
@@ -116,7 +114,7 @@ For a single frame, in order:
 | upstream | values copied from `sessions/<pid>.json` / llm-gateway | external (§2.4) |
 | mesh | the last whole value each peer stated on a cluster-wide topic, and the mark saying whether it can be reached (§7.4 / §7.5) | the originating instance |
 
-**The transcript's fold is a single one.** The old daemon had status / errors / user-input independently fold the same line through 3 lineages. v2 shapes it as tail 1 → fold 1 → deriving each topic's value from that (M5; why it is not a two-tier fold is DR-0009). If load becomes a problem, the answer is to lighten the fold's content, not to add more folds.
+**The transcript's fold is a single one.** It is shaped as tail 1 → fold 1 → deriving each topic's value from that (M5; why it is not a two-tier fold is DR-0009). If load becomes a problem, the answer is to lighten the fold's content, not to add more folds.
 
 §7. It is placed next to domain because mesh is the layer that "shows another instance's domain as if it were one's own domain."
 
@@ -250,7 +248,7 @@ A row with no connection carries none of the fields that are about one (`connect
 
 **A Codex session names no terminal.** "Unmanaged" in the classification means "alive, but with no handle to type into" (§4.3), and there is no way to type into a Codex thread the way a terminal is typed into. So a live Codex session this instance holds no connection to reads as `live_unmanaged`. Delivery is a separate matter: route (a) puts the message on the thread's queue (§6.5).
 
-**The set of sessions comes from watching our own config home's `sessions/`** (why no `claude agents` child process is DR-0009). There is no child-process launch every 5 seconds (M3). Since file watching can miss events, a low-frequency confirmation poll **runs alongside it** — this is the same shape the old daemon adopted for transcript tail based on measurement, and the rationale for the interval is "catch changes that the watch dropped before the user notices," not the primary acquisition route.
+**The set of sessions comes from watching our own config home's `sessions/`** (why no `claude agents` child process is DR-0009). There is no child-process launch every 5 seconds (M3). Since file watching can miss events, a low-frequency confirmation poll **runs alongside it** — the rationale for the interval is "catch changes that the watch dropped before the user notices," not the primary acquisition route.
 
 A rewrite can leave `sessions/<pid>.json` temporarily empty or incomplete. While the file still exists, the daemon retains the last row read completely from that file and does not publish an incomplete read as the session's disappearance. It removes the row immediately when a complete document names a process that is gone or when the file itself disappears. The watch is a resource that announces possible change; an intermediate representation is not evidence of a new current value.
 
@@ -279,7 +277,7 @@ Because the attribute is not the classification, **the gateway seeing a session 
 
 ### 4.4 The two kinds of "last activity time"
 
-The old daemon kept "the time updated on every ccmsg request" (the agent's busyness) and "the time the human typed input" (the sort order) in two separate places. v2 **makes explicit at the type level that these are two values for two different purposes**, and decides in one place which one drives the sort order. They are never held under the same name.
+"The time updated on every ccmsg request" (the agent's busyness) and "the time the human typed input" (the sort order) are two values for two different purposes, and **that is made explicit at the type level**. Which one drives the sort order is decided in one place. They are never held under the same name.
 
 ### 4.5 The two routes from a sid to its transcript
 
@@ -389,7 +387,7 @@ The contract defines only one shape: "immediately after `topic.subscribe`, a fra
 | Update entry point | A single function that domain uses to hand in "a new value" |
 | Suppression | **For the granularities that replace the value**, do not send if identical to the last value sent (**a single implementation shared by all topics**, M5) |
 
-The old daemon had suppression on only 3 topic-equivalents, and each was a separate implementation. v2 builds suppression into the topic mechanism itself, so "this topic has no suppression" can never happen.
+Suppression is built into the topic mechanism itself, so "this topic has no suppression" can never happen.
 
 ### 6.2 Delta granularity
 
@@ -466,7 +464,7 @@ The contract's `message.send` promises only "deliver to the destination sid," re
 
 **Prefer (a); fall back to (b) on failure** (DR-0008). Two reasons.
 
-- (a) **arrives even if the receiving side does not have a ccmsg long-running process**. The gap "messages don't reach a session that hasn't subscribed yet" (which the old daemon plugged with a 3-minute rewind window) disappears as a property of the route rather than being closed by a time window. That **its only input is `sessions/`** is the same property from the other side: resolving the addressee and writing to it both hold for a session whose greeting was never heard — which, to a restarted instance, is every session
+- (a) **arrives even if the receiving side does not have a ccmsg long-running process**. The gap "messages don't reach a session that hasn't subscribed yet" disappears as a property of the route rather than being closed by a time window. That **its only input is `sessions/`** is the same property from the other side: resolving the addressee and writing to it both hold for a session whose greeting was never heard — which, to a restarted instance, is every session
 - (b) is ccmsg's own protocol, so it works for peers where (a) is unusable (generation mismatch, no socket, cannot read the key). There are combinations that work with only one of the two but not the other
 
 Route (a) applies **only when every condition is satisfied**. If even one is missing, it falls back to (b) without further judgment.
@@ -681,7 +679,6 @@ That the path a listener bound is unlinked when it stops is Bun's behaviour (mea
 
 **Deadlines.** A served WebSocket whose `ws.close()` this process called itself — which the mesh does, to drop the loser of a glare, a link gone silent, or a peer speaking out of turn — never settles its `stop`, while the address is in fact given up within a millisecond and can be bound again (measured on 1.3.13). So a WebSocket's close is cut off at **250 ms** and the address is trusted over the promise; a UDS `stop` returns synchronously and is not waited on at all. The supervisor gives each child **10 seconds** to leave when asked, then escalates to SIGTERM, another 10 seconds, and SIGKILL. It closes its own socket only once every child has gone, for what 5 and 6 say about an instance: a socket that goes first leaves a supervisor still seeing its children out looking, from outside, like one that has left. The init system's side (`service stop`) is the same shape — after SIGTERM it waits up to 10 seconds for the supervisor's pid to go, escalates to SIGKILL, and answers with what happened.
 
-This order is already established as convention in the old daemon, so it carries over.
 
 ### 8.6 Out of scope
 
@@ -712,7 +709,7 @@ The daemon's tests also read the "real wire JSON passes the schema" fixtures hel
 
 ### 9.2 Always test authorization boundaries directly
 
-In the old daemon, the 3 modules holding authorization boundaries were never imported from a test even once. v2 places **a test that directly calls the route** on every route that holds a boundary. We do not skip this on the grounds that "it's covered by e2e."
+Every route that holds a boundary carries **a test that directly calls that route**. We do not skip this on the grounds that "it's covered by e2e."
 
 - Each of §2.2's steps 1–6 independently returns the correct code on its own
 - For every op in the attribute table, a role outside `roles` gets `forbidden` (auto-generated by walking the table)

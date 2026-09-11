@@ -9,7 +9,7 @@ Sponsor: 統括裁定 (2026-09-08)
 
 一覧の分類 (Pinned / Waiting / alive / unmanaged / Paused / Disappeared) を誰が決めるかが定まっていなかった。webui が生の値を組み合わせて分類すると、instance ごとに解釈がずれる。
 
-旧 daemon には 3 つの負債があった。`claude agents` を 5 秒ごとに子プロセスとして起こしていたこと、`sessions/<pid>.json` の生 status から Busy / Idle を決めていたこと、同じ transcript の行を status / errors / user-input の 3 系統が独立に fold していたことである。
+v1 の daemon には 4 つの負債があった。`claude agents` を 5 秒ごとに子プロセスとして起こしていたこと、`sessions/<pid>.json` の生 status から Busy / Idle を決めていたこと、同じ transcript の行を status / errors / user-input の 3 系統が独立に fold していたこと、そして「ccmsg リクエストのたび更新される時刻」(エージェントの忙しさ) と「人間が入力した時刻」(並び順) という用途の違う 2 つを別の場所に持っていたことである。
 
 ## 2. 決定
 

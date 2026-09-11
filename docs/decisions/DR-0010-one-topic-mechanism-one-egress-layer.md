@@ -7,7 +7,7 @@ Sponsor: kawaz 指示 (2026-09-10)「各 WS 終端の送出側に rate limit 層
 
 ## 1. 背景
 
-旧 daemon で push の抑止 (前回と同じ値なら送らない) を持っていたのは topic 相当の 3 箇所だけで、しかもそれぞれ別実装だった。抑止を持つ topic と持たない topic が生まれる。
+v1 の daemon で push の抑止 (前回と同じ値なら送らない) を持っていたのは topic 相当の 3 箇所だけで、しかもそれぞれ別実装だった。抑止を持つ topic と持たない topic が生まれる。
 
 2026-09-10 の本番で、bare instance が `agents` / `peers` を ~1 kHz で publish し (0.92 秒で 882 frame)、mesh 経由で全 instance → webui に fan-out して一覧が振動し UI が停止した。抑止は「前回と同じ値」しか止められず、**毎回変わる値が高頻度で述べられる**と全部が frame になる。
 
