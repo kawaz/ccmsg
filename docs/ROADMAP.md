@@ -16,11 +16,10 @@
 
 kawaz が v1 の webui を使い続けている理由を潰す束。**契約と daemon は揃っていて、webui だけの作業**。これが他の束より先。
 
-- 親: webui `2026-09-12-v1-parity-for-migration.md` — 画面 9 件 (Usage / クォータ、cache リング + LLM status、翻訳タブ、Status タブの中身、Session Search、Session Launcher、LLM stats、dump ボタン、kill / rename / pinned)
-- 移行前に直す使い勝手 (親 issue の外):
-  - webui `2026-09-12-first-connect-flow.md` — スマホ初回アクセスの接続・認証導線
-  - webui `2026-09-12-timeline-width-and-bubble-gutter.md` — TL の幅崩れとバブル左余白
-  - webui `2026-09-12-composer-enter-newline.md` — Composer の Enter を改行にする
+- webui `2026-09-12-first-connect-flow.md` — スマホ初回アクセスの接続・認証導線
+- webui `2026-09-12-timeline-width-and-bubble-gutter.md` — TL の幅崩れとバブル左余白
+- webui `2026-09-12-composer-enter-newline.md` — Composer の Enter を改行にする
+- webui `2026-09-12-v1-parity-for-migration.md` — 画面 9 件 (Usage / クォータ、cache リング + LLM status、翻訳タブ、Status タブの中身、Session Search、Session Launcher、LLM stats、dump ボタン、kill / rename / pinned)
 
 契約 / daemon 側から要る 3 件 (sandbox の配信、Composer の添付、`.code-workspace`) は束 2 に寄せる。
 
@@ -64,7 +63,7 @@ kawaz が v1 の webui を使い続けている理由を潰す束。**契約と 
 - 契約 `2026-09-10-ecosystem-review-2026-09.md` — 外部レビューの指摘への対応
 - 契約 `2026-09-10-schema-library-choice-record.md` — TypeBox 採用の根拠が記録されていない
 
-## 保留 (kawaz)
+## 束 6 — 保留 (kawaz)
 
 - **cluster / 権限構造** — 再開する時は権限構造から起票し直す ([DR-0005](./decisions/DR-0005-withdraw-the-cluster-concept.md) §2.1 / §2.2 に用語と論点がある)
 - **Codex の hook trust** — trust を install 側が書かない方針のまま、人が承認する導線を用意していない
