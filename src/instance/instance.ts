@@ -62,7 +62,7 @@ import {
   Transport,
   type UpgradeDecision,
 } from "../transport/index.ts";
-import { Mesh, MESH_PROTOCOL } from "../mesh/index.ts";
+import { Instances, Mesh, MESH_PROTOCOL } from "../mesh/index.ts";
 import {
   Gateway,
   gatewayCapabilities,
@@ -317,6 +317,7 @@ export class Instance {
   readonly #transport = new Transport();
   readonly #topics: Topics;
   readonly #sessions: Sessions;
+  readonly #instances: Instances;
   readonly #status: SessionStatus;
   readonly #transcripts: Transcripts;
   readonly #gateway: Gateway;
@@ -401,10 +402,10 @@ export class Instance {
         const stated = (data as { records?: AuthRecord[] } | undefined)?.records;
         if (Array.isArray(stated)) this.#auth.merge(stated);
       },
-      // What `peers` says about the instances is this instance's own view, so
-      // it is restated when that view moves (§7.5).
+      // The mesh view is this instance's own, so the topic that carries it is
+      // restated when that view moves (§7.5).
       changed: () => {
-        this.#sessions.refresh();
+        this.#instances.refresh();
         this.#linkMoved();
       },
     });
@@ -532,6 +533,15 @@ export class Instance {
       publish: (topic, data, instance) => this.#topics.publish(topic, data, instance),
     });
 
+    this.#instances = new Instances({
+      self: this.self,
+      ...(this.#mesh === undefined ? {} : { endpoint: this.#mesh.self, mesh: this.#mesh }),
+      publish: (topic, data) => {
+        this.#topics.publish(topic, data);
+      },
+    });
+
+    this.#topics.attach("instances", this.#instances);
     this.#topics.attach("peers", this.#sessions);
     this.#topics.attach("agents", this.#sessions);
     this.#topics.attach("inbox", this.#delivery);

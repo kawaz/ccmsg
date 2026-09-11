@@ -93,7 +93,7 @@ describe("the subscription is the whole of what a topic holds (§6.1)", () => {
     const here = connAs("user");
     const elsewhere = connAs("user");
     hub.subscribe(here, "notify");
-    hub.subscribe(elsewhere, "peers");
+    hub.subscribe(elsewhere, "instances");
 
     hub.publish("notify", NOTIFICATION);
 
@@ -104,9 +104,11 @@ describe("the subscription is the whole of what a topic holds (§6.1)", () => {
 
 /** A topic whose frames replace the value they carry, and one payload the
  * contract accepts for it. Suppression is about those: a repeated whole value
- * leaves the subscriber holding what it already holds. */
-const PEERS = "peers";
-const PEER_LIST = { peers: [], last_live: [] };
+ * leaves the subscriber holding what it already holds — which is why the stand
+ * -in is the mesh view rather than the rows of `peers`, whose frames carry the
+ * rows that changed. */
+const PEERS = "instances";
+const PEER_LIST = { instances: [] };
 
 /** Which topics the rule covers, read off the contract rather than listed
  * here: the granularity is what decides, so a topic added to the contract
@@ -170,11 +172,11 @@ describe("suppression is one implementation, and it is every topic's (M5)", () =
   test("one instance repeating itself does not hide another instance's value", () => {
     const hub = topics();
     const conn = connAs("user");
-    hub.subscribe(conn, "peers");
+    hub.subscribe(conn, "instances");
 
-    hub.publish("peers", { count: 1 }, SELF);
-    hub.publish("peers", { count: 1 }, OTHER_INSTANCE);
-    hub.publish("peers", { count: 1 }, SELF);
+    hub.publish("instances", { count: 1 }, SELF);
+    hub.publish("instances", { count: 1 }, OTHER_INSTANCE);
+    hub.publish("instances", { count: 1 }, SELF);
 
     // The two instances' whole values share the topic name without colliding
     // (§6.2), so the third publish is a repeat of the first and nothing else.
@@ -183,24 +185,24 @@ describe("suppression is one implementation, and it is every topic's (M5)", () =
 
   test("a later subscriber is handed every instance's share as a snapshot", () => {
     const hub = topics();
-    owner(hub, "peers", [
+    owner(hub, "instances", [
       { instance: SELF, data: { count: 1 } },
       { instance: OTHER_INSTANCE, data: { count: 2 } },
     ]);
     const first = connAs("user");
-    hub.subscribe(first, "peers");
-    hub.publish("peers", { count: 1 }, SELF);
-    hub.publish("peers", { count: 2 }, OTHER_INSTANCE);
+    hub.subscribe(first, "instances");
+    hub.publish("instances", { count: 1 }, SELF);
+    hub.publish("instances", { count: 2 }, OTHER_INSTANCE);
 
     const later = connAs("user");
-    hub.subscribe(later, "peers");
+    hub.subscribe(later, "instances");
     later.flush();
 
     expect(later.topics()).toEqual([
-      { ev: "topic", topic: "peers", snapshot: true, instance: SELF, data: { count: 1 } },
+      { ev: "topic", topic: "instances", snapshot: true, instance: SELF, data: { count: 1 } },
       {
         ev: "topic",
-        topic: "peers",
+        topic: "instances",
         snapshot: true,
         instance: OTHER_INSTANCE,
         data: { count: 2 },
@@ -444,29 +446,33 @@ describe("the ops reach the mechanism through dispatch", () => {
 
   test("the reply acknowledges, and the snapshot follows it", async () => {
     const hub = topics();
-    owner(hub, "peers", [{ instance: SELF, data: { count: 1 } }]);
+    owner(hub, "instances", [{ instance: SELF, data: { count: 1 } }]);
     const conn = connAs("user");
 
-    const result = await dispatch(frameFor("topic_subscribe", { topic: "peers" }), conn, deps(hub));
+    const result = await dispatch(
+      frameFor("topic_subscribe", { topic: "instances" }),
+      conn,
+      deps(hub),
+    );
 
     expect(result).toEqual({
       kind: "reply",
-      response: { ok: true, request_id: "1", topic: "peers" },
+      response: { ok: true, request_id: "1", topic: "instances" },
     });
     // The driver sends the reply and then releases what the handler queued.
     conn.flush();
     expect(conn.topics()).toEqual([
-      { ev: "topic", topic: "peers", snapshot: true, instance: SELF, data: { count: 1 } },
+      { ev: "topic", topic: "instances", snapshot: true, instance: SELF, data: { count: 1 } },
     ]);
   });
 
   test("unsubscribing through the op stops the frames", async () => {
     const hub = topics();
     const conn = connAs("user");
-    await dispatch(frameFor("topic_subscribe", { topic: "peers" }), conn, deps(hub));
-    await dispatch(frameFor("topic_unsubscribe", { topic: "peers" }), conn, deps(hub));
+    await dispatch(frameFor("topic_subscribe", { topic: "instances" }), conn, deps(hub));
+    await dispatch(frameFor("topic_unsubscribe", { topic: "instances" }), conn, deps(hub));
 
-    hub.publish("peers", { count: 1 });
+    hub.publish("instances", { count: 1 });
     conn.flush();
     expect(conn.topics()).toEqual([]);
   });

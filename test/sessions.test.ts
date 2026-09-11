@@ -13,7 +13,7 @@ import { join } from "node:path";
 import {
   type HelloResult,
   LAST_LIVE_RETENTION_MS,
-  type LastLiveSession,
+  type PeerInfo,
   OP_SCHEMAS,
   PROTOCOL_VERSION,
   type SessionState,
@@ -24,6 +24,7 @@ import {
 import { OpError } from "../src/dispatch/index.ts";
 import { Topics } from "../src/topics/index.ts";
 import {
+  isLive,
   classify,
   type GatewaySource,
   HarnessSessions,
@@ -301,7 +302,23 @@ function meta() {
 }
 
 const peersOf = (frames: Published[]) => frames.filter((frame) => frame.topic === "peers");
+
+/** Every `peers` frame folded the way a subscriber folds them: a row is
+ * matched by its sid, a later frame replaces it, and a removal takes it away. */
+function folded(published: Published[]): PeerInfo[] {
+  const rows = new Map<Sid, PeerInfo>();
+  for (const frame of peersOf(published)) {
+    for (const row of (frame.data as { peers: (PeerInfo & { removed?: true })[] }).peers) {
+      if (row.removed === true) rows.delete(row.sid);
+      else rows.set(row.sid, row);
+    }
+  }
+  return [...rows.values()];
+}
 const agentsOf = (frames: Published[]) => frames.filter((frame) => frame.topic === "agents");
+
+/** The other half of the same list: the rows the instance has lost. */
+const isLost = (row: { readonly state?: string }): boolean => !isLive(row as { state?: never });
 
 describe("hello", () => {
   test("answers the contract's own result, naming only this instance", () => {
@@ -333,7 +350,7 @@ describe("hello", () => {
       conn: greeting(),
       args: { op: "hello", request_id: "1", role: "user", protocol_version: PROTOCOL_VERSION },
     });
-    expect(domain.peers().peers).toEqual([]);
+    expect(domain.peerRows().filter(isLive)).toEqual([]);
   });
 
   test("each role says what its own greeting has to carry", () => {
@@ -361,7 +378,7 @@ describe("hello", () => {
         mesh: { ver: 1, iss: SELF, aud: SELF, kid: "0123456789abcdef" },
       }),
     ).toThrow(OpError);
-    expect(domain.peers().peers).toEqual([]);
+    expect(domain.peerRows().filter(isLive)).toEqual([]);
   });
 
   test("a connection greets once, and a second greeting is refused", () => {
@@ -400,7 +417,7 @@ describe("hello", () => {
       },
     });
     expect(context.domain.transcriptPath(SID)).toBeUndefined();
-    expect(context.domain.peers().peers[0]?.transcript_path).toBeUndefined();
+    expect(context.domain.peerRows().filter(isLive)[0]?.transcript_path).toBeUndefined();
   });
 
   test("a transcript inside projects/ is taken before anything is written to it", () => {
@@ -479,7 +496,7 @@ describe("hello", () => {
     greetWith(context.domain, { cwd: "/somewhere/else" });
 
     expect(context.domain.transcriptPath(SID)).toBe(transcriptPath);
-    expect(context.domain.peers().peers[0]).toMatchObject({
+    expect(context.domain.peerRows().filter(isLive)[0]).toMatchObject({
       repo: "a-repo",
       ws: "main",
       cwd: "/somewhere/else",
@@ -492,7 +509,7 @@ describe("hello", () => {
 
     greetWith(context.domain, { title: "renamed" });
 
-    expect(context.domain.peers().peers[0]).toMatchObject({
+    expect(context.domain.peerRows().filter(isLive)[0]).toMatchObject({
       repo: "a-repo",
       ws: "main",
       title: "renamed",
@@ -526,12 +543,12 @@ describe("hello", () => {
     // to it (§5.3).
     const { domain } = sessions();
     helloFrom(domain, greeting());
-    const greeted = domain.peers().peers[0]?.last_activity_at ?? 0;
+    const greeted = domain.peerRows().filter(isLive)[0]?.last_activity_at ?? 0;
     domain.touch(SID, greeted + 5_000);
-    expect(domain.peers().peers[0]?.last_activity_at).toBe(greeted + 5_000);
+    expect(domain.peerRows().filter(isLive)[0]?.last_activity_at).toBe(greeted + 5_000);
     // A session nothing knows about is not invented by being touched.
     domain.touch(OTHER_SID, greeted + 5_000);
-    expect(domain.peers().peers).toHaveLength(1);
+    expect(domain.peerRows().filter(isLive)).toHaveLength(1);
   });
 
   test("a greeting announcing another generation is refused", () => {
@@ -549,7 +566,7 @@ describe("hello", () => {
   test("what the greeting said about the session is what peers repeats", () => {
     const { domain } = sessions();
     helloFrom(domain, greeting());
-    const peer = domain.peers().peers[0];
+    const peer = domain.peerRows().filter(isLive)[0];
     // Where it lives and what it calls itself. What it runs as (model, effort)
     // belongs to `last_live` alone, where a resume reads it.
     const { model: _model, effort: _effort, ...shown } = meta();
@@ -562,13 +579,13 @@ describe("hello", () => {
       gateway: { activeAt: (sid) => (sid === SID ? seen : undefined) },
     });
     helloFrom(domain, greeting());
-    expect(domain.peers().peers[0]?.gateway_active_at).toBe(seen);
+    expect(domain.peerRows().filter(isLive)[0]?.gateway_active_at).toBe(seen);
   });
 
   test("an instance with no gateway shows the peer without the mark, not as quiet", () => {
     const { domain } = sessions();
     helloFrom(domain, greeting());
-    expect(domain.peers().peers[0]?.gateway_active_at).toBeUndefined();
+    expect(domain.peerRows().filter(isLive)[0]?.gateway_active_at).toBeUndefined();
   });
 
   test("a session that named none of it is shown without it, never with a guess", () => {
@@ -584,7 +601,7 @@ describe("hello", () => {
         sid: SID,
       },
     });
-    const peer = domain.peers().peers[0];
+    const peer = domain.peerRows().filter(isLive)[0];
     expect(peer).toMatchObject({ repo: "", ws: "", cwd: "" });
     expect(peer?.repo_root).toBeUndefined();
     expect(peer?.branch).toBeUndefined();
@@ -594,9 +611,14 @@ describe("hello", () => {
     const { domain } = sessions();
     const conn = greeting();
     helloFrom(domain, conn);
-    expect(domain.peers().peers.map((peer) => peer.sid)).toEqual([SID]);
+    expect(
+      domain
+        .peerRows()
+        .filter(isLive)
+        .map((peer) => peer.sid),
+    ).toEqual([SID]);
     conn.close();
-    expect(domain.peers().peers).toEqual([]);
+    expect(domain.peerRows().filter(isLive)).toEqual([]);
   });
 });
 
@@ -613,7 +635,7 @@ describe("the harness's sessions directory", () => {
 
     expect(context.domain.watching).toBe(false);
     expect(context.domain.classify(SID)).toBe("live_unmanaged");
-    expect(context.domain.agents().agents.map((row) => row.sid)).toEqual([SID]);
+    expect(context.domain.agentRows().map((row) => row.sid)).toEqual([SID]);
   });
 
   test("a session the harness names is on `peers` though it never greeted", () => {
@@ -624,7 +646,7 @@ describe("the harness's sessions directory", () => {
     const context = sessions();
     writeState(context.sessionsDir, process.pid, SID, { name: "a title" });
 
-    const payload = context.domain.peers(NOW);
+    const payload = { peers: context.domain.peerRows(NOW) };
     expect(payload.peers).toEqual([
       {
         sid: SID,
@@ -649,8 +671,13 @@ describe("the harness's sessions directory", () => {
 
     const restarted = restart(context);
 
-    expect(restarted.peers(NOW).peers.map((row) => row.sid)).toEqual([SID]);
-    expect(restarted.peers(NOW).last_live).toEqual([]);
+    expect(
+      restarted
+        .peerRows(NOW)
+        .filter(isLive)
+        .map((row) => row.sid),
+    ).toEqual([SID]);
+    expect(restarted.peerRows(NOW).filter(isLost)).toEqual([]);
   });
 
   test("what it greeted with stays on the row after the connection goes", () => {
@@ -663,7 +690,7 @@ describe("the harness's sessions directory", () => {
     helloFrom(context.domain, conn);
     conn.close();
 
-    expect(context.domain.peers(NOW).peers[0]).toMatchObject({
+    expect(context.domain.peerRows(NOW).filter(isLive)[0]).toMatchObject({
       sid: SID,
       repo: "someone/a-repo",
       ws: "main",
@@ -682,7 +709,7 @@ describe("the harness's sessions directory", () => {
     conn.close();
 
     expect(context.domain.classify(SID)).toBe("live_unmanaged");
-    expect(context.domain.peers().last_live).toEqual([]);
+    expect(context.domain.peerRows().filter(isLost)).toEqual([]);
   });
 
   test("a state file appearing, changing and going away each states peers", async () => {
@@ -707,7 +734,7 @@ describe("the harness's sessions directory", () => {
     // follows: a session stops being live, and the entry that outlives it is
     // written where that is noticed.
     await context.until(() => context.domain.classify(SID) === "disappeared");
-    expect(context.domain.agents().agents).toEqual([]);
+    expect(context.domain.agentRows()).toEqual([]);
   });
 
   test("the payloads pass the contract's own validators", async () => {
@@ -715,15 +742,18 @@ describe("the harness's sessions directory", () => {
     helloFrom(context.domain, greeting());
     context.domain.start("agents");
     writeState(context.sessionsDir, process.pid, OTHER_SID, { name: "a title" });
-    await context.until(() => context.domain.agents().agents.length === 1);
+    await context.until(() => context.domain.agentRows().length === 1);
 
-    expect(validationErrors(TOPIC_SCHEMAS.peers, frame("peers", context.domain.peers()))).toEqual(
-      [],
-    );
     expect(
-      validationErrors(TOPIC_SCHEMAS.agents, frame("agents", context.domain.agents())),
+      validationErrors(TOPIC_SCHEMAS.peers, frame("peers", { peers: context.domain.peerRows() })),
     ).toEqual([]);
-    const peer = context.domain.peers().peers[0];
+    expect(
+      validationErrors(
+        TOPIC_SCHEMAS.agents,
+        frame("agents", { agents: context.domain.agentRows() }),
+      ),
+    ).toEqual([]);
+    const peer = context.domain.peerRows().filter(isLive)[0];
     expect(peer?.protocol_version).toBe(PROTOCOL_VERSION);
   });
 
@@ -734,8 +764,8 @@ describe("the harness's sessions directory", () => {
     // that did not clean up after itself looks like.
     writeState(context.sessionsDir, 2_147_483_646, SID);
     writeState(context.sessionsDir, process.pid, OTHER_SID);
-    await context.until(() => context.domain.agents().agents.length > 0);
-    expect(context.domain.agents().agents.map((agent) => agent.sid)).toEqual([OTHER_SID]);
+    await context.until(() => context.domain.agentRows().length > 0);
+    expect(context.domain.agentRows().map((agent) => agent.sid)).toEqual([OTHER_SID]);
   });
 
   test("an in-place state write keeps the last complete row until its replacement is complete", () => {
@@ -845,13 +875,13 @@ describe("the classification on the wire", () => {
     });
     await context.until(() => context.domain.classify(SID) === "waiting");
 
-    const payload = context.domain.peers();
-    for (const row of [...payload.peers, ...payload.last_live]) {
+    const rows = context.domain.peerRows();
+    for (const row of rows) {
       expect(row.state).toBeDefined();
       expect(row.pinned).toBe(false);
     }
-    expect(payload.peers[0]?.state).toBe("waiting");
-    expect(payload.last_live[0]?.state).toBe("disappeared");
+    expect(rows.filter(isLive)[0]?.state).toBe("waiting");
+    expect(rows.filter(isLost)[0]?.state).toBe("disappeared");
   });
 
   test("a session that said it was stopping travels as paused, with when it said so", () => {
@@ -862,7 +892,7 @@ describe("the classification on the wire", () => {
     // the two are one event in (contract, `session_stopping`).
     const declared = declareStopping(context.domain, conn);
     conn.close();
-    const entry = context.domain.peers().last_live[0];
+    const entry = context.domain.peerRows().filter(isLost)[0];
     expect(entry?.state).toBe("paused");
     expect(entry?.stopped_at).toBe(declared.stopped_at);
   });
@@ -872,7 +902,7 @@ describe("the classification on the wire", () => {
     const conn = greeting();
     helloFrom(context.domain, conn);
     conn.close();
-    const entry = context.domain.peers().last_live[0];
+    const entry = context.domain.peerRows().filter(isLost)[0];
     expect(entry?.state).toBe("disappeared");
     expect(entry?.stopped_at).toBeUndefined();
   });
@@ -883,7 +913,7 @@ describe("the classification on the wire", () => {
     helloFrom(context.domain, conn);
     declareStopping(context.domain, conn);
     expect(context.domain.classify(SID)).toBe("live");
-    expect(context.domain.peers().last_live).toEqual([]);
+    expect(context.domain.peerRows().filter(isLost)).toEqual([]);
   });
 
   test("what the session ran as follows it into last_live", () => {
@@ -892,7 +922,7 @@ describe("the classification on the wire", () => {
     helloFrom(context.domain, conn);
     conn.close();
     const greeted = meta();
-    expect(context.domain.peers().last_live[0]).toMatchObject({
+    expect(context.domain.peerRows().filter(isLost)[0]).toMatchObject({
       title: greeted.title,
       model: greeted.model,
       effort: greeted.effort,
@@ -908,7 +938,7 @@ describe("the classification on the wire", () => {
     const conn = greeting();
     helloFrom(context.domain, conn);
     conn.close();
-    expect(context.domain.peers().last_live[0]).toMatchObject({
+    expect(context.domain.peerRows().filter(isLost)[0]).toMatchObject({
       model: "claude-opus-5",
       effort: "xhigh",
     });
@@ -920,7 +950,7 @@ describe("the classification on the wire", () => {
     helloFrom(context.domain, conn);
     conn.close();
     const greeted = meta();
-    expect(context.domain.peers().last_live[0]).toMatchObject({
+    expect(context.domain.peerRows().filter(isLost)[0]).toMatchObject({
       model: greeted.model,
       effort: greeted.effort,
     });
@@ -939,7 +969,7 @@ describe("last_live", () => {
     expect(restarted.classify(SID)).toBe("disappeared");
     // And it leaves the list the moment the session registers again.
     helloFrom(restarted, greeting());
-    expect(restarted.peers().last_live).toEqual([]);
+    expect(restarted.peerRows().filter(isLost)).toEqual([]);
   });
 
   test("an entry goes when the harness names its session again, greeting or no greeting", () => {
@@ -951,13 +981,23 @@ describe("last_live", () => {
     const conn = greeting();
     helloFrom(context.domain, conn);
     conn.close();
-    expect(context.domain.peers().last_live.map((entry) => entry.sid)).toEqual([SID]);
+    expect(
+      context.domain
+        .peerRows()
+        .filter(isLost)
+        .map((entry) => entry.sid),
+    ).toEqual([SID]);
 
     writeState(context.sessionsDir, process.pid, SID);
     context.domain.refresh();
 
-    expect(context.domain.peers().last_live).toEqual([]);
-    expect(context.domain.peers().peers.map((row) => row.sid)).toEqual([SID]);
+    expect(context.domain.peerRows().filter(isLost)).toEqual([]);
+    expect(
+      context.domain
+        .peerRows()
+        .filter(isLive)
+        .map((row) => row.sid),
+    ).toEqual([SID]);
   });
 
   test("an entry past the retention window is dropped", () => {
@@ -1040,8 +1080,8 @@ describe("last_live", () => {
     });
     running.push(domain);
 
-    const payload = domain.peers(NOW);
-    expect(payload.last_live[0]?.instance).toBe(SELF);
+    const payload = { peers: domain.peerRows(NOW) };
+    expect(payload.peers.filter(isLost)[0]?.instance).toBe(SELF);
     expect(validationErrors(TOPIC_SCHEMAS.peers, frame("peers", payload))).toEqual([]);
   });
 
@@ -1098,7 +1138,7 @@ describe("the inputs of §5.1", () => {
     expect(context.domain.classify(OTHER_SID)).toBeUndefined();
     // Nothing greeted, so nothing is on `peers` either — the row the gateway
     // would otherwise have put there is what makes the sid addressable.
-    expect(context.domain.peers(Date.now()).peers).toEqual([]);
+    expect(context.domain.peerRows(Date.now()).filter(isLive)).toEqual([]);
   });
 
   test("an instance with no gateway leaves the input absent rather than old", () => {
@@ -1172,9 +1212,9 @@ describe("the terminal a live session runs in", () => {
     writeState(context.sessionsDir, pid, SID);
 
     // The scan is what notices the pid, and the read is what follows it.
-    expect(context.domain.agents().agents[0]?.terminal_id).toBeUndefined();
-    await context.until(() => context.domain.agents().agents[0]?.terminal_id === "t-1");
-    expect(context.domain.agents().agents[0]?.terminal_namespace).toBe("work");
+    expect(context.domain.agentRows()[0]?.terminal_id).toBeUndefined();
+    await context.until(() => context.domain.agentRows()[0]?.terminal_id === "t-1");
+    expect(context.domain.agentRows()[0]?.terminal_namespace).toBe("work");
     // Reachable through its terminal with no connection to this instance,
     // which is the whole of what the terminal is read for (§5.2).
     expect(context.domain.classify(SID)).toBe("live");
@@ -1186,10 +1226,10 @@ describe("the terminal a live session runs in", () => {
     writeState(context.sessionsDir, pid, SID);
     // The read is asked for while the list is built, and its finishing is the
     // one thing that publishes here.
-    context.domain.agents();
+    context.domain.agentRows();
     await context.until((frames) => agentsOf(frames).length > 0);
 
-    const row = context.domain.agents().agents[0];
+    const row = context.domain.agentRows()[0];
     expect(row?.sid).toBe(SID);
     expect(row?.terminal_id).toBeUndefined();
     expect(context.domain.classify(SID)).toBe("live_unmanaged");
@@ -1200,7 +1240,7 @@ describe("the terminal a live session runs in", () => {
     const context = withTerminals(reads);
     const pid = await child({ HYOUI_SESSION_ID: "t-2" });
     writeState(context.sessionsDir, pid, SID);
-    await context.until(() => context.domain.agents().agents[0]?.terminal_id === "t-2");
+    await context.until(() => context.domain.agentRows()[0]?.terminal_id === "t-2");
     for (let asked = 0; asked < 5; asked += 1) context.domain.classify(SID);
     expect(reads).toEqual([pid]);
   });
@@ -1210,25 +1250,27 @@ describe("the terminal a live session runs in", () => {
     const context = withTerminals(reads);
     const pid = await child({ HYOUI_SESSION_ID: "t-3" });
     writeState(context.sessionsDir, pid, SID);
-    await context.until(() => context.domain.agents().agents[0]?.terminal_id === "t-3");
+    await context.until(() => context.domain.agentRows()[0]?.terminal_id === "t-3");
 
     rmSync(join(context.sessionsDir, `${pid}.json`));
-    context.domain.agents();
+    context.domain.agentRows();
     // The same pid again is a process this instance knows nothing about: what
     // it named before was named by whatever was running under it then.
     writeState(context.sessionsDir, pid, SID);
-    context.domain.agents();
+    context.domain.agentRows();
     await context.until(() => reads.length === 2);
     expect(reads).toEqual([pid, pid]);
   });
 });
 
 describe("what a session said about itself when it greeted", () => {
-  /** The `last_live` rows of the most recent `peers` payload. */
-  function lastLive(published: Published[]): LastLiveSession[] {
-    const frames = peersOf(published);
-    const data = frames.at(-1)?.data as { last_live?: LastLiveSession[] } | undefined;
-    return data?.last_live ?? [];
+  /** The lost rows of `peers`, as a subscriber holds them.
+   *
+   * Every frame carries the rows that changed, so the list is the frames
+   * folded in order — reading the last one alone would say nothing about a row
+   * that stopped changing two frames ago. */
+  function lastLive(published: Published[]): PeerInfo[] {
+    return folded(published).filter(isLost);
   }
 
   test("outlives the connection that said it, while the harness still names the session", async () => {
@@ -1273,6 +1315,6 @@ describe("what a session said about itself when it greeted", () => {
     // Nothing is guessed out of the row's path: `repo` and `ws` are what a
     // session said, and this one has said nothing.
     expect(context.domain.transcriptPath(OTHER_SID)).toBeUndefined();
-    expect(context.domain.agents().agents.map((row) => row.sid)).toEqual([OTHER_SID]);
+    expect(context.domain.agentRows().map((row) => row.sid)).toEqual([OTHER_SID]);
   });
 });

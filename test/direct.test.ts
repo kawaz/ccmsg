@@ -346,7 +346,7 @@ describe("delivery over route (a)", () => {
    * can run against the real route without the rest of the instance. */
   const sessions = {
     classify: () => "live" as const,
-    peers: () => ({ peers: [], last_live: [] }),
+    peerRows: () => [],
   };
 
   function delivery(configHome: string, dir: string): Delivery {

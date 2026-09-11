@@ -7,7 +7,6 @@ import {
   type OpName,
   OP_SCHEMAS,
   opAttributes,
-  type PeerInfo,
   type Role,
   SessionDumpFile,
   type Sid,
@@ -600,6 +599,10 @@ describe("session_last_live_remove", () => {
         .map((entry) => entry.sid),
     ).toEqual([SID]);
 
+    // A subscriber that holds the row is what the removal has to reach: a
+    // frame carries what changed, and what changed is measured against what
+    // the opening frame stated.
+    domain.snapshot("peers");
     published.length = 0;
     const removed = await run("session_last_live_remove", handlers.session_last_live_remove, {
       sid: SID,
@@ -608,9 +611,13 @@ describe("session_last_live_remove", () => {
     expect(domain.peerRows().filter(isLost)).toEqual([]);
     // The removal changes a value the `peers` topic carries, so it goes out
     // through the one push path rather than being a silent edit to a file.
+    // The row leaves as a marked element, since an absence in a list of
+    // changes says nothing.
     const peers = published.filter((each) => each.topic === "peers").at(-1);
     expect(peers).toBeDefined();
-    expect((peers?.data as { last_live: PeerInfo[] } | undefined)?.last_live).toEqual([]);
+    expect((peers?.data as { peers: unknown[] } | undefined)?.peers).toEqual([
+      { sid: SID, instance: SELF, removed: true },
+    ]);
 
     // Two clients pressing the same button is the ordinary case, and the
     // caller's goal holds either way.

@@ -13,14 +13,16 @@ import { connAs, OTHER_INSTANCE, SELF, SID, TestConn } from "./frames.ts";
  * how many frames leave per period and which ones, and both are decided by the
  * period alone. */
 
-const PEERS = "peers";
+/** A topic whose frames replace the value they carry, which is what folding
+ * is about: the mesh view, since the rows of `peers` carry what changed. */
+const PEERS = "instances";
 const NOTIFY = "notify";
 
 function rig() {
   const time = manualClock();
   const hub = new Topics(SELF, new Set(), undefined, { clock: time.clock });
   const conn = connAs("user");
-  hub.attach("peers", { start: () => {}, stop: () => {}, snapshot: () => [] });
+  hub.attach("instances", { start: () => {}, stop: () => {}, snapshot: () => [] });
   hub.attach("notify", { start: () => {}, stop: () => {}, snapshot: () => [] });
   return { time, hub, conn };
 }
@@ -51,7 +53,7 @@ describe("a value stated faster than it can be read (§6.4)", () => {
 
     // A second of the storm the incident was: one statement per millisecond.
     for (let ms = 0; ms < 1000; ms += 1) {
-      hub.publish(PEERS, { peers: [], at: ms });
+      hub.publish(PEERS, { instances: [], at: ms });
       time.advance(1);
     }
     time.advance(FLUSH_PERIOD_MS);
@@ -68,10 +70,10 @@ describe("a value stated faster than it can be read (§6.4)", () => {
     const { time, hub, conn } = rig();
     hub.subscribe(conn, PEERS);
 
-    hub.publish(PEERS, { peers: [], at: 1 });
+    hub.publish(PEERS, { instances: [], at: 1 });
     time.advance(1);
-    hub.publish(PEERS, { peers: [], at: 2 });
-    hub.publish(PEERS, { peers: [], at: 3 });
+    hub.publish(PEERS, { instances: [], at: 2 });
+    hub.publish(PEERS, { instances: [], at: 3 });
     time.advance(FLUSH_PERIOD_MS);
 
     expect(delivered(conn).map((frame) => (frame["data"] as { at: number }).at)).toEqual([1, 3]);
@@ -82,10 +84,10 @@ describe("a value stated faster than it can be read (§6.4)", () => {
     hub.subscribe(conn, PEERS);
     // The first frame goes out at once, so both of the ones under test are
     // gathered by the same flush.
-    hub.publish(PEERS, { peers: [], at: 0 });
+    hub.publish(PEERS, { instances: [], at: 0 });
 
-    hub.publish(PEERS, { peers: [], from: "self" }, SELF);
-    hub.publish(PEERS, { peers: [], from: "other" }, OTHER_INSTANCE);
+    hub.publish(PEERS, { instances: [], from: "self" }, SELF);
+    hub.publish(PEERS, { instances: [], from: "other" }, OTHER_INSTANCE);
     time.advance(FLUSH_PERIOD_MS);
 
     const gathered = delivered(conn).slice(1);
@@ -96,7 +98,7 @@ describe("a value stated faster than it can be read (§6.4)", () => {
     const { time, hub, conn } = rig();
     hub.subscribe(conn, PEERS);
 
-    hub.publish(PEERS, { peers: [], at: 1 });
+    hub.publish(PEERS, { instances: [], at: 1 });
     expect(time.pending).toBe(0);
     expect(delivered(conn)).toHaveLength(1);
   });
@@ -121,16 +123,16 @@ describe("what happened, as against what is (§6.4)", () => {
     hub.subscribe(conn, PEERS);
     hub.publish(NOTIFY, { n: 0 });
 
-    hub.publish(PEERS, { peers: [], at: 1 });
+    hub.publish(PEERS, { instances: [], at: 1 });
     hub.publish(NOTIFY, { n: 1 });
-    hub.publish(PEERS, { peers: [], at: 2 });
+    hub.publish(PEERS, { instances: [], at: 2 });
     hub.publish(NOTIFY, { n: 2 });
     time.advance(FLUSH_PERIOD_MS);
 
     // The value keeps the place its first statement took, carrying the latest
     // of what was said there.
     expect(delivered(conn).slice(1).map(topicOf)).toEqual([PEERS, NOTIFY, NOTIFY]);
-    expect(delivered(conn).slice(1)[0]?.["data"]).toEqual({ peers: [], at: 2 });
+    expect(delivered(conn).slice(1)[0]?.["data"]).toEqual({ instances: [], at: 2 });
   });
 
   test("past the limit the frame is refused, and the queue below it is untouched", () => {
@@ -208,7 +210,7 @@ describe("a relayed value goes through the same layer (§7.4, §6.4)", () => {
     });
 
     for (let n = 0; n < 200; n += 1) {
-      relay.accept(OTHER_INSTANCE as InstanceId, PEERS, { peers: [], at: n });
+      relay.accept(OTHER_INSTANCE as InstanceId, PEERS, { instances: [], at: n });
       time.advance(1);
     }
     time.advance(FLUSH_PERIOD_MS);

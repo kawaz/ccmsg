@@ -763,7 +763,7 @@ export class Mesh {
       this.#host?.element(topic, instance as InstanceId, fields["data"]);
       return true;
     }
-    this.relay.accept(instance as InstanceId, topic, fields["data"]);
+    this.relay.accept(instance as InstanceId, topic, fields["data"], fields["snapshot"] === true);
     return true;
   }
 

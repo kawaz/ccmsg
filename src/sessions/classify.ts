@@ -64,3 +64,15 @@ export function classify(
   if (inputs.last_live === undefined) return undefined;
   return inputs.last_live.stopped_at === undefined ? "disappeared" : "paused";
 }
+
+/** Whether a classification is one of the connected ones, which is what a row
+ * has to be for anything here to reach it.
+ *
+ * Read off the classification rather than restated: the two sections the
+ * vocabulary is divided into are the contract's own, and a second list of
+ * which words mean "still there" would be a second place for the rule to drift
+ * in (M1). A row that states none is one no section holds, which is not a
+ * session anything can be handed to. */
+export function isLive(row: { readonly state?: SessionState }): boolean {
+  return row.state !== undefined && row.state !== "paused" && row.state !== "disappeared";
+}

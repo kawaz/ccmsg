@@ -1,38 +1,57 @@
+import type { SessionRow } from "../topics/index.ts";
 import {
-  type AgentInfo,
   type InstanceId,
   LAST_LIVE_RETENTION_MS,
-  type LastLiveSession,
-  type PeerInfo,
   PLAIN_TOPICS,
   type Sid,
   TOPIC_ATTRIBUTES,
   type Timestamp,
 } from "@ccmsg/protocol";
-import type { TopicValue } from "../topics/index.ts";
+import { Elements, type TopicValue } from "../topics/index.ts";
+
+/** The rows of sessions the whole cluster is seen through.
+ *
+ * They are `element`-granular, and an element topic is relayable only when its
+ * elements say whose they are: a row here names the instance that holds the
+ * session, so two instances' rows stand side by side under one topic name the
+ * way a whole value per instance does. `inbox` and `kv:<ns>` are elements of
+ * the same granularity and are not relayed, because their elements carry no
+ * such name — an `inbox` frame belongs to a session, not to an instance. */
+const ROW_TOPICS: readonly string[] = ["peers", "agents"];
 
 /** The topics a subscriber sees the whole cluster on.
  *
- * The per-instance whole is what makes a cluster view possible at all (§6.2):
- * a frame replaces its own instance's entries and leaves every other
- * instance's alone, so several instances can state the same topic name without
- * colliding. A topic of any other granularity has no such rule and is not
- * relayed — an `element` topic like `inbox` names one instance's topic while
- * its value belongs to a session, and a frame of it carries no way to say
- * whose it is. */
-export const CLUSTER_TOPICS: readonly string[] = PLAIN_TOPICS.filter(
-  (topic) => TOPIC_ATTRIBUTES[topic].granularity === "per_instance_whole",
-);
+ * A per-instance whole is relayable by construction (§6.2): a frame replaces
+ * its own instance's entries and leaves every other instance's alone, so
+ * several instances can state the same topic name without colliding. The rows
+ * above are relayable for the same reason read one element at a time. */
+export const CLUSTER_TOPICS: readonly string[] = [
+  ...PLAIN_TOPICS.filter((topic) => TOPIC_ATTRIBUTES[topic].granularity === "per_instance_whole"),
+  ...ROW_TOPICS,
+];
 
 /** The one topic the mesh carries that the relay does not.
  *
- * It is `element`-granular, so what travels is the entries that changed and the
- * receiver merges them by key; and it is the instances' own, so it is asked for
- * as the instance rather than on a person's behalf (DR-0001 §2.6). */
+ * It is `element`-granular and its elements are the instances' own, so it is
+ * asked for as the instance rather than on a person's behalf, and folded into
+ * the set this instance holds rather than held here (DR-0001 §2.6). */
 export const AUTH_TOPIC = "auth_records";
 
 export function isClusterTopic(topic: string): boolean {
   return CLUSTER_TOPICS.includes(topic);
+}
+
+/** Whether what a frame of this topic carries is rows to be merged rather than
+ * a value to be replaced. */
+function carriesRows(topic: string): boolean {
+  return ROW_TOPICS.includes(topic);
+}
+
+/** The rows of one frame, under the field each topic names them in. A frame
+ * that carries none is one there is nothing to merge from. */
+function rowsOf(topic: string, data: unknown): readonly SessionRow[] {
+  const field = (data as Record<string, unknown> | undefined)?.[topic];
+  return Array.isArray(field) ? (field as SessionRow[]) : [];
 }
 
 export interface RelayDeps {
@@ -71,18 +90,46 @@ export class Relay {
 
   /** A frame a peer pushed on a topic this instance relays.
    *
+   * `snapshot` marks the opening frame of a subscription, which carries the
+   * whole of what its instance holds rather than what changed.
+   *
    * `instance` is the one that produced the value, which is not always the
    * peer it arrived from: a mesh of three relays transitively, and the frame
    * names its origin the whole way. Held under that origin, and passed on
    * unchanged — recomputing it would put the same judgement in two places
    * (§7.4). */
-  accept(instance: InstanceId, topic: string, data: unknown): void {
+  accept(instance: InstanceId, topic: string, data: unknown, snapshot = false): void {
     if (!isClusterTopic(topic)) return;
     this.#sweep();
     const held = this.#held.get(instance) ?? new Map<string, unknown>();
     this.#held.set(instance, held);
-    held.set(topic, data);
-    this.deps.publish(topic, data, instance);
+    if (!carriesRows(topic)) {
+      held.set(topic, data);
+      this.deps.publish(topic, data, instance);
+      return;
+    }
+    // A frame of rows says what changed, so what is held is the rows merged
+    // and what travels on is the part of it that said something. The same
+    // comparison the mechanism makes of a whole value, made of one element
+    // (M5) — and a frame left with no rows is not passed on at all, which is
+    // what stops a peer's restatement from becoming a frame for every local
+    // subscriber.
+    // An opening frame is the whole of what its instance holds, so it is taken
+    // as the list restated rather than as changes folded in: a row the peer no
+    // longer has is gone from it and from nowhere else, and merging would leave
+    // it here forever. What comes of that is the same kind of answer either
+    // way — the rows that told this instance something, removals included.
+    const rows = this.#rows(held, topic);
+    const stated = rowsOf(topic, data);
+    const news = snapshot ? rows.diff(stated) : rows.merge(stated);
+    if (news.length > 0) this.deps.publish(topic, { [topic]: news }, instance);
+  }
+
+  /** The rows one instance has stated on a topic, made the first time it does. */
+  #rows(held: Map<string, unknown>, topic: string): Elements {
+    const rows = (held.get(topic) as Elements | undefined) ?? new Elements();
+    held.set(topic, rows);
+    return rows;
   }
 
   /** The link to this instance is gone. What it said is kept and marked,
@@ -113,7 +160,16 @@ export class Relay {
     const values: TopicValue[] = [];
     for (const [instance, held] of this.#held) {
       const data = held.get(topic);
-      if (data !== undefined) values.push({ instance, data });
+      if (data === undefined) continue;
+      // A topic of rows is held merged, and the opening frame of a topic is
+      // its whole value — so what a fresh subscriber is handed is every row
+      // that instance has stated, in one frame of the same shape as the ones
+      // that follow it.
+      values.push(
+        carriesRows(topic)
+          ? { instance, data: { [topic]: (data as Elements).rows() } }
+          : { instance, data },
+      );
     }
     return values;
   }
@@ -121,29 +177,21 @@ export class Relay {
   /** Which instance a session belongs to, read from the cluster values the
    * peers stated (§7.3).
    *
-   * `peers` names every session an instance currently holds — connected or in
-   * `last_live` — and is checked first. A session hello has not reached yet
-   * has no row there but the harness may already know of it, so `agents` is
-   * checked next; `last_live` is the last resort for one whose instance has
-   * not stated `agents` at all. Every row names its own instance rather than
-   * the one that relayed it, so a value that travelled through a third
-   * instance still points at the session's own. */
+   * `peers` names every session an instance holds, connected and lost alike,
+   * and is checked first. A session whose greeting has not reached its
+   * instance yet has no row there while the harness may already know of it, so
+   * `agents` is checked next. Every row names its own instance rather than the
+   * one that relayed it, so a row that travelled through a third instance
+   * still points at the session's own. */
   owner(sid: Sid): InstanceId | undefined {
     this.#sweep();
-    for (const held of this.#held.values()) {
-      const value = held.get("peers") as { peers?: PeerInfo[] } | undefined;
-      const row = value?.peers?.find((peer) => peer.sid === sid);
-      if (row !== undefined) return row.instance;
-    }
-    for (const held of this.#held.values()) {
-      const value = held.get("agents") as { agents?: AgentInfo[] } | undefined;
-      const row = value?.agents?.find((agent) => agent.sid === sid);
-      if (row !== undefined) return row.instance;
-    }
-    for (const held of this.#held.values()) {
-      const value = held.get("peers") as { last_live?: LastLiveSession[] } | undefined;
-      const row = value?.last_live?.find((session) => session.sid === sid);
-      if (row !== undefined) return row.instance;
+    for (const topic of ROW_TOPICS) {
+      for (const held of this.#held.values()) {
+        const row = (held.get(topic) as Elements | undefined)
+          ?.rows()
+          .find((held) => held.sid === sid);
+        if (row !== undefined) return row.instance;
+      }
     }
     return undefined;
   }

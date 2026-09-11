@@ -1,5 +1,4 @@
 import { realpathSync, statSync } from "node:fs";
-import { hostname } from "node:os";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import {
   type AgentInfo,
@@ -7,9 +6,10 @@ import {
   type HelloArgs,
   type HelloResult,
   type Endpoint,
+  type AgentElement,
   type InstanceId,
   type InstanceInfo,
-  type LastLiveSession,
+  type PeerElement,
   type PeerInfo,
   PROTOCOL_VERSION,
   type SessionState,
@@ -20,8 +20,9 @@ import {
 import { type HandlerInput, OpError, type Requester } from "../dispatch/index.ts";
 import { within } from "../files/index.ts";
 import { HARNESS, type Harness } from "../harness/index.ts";
+import { clusterView } from "../mesh/instances.ts";
 import type { TranscriptFacts } from "../transcript/index.ts";
-import type { TopicValue, UpstreamResource } from "../topics/index.ts";
+import { Elements, type TopicValue, type UpstreamResource } from "../topics/index.ts";
 import { classify, type SessionInputs } from "./classify.ts";
 import { isWaiting, type OwnSessions, ownSessions } from "./harness.ts";
 import { LastLiveStore, type StoredEntry } from "./last-live.ts";
@@ -211,6 +212,16 @@ export class Sessions implements UpstreamResource {
    * then carries on stays connected and keeps its declaration, which is spent
    * whenever it does leave. */
   readonly #stopping = new Map<Sid, Timestamp>();
+  /** What the last frame of each topic left every subscriber holding, kept
+   * whether or not anybody is subscribed.
+   *
+   * A frame carries a difference, and the difference is taken against what was
+   * sent — not against what the last listener happened to see. Which is also
+   * what makes it right for a subscriber that arrives after a spell of nobody
+   * listening: it is handed every row as a snapshot, and every frame after it
+   * says what changed since the last one went out. */
+  readonly #sentPeers = new Elements();
+  readonly #sentAgents = new Elements();
 
   constructor(private readonly deps: SessionsDeps) {
     this.#harness = ownSessions(
@@ -294,18 +305,9 @@ export class Sessions implements UpstreamResource {
       protocol_version: PROTOCOL_VERSION,
       instance: this.deps.self,
       ...(this.deps.endpoint === undefined ? {} : { endpoint: this.deps.endpoint }),
-      // Without a mesh the cluster is this instance alone, and it says so:
-      // an instance serving the unix socket alone has no URL to be dialed at,
-      // which is a row without an endpoint rather than no row (contract,
-      // `InstanceInfo`).
-      instances: this.deps.mesh?.instances() ?? [
-        {
-          id: this.deps.self,
-          ...(this.deps.endpoint === undefined ? {} : { endpoint: this.deps.endpoint }),
-          host: hostname(),
-          reachable: true,
-        },
-      ],
+      // The same view the `instances` topic carries, worked out in one place
+      // so a greeting and a subscription cannot state two different clusters.
+      instances: clusterView(this.deps.self, this.deps.endpoint, this.deps.mesh),
       capabilities: [...this.deps.capabilities],
       version: this.deps.version,
       started_at: this.deps.startedAt,
@@ -483,9 +485,21 @@ export class Sessions implements UpstreamResource {
     if (this.#wanted.size === 0) this.#harness.stop();
   }
 
+  /** What a fresh subscriber is handed: every row, connected and lost alike.
+   *
+   * A frame of either topic carries the rows that changed, so the opening one
+   * has to carry all of them — it is the only frame that states the rows a
+   * subscriber was not there for. Stating them is also what the difference
+   * after it is taken against: these rows are what the subscriber now holds,
+   * and they are the same rows every earlier subscriber was brought up to by
+   * the frames it has had. */
   snapshot(topic: string): readonly TopicValue[] {
+    const now = Date.now();
     const own = this.#own();
-    const data = topic === "agents" ? this.agents(own) : this.peers(Date.now(), own);
+    const data =
+      topic === "agents"
+        ? { agents: this.#sentAgents.stated(this.agentRows(own)), polled_at: now }
+        : { peers: this.#sentPeers.stated(this.peerRows(now, own)) };
     return [{ instance: this.deps.self, data }];
   }
 
@@ -495,9 +509,11 @@ export class Sessions implements UpstreamResource {
     return this.#harness.running;
   }
 
-  /** The `peers` payload: what is live now, and what was live when this
-   * instance last saw it. Both travel together because coming back is exactly
-   * what moves a session from the second list to the first.
+  /** Every row `peers` states: what is live now, and what was live when this
+   * instance last saw it. One kind of row rather than two lists, because
+   * coming back and going quiet are the same row changing its `state` — a
+   * client that held two lists would have to move an entry between them to
+   * follow one field.
    *
    * Live is not the same as connected (§5.2). A session the harness names is
    * live whether or not it ever greeted us, and it has to be on this list for
@@ -510,41 +526,27 @@ export class Sessions implements UpstreamResource {
    * — this instance is one that classifies, so it says so on every row rather
    * than on the rows it happens to have an answer for.
    *
-   * `instances` is the same view `hello` answers with, restated here so that a
-   * link going down reaches a subscriber on the topic it is already on rather
-   * than only on its next greeting (§7.5). It is this instance's view: what a
-   * peer relayed here carries the peer's own, and neither is folded into the
-   * other. An instance with no mesh states none, which is a different thing
-   * from stating that nothing is reachable. */
-  peers(
-    now: Timestamp = Date.now(),
-    own: Own = this.#own(),
-  ): { peers: PeerInfo[]; last_live: LastLiveSession[]; instances?: InstanceInfo[] } {
-    const instances = this.deps.mesh?.instances();
-    return {
-      peers: [
-        ...[...this.#connected.values()].map((session) => this.#peer(session, now, own)),
-        ...[...own.present]
-          .filter((sid) => !this.#connected.has(sid))
-          .map((sid) => this.#unconnected(sid, now, own)),
-      ],
-      last_live: this.#lastLive.entries(now).map((entry) => ({
+   * A lost session is a row here rather than a list of its own: its entry in
+   * the store holds what was observed, and the two fields a row derives —
+   * where it stands now, and whether it is pinned — are worked out at read
+   * time (M4). */
+  peerRows(now: Timestamp = Date.now(), own: Own = this.#own()): PeerInfo[] {
+    return [
+      ...[...this.#connected.values()].map((session) => this.#peer(session, now, own)),
+      ...[...own.present]
+        .filter((sid) => !this.#connected.has(sid))
+        .map((sid) => this.#unconnected(sid, now, own)),
+      ...this.#lastLive.entries(now).map((entry) => ({
         ...entry,
         state: this.classify(entry.sid, now, own) ?? "disappeared",
         pinned: this.#pinned(entry.sid),
       })),
-      ...(instances === undefined ? {} : { instances }),
-    };
+    ];
   }
 
-  /** The `agents` payload: the harness's own view, as it stated it.
-   *
-   * `polled_at` is left out. Stating when the read behind the list ran would
-   * make every confirmation poll a value the list did not have before, so the
-   * one suppression every topic shares (M5) would let a five-second heartbeat
-   * through for a directory that had not changed. */
-  agents(own: Own = this.#own()): { agents: AgentInfo[] } {
-    return { agents: [...own.rows.values()] };
+  /** Every row `agents` states: the harness's own view, as it stated it. */
+  agentRows(own: Own = this.#own()): AgentInfo[] {
+    return [...own.rows.values()];
   }
 
   /** Bind a session to this instance, and take what it says about itself. Its
@@ -596,11 +598,16 @@ export class Sessions implements UpstreamResource {
     this.changed();
   }
 
-  /** Recompute, record what stopped being live, and state both topics.
+  /** Recompute, record what stopped being live, and state what moved on both
+   * topics.
    *
-   * Publishing is unconditional here because suppression belongs to the topic
-   * mechanism and is written once for every topic (M5) — a payload equal to
-   * the last one goes no further than that. */
+   * Both carry the rows that changed, so what is published is the difference
+   * against what was last published rather than the whole list: a session
+   * whose inference just ran is one row, and restating every row to say so
+   * would send a list to report one field. A recompute that found nothing
+   * different publishes nothing — the suppression every topic shares (M5) is
+   * whole-value and cannot drop a frame of elements, so the diff is where a
+   * repeat stops here. */
   private changed(now: Timestamp = Date.now()): void {
     const own = this.#own();
     const live = this.#liveNow(now, own);
@@ -622,8 +629,10 @@ export class Sessions implements UpstreamResource {
     }
     this.#reclaim(live);
     this.#live = live;
-    this.deps.publish("peers", this.peers(now, own));
-    this.deps.publish("agents", this.agents(own));
+    const peers = this.#sentPeers.diff(this.peerRows(now, own)) as PeerElement[];
+    if (peers.length > 0) this.deps.publish("peers", { peers });
+    const agents = this.#sentAgents.diff(this.agentRows(own)) as AgentElement[];
+    if (agents.length > 0) this.deps.publish("agents", { agents, polled_at: now });
     this.deps.onChanged?.();
   }
 

@@ -369,12 +369,12 @@ describe("relaying events (§7.4)", () => {
   });
 });
 
-describe("what the peers topic says about the instances (§7.5)", () => {
+describe("what the instances topic says (§7.5)", () => {
   test("a frame carries the sending instance's own view, and a relayed one keeps its sender's", async () => {
     const { a, b } = await pair();
     const user = await client(a);
     await greet(user, {});
-    await ask(user, { op: "topic_subscribe", request_id: "sub", topic: "peers" });
+    await ask(user, { op: "topic_subscribe", request_id: "sub", topic: "instances" });
 
     // Two frames on one topic, and each says what its own sender can reach —
     // which is why the field travels per instance rather than being folded
@@ -383,7 +383,7 @@ describe("what the peers topic says about the instances (§7.5)", () => {
     const views = new Map<string, InstanceInfo[]>();
     await eventually(async () => {
       const frame = await user.next();
-      if (frame["topic"] !== "peers") return false;
+      if (frame["topic"] !== "instances") return false;
       const stated = (frame["data"] as { instances?: InstanceInfo[] }).instances;
       if (stated !== undefined) views.set(frame["instance"] as string, stated);
       return views.has(a.self) && views.has(b.self);
@@ -401,13 +401,13 @@ describe("what the peers topic says about the instances (§7.5)", () => {
     const { a, b } = await pair();
     const user = await client(a);
     await greet(user, {});
-    await ask(user, { op: "topic_subscribe", request_id: "sub", topic: "peers" });
+    await ask(user, { op: "topic_subscribe", request_id: "sub", topic: "instances" });
     await b.stop();
     // No second greeting: the subscriber is already on the topic the view
     // rides on, which is what carrying it here is for (§7.5).
     await eventually(async () => {
       const frame = await user.next();
-      if (frame["topic"] !== "peers" || frame["instance"] !== a.self) return false;
+      if (frame["topic"] !== "instances" || frame["instance"] !== a.self) return false;
       const stated = (frame["data"] as { instances?: InstanceInfo[] }).instances ?? [];
       return stated.find((one) => one.id === b.self)?.reachable === false;
     });
@@ -515,7 +515,7 @@ describe("what a disconnected instance leaves behind (§7.5, DV-Q12)", () => {
       // arrives after it is the notice itself.
       const watcher = await client(staying);
       await greet(watcher, {});
-      await ask(watcher, { op: "topic_subscribe", request_id: "sub", topic: "peers" });
+      await ask(watcher, { op: "topic_subscribe", request_id: "sub", topic: "instances" });
 
       await going.stop();
       // Told by the link ending, not by a heartbeat: the silence a heartbeat is
@@ -525,7 +525,7 @@ describe("what a disconnected instance leaves behind (§7.5, DV-Q12)", () => {
       // the disconnection immediate, with no interval on this side to wait out.
       await eventually(async () => {
         const frame = await watcher.next();
-        if (frame["topic"] !== "peers" || frame["instance"] !== staying.self) return false;
+        if (frame["topic"] !== "instances" || frame["instance"] !== staying.self) return false;
         const instances = (frame["data"] as { instances?: InstanceInfo[] }).instances;
         return instances?.some((held) => held.id === going.self && !held.reachable) === true;
       });
@@ -553,14 +553,17 @@ describe("what a disconnected instance leaves behind (§7.5, DV-Q12)", () => {
     });
 
     // Back, with nothing greeted to it this time. What it says now stands in
-    // place of what it said before, rather than being merged with it.
+    // place of what it said before rather than being merged with it: the
+    // session it held is one it has lost across the restart, so the row a
+    // subscriber ends up with is that one and not the live row from before.
     const returned = await startAt(homeB, { reconnectMinMs: 20 });
     await eventually(() => a.mesh?.reachable(endpointOf(returned)) === true);
     await eventually(() => a.mesh?.relay.unreachable(returned.self) === false);
     await eventually(() => {
       const held = a.mesh?.relay.snapshot("peers") ?? [];
       const value = held.find((one) => one.instance === returned.self)?.data;
-      return (value as { peers?: unknown[] } | undefined)?.peers?.length === 0;
+      const rows = (value as { peers?: { state?: string }[] } | undefined)?.peers ?? [];
+      return rows.length === 1 && rows[0]?.state === "disappeared";
     });
   });
 
@@ -605,14 +608,21 @@ describe("what a disconnected instance leaves behind (§7.5, DV-Q12)", () => {
     expect(relay.owner(SID_ON_B)).toBe(peer);
   });
 
-  test("a session the peer has only in `last_live` is still found (§7.3)", () => {
+  test("a session the peer has lost is still found (§7.3)", () => {
     const relay = new Relay({ publish: () => undefined });
     const peer = "ws://127.0.0.1:9" as InstanceId;
     relay.accept(peer, "peers", {
-      peers: [],
-      last_live: [{ sid: SID_ON_B, instance: peer, last_seen_at: 0 }],
+      peers: [{ sid: SID_ON_B, instance: peer, state: "paused", last_seen_at: 0 }],
     });
     expect(relay.owner(SID_ON_B)).toBe(peer);
+  });
+
+  test("a row the peer removed is no longer found", () => {
+    const relay = new Relay({ publish: () => undefined });
+    const peer = "ws://127.0.0.1:9" as InstanceId;
+    relay.accept(peer, "peers", { peers: [{ sid: SID_ON_B, instance: peer, state: "live" }] });
+    relay.accept(peer, "peers", { peers: [{ sid: SID_ON_B, instance: peer, removed: true }] });
+    expect(relay.owner(SID_ON_B)).toBeUndefined();
   });
 
   test("a topic of any other granularity is not relayed", () => {

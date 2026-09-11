@@ -114,6 +114,10 @@ describe("nothing pushes a topic frame outside the topic mechanism (M5)", () => 
       // either way.
       "sessions/items.ts",
       "sessions/last-live.ts",
+      // The mechanism's own two: one turns a value into the form it compares,
+      // the other does the same for one element of a topic whose frames carry
+      // the rows that changed.
+      "topics/elements.ts",
       "topics/topics.ts",
       // Framing once more, towards an upstream rather than a client: the
       // translation helper takes one JSON object per line.

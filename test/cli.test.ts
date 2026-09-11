@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   type InboxMessage,
-  type LastLiveSession,
+  type PeerInfo,
   type Notification,
   PROTOCOL_VERSION,
 } from "@ccmsg/protocol";
@@ -81,18 +81,25 @@ async function subscribe(client: LineClient, topic: string): Promise<void> {
   expect((await client.next())["ok"]).toBe(true);
 }
 
-/** The `last_live` rows of the next `peers` frame that satisfies `want`.
- * Frames arrive for every recompute, so a test waits for the one carrying the
- * row it is about rather than assuming which one that is. */
-async function until(
-  client: LineClient,
-  want: (rows: LastLiveSession[]) => boolean,
-): Promise<LastLiveSession[]> {
+/** The lost rows of `peers`, once they satisfy `want`.
+ *
+ * A frame carries the rows that changed, so the frames are folded the way a
+ * subscriber folds them and the fold is what is waited on: the row a test is
+ * about stops being named again once it has settled. */
+async function until(client: LineClient, want: (rows: PeerInfo[]) => boolean): Promise<PeerInfo[]> {
+  const held = new Map<string, PeerInfo>();
   for (;;) {
     const frame = await client.next();
-    const data = frame["data"] as { last_live?: LastLiveSession[] } | undefined;
-    const rows = data?.last_live ?? [];
-    if (want(rows)) return rows;
+    const data = frame["data"] as { peers?: (PeerInfo & { removed?: true })[] } | undefined;
+    if (data?.peers === undefined) continue;
+    for (const row of data.peers) {
+      if (row.removed === true) held.delete(row.sid);
+      else held.set(row.sid, row);
+    }
+    const lost = [...held.values()].filter(
+      (row) => row.state === "paused" || row.state === "disappeared",
+    );
+    if (want(lost)) return lost;
   }
 }
 
@@ -201,9 +208,9 @@ describe("ccmsg peers / ccmsg agents", () => {
     expect(answer).toHaveLength(1);
     const stated = answer[0] as Answer[number];
     expect(stated.instance).toBe(at.self);
-    // Nothing of the payload is rewritten: the two lists the contract names
-    // are both there, under their own names.
-    expect(Object.keys(stated.data).sort()).toEqual(["last_live", "peers"]);
+    // Nothing of the payload is rewritten: the rows are under the name the
+    // contract gives them, connected and lost alike in the one list.
+    expect(Object.keys(stated.data).sort()).toEqual(["peers"]);
     const found = (stated.data["peers"] as { sid: string }[]).map((row) => row.sid);
     expect(found).toContain(OTHER_SID);
     // The command greeted as the session it was told it is, so that session is

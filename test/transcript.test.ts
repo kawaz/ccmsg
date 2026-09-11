@@ -11,8 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Glob } from "bun";
 import { PROTOCOL_VERSION, TOPIC_SCHEMAS, validationErrors } from "@ccmsg/protocol";
-import {
-  isLive, classify, Sessions, sessionStatusOf } from "../src/sessions/index.ts";
+import { isLive, classify, Sessions, sessionStatusOf } from "../src/sessions/index.ts";
 import { Topics } from "../src/topics/index.ts";
 import {
   FOLD_TAIL_BYTES,

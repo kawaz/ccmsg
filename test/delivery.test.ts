@@ -6,7 +6,6 @@ import {
   INBOX_MAX_PER_SID,
   INBOX_RETENTION_MS,
   type InboxMessage,
-  type LastLiveSession,
   type MessageSendResult,
   OP_SCHEMAS,
   type PeerInfo,
@@ -77,7 +76,7 @@ const INPUTS_FOR: Record<SessionState, SessionInputs> = {
 class FakeSessions {
   readonly inputs = new Map<Sid, SessionInputs>();
   readonly connected: PeerInfo[] = [];
-  readonly lastLive: LastLiveSession[] = [];
+  readonly lastLive: PeerInfo[] = [];
 
   /** The real derivation, over inputs this test arranges. What a reason is
    * derived from is the thing under test, so the state is never set: it is what
@@ -87,8 +86,8 @@ class FakeSessions {
     return inputs === undefined ? undefined : classify(inputs);
   }
 
-  peers() {
-    return { peers: this.connected, last_live: this.lastLive };
+  peerRows(): PeerInfo[] {
+    return [...this.connected, ...this.lastLive];
   }
 
   /** Inputs that put a session in `state`, so a case naming a state says which
@@ -510,7 +509,7 @@ describe("the sessions a message can be addressed to", () => {
     // Nothing greeted and the harness names nobody, so the gateway's word is
     // the only thing that could make OTHER_SID live here.
     expect(domain.classify(OTHER_SID)).toBeUndefined();
-    expect(domain.peers(Date.now()).peers).toEqual([]);
+    expect(domain.peerRows(Date.now())).toEqual([]);
     expect(
       messagingHandlers(
         delivery,

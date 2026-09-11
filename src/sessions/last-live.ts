@@ -3,22 +3,39 @@ import { dirname, join } from "node:path";
 import {
   LAST_LIVE_RETENTION_MS,
   type InstanceId,
-  type LastLiveSession,
+  type PeerInfo,
   type Sid,
   type Timestamp,
 } from "@ccmsg/protocol";
 
 export const LAST_LIVE_FILE = "last-live.json";
 
-/** What is stored per session: the contract's entry, minus the one field that
- * is derived rather than observed.
+/** What is stored per session: the observations a lost session's row is built
+ * from, and nothing the row derives or a connection supplies.
  *
  * `state` is left out on purpose (M4). It follows from `stopped_at` and from
  * whether the session is live again, both of which are known when the list is
  * read, so storing it would be storing a conclusion that can go stale on disk.
  * `pinned` is left out because no pin is held anywhere yet; when one is, it
- * belongs to the session rather than to this list. */
-export type StoredEntry = Omit<LastLiveSession, "state" | "pinned">;
+ * belongs to the session rather than to this list. The connection fields go
+ * with the connection there is none of.
+ *
+ * `last_seen_at` is required here while the row states it optionally: a row
+ * this store holds is by definition one this instance has lost, and when it
+ * last saw it is what the retention window is measured from. */
+export type StoredEntry = Omit<
+  PeerInfo,
+  | "state"
+  | "pinned"
+  | "last_activity_at"
+  | "last_user_input_at"
+  | "gateway_active_at"
+  | "send_message"
+  | "client_version"
+  | "protocol_version"
+  | "stale_client"
+  | "last_seen_at"
+> & { last_seen_at: Timestamp };
 
 interface Document {
   version: number;

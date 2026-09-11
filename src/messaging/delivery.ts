@@ -3,7 +3,6 @@ import type {
   CandidateSession,
   InboxMessage,
   InstanceId,
-  LastLiveSession,
   MessageSendArgs,
   MessageSendResult,
   Mid,
@@ -15,6 +14,7 @@ import type {
   UndeliveredReason,
 } from "@ccmsg/protocol";
 import { USER_SENDER } from "@ccmsg/protocol";
+import { isLive } from "../sessions/classify.ts";
 import {
   type DispatchResult,
   type HandlerInput,
@@ -35,7 +35,7 @@ const INBOX = "inbox";
  * the reasons of §4.2 from growing a source per reason. */
 export interface SessionLookup {
   classify(sid: Sid): SessionState | undefined;
-  peers(): { peers: PeerInfo[]; last_live: LastLiveSession[] };
+  peerRows(): PeerInfo[];
 }
 
 /** The rest of the cluster, for a message addressed outside this instance.
@@ -291,16 +291,26 @@ export class Delivery implements UpstreamResource {
 
   /** Sessions live now in the repository the addressee belongs to (§4.2).
    *
+   * The rows are one list of sessions, connected and lost alike, so which of
+   * them can be written to is the classification — asked of the domain, the
+   * same way the addressee's own reason was, rather than read off a field of
+   * the row (M1).
+   *
    * The repository is `repo_root` as the session named it. A session that named
    * none is left out rather than matched on something derived from its `cwd`:
    * no primary source states that derivation, and the sessions domain does not
    * make one up either. */
   #candidates(to: Sid): CandidateSession[] {
-    const { peers, last_live } = this.deps.sessions.peers();
-    const root = [...peers, ...last_live].find((row) => row.sid === to)?.repo_root;
+    const rows = this.deps.sessions.peerRows();
+    const root = rows.find((row) => row.sid === to)?.repo_root;
     if (root === undefined) return [];
-    return peers
-      .filter((peer) => peer.sid !== to && peer.repo_root === root)
+    return rows
+      .filter(
+        (peer) =>
+          peer.sid !== to &&
+          peer.repo_root === root &&
+          isLive({ state: this.deps.sessions.classify(peer.sid) }),
+      )
       .map((peer) => ({
         sid: peer.sid,
         ...(peer.ws === "" ? {} : { ws: peer.ws }),
@@ -374,7 +384,7 @@ function callerOf(input: HandlerInput): CallerIdentity | undefined {
  * notification's subject are the same session seen from two ops, and a session
  * shown one way there and another way here would read as two. */
 export function sessionLabel(sessions: SessionLookup, sid: Sid): string {
-  const peer = sessions.peers().peers.find((row) => row.sid === sid);
+  const peer = sessions.peerRows().find((row) => row.sid === sid);
   if (peer === undefined) return sid;
   const where = [peer.repo, peer.ws].filter((part) => part !== "").join("/");
   return where === "" ? sid : where;

@@ -24,7 +24,7 @@ import {
 } from "../src/instance/index.ts";
 import { CodexQueueRoute } from "../src/messaging/index.ts";
 import { HOOKS_FILE, install, status, uninstall } from "../src/plugin/index.ts";
-import { Sessions } from "../src/sessions/index.ts";
+import { isLive, Sessions } from "../src/sessions/index.ts";
 import { readRecord, TranscriptFiles, TranscriptFold } from "../src/transcript/index.ts";
 
 const dirs: string[] = [];
@@ -376,15 +376,15 @@ describe("what says a session is there", () => {
     const domain = domainFor(home);
     mkdirSync(join(home, "thread-writer-locks"), { recursive: true });
     writeFileSync(join(home, "thread-writer-locks", ".coordination.lock"), "");
-    expect(domain.peers().peers).toEqual([]);
-    expect(domain.agents().agents).toEqual([]);
+    expect(domain.peerRows().filter(isLive)).toEqual([]);
+    expect(domain.agentRows()).toEqual([]);
   });
 
   test("`agents` is Claude Code's own list, so a Codex instance reports none", () => {
     const home = codexHome();
     const domain = domainFor(home);
     lock(home, THREAD);
-    expect(domain.agents().agents).toEqual([]);
+    expect(domain.agentRows()).toEqual([]);
   });
 });
 

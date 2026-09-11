@@ -725,7 +725,9 @@ describe("only this config home is read (M6)", () => {
     client.send({ op: "topic_subscribe", request_id: "sub", topic: "agents" });
     expect((await client.next())["ok"]).toBe(true);
     const snapshot = await client.next();
-    expect(snapshot["data"]).toEqual({ agents: [] });
+    // The rows are the whole of what the other config home would have shown,
+    // and there are none; `polled_at` says when the read behind them ran.
+    expect((snapshot["data"] as { agents: unknown[] }).agents).toEqual([]);
     expect(instance.paths.configHome).toBe(home);
   });
 });

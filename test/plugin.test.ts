@@ -16,7 +16,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type LastLiveSession, PROTOCOL_VERSION } from "@ccmsg/protocol";
+import { PROTOCOL_VERSION } from "@ccmsg/protocol";
 import { hello, stopping } from "../src/cli.ts";
 import { statedMeta } from "../src/greeting/index.ts";
 import {
@@ -541,22 +541,38 @@ describe("the hooks against a running instance", () => {
     return client;
   }
 
-  interface Peers {
-    peers: {
-      sid: string;
-      repo?: string;
-      ws?: string;
-      cwd?: string;
-      state?: string;
-      connected_at?: number;
-    }[];
-    last_live: LastLiveSession[];
+  interface Row {
+    sid: string;
+    repo?: string;
+    ws?: string;
+    cwd?: string;
+    state?: string;
+    connected_at?: number;
+    stopped_at?: number;
+    removed?: true;
   }
 
+  interface Peers {
+    peers: Row[];
+  }
+
+  /** Frames folded the way a subscriber folds them, and the first fold that
+   * satisfies `want`.
+   *
+   * A frame carries the rows that changed, so what a test is about is the list
+   * as it stands after the frame rather than what that one frame happened to
+   * name. */
   async function until(client: LineClient, want: (data: Peers) => boolean): Promise<Peers> {
+    const held = new Map<string, Row>();
     for (;;) {
       const data = (await client.next())["data"] as Peers | undefined;
-      if (data?.peers !== undefined && want(data)) return data;
+      if (data?.peers === undefined) continue;
+      for (const row of data.peers) {
+        if (row.removed === true) held.delete(row.sid);
+        else held.set(row.sid, row);
+      }
+      const folded = { peers: [...held.values()] };
+      if (want(folded)) return folded;
     }
   }
 
@@ -609,7 +625,7 @@ describe("the hooks against a running instance", () => {
     // classifications depends on the terminal this test's own process runs in —
     // and nothing was written down as having stopped.
     expect(left.peers.find((row) => row.sid === SID)?.state).toMatch(/^live/);
-    expect(left.last_live.some((row) => row.sid === SID)).toBe(false);
+    expect(left.peers.some((row) => row.sid === SID && row.stopped_at !== undefined)).toBe(false);
   });
 
   test("a greeting with no instance behind it costs the session nothing", async () => {
@@ -638,8 +654,10 @@ describe("the hooks against a running instance", () => {
     // Declared and then gone is a pause, which is the difference the hook
     // exists to make: the harness still names the session, and it is the
     // declaration that puts it on the list at all.
-    const paused = await until(watcher, (data) => data.last_live.some((row) => row.sid === SID));
-    expect(paused.last_live.find((row) => row.sid === SID)).toMatchObject({ state: "paused" });
-    expect(paused.last_live.find((row) => row.sid === SID)?.stopped_at).toBeGreaterThan(0);
+    const paused = await until(watcher, (data) =>
+      data.peers.some((row) => row.sid === SID && row.state === "paused"),
+    );
+    expect(paused.peers.find((row) => row.sid === SID)).toMatchObject({ state: "paused" });
+    expect(paused.peers.find((row) => row.sid === SID)?.stopped_at).toBeGreaterThan(0);
   });
 });
