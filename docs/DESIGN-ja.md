@@ -277,11 +277,45 @@ record 単位で束ねる読み手がこれをハーネスの uuid と取り違�
 `system:unknown` になる。UI と状態の記録 (`mode` / `queue-operation` / `progress` / `*-title` /
 `file-history-*` 等) だけが対象外で、実測では 1 セッション 3,429 行のうち 1,317 行がこれである。
 
-**主語はセッション、または配下の worker 1 体である** (`agent_id` を指定すると
-`<sid>/subagents/agent-<id>.jsonl` が対象になる)。型の定義は変えず、`in` / `out` を主語から見る:
-worker を主語にすると `message:user:in` は親が渡した指示書 (= その file で誰の返信でもない先頭行) に、
-`message:user:out` は worker の回答になる。同じ preset がどの階層でもそのまま通るのはこのためで、
-末尾の `ids` 台帳に出た `agent_id` を次の dump の主語にすることで掘り下げられる。
+**主語はセッション、または配下の agent 1 体である** (`agent_id` を指定すると
+`<sid>/subagents/agent-<id>.jsonl` が対象になる)。型の定義は変えず、`in` / `out` を主語から見る。
+同じ preset がどの階層でもそのまま通るのはこのためで、末尾の `ids` 台帳に出た `agent_id` を
+次の dump の主語にすることで掘り下げられる。
+
+**`message:<X>` の `X` が名指すのは主語から見た相手の種類であって、主語自身の立ち位置ではない** —
+`parent` は主語を起こした相手、`sub` は使い捨てで起こした子、`team` は名前を持って居続ける相手、
+`session` は ccmsg 経由の別セッション。唯一の例外が `user` で、これは関係ではなく **人** を指す。
+agent にとっての親はセッションか別の agent なので、そこを `user` と呼ぶと読み手が機械を人と取り違える。
+ハーネスの実名 (`main` / `team-lead` / teammate 名) は型でなく item の `to` / `from` に残る。
+
+**相手が誰かは record が言う。** 分類は次で決める:
+
+| 判定 | 型 |
+|---|---|
+| record が sidechain (= agent 自身の file) の、返信元を持たない user 行 | `message:parent:in` (封筒があれば `from` も載る) |
+| 同じ file の assistant text | `message:parent:out` (呼び出しを伴わない散文) |
+| `<teammate-message teammate_id=…>` 封筒で送り手が `main` / `team-lead` | `message:parent:in` |
+| 同上で送り手がそれ以外の名前 | `message:team:in` (呼び出しの答えではない独立した 1 通) |
+| `Agent` 呼び出しで `name` / `team_name` 引数を持つ (= teammate の起動) | `message:team:out`、その完了通知が `message:team:in` (結果形) |
+| 同上で持たない | `message:sub:out` / `message:sub:in` |
+| `SendMessage` の宛先が sid | `message:session:out` |
+| 同上が `main` / `team-lead` | `message:parent:out` (呼び出し形) |
+| 同上がそれ以外の名前 | `message:team:out` |
+
+**名前で宛てた相手が teammate か使い捨て worker かは、名前だけでは決まらない — 名前を持つこと自体が
+teammate の定義である。** 名前を持つ agent は以降も書き足せて、返事は呼び出しの答えではなく独立した
+message として届く。使い捨ての agent は 1 度答えて終わるので、その往復だけが対になる。判別のつかない
+名前を `team` に倒すのはこのためで、`sub` に倒すと「来ない答えを待っている呼び出し」として描かれる。
+
+**主語が agent のとき、人の直接入力は識別しない。** teammate は人が直接打てる相手なので原理的には
+`message:user:in` が立ちうるが、transcript の上で worker と teammate を分ける印は無い
+(実測 9,573 件: 開始行の封筒の有無は taskKind と 98.9% しか一致せず、`isSidechain` は 9,572 件で立つ)。
+そこで **sidechain な file の封筒なし user 行は一律 `message:parent:in`** とする。誤って `user` と
+名乗るより、親から来たと言うほうが実態に近い (teammate の指示は実際に親から来る)。
+
+**teammate 名は `ids` 台帳に載せない。** 台帳は「読み手が次に掘る対象」の一覧で、載る id は dump の
+主語にできるものに限る。teammate 名は `DumpIdKind` のどれでもなく、名前では dump を引けない。
+teammate の `agent_id` は起動の答えで判るので、そちらが `agent` として載り、名前は `label` になる。
 
 **何を残すかは `types` で左から順に決める。** 要素は型 (prefix 可)・`-` 始まりの除外・
 `@<preset 名>` (config の preset をその位置に展開、再帰可) で、無指定は `system:attachment` を除く全部。
@@ -292,6 +326,8 @@ preset は契約に焼かず config の `dump.presets` に置く (名前が指�
 `{sid, agent_id?, written_at, types, items, ids}` で、`types` は **展開・除外適用後の選択そのもの**である
 (file は要求より長生きするので、何の dump で何を落としたかを file 自身が言えなければならない)。`ids` 台帳は型ではないので選択で落ちない。
 既存の `no_thinking` / `no_agent` は `["-thinking"]` / `["-message:sub", "-tool:Agent"]` と同義で、最後に適用される。
+落ちるのは使い捨ての往復の機械仕掛けだけで、teammate との往復は残る (teammate とのやり取りは会話であり、
+会話を残せと言った dump から会話が消えることになるため)。
 
 **型を読める文字に落とすのは表示層の責務である** (`src/transcript/items/render.ts` と `document.ts`、CLI の `ccmsg dump`)。
 型ごとに 1 つの関数が「見出しの語」と「その下の行」を返し、文書は `[<uuid8>:<index>] <型> <見出し> <時刻> turn` の 1 行と

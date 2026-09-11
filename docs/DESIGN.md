@@ -315,10 +315,48 @@ bookkeeping records are out of scope (`mode` / `queue-operation` / `progress` / 
 
 **The subject is the session, or one agent below it** (`agent_id` makes
 `<sid>/subagents/agent-<id>.jsonl` the subject). The type definitions do not change; `in` and
-`out` are read from where the subject stands, so for an agent `message:user:in` is the brief its
-parent gave it — the record nothing else in that file is a reply to — and `message:user:out` is
-what it answered. That is what lets one preset be carried unchanged down a chain: an `agent_id`
-from the `ids` ledger at the end becomes the subject of the next dump.
+`out` are read from where the subject stands. That is what lets one preset be carried unchanged
+down a chain: an `agent_id` from the `ids` ledger at the end becomes the subject of the next dump.
+
+**The `X` in `message:<X>` names the kind of party at the other end, not where the subject
+stands** — `parent` is whoever started it, `sub` the throwaway agents below, `team` a named agent
+that goes on standing, `session` another session over ccmsg. The one exception is `user`, which is
+a person and not a relation: an agent's parent is a session or another agent, and calling that
+`user` would have a reader take a machine for a person. The harness's own names (`main`,
+`team-lead`, a teammate's) stay on the item as `to` / `from` rather than in the type.
+
+**The record says who the counterpart is.** The classification decides by:
+
+| what the record says | type |
+|---|---|
+| a user line with nothing it replies to, in a sidechain file (an agent's own) | `message:parent:in` (with `from` when an envelope carried one) |
+| assistant text in that same file | `message:parent:out`, prose with no call behind it |
+| a `<teammate-message teammate_id=…>` envelope written by `main` / `team-lead` | `message:parent:in` |
+| the same envelope written under any other name | `message:team:in`, a message of its own rather than an answer |
+| an `Agent` call carrying `name` / `team_name` (a teammate being started) | `message:team:out`, its completion the result-shaped `message:team:in` |
+| an `Agent` call carrying neither | `message:sub:out` / `message:sub:in` |
+| `SendMessage` addressed by sid | `message:session:out` |
+| `SendMessage` addressed to `main` / `team-lead` | `message:parent:out`, the call-shaped one |
+| `SendMessage` addressed to any other name | `message:team:out` |
+
+**Whether a name belongs to a teammate or a throwaway agent is not a further question — having a
+name is what makes an agent a teammate.** A named agent stands and can be written to again, and
+what it says back arrives as its own message; a throwaway one answers the call that started it and
+is done. So a name nothing else identifies is read as `team`: read as `sub` it would be drawn as a
+call waiting for an answer that has no way in.
+
+**With an agent as the subject, a person's own words are not identified.** A teammate is somebody
+a person can type at directly, so `message:user:in` could in principle stand in its file, but
+nothing in a transcript separates a teammate from a throwaway worker (measured over 9,573 agent
+files: whether the opening record is an envelope agrees with the harness's own `taskKind` only
+98.9% of the time, while `isSidechain` is set on 9,572 of them). So **every envelope-less user line
+in a sidechain file is `message:parent:in`**. Saying it came from above is nearer the truth than
+claiming a person wrote it — a teammate's instructions do come from above.
+
+**A teammate's name is not in the `ids` ledger.** The ledger is what a reader descends by, so what
+it lists is what can be the subject of a dump. A name is none of the `DumpIdKind`s and nothing can
+be dumped by one. A teammate's `agent_id` is known from the answer to the call that started it, so
+that is what the ledger carries, with the name as its `label`.
 
 **What is kept is decided by `types`, read left to right.** An element is a type name (a prefix
 will do), an exclusion beginning with `-`, or `@<preset>` expanding a configured selection in
@@ -333,7 +371,9 @@ reading a format nothing states. It is `{sid, agent_id?, written_at, types, item
 `types` is **the selection as applied** — presets expanded, exclusions in place — because a file
 outlives the request that made it and has to say on its own what it is a dump of and what was
 left out. The `ids` ledger is not a type and is never selected away. The older `no_thinking` / `no_agent` mean `["-thinking"]` and
-`["-message:sub", "-tool:Agent"]`, and are applied last.
+`["-message:sub", "-tool:Agent"]`, and are applied last. They take out the machinery of errands and
+leave a teammate's correspondence standing: what passes with a teammate is talk, and dropping it
+would take conversation out of a dump that asked to keep conversation.
 
 **Turning types into readable words is the drawing layer's work** (`src/transcript/items/render.ts`
 and `document.ts`, and the CLI's `ccmsg dump`). One function per type answers with the words of a
