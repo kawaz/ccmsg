@@ -872,6 +872,15 @@ liveness, and the next time a payload is built it is gone from the row's `gatewa
 well. The window is judged at the moment of reading; no timer announces that it has closed
 (§1.3).
 
+Because the attribute is not the classification, **the gateway seeing a session again does not
+put a frame on `peers`**. What the sessions domain is told about is the window opening, which
+is a row moving between sections; being seen again inside a window it is already in moves a
+clock, and a clock is not news a subscriber asked for (§6.1). Inference is observed several
+times a second, so publishing on each would restate the whole list at that rate for rows that
+differ in one attribute. The value is not lost: the next payload — whatever raised it — carries
+the newest reading, and a client that wants to watch inference as it happens has
+`llm_requests`, which is a view of the gateway rather than of the list.
+
 ### 5.3 The two kinds of "last activity time"
 
 The old daemon kept "the time updated on every ccmsg request" (the agent's busyness) and "the
