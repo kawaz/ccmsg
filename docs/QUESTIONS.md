@@ -20,12 +20,7 @@
 
 ## 裁定待ち
 
-### CM-Q2 TS config のファイル構成
-
-裁定済み (2026-09-10 r298m35): config は JSON + マージ規則でなく **TS** で書く。defaults は `({builtin, config: builtin のコピー}) => config`、instance は `({builtin, default, config: default のコピー}) => config` を export し、`builtin` / `default` は immutable で渡す (= 深い / 浅いの問題が消える。v0.3.5 の `MERGE_RULES` は撤去)。残る問い:
-
-- [ ] a: `~/.config/ccmsg/config.ts` (defaults) + `~/.config/ccmsg/instances/<name>.ts` (instance ごと 1 ファイル、自動発見。`daemon add` はテンプレを 1 ファイル生成、`remove` は削除) (推し)
-- [ ] b: `config.ts` 1 ファイルで defaults と instances 配列の両方を返す (`daemon add` は使えなくなり、人が編集)
+(なし)
 
 ## 確認待ち
 
