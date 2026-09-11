@@ -127,6 +127,21 @@ export interface InstanceConfig {
    * get it wrong — which is a mesh an instance is silently not in. Which entry
    * of the list is this instance is settled at startup by the probe (§7.1). */
   readonly peers: readonly Endpoint[];
+  /** Where peers and people reach this instance, when that is not the address
+   * it binds.
+   *
+   * An instance behind a reverse proxy is dialled at the proxy's name and
+   * listens on loopback, and the two cannot be derived from each other. It is
+   * what the mesh puts in its list for this instance — so it is what the probe
+   * settles `self` to, what a handshake carries as `iss` and `aud`, and what
+   * a person is handed to open a page at (§7.1). Absent leaves the address
+   * this instance binds, which is what a host with no proxy in front of it
+   * has.
+   *
+   * Stated per instance, in the file that already states which port: what a
+   * proxy is set up to forward where is one fact, and writing it twice is a
+   * second place for it to be wrong. */
+  readonly endpoint?: Endpoint;
   /** Absent when this instance serves the unix socket only. */
   readonly entry?: EntryConfig;
   readonly upstream: UpstreamConfig;
@@ -193,6 +208,11 @@ const JSON_FILE = "config.json";
  * the types say so while the file is being edited, and this says so when it is
  * read. */
 const FIELDS = ["harness", "entry", "upstream", "direct_delivery", "fork_origin", "dump"] as const;
+
+/** What only one instance's own file may state: which config home it answers
+ * for, and the address it is reached at. Neither is a thing the shared file
+ * could say once for everybody. */
+const INSTANCE_FIELDS = ["dir", "endpoint"] as const;
 
 /** Where the mesh endpoints this host does not serve itself are written.
  *
@@ -292,6 +312,13 @@ export async function loadAll(configDir: string): Promise<{
  * mesh, which it already is. */
 function meshOf(configDir: string, instances: readonly InstanceSetting[]): readonly Endpoint[] {
   const listed = instances.flatMap((one) => {
+    // What the instance says it is reached at, and only failing that the
+    // address it binds: an instance behind a proxy is in the mesh under the
+    // name its peers dial, not under the loopback address that name forwards
+    // to. An instance with neither serves the unix socket alone, so there is
+    // nothing for a peer to dial and it is in nobody's list.
+    const stated = one.config.endpoint;
+    if (stated !== undefined) return [stated];
     const entry = one.config.entry;
     return entry === undefined ? [] : [localEndpoint(entry)];
   });
@@ -427,9 +454,12 @@ function settingsOf(
 ): { dir: string; config: InstanceConfig } {
   const fields = objectOf(file, "what the config function returned", returned);
   for (const name of Object.keys(fields)) {
-    if (name === "dir") {
+    if ((INSTANCE_FIELDS as readonly string[]).includes(name)) {
       if (wantsDir) continue;
-      throw new ConfigError(file, `dir belongs to an ${INSTANCES_DIR}/ file, which this is not`);
+      throw new ConfigError(
+        file,
+        `${name} belongs to an ${INSTANCES_DIR}/ file, which this is not`,
+      );
     }
     if (name === "peers") {
       // Said as its own refusal rather than as an unknown field, because a
@@ -483,6 +513,9 @@ export function parseConfig(file: string, fields: Record<string, unknown>): Inst
     // mesh is known: one file states one instance, and a mesh is every one of
     // them plus what `peers.json` names.
     peers: [],
+    ...(fields["endpoint"] === undefined
+      ? {}
+      : { endpoint: endpointOf(file, "endpoint", fields["endpoint"]) }),
     ...(fields["entry"] === undefined ? {} : { entry: entryOf(file, fields["entry"]) }),
     upstream: upstreamOf(file, fields["upstream"]),
     direct_delivery: flagOf(

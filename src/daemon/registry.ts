@@ -345,7 +345,14 @@ function presetLiteral(preset: (typeof STARTING_PRESETS)[number]): string {
 /** One instance's file, as `add` first writes it: what differs from
  * `config.ts`, and nothing else. */
 function instanceTemplate(name: string, dir: string, harness: Harness, port: number): string {
-  const lines = [`  config.dir = ${JSON.stringify(dir)};`];
+  const lines = [
+    `  config.dir = ${JSON.stringify(dir)};`,
+    "",
+    "  // reverse proxy の後ろに居るなら、peer と人が届く公開 URL (末尾 /) を書く。",
+    "  // 書かなければ下の待ち受け address がそのまま mesh の一覧に載る。",
+    `  // config.endpoint = "https://ccmsg-${name}.<host>/";`,
+    "",
+  ];
   if (harness !== DEFAULT_HARNESS) lines.push(`  config.harness = ${JSON.stringify(harness)};`);
   lines.push(
     `  config.entry = {`,

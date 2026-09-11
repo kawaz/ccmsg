@@ -1268,8 +1268,16 @@ home no file names, run with `ccmsg daemon run`, is what `config.ts` returns plu
 defaults.
 
 **The mesh is derived, not written** (§7.1). It is the instances of this host — each at the
-address its own file gives it — followed by what `peers.json` names, with a remote entry that
-spells a local one taken once. No config file states `peers`, and one that does is refused
+address its own file gives it: `endpoint` where the file states one, and the address it binds
+where it does not — followed by what `peers.json` names, with a remote entry that spells a
+local one taken once. An instance with neither an endpoint nor an entry serves the unix socket
+alone and is in nobody's list.
+
+**`endpoint` is stated where a proxy is in front of an instance.** What it binds and what it is
+reached at are two facts and neither follows from the other, so the one a peer can dial is
+written down: it is what the probe settles `self` to, what a handshake carries as `iss` and
+`aud`, and what a person is handed to open a page at. It belongs to the instance's own file for
+`dir`'s reason — the shared file could not state one address for every instance of the host. No config file states `peers`, and one that does is refused
 rather than ignored: a person writing it is stating a mesh, and the answer is where a mesh is
 stated now. The reason is that the local half is already written down in `instances/`, and
 writing it again is a second place to get it wrong — which is an instance silently outside the

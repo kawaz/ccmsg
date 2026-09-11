@@ -223,6 +223,42 @@ describe("config", () => {
     expect(config.upstream.gateway_url).toBe("https://gateway.example");
   });
 
+  test("an instance behind a proxy is in the mesh under the name its peers dial", async () => {
+    const { root } = disposable();
+    const dir = join(root, "config");
+    const entry = { host: "127.0.0.1", source_ips: [], trusted_proxies: [] };
+    writeConfigHome(
+      dir,
+      {},
+      {
+        // The address it binds and the address it is reached at are two facts,
+        // and neither follows from the other: what goes in the mesh is the one
+        // a peer can dial, which is also what the probe settles `self` to and
+        // what a handshake carries (§7.1).
+        front: {
+          dir: "/a/.claude",
+          endpoint: "https://ccmsg-front.example/",
+          entry: { ...entry, port: 8643 },
+        },
+        plain: { dir: "/b/.claude", entry: { ...entry, port: 8644 } },
+      },
+    );
+    const { instances } = await loadAll(dir);
+    for (const instance of instances) {
+      expect(instance.config.peers).toEqual([
+        "https://ccmsg-front.example/",
+        "http://127.0.0.1:8644/",
+      ]);
+    }
+    // And it is the instance's own to state: the shared file cannot say one
+    // address for every instance of the host.
+    expect(loadConfig(dir, "/a/.claude")).resolves.toMatchObject({
+      endpoint: "https://ccmsg-front.example/",
+    });
+    writeConfigHome(dir, { endpoint: "https://ccmsg-front.example/" });
+    expect(loadConfig(dir, "/a/.claude")).rejects.toThrow(/endpoint belongs to an instances/);
+  });
+
   test("the mesh is the instances of this host, and then what peers.json names", async () => {
     const { root } = disposable();
     const dir = join(root, "config");
@@ -1173,7 +1209,9 @@ type Same<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
 // the instances of this host and `peers.json`, so the declarations a person
 // writes against do not offer it.
 type Written = Exclude<keyof InstanceConfig, "peers">;
-export type _ConfigFields = Assert<Same<Written, keyof Draft>>;
+// `endpoint` is an instance's own to state, like `dir`: the shared file could
+// not say either of them once for everybody.
+export type _ConfigFields = Assert<Same<Exclude<Written, "endpoint">, keyof Draft>>;
 export type _InstanceFields = Assert<Same<Written | "dir", keyof InstanceDraft>>;
 // Down through the shapes that hang below it, since a field added inside the
 // launcher or an entry is as invisible from the top level as one added beside
