@@ -26,11 +26,11 @@ wire の契約は [kawaz/ccmsg-protocol](https://github.com/kawaz/ccmsg-protocol
 | date | category | status | slug | 概要 |
 |---|---|---|---|---|
 | 2026-09-11 | bug | open | [daemon-restart-all-leaves-supervisor-on-old-build](./2026-09-11-daemon-restart-all-leaves-supervisor-on-old-build.md) | `ccmsg daemon restart --all` は子 instance だけを新コードで起動し直し、launchd 配下の監督者 (`c… |
-| 2026-09-10 | request | open | [gateway-cache-notice-and-expired](./2026-09-10-gateway-cache-notice-and-expired.md) | llm-gateway v0.45.0 (2026-09-10) の event 追加への追従依頼: cache リングを gateway の「見込み」で… |
 | 2026-09-10 | bug | open | [service-stop-wedges-with-sockets-unlinked](./2026-09-10-service-stop-wedges-with-sockets-unlinked.md) | 本運用 (v0.2.13 監督者 + 3 instance) で `service stop` が socket unlink 後に wedge し、応答は `run… |
 | 2026-09-10 | task | open | [design-doc-reflow-after-v2-settles](./2026-09-10-design-doc-reflow-after-v2-settles.md) | `docs/DESIGN-ja.md` / `docs/DESIGN.md` (と契約リポの DESIGN、README-ja) は v2 の構築中に節を足し続… |
 | 2026-09-10 | design | open | [dump-sidechain-rows-placement](./2026-09-10-dump-sidechain-rows-placement.md) | session_dump_write が出力する日記に、subagent (sidechain) の発話をどう配置するかを裁定する。 |
 | 2026-09-09 | design | open | [sandbox-grant-delivery-path](./2026-09-09-sandbox-grant-delivery-path.md) | sandbox_grant は capability URL を発行するが、`SandboxGrants.find` の呼び... |
+| 2026-09-10 | request | wip | [gateway-cache-notice-and-expired](./2026-09-10-gateway-cache-notice-and-expired.md) | llm-gateway v0.45.0 (2026-09-10) の event 追加への追従依頼: cache リングを gateway の「見込み」で… |
 
 <!--
 INDEX の列構成・canonical 順序・行形式の唯一の正本:
