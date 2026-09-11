@@ -430,9 +430,9 @@ worker の transcript は 1 ファイルで完結し、全行が `isSidechain: t
         "opts": { "types": ["message.user", "message.parent", "message.sub.in", "message.team.in", "notice", "thinking"] }
       },
       {
-        "name": "handoff",
-        "description": "後継セッションへの引き継ぎ。直近の会話と、走っているものの台帳",
-        "opts": { "types": ["message", "system.task", "ids"] }
+        "name": "recover",
+        "description": "文脈の全回復。since / until で区切った区間の会話・作業・思考・合図と台帳",
+        "opts": { "types": ["message", "tool", "thinking", "notice", "hook", "system.compact", "system.api.error", "system.task", "system.attachment.queued_command", "ids"] }
       },
       {
         "name": "audit",
@@ -445,6 +445,8 @@ worker の transcript は 1 ファイルで完結し、全行が `isSidechain: t
 ```
 
 一覧は `dump.presets.read` で引く。`daemon add` の初期 config にこの 5 つを例として入れる。
+
+`recover` が `system.*` を選り分けているのは、この群に**文脈そのものと、文脈の外側の事実**が混ざっているからである。要るのは `system.compact` (圧縮で消えた前半の要約であり、区間の前提そのもの)、`system.api.error` (応答が返らず打ち切られた = その turn に何も起きなかった理由)、`system.task` (背景で走っていた物の通知)、`system.attachment.queued_command` (人が割り込みで打った指示) の 4 つ。要らないのは `system.attachment.environment` / `date` / `model` / `skill_listing` / `prompt_snapshot` と `system.caveat` / `system.resume` / `system.unknown` で、これらは「その時 harness が何を注入したか」であって、後から文脈を組み直す人が知る必要は無い (環境や日付は今の環境から読めるし、注意書きや定型文は毎回同じ)。
 
 ### preset の合成
 

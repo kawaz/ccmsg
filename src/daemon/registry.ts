@@ -201,9 +201,22 @@ const STARTING_PRESETS = [
     },
   },
   {
-    name: "handoff",
-    description: "後継セッションへの引き継ぎ。直近の会話と、走っているものの台帳",
-    opts: { types: ["message", "system.task", "ids"] },
+    name: "recover",
+    description: "文脈の全回復。since / until で区切った区間の会話・作業・思考・合図と台帳",
+    opts: {
+      types: [
+        "message",
+        "tool",
+        "thinking",
+        "notice",
+        "hook",
+        "system.compact",
+        "system.api.error",
+        "system.task",
+        "system.attachment.queued_command",
+        "ids",
+      ],
+    },
   },
   {
     name: "audit",

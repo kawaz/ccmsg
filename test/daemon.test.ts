@@ -132,7 +132,7 @@ describe("which config homes there are (daemon add / remove / list)", () => {
       "file",
       "howto",
       "journal",
-      "handoff",
+      "recover",
       "audit",
     ]);
     expect(instances).toMatchObject([{ id: added.id, name: "one", dir: home }]);
