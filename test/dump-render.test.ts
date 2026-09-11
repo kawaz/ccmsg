@@ -402,20 +402,27 @@ describe("what a person typed, as the op's arguments", () => {
     ).toEqual({ sid: SID, preset: "howto", types: ["thinking", "tool.Bash", "-tool.Read"] });
   });
 
-  test("a bound is read as whichever of the two kinds it was written in", () => {
-    // A moment parses as one; a record id does not, so nobody has to say which
+  test("a bound is read as whichever of the kinds it was written in", () => {
+    // A moment reads as one; a record id does not, so nobody has to say which
     // they are handing over.
     expect(dumpArgs(SID, new Map([["since", "2026-09-01T00:00:00.000Z"]]))).toEqual({
       sid: SID,
       since_at: Date.UTC(2026, 8, 1),
     });
-    expect(dumpArgs(SID, new Map([["until", "9f2c1ab4"]]))).toEqual({
+    expect(dumpArgs(SID, new Map([["until", "9f2c1ab4-0000-4000-8000-000000000000"]]))).toEqual({
       sid: SID,
-      until_uuid: "9f2c1ab4",
+      until_uuid: "9f2c1ab4-0000-4000-8000-000000000000",
     });
     expect(dumpArgs(SID, new Map([["since", "1756684800000"]]))).toEqual({
       sid: SID,
       since_at: 1_756_684_800_000,
     });
+    // A stretch back from now, resolved where the command was given.
+    const asked = dumpArgs(SID, new Map([["since", "-10m"]])) as { since_at: number };
+    expect(Math.abs(asked.since_at - (Date.now() - 600_000))).toBeLessThan(5_000);
+    // The id a heading shows is the first bytes of the uuid, and a bound is
+    // matched against the whole of it: the short form is refused rather than
+    // cutting nothing.
+    expect(() => dumpArgs(SID, new Map([["until", "9f2c1ab4"]]))).toThrow(/uuid/);
   });
 });

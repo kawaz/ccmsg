@@ -438,8 +438,11 @@ const ROOT: Command = {
       options: [
         ["--preset <名前>", "instance が持つ選択 (ccmsg dump presets で一覧)"],
         ["--types <選択>", "型をカンマ区切りで。prefix 可、-で除外、@名前で preset 展開"],
-        ["--since <at|uuid>", "下限。時刻 (ISO か epoch ミリ秒) か record の uuid"],
-        ["--until <at|uuid>", "上限。同上"],
+        [
+          "--since <at|ago|uuid>",
+          "下限。時刻 (ISO か epoch ミリ秒)、今からの差 (-10m / -2h / -1d / -30s)、record の uuid",
+        ],
+        ["--until <at|ago|uuid>", "上限。同上"],
         ["--max-chars <n>", "1 アイテムの本文をこの文字数で切る (既定は切らない)"],
         ["--json", "markdown ではなく dump file の中身をそのまま出す"],
         ["--out <path>", "標準出力ではなくこの path に書く"],
@@ -1242,8 +1245,10 @@ async function dump(args: readonly string[]): Promise<unknown> {
     ...dumpArgs(subject, parsed.named),
   })) as unknown as SessionDumpWriteResult;
   const body = readFileSync(written.path, "utf8");
-  const since = parsed.named.get("since");
-  const until = parsed.named.get("until");
+  // What the heading states is where the cut fell, not the words it was asked
+  // for in: a dump read next week cannot work out what "10 minutes ago" was.
+  const since = spelled(resolved("since", parsed.named.get("since")));
+  const until = spelled(resolved("until", parsed.named.get("until")));
   const limit = parsed.named.get("max-chars");
   const text = parsed.flags.has("json")
     ? body
@@ -1301,23 +1306,73 @@ export function dumpArgs(
   };
 }
 
-const AGENT_MARK = "/agent-";
-
-/** One bound, as whichever of the two kinds it was written in.
- *
- * A time and a record id cannot be confused for one another — one parses as a
- * moment and the other does not — so the caller writes what they have rather
- * than saying which it is. */
-function bound(kind: "since" | "until", value: string | undefined): Record<string, unknown> {
-  if (value === undefined || value === "") return {};
-  const at = moment(value);
-  return at === undefined ? { [`${kind}_uuid`]: value } : { [`${kind}_at`]: at };
+/** One bound as the heading writes it: a moment in the spelling everything
+ * else states an instant in, and a record id as it was given. */
+function spelled(bound: number | string | undefined): string | undefined {
+  if (bound === undefined) return undefined;
+  return typeof bound === "number" ? new Date(bound).toISOString() : bound;
 }
 
-function moment(value: string): number | undefined {
+const AGENT_MARK = "/agent-";
+
+/** One bound, as whichever of the kinds it was written in.
+ *
+ * A moment and a record id cannot be confused for one another — one reads as a
+ * time and the other does not — so the caller writes what they have rather than
+ * saying which it is. What reads as neither ends the command: a bound nobody
+ * could act on would otherwise be dropped, and a dump asked for "the last ten
+ * minutes" would come back empty with nothing saying why. */
+function bound(kind: "since" | "until", value: string | undefined): Record<string, unknown> {
+  const at = resolved(kind, value);
+  if (at === undefined) return {};
+  return typeof at === "number" ? { [`${kind}_at`]: at } : { [`${kind}_uuid`]: at };
+}
+
+/** A record id, as the harness writes one: the whole uuid.
+ *
+ * Checked rather than assumed, because "not a time" is what a typo looks like
+ * too — and because the id a heading shows is shortened to its first bytes,
+ * which is what a person copies. The instance matches a bound against the
+ * record's own uuid exactly, so a shortened one would cut nothing and answer
+ * with an empty dump. */
+const RECORD_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** How far back from now a bound may be written: a count and a unit, with the
+ * sign that says it is in the past.
+ *
+ * Only backwards, because what a person asks a transcript for is a stretch
+ * that has already happened. A bound in the future would name a moment nothing
+ * has reached, which is an empty dump asked for in a roundabout way. */
+const AGO = /^-(\d+)(s|m|h|d)$/;
+
+const SPANS: Readonly<Record<string, number>> = {
+  s: 1_000,
+  m: 60_000,
+  h: 3_600_000,
+  d: 86_400_000,
+};
+
+/** What one bound turns out to be: a moment, a record id, or nothing written.
+ *
+ * The clock is read here, at the moment the command is given, so `-10m` is ten
+ * minutes before a person typed it rather than before anything the instance
+ * later does. */
+function resolved(
+  kind: "since" | "until",
+  value: string | undefined,
+  now: number = Date.now(),
+): number | string | undefined {
+  if (value === undefined || value === "") return undefined;
+  const ago = AGO.exec(value);
+  if (ago !== null) return now - Number(ago[1]) * (SPANS[ago[2] as string] as number);
   if (/^\d+$/.test(value)) return Number(value);
   const parsed = Date.parse(value);
-  return Number.isNaN(parsed) ? undefined : parsed;
+  if (!Number.isNaN(parsed)) return parsed;
+  if (RECORD_ID.test(value)) return value;
+  throw new CommandError(
+    "invalid_args",
+    `--${kind} は時刻 (ISO か epoch ミリ秒)、今からの差 (-10m / -2h / -1d / -30s)、または record の uuid (短縮形でなく全体) です: ${value}`,
+  );
 }
 
 function chars(value: string): number {

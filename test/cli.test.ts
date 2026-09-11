@@ -411,6 +411,47 @@ describe("ccmsg dump", () => {
     expect(text).not.toContain("message.user.in");
   });
 
+  test("a bound written as a stretch back from now is resolved before it is asked for", async () => {
+    await instance();
+    const home = process.env["CLAUDE_CONFIG_DIR"] as string;
+    transcript(home, SID, SPOKE);
+    // The transcript is from 2026-09-01, so "the last ten minutes" contains
+    // none of it: a relative bound is a moment, and the cut falls where that
+    // moment is rather than being dropped for not parsing as a time.
+    const recent = await capture(() => main(["dump", SID, "--since", "-10m", "--json"]));
+    expect(recent.code).toBe(0);
+    expect((json(recent.out) as { items: unknown[] }).items).toEqual([]);
+    // And a stretch long enough to reach back over it keeps it.
+    const far = await capture(() => main(["dump", SID, "--since", "-3650d", "--json"]));
+    expect((json(far.out) as { items: unknown[] }).items.length).toBeGreaterThan(0);
+  });
+
+  test("the heading states where a relative bound landed, not the words it was asked in", async () => {
+    await instance();
+    transcript(process.env["CLAUDE_CONFIG_DIR"] as string, SID, SPOKE);
+    const drawn = await capture(() => main(["dump", SID, "--since", "-3650d"]));
+    // A dump read next week cannot work out what "3650 days ago" was, so what
+    // it says is the instant the cut fell at.
+    expect(drawn.out).toMatch(/- 範囲: since=\d{4}-\d{2}-\d{2}T/);
+  });
+
+  test("a bound that is neither a moment nor a record id is refused", async () => {
+    await instance();
+    transcript(process.env["CLAUDE_CONFIG_DIR"] as string, SID, SPOKE);
+    // Dropped silently, this would come back as an empty dump with nothing
+    // saying why — the one answer a person cannot tell from "nothing happened".
+    for (const wrong of ["10m", "+10m", "-10x", "yesterday", "u1"]) {
+      const refused = await capture(() => main(["dump", SID, "--since", wrong]));
+      expect(refused.code).toBe(1);
+      expect(json(refused.err)).toMatchObject({ error: { code: "invalid_args" } });
+    }
+    // A record id is taken as one, since that is the other thing a bound may be.
+    const byRecord = await capture(() =>
+      main(["dump", SID, "--until", "3f9a21c4-0000-4000-8000-000000000000", "--json"]),
+    );
+    expect(byRecord.code).toBe(0);
+  });
+
   test("dump presets answers with what this instance is configured with", async () => {
     await instance();
     const listed = await capture(() => main(["dump", "presets"]));
