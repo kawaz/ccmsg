@@ -188,9 +188,16 @@ const STARTING_PRESETS = [
   },
   {
     name: "journal",
-    description: "日記用。人との往復と worker の答え、思考は要点だけ",
+    description: "日記用。人との往復と worker の答え、中断などの合図、思考は要点だけ",
     opts: {
-      types: ["message.user", "message.parent", "message.sub.in", "message.team.in", "thinking"],
+      types: [
+        "message.user",
+        "message.parent",
+        "message.sub.in",
+        "message.team.in",
+        "notice",
+        "thinking",
+      ],
     },
   },
   {

@@ -426,8 +426,8 @@ worker の transcript は 1 ファイルで完結し、全行が `isSidechain: t
       },
       {
         "name": "journal",
-        "description": "日記用。人との往復と worker の答え、思考は要点だけ",
-        "opts": { "types": ["message.user", "message.parent", "message.sub.in", "message.team.in", "thinking"] }
+        "description": "日記用。人との往復と worker の答え、中断などの合図、思考は要点だけ",
+        "opts": { "types": ["message.user", "message.parent", "message.sub.in", "message.team.in", "notice", "thinking"] }
       },
       {
         "name": "handoff",
