@@ -1,6 +1,6 @@
 ---
 title: dump-sidechain-rows-placement
-status: open
+status: resolved
 category: design
 created: 2026-09-10T14:32:54+09:00
 last_read: 2026-09-11T13:00:43+09:00
@@ -9,10 +9,10 @@ wip_entered:
 blocked_entered:
 pending_entered:
 discarded_entered:
-resolved_entered:
+resolved_entered: 2026-09-11T13:09:12+09:00
 discard_reason:
 pending_reason:
-close_reason:
+close_reason: ["design/dump-kinds.md","implemented","related:dump-timeline-shared-selection"]
 blocked_by:
 origin: 自リポ TODO
 ---
