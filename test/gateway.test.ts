@@ -78,6 +78,38 @@ function responseEvent(extra: Record<string, unknown> = {}): Record<string, unkn
   };
 }
 
+/** Two names of a promised lifetime, in the gateway's own alphabet. */
+const NOTICE = "kUu1xR4-tQ9nSp2Zc0dBvA";
+const OTHER_NOTICE = "Zt7mQ0aL2xR9-bNc4dEfGh";
+
+/** One raised keepalive. The promise's name and the signal's own password are
+ * the same value on this notice. */
+function keepaliveEvent(extra: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    type: "cache_keepalive",
+    ts: NOW + 3_300_000,
+    session_id: SID,
+    prefix: "2cf24dba",
+    nonce: NOTICE,
+    cache_notice: NOTICE,
+    deadline: NOW + 3_330_000,
+    marker: "[llm-gateway keepalive ping] …",
+    ...extra,
+  };
+}
+
+/** One promise withdrawn by name. */
+function expiredEvent(extra: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    type: "cache_expired",
+    ts: NOW + 3_600_001,
+    session_id: SID,
+    prefix: "2cf24dba",
+    of: NOTICE,
+    ...extra,
+  };
+}
+
 const REPORT = {
   schema_version: 2,
   generated_at: NOW,
@@ -350,7 +382,7 @@ describe("what the sessions domain is told about inference (§5.1, §5.2)", () =
     const now = Date.now();
     for (let index = 0; index < 10; index += 1) {
       subject.record(observation(now + index * 100));
-      subject.note(SID, now + index * 100 + 50);
+      subject.note({ sid: SID, at: now + index * 100 + 50 });
     }
     // The window opened once, which is the one moment the classification can
     // change and so the one that recomputes the sessions domain.
@@ -623,7 +655,7 @@ describe("reading one posted item", () => {
     // position would restart the series' countdown from when its answer ended.
     expect(parseGatewayItem(responseEvent())).toEqual({
       kind: "response",
-      info: { sid: SID, at: NOW + 12_000 },
+      info: { sid: SID, at: NOW + 12_000, prefix: "2cf24dba", request_at: NOW },
     });
     expect(parseGatewayItem({ type: "something_new", ts: NOW, session_id: SID })).toBeUndefined();
   });
@@ -647,5 +679,150 @@ describe("reading one posted item", () => {
     expect(info).not.toHaveProperty("status");
     expect(info).not.toHaveProperty("cache_paused");
     expect(info).not.toHaveProperty("prefix");
+  });
+
+  test("the name of a promise is read beside the request, not inside it", () => {
+    // It is how two of the gateway's own notices are matched to each other, so
+    // it never reaches a client as a field of the request (§3.5).
+    const item = parseGatewayItem(requestEvent({ cache_notice: NOTICE }));
+    expect(item).toMatchObject({ kind: "request", notice: NOTICE });
+    expect((item as { info: Record<string, unknown> }).info).not.toHaveProperty("cache_notice");
+    expect(parseGatewayItem(requestEvent())).not.toHaveProperty("notice");
+  });
+
+  test("a signal and a withdrawal each name the promise they are about", () => {
+    expect(parseGatewayItem(keepaliveEvent())).toEqual({
+      kind: "keepalive",
+      info: { sid: SID, prefix: "2cf24dba", notice: NOTICE },
+    });
+    expect(parseGatewayItem(expiredEvent())).toEqual({
+      kind: "cache_expired",
+      info: { sid: SID, prefix: "2cf24dba", of: NOTICE, at: NOW + 3_600_001 },
+    });
+    // A withdrawal that names no promise withdraws nothing and could not be
+    // read as what it claims to be.
+    expect(parseGatewayItem(expiredEvent({ of: undefined }))).toBeUndefined();
+  });
+
+  test("an answer carries the verdict only an answer holds", () => {
+    expect(parseGatewayItem(responseEvent({ cache: "written" }))).toEqual({
+      kind: "response",
+      info: { sid: SID, at: NOW + 12_000, prefix: "2cf24dba", request_at: NOW, cache: "written" },
+    });
+    // A verdict outside the gateway's vocabulary is dropped rather than carried
+    // as a word nothing downstream can decide anything from.
+    const item = parseGatewayItem(responseEvent({ cache: "warmed" }));
+    expect((item as { info: Record<string, unknown> }).info).not.toHaveProperty("cache");
+  });
+});
+
+describe("the cache window as the gateway states it happened", () => {
+  /** A `LlmRequests` with what it publishes and what it says kept. */
+  function requests(): { subject: LlmRequests; last: () => LlmRequestInfo[]; said: string[] } {
+    const frames: LlmRequestInfo[][] = [];
+    const said: string[] = [];
+    const subject = new LlmRequests({
+      self: SELF,
+      publish: (_topic, data) => frames.push(data as LlmRequestInfo[]),
+      log: (msg) => said.push(msg),
+    });
+    return { subject, last: () => frames[frames.length - 1] ?? [], said };
+  }
+
+  /** The observation one promising request makes, with its own instant. A
+   * signal's return trip is the same notice carrying the gateway's verdict on
+   * it. */
+  function promised(ts: number, extra: Record<string, unknown> = {}): LlmRequestObservation {
+    const item = parseGatewayItem(requestEvent({ ts, cache_expires_at: ts + 3_600_000, ...extra }));
+    if (item?.kind !== "request") throw new Error("the request event no longer reads as one");
+    return item.info;
+  }
+
+  test("a withdrawal naming the promise that stands closes the window", () => {
+    const { subject, last } = requests();
+    const now = Date.now();
+    subject.record(promised(now), NOTICE);
+    expect(last()).toHaveLength(1);
+
+    subject.expire({ sid: SID, prefix: "2cf24dba", of: NOTICE, at: now + 1_000 });
+    // The topic carries the open windows, so a countdown reaching zero is the
+    // row leaving rather than a row stating zero.
+    expect(last()).toEqual([]);
+    expect(subject.entries(now + 2_000)).toEqual([]);
+  });
+
+  test("a withdrawal naming a promise since replaced changes nothing", () => {
+    const { subject, last } = requests();
+    const now = Date.now();
+    subject.record(promised(now), NOTICE);
+    subject.record(promised(now + 1_000), OTHER_NOTICE);
+
+    subject.expire({ sid: SID, prefix: "2cf24dba", of: NOTICE, at: now + 2_000 });
+    expect(last().map((row) => row.cache_expires_at)).toEqual([now + 1_000 + 3_600_000]);
+  });
+
+  test("a signal's name is what a later withdrawal is matched against", () => {
+    const { subject, last } = requests();
+    const now = Date.now();
+    subject.record(promised(now), NOTICE);
+    subject.noteKeepalive({ sid: SID, prefix: "2cf24dba", notice: OTHER_NOTICE });
+
+    // The request's own name has been replaced by the signal's.
+    subject.expire({ sid: SID, prefix: "2cf24dba", of: NOTICE, at: now + 1_000 });
+    expect(last()).toHaveLength(1);
+    subject.expire({ sid: SID, prefix: "2cf24dba", of: OTHER_NOTICE, at: now + 2_000 });
+    expect(last()).toEqual([]);
+  });
+
+  test("an answer that says the cache was written redraws the window from there", () => {
+    const { subject, last, said } = requests();
+    const now = Date.now();
+    // A signal's return trip, which the gateway judged came back in time.
+    subject.record(promised(now, { keepalive: "applied" }), NOTICE);
+
+    const wrote = now + 20_000;
+    subject.note({ sid: SID, prefix: "2cf24dba", at: wrote, request_at: now, cache: "written" });
+    const [row] = last();
+    // The signal extended nothing — what it was applied to was written from
+    // nothing — so the hour starts at the writing, and the disagreement
+    // between the two readings is said out loud.
+    expect(said).toEqual(["a keepalive was applied to a cache that had to be rebuilt"]);
+    expect(row?.cache_since_at).toBe(wrote);
+    expect(row?.cache_expires_at).toBe(wrote + 3_600_000);
+    // The chain the request projected was not the one continued.
+    expect(row).not.toHaveProperty("cache_until_at");
+    expect(row).not.toHaveProperty("cache_breakeven_until_at");
+    // And the promise that named the lifetime which turned out not to exist is
+    // gone with it, so its withdrawal no longer closes the redrawn window.
+    subject.expire({ sid: SID, prefix: "2cf24dba", of: NOTICE, at: wrote + 1_000 });
+    expect(last()).toHaveLength(1);
+  });
+
+  test("an answer to a request the series has replaced redraws nothing", () => {
+    const { subject, last } = requests();
+    const now = Date.now();
+    subject.record(promised(now), NOTICE);
+    subject.record(promised(now + 1_000), OTHER_NOTICE);
+
+    // The verdict belongs to the earlier request, whose window is no longer
+    // the one drawn.
+    subject.note({
+      sid: SID,
+      prefix: "2cf24dba",
+      at: now + 2_000,
+      request_at: now,
+      cache: "written",
+    });
+    expect(last().map((row) => row.cache_expires_at)).toEqual([now + 1_000 + 3_600_000]);
+  });
+
+  test("an answer that says the cache was there leaves the window alone", () => {
+    const { subject, last } = requests();
+    const now = Date.now();
+    subject.record(promised(now), NOTICE);
+    for (const cache of ["hit", "partial", "none", "unknown"] as const) {
+      subject.note({ sid: SID, prefix: "2cf24dba", at: now + 20_000, request_at: now, cache });
+    }
+    expect(last().map((row) => row.cache_expires_at)).toEqual([now + 3_600_000]);
   });
 });

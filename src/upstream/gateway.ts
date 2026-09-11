@@ -143,6 +143,7 @@ export class Gateway {
       publish: deps.publish,
       ...(deps.onActivity === undefined ? {} : { onActivity: deps.onActivity }),
       ...(deps.onMoved === undefined ? {} : { onMoved: deps.onMoved }),
+      ...(deps.log === undefined ? {} : { log: deps.log }),
     });
     this.status =
       deps.setup.statusUrl === undefined
@@ -200,10 +201,14 @@ export class Gateway {
         continue;
       }
       if (item.kind === "request") {
-        this.requests.record(item.info);
+        this.requests.record(item.info, item.notice);
         this.status?.noteRequestStatus(item.info.status);
       } else if (item.kind === "response") {
-        this.requests.note(item.info.sid, item.info.at);
+        this.requests.note(item.info);
+      } else if (item.kind === "keepalive") {
+        this.requests.noteKeepalive(item.info);
+      } else if (item.kind === "cache_expired") {
+        this.requests.expire(item.info);
       }
     }
     if (unreadable > 0) {

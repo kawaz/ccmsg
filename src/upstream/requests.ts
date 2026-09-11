@@ -1,5 +1,6 @@
 import {
   type InstanceId,
+  LLM_PROMPT_CACHE_TTL_MS,
   llmCacheWindowEndAt,
   type LlmRequestInfo,
   type Sid,
@@ -7,7 +8,12 @@ import {
 } from "@ccmsg/protocol";
 import { GATEWAY_LIVE_WINDOW_MS } from "../sessions/index.ts";
 import type { TopicValue, UpstreamResource } from "../topics/index.ts";
-import type { LlmRequestObservation } from "./events.ts";
+import type {
+  CacheExpiredObservation,
+  CacheKeepaliveObservation,
+  LlmRequestObservation,
+  LlmResponseObservation,
+} from "./events.ts";
 
 export interface LlmRequestsDeps {
   readonly self: InstanceId;
@@ -21,6 +27,7 @@ export interface LlmRequestsDeps {
    * of one row moved. Told apart from the above because what it asks for is
    * that row restated rather than the whole domain recomputed. */
   readonly onMoved?: (sid: Sid) => void;
+  readonly log?: (msg: string, fields?: Record<string, unknown>) => void;
 }
 
 /** Which of a session's gateway facts moved.
@@ -49,6 +56,10 @@ interface Series {
   /** Orders a session's series by when it started using them, which is the
    * tiebreak when it has several the sharing rule does not disqualify. */
   firstSeen: number;
+  /** The name of the lifetime this series was last promised, when the gateway
+   * named one. It is what a withdrawal is matched against, and it is held here
+   * rather than published because it means nothing outside that match. */
+  notice?: string;
 }
 
 /** What the gateway saw go upstream, per conversation series, and when each
@@ -83,7 +94,7 @@ export class LlmRequests implements UpstreamResource {
    * The newer of the two wins when a series already has one: events are
    * near-ordered in practice, but a redelivery can put an older one after a
    * newer, and a countdown must not walk backwards. */
-  record(info: LlmRequestObservation): void {
+  record(info: LlmRequestObservation, notice?: string): void {
     this.moved(info.sid, this.active(info.sid, info.received_at));
     const key = seriesKey(info.sid, info.prefix);
     const held = this.#series.get(key);
@@ -93,7 +104,14 @@ export class LlmRequests implements UpstreamResource {
     // end of the map's order, which is what makes the eviction below drop the
     // one seen least recently. `firstSeen` survives that move.
     this.#series.delete(key);
-    this.#series.set(key, { info, firstSeen: held?.firstSeen ?? ++this.#sequence });
+    // The name is replaced rather than merged: a request that promises nothing
+    // leaves the series with no promise to withdraw, which is what a request
+    // that cached nothing means.
+    this.#series.set(key, {
+      info,
+      firstSeen: held?.firstSeen ?? ++this.#sequence,
+      ...(notice === undefined ? {} : { notice }),
+    });
     while (this.#series.size > MAX_SERIES) {
       const oldest = this.#series.keys().next();
       if (oldest.done === true) break;
@@ -102,11 +120,87 @@ export class LlmRequests implements UpstreamResource {
     this.publish();
   }
 
-  /** Take one answer the gateway saw close. It moves nothing on this topic —
-   * the window belongs to the request that opened it — and only says the
-   * session was still running inference at that instant. */
-  note(sid: Sid, at: Timestamp): void {
-    this.moved(sid, this.active(sid, at));
+  /** Take one answer the gateway saw close. It says the session was still
+   * running inference at that instant, and it carries the one verdict only an
+   * answer holds: whether the cache the request counted on was there. `hit` and
+   * `partial` confirm the window the request stated, so nothing moves; `written`
+   * says that window was a promise about a cache that no longer existed. */
+  note(info: LlmResponseObservation): void {
+    this.moved(info.sid, this.active(info.sid, info.at));
+    if (info.cache === "written") this.rebuild(info);
+  }
+
+  /** A keepalive the gateway raised names the lifetime it promises. Held
+   * against the series so a withdrawal naming it can be told from one naming a
+   * promise since replaced. A series nothing is held for has no window to
+   * withdraw, so the name has nothing to attach to. */
+  noteKeepalive(info: CacheKeepaliveObservation): void {
+    const series = this.#series.get(seriesKey(info.sid, info.prefix));
+    if (series === undefined) return;
+    series.notice = info.notice;
+  }
+
+  /** The gateway withdrawing a promised lifetime by name.
+   *
+   * Only the series whose latest promise is the one named loses its window: a
+   * different name means that promise was replaced — by this gateway's next
+   * request or by another gateway watching the same series — and the window
+   * standing now is not the one being withdrawn. The window going to zero is
+   * the row leaving, since this topic carries the open ones. */
+  expire(info: CacheExpiredObservation): void {
+    const key = seriesKey(info.sid, info.prefix);
+    const series = this.#series.get(key);
+    if (series === undefined || series.notice !== info.of) return;
+    this.#series.delete(key);
+    this.publish();
+  }
+
+  /** The cache was gone and the whole prompt was written again, so the window
+   * starts at the moment of that writing rather than where the request said.
+   *
+   * The chain the request projected (`cache_until_at` and the breakeven beside
+   * it) described a chain that was not continued, so it is dropped rather than
+   * carried onto a window that begins elsewhere; the gateway states the new
+   * projection on its next event. The promise is dropped with it: it named the
+   * lifetime that just turned out not to exist. */
+  private rebuild(info: LlmResponseObservation): void {
+    const key = seriesKey(info.sid, info.prefix);
+    const series = this.#series.get(key);
+    if (series === undefined) return;
+    // The answer names the request it belongs to. A verdict about a request
+    // the series has already replaced is about a window that is no longer the
+    // one drawn, so it moves nothing.
+    const held = series.info;
+    if (
+      info.request_at === undefined
+        ? held.received_at > info.at
+        : info.request_at !== held.received_at
+    ) {
+      return;
+    }
+    // The gateway judged the signal applied because it came back in time; the
+    // answer says what it was applied to was written from nothing. Said out
+    // loud because it is the one case where those two readings disagree.
+    if (held.keepalive === "applied") {
+      this.deps.log?.("a keepalive was applied to a cache that had to be rebuilt", {
+        sid: info.sid,
+        ...(info.prefix === undefined ? {} : { prefix: info.prefix }),
+      });
+    }
+    const {
+      cache_until_at: _until,
+      cache_until_count: _untilCount,
+      cache_breakeven_until_at: _breakeven,
+      cache_breakeven_count: _breakevenCount,
+      ...rest
+    } = held;
+    const ttl =
+      rest.cache_ttl_secs === undefined ? LLM_PROMPT_CACHE_TTL_MS : rest.cache_ttl_secs * 1000;
+    this.#series.set(key, {
+      firstSeen: series.firstSeen,
+      info: { ...rest, cache_since_at: info.at, cache_expires_at: info.at + ttl },
+    });
+    this.publish();
   }
 
   /** Tell whoever holds the row what this event moved for that session. */

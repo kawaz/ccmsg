@@ -9,10 +9,49 @@ import type { LlmRequestInfo, Sid, Timestamp } from "@ccmsg/protocol";
  * nothing about which instance received it. */
 export type LlmRequestObservation = Omit<LlmRequestInfo, "main" | "instance">;
 
-/** An answer the gateway saw close. Only the two fields the sessions domain
- * reads: it says inference for that session has stopped running, and when. */
+/** How the prompt cache actually worked for one request, as the gateway read it
+ * off the answer's usage. The gateway's own closed vocabulary: a word outside
+ * it is dropped rather than carried, so nothing downstream has to decide what
+ * an unknown verdict means for a countdown. */
+export type CacheResult = "hit" | "written" | "partial" | "none" | "unknown";
+
+const CACHE_RESULTS: readonly CacheResult[] = ["hit", "written", "partial", "none", "unknown"];
+
+function cacheResultOf(value: unknown): CacheResult | undefined {
+  return CACHE_RESULTS.find((result) => result === value);
+}
+
+/** An answer the gateway saw close. It says inference for that session has
+ * stopped running and when, and it carries the one thing only an answer knows:
+ * whether the cache the request counted on was actually there. That verdict
+ * belongs to a series, so the series is named too. */
 export interface LlmResponseObservation {
   readonly sid: Sid;
+  readonly at: Timestamp;
+  readonly prefix?: string;
+  readonly cache?: CacheResult;
+  /** The instant of the request this is the answer to. A series has several
+   * requests in flight, so it is what says which of them this verdict is
+   * about. */
+  readonly request_at?: Timestamp;
+}
+
+/** A keepalive the gateway raised into a conversation. Nothing here replays it;
+ * what is read is the name of the promise it carries, so a later withdrawal can
+ * be matched against it. On this notice the name is the signal's own `nonce`. */
+export interface CacheKeepaliveObservation {
+  readonly sid: Sid;
+  readonly prefix?: string;
+  readonly notice: string;
+}
+
+/** The gateway withdrawing a promised lifetime by name. `of` names one promise
+ * and only that one: a series whose latest promise is a different name has been
+ * extended by someone else since, and this notice says nothing about it. */
+export interface CacheExpiredObservation {
+  readonly sid: Sid;
+  readonly prefix?: string;
+  readonly of: string;
   readonly at: Timestamp;
 }
 
@@ -23,15 +62,25 @@ export interface LlmResponseObservation {
  * difference is the whole value of the log line: a batch of ignorable items is
  * the gateway working, a batch of unreadable ones is a schema that moved. */
 export type GatewayItem =
-  | { readonly kind: "request"; readonly info: LlmRequestObservation }
+  | {
+      readonly kind: "request";
+      readonly info: LlmRequestObservation;
+      /** The name of the lifetime this request promised, when it promised one.
+       * Kept beside the observation rather than inside it: it is how two
+       * notices of the gateway's are matched to each other, and nothing a
+       * client reads (§3.5). */
+      readonly notice?: string;
+    }
   | { readonly kind: "response"; readonly info: LlmResponseObservation }
+  | { readonly kind: "keepalive"; readonly info: CacheKeepaliveObservation }
+  | { readonly kind: "cache_expired"; readonly info: CacheExpiredObservation }
   | { readonly kind: "ignored" };
 
-/** Kinds the gateway posts beside the two above: a keepalive it wants replayed
- * into a session, and its keepalive strategy being held off for one. Neither
- * is read here. They are named rather than reached as "not a request", so a
- * kind the gateway grows still arrives as unreadable and shows up in the log. */
-const IGNORED = new Set(["cache_keepalive", "keepalive_paused"]);
+/** A kind the gateway posts that nothing here reads: its keepalive strategy
+ * being held off for a session. It is named rather than reached as "not a
+ * request", so a kind the gateway grows still arrives as unreadable and shows
+ * up in the log. */
+const IGNORED = new Set(["keepalive_paused"]);
 
 /** The fields whose name is the same on both sides, and whose value is already
  * this contract's unit — a count of seconds, or an instant in Unix ms. */
@@ -76,13 +125,54 @@ export function parseGatewayItem(value: unknown): GatewayItem | undefined {
     const info = responseOf(raw);
     return info === undefined ? undefined : { kind: "response", info };
   }
+  if (kind === "cache_keepalive") {
+    const info = keepaliveOf(raw);
+    // A signal that named no promise is still the gateway working: it is the
+    // notice this instance has nothing to match later, not one it misread.
+    return info === undefined ? { kind: "ignored" } : { kind: "keepalive", info };
+  }
+  if (kind === "cache_expired") {
+    const info = expiredOf(raw);
+    return info === undefined ? undefined : { kind: "cache_expired", info };
+  }
   // The forwarding notice is the one kind that carries no mark, because it
   // existed before the others did. So it is a request by position, and only
   // when it names no kind at all: an item that names one and is not handled
   // above must not be read as a request whose fields happen to line up.
   if (kind !== undefined) return undefined;
   const info = requestOf(raw);
-  return info === undefined ? undefined : { kind: "request", info };
+  if (info === undefined) return undefined;
+  const notice = raw["cache_notice"];
+  return {
+    kind: "request",
+    info,
+    ...(typeof notice === "string" && notice !== "" ? { notice } : {}),
+  };
+}
+
+function keepaliveOf(raw: Record<string, unknown>): CacheKeepaliveObservation | undefined {
+  const sid = raw["session_id"];
+  // On this notice the promise's name and the signal's own password are the
+  // same value, stated under either field, so both are read as the one name.
+  const notice = raw["cache_notice"] ?? raw["nonce"];
+  if (typeof sid !== "string" || sid === "") return undefined;
+  if (typeof notice !== "string" || notice === "") return undefined;
+  return { sid, notice, ...seriesOf(raw) };
+}
+
+function expiredOf(raw: Record<string, unknown>): CacheExpiredObservation | undefined {
+  const at = raw["ts"];
+  const sid = raw["session_id"];
+  const of = raw["of"];
+  if (!isInstant(at) || typeof sid !== "string" || sid === "") return undefined;
+  if (typeof of !== "string" || of === "") return undefined;
+  return { sid, of, at, ...seriesOf(raw) };
+}
+
+/** The series half of a key, when the notice names one. */
+function seriesOf(raw: Record<string, unknown>): { prefix?: string } {
+  const prefix = raw["prefix"];
+  return typeof prefix === "string" && prefix !== "" ? { prefix } : {};
 }
 
 function requestOf(raw: Record<string, unknown>): LlmRequestObservation | undefined {
@@ -115,7 +205,15 @@ function responseOf(raw: Record<string, unknown>): LlmResponseObservation | unde
   const at = raw["ts"];
   const sid = raw["session_id"];
   if (!isInstant(at) || typeof sid !== "string" || sid === "") return undefined;
-  return { sid, at };
+  const cache = cacheResultOf(raw["cache"]);
+  const requestAt = raw["request_ts"];
+  return {
+    sid,
+    at,
+    ...seriesOf(raw),
+    ...(cache === undefined ? {} : { cache }),
+    ...(isInstant(requestAt) ? { request_at: requestAt } : {}),
+  };
 }
 
 /** A number that can be an instant on this wire. Rejecting a non-number is
