@@ -171,13 +171,15 @@ wire 上は `type:"user"` / `type:"assistant"` / `type:"attachment"` に化け�
 
 ### `message.sub.out` / `message.sub.in`
 
-別アイテムだが、`result_item` が指す先を 1 段インデントで子として寄せて描く。答えが来ていなければ (dump の範囲外を含む) use 側だけが出る。
+別アイテムで、それぞれ自分の時刻に並ぶ。worker の答えは数分後に来るのが普通なので、指示の下に寄せると後の瞬間が前の瞬間の途中に挿し込まれることになる。対応は id で辿る (out 側が `→`、in 側が `←`)。答えが来ていなければ (dump の範囲外を含む) use 側だけが出る。
 
 ```
 [b7e41d09] message.sub.out  agent=a471372f2 type=opus5-worker-high  → c2d80f16  10:15:11
   docs/design/dump-kinds.md を書き直す。範囲は csa と同じ since / until。
-  [c2d80f16] message.sub.in  agent=a471372f2 status=ok 4m12s  10:19:23
-    型一覧を 4 群 (message / thinking / tool / notice) に整理しました。
+[ffffffff] thinking  10:17:40
+  待つ間に INDEX を眺める。
+[c2d80f16] message.sub.in  ← b7e41d09  agent=a471372f2 status=ok 4m12s  10:19:23
+  型一覧を 4 群 (message / thinking / tool / notice) に整理しました。
 
 [f04b71c8] message.sub.out  agent=b83e0f114 type=sonnet5-worker-medium  (未着)  10:41:03
   INDEX の再生成だけやって。

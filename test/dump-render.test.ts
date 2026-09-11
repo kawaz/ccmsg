@@ -157,7 +157,7 @@ describe("a call and what came back", () => {
   $ wc -l < f`);
   });
 
-  test("an agent's answer is drawn under the brief, however far apart they are", () => {
+  test("an agent's answer stands at its own moment and points back at the brief", () => {
     const brief = item("b7e41d09", "message.sub.out", {
       role: "use",
       tool_use_id: "t1",
@@ -176,17 +176,21 @@ describe("a call and what came back", () => {
       duration_ms: 252_000,
       text: "4 群に整理しました。",
     });
+    // An agent answers minutes later, so its answer is a later moment: drawn
+    // where it arrived, after what happened in between, pointing back at what
+    // asked for it. The brief points forward at it by id.
     expect(drawn(brief, between, back))
       .toBe(`[b7e41d09:0] message.sub.out  agent=a471372f2  type=opus5-worker-high  → c2d80f16:0  00:01:02
   docs を書き直す。
-  [c2d80f16:0] message.sub.in  agent=a471372f2  status=ok  4m12s  00:01:02
-    4 群に整理しました。
 
 [ffffffff:0] thinking  00:01:02
-  待つ`);
+  待つ
+
+[c2d80f16:0] message.sub.in  ← b7e41d09:0  agent=a471372f2  status=ok  4m12s  00:01:02
+  4 群に整理しました。`);
   });
 
-  test("a teammate's run ends under the call that started it, and its letters stand alone", () => {
+  test("a teammate's letters and the end of its run each stand where they arrived", () => {
     const start = item("c8a2f371", "message.team.out", {
       role: "use",
       tool_use_id: "t9",
@@ -207,16 +211,18 @@ describe("a call and what came back", () => {
       duration_ms: 240_000,
       text: "1.17.0 を切った。",
     });
-    // The letter is its own message and stands where it arrived; only the run
-    // ending answers anything, and that is drawn under what asked for it.
+    // The letter arrived before the run ended, and the page says so: what a
+    // reader follows is the order things happened in, and the two halves of
+    // the exchange find each other by id.
     expect(drawn(start, letter, done))
       .toBe(`[c8a2f371:0] message.team.out  to=contract-dump-items  type=opus5-worker-high  → d4c1a0b2:0  00:01:02
   契約に 2 型を足して。
-  [d4c1a0b2:0] message.team.in  status=ok  4m00s  00:01:02
-    1.17.0 を切った。
 
 [e5b70c93:0] message.team.in  from=contract-dump-items  00:01:02
-  fixtures まで通った。`);
+  fixtures まで通った。
+
+[d4c1a0b2:0] message.team.in  ← c8a2f371:0  status=ok  4m00s  00:01:02
+  1.17.0 を切った。`);
   });
 
   test("what the one above said and what was said back to it", () => {
@@ -300,9 +306,11 @@ describe("a call and what came back", () => {
       text: "書き直しました。",
     });
     const page = drawn(call, brief, back);
-    // Under the brief, indented as an agent's answer is, and the tool call is
-    // left standing with nothing back.
-    expect(page).toContain("  [s2:0] message.sub.in  00:01:02");
+    // It came back with nothing in between, so it reads as one exchange: the
+    // brief keeps the heading and the answer's words follow it. The tool call
+    // is left standing with nothing back.
+    expect(page).toContain("[s1:0] message.sub.out  (未着)");
+    expect(page).toContain("書き直しました。");
     expect(page).toContain("[s1:0] tool.Agent  (未着)");
   });
 });

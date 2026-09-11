@@ -83,31 +83,14 @@ function heading(file: SessionDumpFile, view: DumpView): string[] {
 function draw(item: Item, child: Item | undefined, view: DumpView, parent?: string): string[] {
   const own = fragment(item);
   const answer = child === undefined ? undefined : fragment(child);
-  const nested = child !== undefined && spoken(child.type);
   const link = isResult(item)
     ? arrow("←", parent)
     : (arrow("→", fields(item)["result_item"]) ?? waiting(item));
   const head = isResult(item)
     ? words(prefix(item), link, own.head, clock(item))
-    : words(
-        prefix(item),
-        own.head,
-        link,
-        nested || answer === undefined ? undefined : answer.head,
-        clock(item),
-      );
-  const under = [
-    ...body(own.body, view),
-    ...(answer === undefined || nested ? [] : body(answer.body, view)),
-  ];
-  const lines = [head, ...under.map((line) => `${INDENT}${line}`)];
-  if (!nested || child === undefined || answer === undefined) return lines;
-  // The agent's answer, under the brief that asked for it. It keeps a heading
-  // of its own — it has its own instant, and often a status the brief could
-  // not have known — and is indented to say whose answer it is.
-  lines.push(`${INDENT}${words(prefix(child), answer.head, clock(child))}`);
-  for (const line of body(answer.body, view)) lines.push(`${INDENT}${INDENT}${line}`);
-  return lines;
+    : words(prefix(item), own.head, link, answer?.head, clock(item));
+  const under = [...body(own.body, view), ...(answer === undefined ? [] : body(answer.body, view))];
+  return [head, ...under.map((line) => `${INDENT}${line}`)];
 }
 
 /** `[id] type`, which is how an item is pointed at: the id is what the links
@@ -238,9 +221,11 @@ function pair(items: readonly Item[]): {
     const call = where.get(to);
     if (call === undefined) continue;
     // A pair the reader would have to scroll between is left where each half
-    // happened, unless it is an agent's: what an agent was asked and what it
-    // answered are one exchange whatever fell between them.
-    if (!spoken(item.type) && call !== at - 1) continue;
+    // happened. What is being read is a run of moments in the order they
+    // happened, and an answer that arrived minutes later — which is the usual
+    // case for an agent — would put a later moment in the middle of an earlier
+    // one. The two halves point at each other by id instead.
+    if (call !== at - 1) continue;
     child.set(call, at);
     folded.add(at);
   }
@@ -254,13 +239,4 @@ function pair(items: readonly Item[]): {
  * not say which. */
 function joined(item: Item, key: string): string {
   return `${item.type.startsWith("message.") ? "message" : "tool"}\n${key}`;
-}
-
-/** Whether an item is the conversation half of starting an agent, as opposed
- * to the call's own half. What was asked and what came back is one exchange
- * however many turns fell between them, so these are drawn together wherever
- * they ended up — a conversation split across the page is one nobody can
- * follow. */
-function spoken(type: string): boolean {
-  return type.startsWith("message.sub") || type.startsWith("message.team");
 }

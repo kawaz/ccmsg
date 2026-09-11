@@ -407,7 +407,8 @@ subject, the instance, the selection and the bounds, and followed by the `ids` l
 type name and whatever fields they carried, since a drawing sharpens how a type reads and never
 decides whether it is kept. Whether a call and its answer are folded into one is **decided
 here** — touching, they are folded under `→`; apart, the answer is drawn where it arrived under
-`←`; an agent's answer alone is drawn under the brief however many turns separate them.
+`←`. What a reader follows is the order things happened in, so an answer that came back later —
+an agent answers minutes afterwards — is a later moment and is drawn as one.
 The id on a heading is the short form of `id` rather than of the record, so a heading names the
 same thing an arrow points at.
 
