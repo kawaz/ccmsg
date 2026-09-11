@@ -3,7 +3,9 @@
 Status: Accepted (2026-09-09。骨子は kawaz 裁定 r292 m10〜m19、細部は統括判断。fable5-high の監査所見 C1〜C3 / M1〜M8 を反映)
 Date: 2026-09-09
 Sponsor: kawaz r292m10 (2026-09-09)「認証は passkey を使うのを基本にしたい」「登録はリモートではなくローカルから」、r292m18「引っ越しを考えると id は固定、iss は変更可能」
-関連: 設計 §3.1 (入口の許可)、§7 (mesh)、§8.2 (config)、§9 (責務外)、`docs/issue/2026-09-09-mesh-tls-trust-root.md`
+関連: 設計 §3 (認証と入口)、§7 (mesh)、§8.2 (設定)、§8.6 (責務外)、`docs/issue/2026-09-09-mesh-tls-trust-root.md`
+
+> §2.7 の「自分の endpoint は probe で確定する」は [DR-0004](DR-0004-config-edited-and-applied.md) §2.4 に置き換わった (設定のエンドポイント一覧のうち自分の id を持つ行が自分の endpoint)。本 DR の他の判断は現役。
 
 ## 1. 背景
 
