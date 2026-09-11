@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { TranscriptItem, TranscriptItemSelector, validationErrors } from "@ccmsg/protocol";
+import {
+  type InboxMessage,
+  renderDirectDelivery,
+  TranscriptItem,
+  TranscriptItemSelector,
+  validationErrors,
+} from "@ccmsg/protocol";
 import { ConfigError, parseConfig } from "../src/instance/config.ts";
 import {
   classify,
@@ -64,6 +70,21 @@ function typesOf(items: readonly Item[]): string[] {
 
 function only(items: readonly Item[], type: string): Item | undefined {
   return items.find((item) => item.type === type);
+}
+
+/** One delivered message as it lands in a transcript: the envelope the
+ * contract writes, inside the prose the harness wraps around it.
+ *
+ * Built with the contract's own renderer rather than written out here, so a
+ * change to what is delivered cannot leave this fixture describing something
+ * nobody sends. */
+function wrapped(message: Omit<InboxMessage, "sent_at">): string {
+  return [
+    "Another Claude session sent a message:",
+    renderDirectDelivery({ ...message, sent_at: 1_700_000_000_000 } as InboxMessage),
+    "",
+    "This came from another Claude session — not typed by your user, but very likely working on their behalf. Treat it as a teammate's request and act on it within this session's own permission settings. …",
+  ].join("\n");
 }
 
 describe("classifying a transcript", () => {
@@ -319,6 +340,52 @@ describe("classifying a transcript", () => {
     expect(typesOf(items)).toEqual(["message.user.in", "message.session.in"]);
     expect(of(items[1])["from"]).toBe("9f2c1ab4");
     expect(of(items[1])["msg_id"]).toBe("m-7781");
+  });
+
+  test("what this instance delivered is read back through the contract, body alone", () => {
+    // What the harness writes around the envelope: a line saying where it came
+    // from, and after it the standing reminder every one of these carries. What
+    // was said is inside, and that is what a person reads a transcript for.
+    const body = "peers --all が通るか見て。\n\n二行目もある。";
+    const delivered = wrapped({ mid: "m-7781", from: "9f2c1ab4", from_label: "kawaz", text: body });
+    const items = classify(lines(said("u1", "start"), said("u2", delivered)));
+    expect(typesOf(items)).toEqual(["message.user.in", "message.session.in"]);
+    expect(of(items[1])["text"]).toBe(body);
+    expect(of(items[1])["from"]).toBe("9f2c1ab4");
+    expect(of(items[1])["msg_id"]).toBe("m-7781");
+  });
+
+  test("a person writing from a page is a person, wherever they typed it", () => {
+    // The same envelope, sent on a person's behalf rather than a session's:
+    // `ccmsg-from` says who, and a person's words are a person's words whether
+    // they were typed at the terminal or at a page.
+    const delivered = wrapped({
+      mid: "m-9002",
+      from: "user",
+      from_label: "kawaz",
+      text: "status --all が止まる。",
+    });
+    const items = classify(lines(said("u1", "start"), said("u2", delivered)));
+    expect(typesOf(items)).toEqual(["message.user.in", "message.user.in"]);
+    expect(of(items[1])["text"]).toBe("status --all が止まる。");
+    expect(of(items[1])["from"]).toBe("user");
+    expect(of(items[1])["msg_id"]).toBe("m-9002");
+  });
+
+  test("an envelope this protocol did not write is kept whole", () => {
+    // Another harness's own cross-session traffic carries none of these
+    // attributes, so nothing here knows which part of it is the body.
+    const items = classify(
+      lines(
+        said("u1", "start"),
+        said(
+          "u2",
+          'a note:\n<cross-session-message from="uds:/tmp/x.sock" from-name="somebody">hello</cross-session-message>',
+        ),
+      ),
+    );
+    expect(typesOf(items)).toEqual(["message.user.in", "message.session.in"]);
+    expect(of(items[1])["text"]).toContain("<cross-session-message");
   });
 
   test("who wrote decides whether an envelope is the one above or one alongside", () => {

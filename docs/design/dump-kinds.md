@@ -16,7 +16,7 @@ dump は transcript の行をそのまま並べるのではなく、**アイテ�
 
 | 型 | 意味 (主語相対) | jsonl 上の抽出 | webui の単位 | csa |
 |---|---|---|---|---|
-| `message.user.in` | 人 → 主語 の発言 | `type:"user"` かつ下記 `notice` / `system` のどれでもない素の行。`content` が string、または text / image ブロックのみの配列 | `UserMessageKind` = `user-prompt` / `slash-command-prompt` | `U` |
+| `message.user.in` | 人 → 主語 の発言 | `type:"user"` かつ下記 `notice` / `system` のどれでもない素の行 (`content` が string、または text / image ブロックのみの配列)、および `ccmsg-from="user"` の直送封筒 (本文だけを持つ) | `UserMessageKind` = `user-prompt` / `slash-command-prompt` | `U` |
 | `message.user.out` | 主語 → 人 への応答 | `type:"assistant"` の `content[].type=="text"` | `Segment` = `text` (role: assistant) | `R` |
 | `message.parent.in` | 親 → 主語 の指示 | worker transcript 先頭の user 行 (`parentUuid` が `null`)、および `<teammate-message …>` 封筒のうち送り手が lead のもの | (未) | `U` |
 | `message.parent.out` | 主語 → 親 への送信・回答 | `name=="SendMessage"` で `to` が `"main"` / `"team-lead"` のもの、および worker の assistant text (末尾が最終回答、途中も同型) | (未) | `R` |
@@ -25,7 +25,7 @@ dump は transcript の行をそのまま並べるのではなく、**アイテ�
 | `message.team.out` | 主語 → teammate の送信 | `name=="Agent"` の tool_use で `name` / `team` 引数を持つもの (= teammate の起動)、および `name=="SendMessage"` で宛先が teammate 名のもの | `agent-send` | `A` |
 | `message.team.in` | teammate → 主語 の受信 | `<teammate-message …>` 封筒のうち送り手が teammate のもの。起動した teammate の完了は `<subagent>` 付き task-notification | `IncomingMessage` | `I` |
 | `message.session.out` | 主語 → 他セッション | `tool_use` `name=="Bash"` の `command` が `ccmsg post` / `ccmsg reply`、および `name=="SendMessage"` で宛先が sid のもの | `SessionReply` | (なし) |
-| `message.session.in` | 他セッション → 主語 | user 行の本文に含まれる `<cross-session-message …>` 封筒 | `IncomingMessage` (`extractIncomingMessages`) | `I` |
+| `message.session.in` | 他セッション → 主語 | user 行の本文に含まれる `<cross-session-message …>` 封筒。この instance が配った物 (`ccmsg-mid` / `ccmsg-from` を持つ) は契約の `parseDirectDelivery` で剥がして本文だけを持ち、`ccmsg-from` が sid の時がこの型 (`user` なら `message.user.in`)。属性を持たない封筒は丸ごと持つ | `IncomingMessage` (`extractIncomingMessages`) | `I` |
 
 実名 (`main` / `team-lead` / teammate 名) はアイテムの `harness_name` に残す。型が言うのは関係で、綴りは相手の名前になる。
 

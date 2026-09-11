@@ -1,4 +1,10 @@
-import type { TranscriptSubject } from "@ccmsg/protocol";
+import {
+  DIRECT_DELIVERY_TAG,
+  type DirectDelivery,
+  parseDirectDelivery,
+  type TranscriptSubject,
+  USER_SENDER,
+} from "@ccmsg/protocol";
 import type { Item } from "./item.ts";
 import {
   count,
@@ -20,7 +26,7 @@ import { genericResult, resultFields, useFields } from "./tools.ts";
  *
  * The contract writes down the type names and what an item of each type
  * carries, and says nothing about the file: the file is the harness's own, it
- * changes without asking, and reading it is this instance's work (§3.8). So
+ * changes without asking, and reading it is this instance's work (DESIGN §4.1). So
  * everything that knows what a line looks like is here, and what leaves is
  * only ever an item.
  *
@@ -126,7 +132,7 @@ export class Classification {
    *
    * It is told rather than read out of the records, because what tells a
    * teammate from an errand is not in the transcript at all: the harness states
-   * it beside the file, and whoever opened the file has already read that (§3.6).
+   * it beside the file, and whoever opened the file has already read that (DESIGN §2.5).
    *
    * A record marked as a sidechain inside a file opened as a session's own says
    * the file is an agent's after all, and the reading moves to `sub` — the
@@ -490,11 +496,7 @@ export class Classification {
       return;
     }
     if (said.includes("<cross-session-message")) {
-      make("message.session.in", {
-        text: said,
-        ...optional("from", attribute(said, "from")),
-        ...optional("msg_id", attribute(said, "mid")),
-      });
+      delivered(said, make);
       return;
     }
     if (said.includes("<teammate-message")) {
@@ -588,6 +590,52 @@ function envelope(said: string): Record<string, unknown> {
     ...optional("harness_name", attribute(said, "teammate_id")),
     ...optional("msg_id", attribute(said, "mid")),
   };
+}
+
+/** What arrived in the envelope another session's message comes in.
+ *
+ * The harness writes prose around it — a line saying where it came from, and
+ * after it a standing reminder about messages from elsewhere — and both are
+ * the same on every one of these. What a person reads a transcript for is what
+ * was said, so the item carries the body alone and the envelope's own
+ * attributes say who said it.
+ *
+ * Who that is settles the type. A message this instance delivered on somebody's
+ * behalf names them: `user` is a person typing at a page, and their words are
+ * the same thing as words typed at the terminal (`message.user.in`). A sid is
+ * another session, which is a correspondent rather than the subject's own
+ * person (`message.session.in`). An envelope from somewhere else entirely —
+ * another harness's own cross-session traffic, which carries none of this
+ * protocol's attributes — is a session's message and is kept whole, since
+ * nothing here knows which part of it is the body. */
+function delivered(said: string, make: Make): void {
+  const parsed = envelopeOf(said);
+  if (parsed === undefined) {
+    make("message.session.in", {
+      text: said,
+      ...optional("from", attribute(said, "from")),
+      ...optional("msg_id", attribute(said, "mid")),
+    });
+    return;
+  }
+  make(parsed.from === USER_SENDER ? "message.user.in" : "message.session.in", {
+    text: parsed.text,
+    from: parsed.from,
+    msg_id: parsed.mid,
+  });
+}
+
+/** The envelope out of whatever the harness wrapped around it.
+ *
+ * The contract reads one that starts where the text does, so the text is cut
+ * to it first: the tag opens it and the last closing tag ends it, which is the
+ * same rule the contract uses to let a body contain one. */
+function envelopeOf(said: string): DirectDelivery | undefined {
+  const open = said.indexOf(`<${DIRECT_DELIVERY_TAG}`);
+  if (open < 0) return undefined;
+  const close = said.lastIndexOf(`</${DIRECT_DELIVERY_TAG}>`);
+  if (close < open) return undefined;
+  return parseDirectDelivery(said.slice(open, close + `</${DIRECT_DELIVERY_TAG}>`.length));
 }
 
 /** The type an agent's answer arrives under, which is the other half of
