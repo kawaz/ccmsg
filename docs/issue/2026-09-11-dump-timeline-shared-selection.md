@@ -21,7 +21,7 @@ origin: 自リポ TODO
 
 ## 概要
 
-dump と timeline (webui の TL) は「型の階層で item を選ぶ」設計を共有している (kawaz r303m5、2026-09-11)。
+dump と timeline (webui の TL) は「型の階層で item を選ぶ」設計を共有している (kawaz 2026-09-11)。
 
 方針:
 

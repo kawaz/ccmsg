@@ -21,7 +21,7 @@ origin: 自リポ TODO
 
 ## 概要
 
-`dump` の出力形式を 3 つにする (kawaz r303 m3/m4、2026-09-11):
+`dump` の出力形式を 3 つにする (kawaz 2026-09-11):
 
 1. **item JSON** — 現行 `--json`。契約の型付き item をそのまま出す
 2. **元 jsonl の型 grep** — ccmsg の分類 (`--types` / preset) で選んだ item に対応する、元の transcript record をそのまま jsonl で出す。claude jsonl を読める外部ツールに「分類だけ」貸す用途
