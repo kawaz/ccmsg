@@ -32,7 +32,6 @@ wire の契約は [kawaz/ccmsg-protocol](https://github.com/kawaz/ccmsg-protocol
 | 2026-09-10 | task | open | [design-doc-reflow-after-v2-settles](./2026-09-10-design-doc-reflow-after-v2-settles.md) | `docs/DESIGN-ja.md` / `docs/DESIGN.md` (と契約リポの DESIGN、README-ja) は v2 の構築中に節を足し続… |
 | 2026-09-09 | design | open | [sandbox-grant-delivery-path](./2026-09-09-sandbox-grant-delivery-path.md) | sandbox_grant は capability URL を発行するが、`SandboxGrants.find` の呼び... |
 | 2026-09-11 | design | pending-sublimation | [multiple-clusters-per-host](./2026-09-11-multiple-clusters-per-host.md) | kawaz の想定 (2026-09-11 r303m11): 1 ホストに複数クラスタ (本人 / 家族 / ホームエージェント等)… |
-| 2026-09-11 | design | pending-sublimation | [auth-records-per-cluster-store](./2026-09-11-auth-records-per-cluster-store.md) | passkey / token family の保管は instance ごとのまま、iss/sub/aud に cluster を含めて複製・検証を cluster… |
 
 <!--
 INDEX の列構成・canonical 順序・行形式の唯一の正本:
