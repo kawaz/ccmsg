@@ -1,6 +1,6 @@
 ---
 title: gateway cache リングを「見込み」でなく実態 (cache_notice/cache_expired/cache) に同期
-status: wip
+status: resolved
 category: request
 created: 2026-09-10T20:13:15+09:00
 last_read: 2026-09-11T13:00:46+09:00
@@ -9,10 +9,10 @@ wip_entered: 2026-09-11T13:02:23+09:00
 blocked_entered:
 pending_entered:
 discarded_entered:
-resolved_entered:
+resolved_entered: 2026-09-11T13:14:45+09:00
 discard_reason:
 pending_reason:
-close_reason:
+close_reason: ["done: v0.9.1 で実装 (src/upstream/{events,gateway,requests}.ts): cache_notice を (sid, prefix) ごとに保持、cache_expired.of が一致した時だけ窓を落とす、response の cache=written で応答時刻起点の新しい窓に引き直す、保持中 request の keepalive=applied と応答の written を request_ts で突き合わせて再構築として扱う (response event に keepalive 欄は無い、gateway events.rs で確認)。実 event: 11301/11302 で request 70 本全てに cache_notice、response に cache (partial 68 / written 1) を観測し written の実物で窓の引き直しを確認。cache_expired と applied+written の組み合わせは実 event 未観測 (テストと gateway 側の期待 JSON で裏取り)。本番は v0.9.1 で稼働中"]
 blocked_by:
 origin: llm-gateway
 ---
