@@ -1,11 +1,11 @@
 ---
 title: design-doc-reflow-after-v2-settles
-status: open
+status: wip
 category: task
 created: 2026-09-10T14:35:49+09:00
 last_read:
 open_entered: 2026-09-10T14:35:49+09:00
-wip_entered:
+wip_entered: 2026-09-12T06:54:40+09:00
 blocked_entered:
 pending_entered:
 discarded_entered:
