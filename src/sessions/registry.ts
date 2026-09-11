@@ -227,6 +227,18 @@ export class Sessions implements UpstreamResource {
         ? undefined
         : new TerminalCache(deps.terminals, () => this.changed());
     this.#live = this.#liveNow(Date.now(), this.#own());
+    this.#reclaim(this.#live);
+  }
+
+  /** Drop the `last_live` entry of every session that is live, which is what
+   * keeps one session off both lists.
+   *
+   * Registering is one way a session comes back and is handled where it
+   * happens; the harness naming it again is the other, and it is the only one
+   * on a restart — nothing greets a daemon that was not there when the session
+   * started. */
+  #reclaim(live: ReadonlyMap<Sid, StoredEntry>): void {
+    for (const sid of live.keys()) this.#lastLive.remove(sid);
   }
 
   /** `hello`, which is where a session becomes something this instance can
@@ -483,9 +495,15 @@ export class Sessions implements UpstreamResource {
     return this.#harness.running;
   }
 
-  /** The `peers` payload: what is connected now, and what was connected when
-   * this instance last saw it. Both travel together because registering is
-   * exactly what moves a session from the second list to the first.
+  /** The `peers` payload: what is live now, and what was live when this
+   * instance last saw it. Both travel together because coming back is exactly
+   * what moves a session from the second list to the first.
+   *
+   * Live is not the same as connected (§5.2). A session the harness names is
+   * live whether or not it ever greeted us, and it has to be on this list for
+   * the same reason it is classified at all: a restart forgets every greeting,
+   * and a list that showed only what had greeted this daemon would show a host
+   * full of running sessions as empty.
    *
    * Every row states its `state` and its `pinned`. The contract lets an
    * instance leave them out, and a client then shows a session it cannot group
@@ -504,7 +522,12 @@ export class Sessions implements UpstreamResource {
   ): { peers: PeerInfo[]; last_live: LastLiveSession[]; instances?: InstanceInfo[] } {
     const instances = this.deps.mesh?.instances();
     return {
-      peers: [...this.#connected.values()].map((session) => this.#peer(session, now, own)),
+      peers: [
+        ...[...this.#connected.values()].map((session) => this.#peer(session, now, own)),
+        ...[...own.present]
+          .filter((sid) => !this.#connected.has(sid))
+          .map((sid) => this.#unconnected(sid, now, own)),
+      ],
       last_live: this.#lastLive.entries(now).map((entry) => ({
         ...entry,
         state: this.classify(entry.sid, now, own) ?? "disappeared",
@@ -597,6 +620,7 @@ export class Sessions implements UpstreamResource {
       // comes back says them again.
       this.#stated.delete(sid);
     }
+    this.#reclaim(live);
     this.#live = live;
     this.deps.publish("peers", this.peers(now, own));
     this.deps.publish("agents", this.agents(own));
@@ -658,6 +682,36 @@ export class Sessions implements UpstreamResource {
       ...(gatewayActiveAt === undefined ? {} : { gateway_active_at: gatewayActiveAt }),
       ...(session.client_version === undefined ? {} : { client_version: session.client_version }),
       protocol_version: session.protocol_version,
+    };
+  }
+
+  /** A session the harness names that holds no connection here (§5.1).
+   *
+   * It is on the same list as the connected ones because it is live in the same
+   * sense: the classification is what separates them, and a client groups on
+   * that field alone (§5.2). What it cannot carry is everything a greeting
+   * states — the session never said where it works, so the working directory
+   * comes from the harness's own row and the display names it does not know are
+   * simply absent.
+   *
+   * The connection fields go with the connection: `connected_at`,
+   * `last_activity_at` and the client's build and generation are things about a
+   * client of this session, and there is none. */
+  #unconnected(sid: Sid, now: Timestamp, own: Own): PeerInfo {
+    const row = own.rows.get(sid);
+    const userInput = this.deps.transcript?.facts(sid).last_user_input_at;
+    const gatewayActiveAt = this.#gatewayActiveAt(sid, true);
+    return {
+      sid,
+      instance: this.deps.self,
+      // The harness knows a title for a session that stated none itself, and
+      // what the session said about itself overrides it.
+      ...(row?.name === undefined ? {} : { title: row.name }),
+      ...this.#where(sid, own),
+      state: this.classify(sid, now, own) ?? "live",
+      pinned: this.#pinned(sid),
+      ...(userInput === undefined ? {} : { last_user_input_at: userInput }),
+      ...(gatewayActiveAt === undefined ? {} : { gateway_active_at: gatewayActiveAt }),
     };
   }
 

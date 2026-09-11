@@ -542,7 +542,14 @@ describe("the hooks against a running instance", () => {
   }
 
   interface Peers {
-    peers: { sid: string; repo?: string; ws?: string; cwd?: string }[];
+    peers: {
+      sid: string;
+      repo?: string;
+      ws?: string;
+      cwd?: string;
+      state?: string;
+      connected_at?: number;
+    }[];
     last_live: LastLiveSession[];
   }
 
@@ -582,19 +589,27 @@ describe("the hooks against a running instance", () => {
       await hello(["--sid", SID, "--repo", "ccmsg", "--ws", "main", "--cwd", "/repos/ccmsg/main"]),
     ).toMatchObject({ greeted: true });
 
-    // While it is connected the instance repeats what it was told, which is
-    // what a message from this session is shown as having come from.
-    const greeted = await until(watcher, (data) => data.peers.some((row) => row.sid === SID));
-    expect(greeted.peers.find((row) => row.sid === SID)).toMatchObject({
+    // The greeting is one short-lived process, and the row outlives it: the
+    // harness names the session, so what is waited for is the state the session
+    // is left in — the words the hook said, on a row that no longer has a
+    // connection behind it. That is both halves of this test at once, and it is
+    // the only moment either can be read at, since the connection itself may
+    // open and close inside one publish.
+    const left = await until(watcher, (data) =>
+      data.peers.some(
+        (row) => row.sid === SID && row.repo === "ccmsg" && row.connected_at === undefined,
+      ),
+    );
+    expect(left.peers.find((row) => row.sid === SID)).toMatchObject({
       repo: "ccmsg",
       ws: "main",
       cwd: "/repos/ccmsg/main",
     });
-
-    // And the greeting ending is not the session ending: the harness still
-    // names it, so nothing is written down as having stopped being live.
-    const gone = await until(watcher, (data) => !data.peers.some((row) => row.sid === SID));
-    expect(gone.last_live.some((row) => row.sid === SID)).toBe(false);
+    // Leaving cost it nothing: it is still live — which of the two live
+    // classifications depends on the terminal this test's own process runs in —
+    // and nothing was written down as having stopped.
+    expect(left.peers.find((row) => row.sid === SID)?.state).toMatch(/^live/);
+    expect(left.last_live.some((row) => row.sid === SID)).toBe(false);
   });
 
   test("a greeting with no instance behind it costs the session nothing", async () => {

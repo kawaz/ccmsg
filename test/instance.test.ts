@@ -730,6 +730,120 @@ describe("only this config home is read (M6)", () => {
   });
 });
 
+describe("a session that never greeted this instance", () => {
+  /** What a restart is left with, and nothing else: the harness's state file,
+   * the key beside it, and a socket at the path that file names.
+   *
+   * Nothing here greets. A session greets when it starts, and a daemon that
+   * came up afterwards is one no session on the host has ever spoken to — so
+   * this is the whole of what the instance has to work from, and both what it
+   * says about the session and how it reaches it have to come out of it. */
+  function unGreeted(home: string, sid: string): { lines: string[]; stop: () => void } {
+    // Short by construction: the path has to fit in `sun_path`, and a
+    // temporary directory plus a name is already most of it.
+    const socketDir = mkdtempSync(join(tmpdir(), "ccs-"));
+    trackRoot(socketDir);
+    const socketPath = join(socketDir, `${process.pid}.sock`);
+    writeFileSync(
+      join(home, "sessions", `${process.pid}.json`),
+      JSON.stringify({
+        pid: process.pid,
+        sessionId: sid,
+        cwd: "/repos/a-repo/main",
+        kind: "interactive",
+        startedAt: 1_757_000_000_000,
+        name: "a-repo@main",
+        messagingSocketPath: socketPath,
+        peerProtocol: 1,
+      }),
+    );
+    writeFileSync(
+      join(home, "sessions", `${process.pid}.${"ab".repeat(32)}.key`),
+      JSON.stringify({ peerToken: "0123456789abcdef0123456789abcdef" }),
+      { mode: 0o600 },
+    );
+    const lines: string[] = [];
+    let held = "";
+    const server = Bun.listen({
+      unix: socketPath,
+      socket: {
+        data: (_socket, chunk) => {
+          held += chunk.toString();
+          let at: number;
+          while ((at = held.indexOf("\n")) >= 0) {
+            lines.push(held.slice(0, at));
+            held = held.slice(at + 1);
+          }
+        },
+        open: () => {},
+        close: () => {},
+        error: () => {},
+      },
+    });
+    return { lines, stop: () => server.stop(true) };
+  }
+
+  async function peersOf(instance: Instance): Promise<Record<string, unknown>[]> {
+    const client = await greet(instance);
+    client.send({ op: "topic_subscribe", request_id: "sub", topic: "peers" });
+    expect((await client.next())["ok"]).toBe(true);
+    const snapshot = await client.next();
+    return (snapshot["data"] as { peers: Record<string, unknown>[] }).peers;
+  }
+
+  test("is on `peers` as live, before and after a restart", async () => {
+    const { env, home } = disposable();
+    const session = unGreeted(home, SID);
+    try {
+      const first = await startAt(env);
+      const rows = await peersOf(first);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        sid: SID,
+        title: "a-repo@main",
+        repo: "",
+        ws: "",
+        cwd: "/repos/a-repo/main",
+        pinned: false,
+      });
+      // Live, and which of the two live classifications depends on whether a
+      // terminal could be read off the process this test runs as.
+      expect(rows[0]?.["state"]).toMatch(/^live/);
+      // No connection has ever been open for it, so the row states neither a
+      // generation nor when one was made.
+      expect(rows[0]?.["protocol_version"]).toBeUndefined();
+      expect(rows[0]?.["connected_at"]).toBeUndefined();
+      await first.stop();
+
+      // The restart knows nothing the first run knew, and the session says
+      // nothing to it: the row comes back out of the directory alone.
+      const second = await startAt(env);
+      expect((await peersOf(second)).map((row) => row["sid"])).toEqual([SID]);
+    } finally {
+      session.stop();
+    }
+  });
+
+  test("is reached by route (a), which reads the same file", async () => {
+    const { env, home } = disposable();
+    const session = unGreeted(home, SID);
+    try {
+      const instance = await startAt(env);
+      const client = await greet(instance);
+      client.send({ op: "message_send", request_id: "send", to: SID, text: "after a restart" });
+      expect(await client.next()).toMatchObject({ ok: true, delivered: true });
+
+      const until = Date.now() + 1_000;
+      while (session.lines.length < 2 && Date.now() < until) await Bun.sleep(1);
+      const [auth, user] = session.lines.map((line) => JSON.parse(line) as Record<string, unknown>);
+      expect(auth).toMatchObject({ type: "auth" });
+      expect(user).toMatchObject({ type: "user", session_id: SID });
+    } finally {
+      session.stop();
+    }
+  });
+});
+
 describe("the ops the instance answers", () => {
   test("an op the contract defines and this instance does not implement says so", () => {
     // Every op in the table now has an implementation, so the filler is asked

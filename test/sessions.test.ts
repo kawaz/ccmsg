@@ -616,6 +616,61 @@ describe("the harness's sessions directory", () => {
     expect(context.domain.agents().agents.map((row) => row.sid)).toEqual([SID]);
   });
 
+  test("a session the harness names is on `peers` though it never greeted", () => {
+    // What a restart is left with: the sessions were started before this
+    // daemon was, so none of them has greeted it and none of them will. The
+    // list has to be the sessions that are there rather than the ones that
+    // happened to say hello, or a host full of running sessions reads as empty.
+    const context = sessions();
+    writeState(context.sessionsDir, process.pid, SID, { name: "a title" });
+
+    const payload = context.domain.peers(NOW);
+    expect(payload.peers).toEqual([
+      {
+        sid: SID,
+        instance: SELF,
+        title: "a title",
+        repo: "",
+        ws: "",
+        cwd: "/Users/someone/.local/share/repos/github.com/someone/a-repo/main",
+        state: "live_unmanaged",
+        pinned: false,
+      },
+    ]);
+    // The connection fields belong to a connection, and there is none: the row
+    // states no generation rather than guessing one.
+    expect(payload.peers[0]?.protocol_version).toBeUndefined();
+    expect(validationErrors(TOPIC_SCHEMAS.peers, frame("peers", payload))).toEqual([]);
+  });
+
+  test("and it is still there after a restart, which was told nothing at all", () => {
+    const context = sessions();
+    writeState(context.sessionsDir, process.pid, SID);
+
+    const restarted = restart(context);
+
+    expect(restarted.peers(NOW).peers.map((row) => row.sid)).toEqual([SID]);
+    expect(restarted.peers(NOW).last_live).toEqual([]);
+  });
+
+  test("what it greeted with stays on the row after the connection goes", () => {
+    // The words outlive the process that said them for as long as the harness
+    // names the session, so the row a restart-less departure leaves is the one
+    // the greeting described rather than a bare sid.
+    const context = sessions();
+    writeState(context.sessionsDir, process.pid, SID);
+    const conn = greeting();
+    helloFrom(context.domain, conn);
+    conn.close();
+
+    expect(context.domain.peers(NOW).peers[0]).toMatchObject({
+      sid: SID,
+      repo: "someone/a-repo",
+      ws: "main",
+      title: "a title",
+    });
+  });
+
   test("a session still in the directory is not written down as gone when its connection closes", () => {
     const context = sessions();
     writeState(context.sessionsDir, process.pid, SID);
@@ -885,6 +940,24 @@ describe("last_live", () => {
     // And it leaves the list the moment the session registers again.
     helloFrom(restarted, greeting());
     expect(restarted.peers().last_live).toEqual([]);
+  });
+
+  test("an entry goes when the harness names its session again, greeting or no greeting", () => {
+    // Resuming a session gives it a new process and a new state file, and
+    // nothing about that is a greeting. One session must not stand in both
+    // lists, so what takes it off `last_live` is being live again rather than
+    // the particular way it said so.
+    const context = sessions();
+    const conn = greeting();
+    helloFrom(context.domain, conn);
+    conn.close();
+    expect(context.domain.peers().last_live.map((entry) => entry.sid)).toEqual([SID]);
+
+    writeState(context.sessionsDir, process.pid, SID);
+    context.domain.refresh();
+
+    expect(context.domain.peers().last_live).toEqual([]);
+    expect(context.domain.peers().peers.map((row) => row.sid)).toEqual([SID]);
   });
 
   test("an entry past the retention window is dropped", () => {
