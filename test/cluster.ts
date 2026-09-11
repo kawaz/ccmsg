@@ -10,7 +10,7 @@ import { mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type Endpoint, type InstanceId, PROTOCOL_VERSION } from "@ccmsg/protocol";
-import { type Env, Instance, isRunning, start } from "../src/instance/index.ts";
+import { type Env, Instance, isRunning, savePeers, start } from "../src/instance/index.ts";
 import { reapOrphans, trackRoot, writeConfigHome } from "./harness.ts";
 import {
   EphemeralKey,
@@ -144,11 +144,15 @@ export function homeFor(lease: PortLease, peers: readonly Endpoint[]): Env {
   mkdirSync(join(home, "sessions"), { recursive: true });
   const configDir = join(root, "config");
   writeConfigHome(configDir, {
-    peers,
     // The page this instance serves, so the `/auth/*` routes have an origin
     // to compare against (DR-0001 §2.3).
     entry: { host: "127.0.0.1", port, origins: [`http://127.0.0.1:${String(port)}`] },
   });
+  // Each of these homes is its own config dir, so the other instances of the
+  // test cluster are peers this one is told about rather than ones it finds:
+  // what `peers.json` is for is exactly a mesh endpoint this host does not
+  // serve (§8.2). Its own address is in the list too, and is taken once.
+  savePeers(configDir, peers);
   const env: Env = {
     CLAUDE_CONFIG_DIR: home,
     CCMSG_STATE_DIR: join(root, "state"),

@@ -555,8 +555,10 @@ days.
 ### 3.8 Harnesses
 
 An instance answers for one config home (A2). **Which program owns that config home** is an
-attribute of the instance and **is not stated in the contract**. `ccmsg daemon add --harness
-<kind> <name> --dir <dir>` writes it into that instance's own file, and the instance reads it at
+attribute of the instance and **is not stated in the contract**. `ccmsg daemon add <dir>` reads it off
+the directory — the marker file is the evidence — writes it into that instance's own file where
+it is not the default, and takes `--harness` where the directory answers twice or not at all.
+The instance reads it at
 startup (§8.2). The default is `claude`, so an existing entry runs unchanged.
 
 **Why a setting rather than a discovery**: an empty config home says nothing about the program
@@ -1220,7 +1222,7 @@ home.** A CLI within a session looks up its own instance from `CLAUDE_CONFIG_DIR
 | Item | Content |
 |---|---|
 | Own config home | The single config home this instance sees (M6) |
-| peers | A list of mesh endpoints (each the instance's public base URL, trailing slash included). **The same list, this instance's own URL included, can be distributed to every instance** (which entry is this one is settled by the startup probe, and the reader takes itself out, §7.1). **It is the only list of URLs config carries** |
+| peers | Every mesh endpoint, this instance's own among them. **Derived**: the instances of this host, at the addresses their own files give them, and then what `peers.json` names. Which entry is this one is settled by the startup probe, and the reader takes itself out (§7.1). **It is the only list of URLs config carries** |
 | Entry-point permission | bind, source IP |
 | upstream | gateway's URL and webhook source, terminal gateway, launcher (roots and recipes), translation helper, sandbox origin |
 
@@ -1235,34 +1237,47 @@ sole way to make a config change take effect.
 **Settings are TypeScript, and there are two levels of them.** Under
 `${XDG_CONFIG_HOME:-~/.config}/ccmsg/`:
 
-| File | What it default exports |
+| File | What it is |
 |---|---|
-| `config.ts` | `({ builtin, config }) => config` — what every instance starts from |
-| `instances/<name>.ts` | `({ builtin, default, config }) => config` — one instance, called by the name of its file |
-| `ccmsg-config.d.ts` | The declarations the two write against, copied here by `daemon add` |
+| `config.ts` | `({ builtin, config }) => config` — what every instance of this host starts from |
+| `instances/<name>.ts` | `({ builtin, default, config }) => config` — one instance. **This file is what says there is one** |
+| `peers.json` | The mesh endpoints this host does not serve itself, as an array. `ccmsg mesh add` / `remove` edit it |
+| `ccmsg-config.d.ts` | The declarations the two TypeScript files write against, copied here by `daemon add` |
 
 `builtin` is the built-in defaults and `default` is what `config.ts` returned; both are handed
 over deeply frozen. `config` is a mutable copy of the level above — of `builtin` in the shared
 file, of `default` in an instance's — so a file edits what it was given and returns it. An
 instance's file states `config.dir`, the absolute config home it answers for, and that is what
 makes it an instance rather than a settings block; two files naming one config home are
-refused, because an instance *is* a config home (A2). The files under `instances/` are found by
-being there, so adding an instance is writing a file and removing one is deleting it.
+refused, because an instance *is* a config home (A2). A file may be `async`, since what it has
+to do to answer — read a secret, ask something — is its own business.
+
+**What is an instance is a file whose name is one.** `instances/` is read one level deep and
+only `<name>.ts` where `<name>` is lower case, digits and dashes is taken. A backup beside the
+file it came from — `one.ts.bak`, `one.old.ts`, `drafts/one.ts` — is then visibly not an
+instance, which matters because this listing is the whole of how instances are found: a rule
+that took every `.ts` would start a second daemon for a config home the moment somebody kept a
+copy of its settings.
 
 **There is no merge rule, because nothing merges.** A file is handed the whole of what it
 builds on and returns the whole of what it runs with, so "does this list replace or add to the
-one below it?" is not a question the reader of a config file has to hold — `config.peers = […]`
-replaces, `config.peers.push(…)` adds, and the file says which it meant. What used to be a
-table of paths and rules is now two lines of TypeScript in the file the rule was about.
+one below it?" is not a question the reader of a config file has to hold — `config.dump.presets
+= […]` replaces, `.push(…)` adds, and the file says which it meant. What every instance shares
+is stated once in `config.ts`, and an instance's own file states only what differs. A config
+home no file names, run with `ccmsg daemon run`, is what `config.ts` returns plus the built-in
+defaults.
 
-There is nothing per config home to write down twice: what every instance shares is stated once
-in `config.ts`, and an instance's own file states only what differs. A config home no file
-names, run with `ccmsg daemon run`, is what `config.ts` returns plus the built-in defaults.
+**The mesh is derived, not written** (§7.1). It is the instances of this host — each at the
+address its own file gives it — followed by what `peers.json` names, with a remote entry that
+spells a local one taken once. No config file states `peers`, and one that does is refused
+rather than ignored: a person writing it is stating a mesh, and the answer is where a mesh is
+stated now. The reason is that the local half is already written down in `instances/`, and
+writing it again is a second place to get it wrong — which is an instance silently outside the
+mesh its host thinks it is in.
 
-A file may be `async`, since what it has to do to answer — read a secret, ask something — is its
-own business. A file that throws, returns something that is not settings, or states a field
-nobody has ends the read: a misspelled field is a setting that was written and does not take,
-and starting with it silently absent is the state §8.3 refuses to run in.
+A field nobody has ends the read, as does a file that throws or returns something that is not
+settings: a misspelled field is a setting that was written and does not take, and starting with
+it silently absent is the state §8.3 refuses to run in.
 
 The effective settings are what `ccmsg daemon status` answers with — for a config home with
 nothing running too, read from the files as the value a restart would apply.
@@ -1328,14 +1343,24 @@ levels of supervision**:
   keep them apart from the contract's — **this is not the contract**. It is an internal
   protocol about processes on this host; no web UI and no mesh peer reaches it.
 
-  `ccmsg daemon add` / `remove` write and delete one `instances/` file and then tell the supervisor (with
-  none running, they only write). `remove` stops it being looked after and **does not stop
+  `ccmsg daemon add <dir>` writes one `instances/` file — the name is the directory's own, the
+  harness is read off it, and the port is the next free one after what this host has already
+  handed out — and then tells the supervisor (with none running, it only writes). `remove`
+  deletes that file. `remove` stops it being looked after and **does not stop
   the child**: editing a list is not a shutdown, and a session already talking to that
   instance keeps talking to it.
 
   There are two exceptions. `ccmsg daemon run [dir]` is a one-off foreground start outside
   the supervisor's care (and outside `status`). `ccmsg daemon log` reads the files directly
   — a log is read after something died, so it must not need the supervisor to be up
+- `ccmsg mesh add | list | remove <endpoint>` — the mesh endpoints this host does not serve
+  itself (`peers.json`, §8.2). Its own command rather than one under `daemon` because what it
+  edits belongs to no single instance: every instance of this host is in the same mesh (§7.1).
+  An addition takes effect when the instances next start, for the reason nothing else reloads
+  either (DV-Q8); a removal is told to whatever is running as well as written down, because an
+  endpoint taken off the list is one this host is not to be talking to, and leaving the link up
+  until the next restart would be leaving exactly the connection that was just revoked.
+
 - `ccmsg service register` — registers that supervisor with launchd (macOS) or
   systemd --user (Linux). Surviving a logout is this layer's business; what
   `ccmsg plugin install` hands out is the agent-side plugin alone. `ccmsg service stop` is a

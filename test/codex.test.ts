@@ -37,10 +37,23 @@ function temp(prefix: string): string {
 }
 
 /** A Codex config home, as `daemon add --harness codex` requires one: the
- * settings file Codex keeps its own configuration in. */
-function codexHome(): string {
-  const dir = temp("ccmsg-codex-home-");
+ * settings file Codex keeps its own configuration in.
+ *
+ * Under a disposable root rather than being one, because an instance is called
+ * what its config home is called and `mkdtemp` names are not names an instance
+ * may be called.  */
+function codexHome(name = "codex-home"): string {
+  const dir = join(temp("ccmsg-codex-root-"), name);
+  mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, "config.toml"), "");
+  return dir;
+}
+
+/** The same, for Claude Code: the settings file is what says so. */
+function claudeHome(name = "claude-home"): string {
+  const dir = join(temp("ccmsg-claude-root-"), name);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "settings.json"), "{}");
   return dir;
 }
 
@@ -82,31 +95,44 @@ describe("config", () => {
   test("`daemon add --harness codex` writes it down, and the instance reads it back", async () => {
     const at = env();
     const home = codexHome();
-    await add(at, "mine", { dir: home, harness: "codex" });
-    const written = readFileSync(join(resolvePaths(at).instancesDir, "mine.ts"), "utf8");
+    await add(at, home, { harness: "codex" });
+    const written = readFileSync(join(resolvePaths(at).instancesDir, "codex-home.ts"), "utf8");
     expect(written).toContain(`config.harness = "codex";`);
     expect(await harnessFor(at, home)).toBe("codex");
   });
 
   test("the default is not written down, so a file states only what differs", async () => {
     const at = env();
-    const home = temp("ccmsg-claude-home-");
-    writeFileSync(join(home, "settings.json"), "{}");
-    await add(at, "mine", { dir: home });
-    expect(readFileSync(join(resolvePaths(at).instancesDir, "mine.ts"), "utf8")).not.toContain(
-      "harness",
-    );
+    const home = claudeHome();
+    // Nothing said which harness: the directory says it, by holding that
+    // harness's own settings file.
+    await add(at, home);
+    expect(
+      readFileSync(join(resolvePaths(at).instancesDir, "claude-home.ts"), "utf8"),
+    ).not.toContain("harness");
     expect(await harnessFor(at, home)).toBe("claude");
+  });
+
+  test("a directory that says two harnesses, or none, is not guessed at", async () => {
+    const at = env();
+    const both = claudeHome("both");
+    writeFileSync(join(both, "config.toml"), "");
+    expect(add(at, both)).rejects.toThrow(/--harness/);
+    const neither = join(temp("ccmsg-neither-root-"), "neither");
+    mkdirSync(neither, { recursive: true });
+    expect(add(at, neither)).rejects.toThrow(/--harness/);
+    // Said outright, it is registered: what the directory could not answer, a
+    // person did.
+    writeFileSync(join(both, "settings.json"), "{}");
+    expect(await add(at, both, { harness: "codex" })).toMatchObject({ name: "both", dir: both });
   });
 
   test("a directory is a config home when it holds that harness's own settings", () => {
     const at = env();
     // A Codex home has no `settings.json`, and Claude Code's has no
     // `config.toml`: each is refused by the other's check.
-    expect(add(at, "mine", { dir: codexHome() })).rejects.toThrow(/settings\.json/);
-    const claude = temp("ccmsg-claude-home-");
-    writeFileSync(join(claude, "settings.json"), "{}");
-    expect(add(at, "mine", { dir: claude, harness: "codex" })).rejects.toThrow(/config\.toml/);
+    expect(add(at, codexHome(), { harness: "claude" })).rejects.toThrow(/settings\.json/);
+    expect(add(at, claudeHome(), { harness: "codex" })).rejects.toThrow(/config\.toml/);
   });
 });
 

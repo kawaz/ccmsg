@@ -22,23 +22,49 @@ export type AdminRequest =
       readonly sub?: Subject;
     }
   | { readonly admin: "passkey_list"; readonly request_id: string }
-  | { readonly admin: "passkey_remove"; readonly request_id: string; readonly sub: Subject };
+  | { readonly admin: "passkey_remove"; readonly request_id: string; readonly sub: Subject }
+  /** Stop being a peer of this endpoint, now rather than at the next start.
+   *
+   * Here with the passkey requests because it is the same kind of thing: what
+   * this host is prepared to talk to, said from the machine it runs on, on the
+   * socket where reaching the address is the permission. `ccmsg mesh remove`
+   * has already taken it off the list; this is the running instance being told
+   * so, because a revocation that waited for a restart would leave the link it
+   * revoked standing. */
+  | { readonly admin: "mesh_forget"; readonly request_id: string; readonly endpoint: Endpoint };
+
+const ADMIN_NAMES = ["passkey_add", "passkey_list", "passkey_remove", "mesh_forget"];
 
 /** Whether a frame is one of these, without deciding anything about it. */
 export function adminRequestOf(frame: unknown): AdminRequest | undefined {
   if (typeof frame !== "object" || frame === null) return undefined;
   const fields = frame as Record<string, unknown>;
-  const name = fields["admin"];
-  if (name !== "passkey_add" && name !== "passkey_list" && name !== "passkey_remove") {
-    return undefined;
-  }
+  if (!ADMIN_NAMES.includes(fields["admin"] as string)) return undefined;
   return typeof fields["request_id"] === "string" ? (frame as AdminRequest) : undefined;
 }
 
+/** What an administrative request is asked of: the passkeys, and the mesh on an
+ * instance that has one. */
+export interface Administered {
+  readonly auth: Auth;
+  readonly mesh?: { forget(peer: Endpoint): boolean };
+}
+
 /** Run one administrative request. */
-export function handleAdmin(auth: Auth, request: AdminRequest): DispatchResult {
+export function handleAdmin(at: Administered, request: AdminRequest): DispatchResult {
+  const auth = at.auth;
   try {
     switch (request.admin) {
+      case "mesh_forget": {
+        const mesh = at.mesh;
+        if (mesh === undefined) {
+          return reply(request.request_id, { endpoint: request.endpoint, dropped: false });
+        }
+        return reply(request.request_id, {
+          endpoint: request.endpoint,
+          dropped: mesh.forget(request.endpoint),
+        });
+      }
       case "passkey_add":
         return reply(
           request.request_id,

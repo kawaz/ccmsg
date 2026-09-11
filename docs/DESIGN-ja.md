@@ -480,8 +480,9 @@ key で畳む。roles は `instance` だけで、relay が `caller` を付ける
 ### 3.8 ハーネス
 
 instance は config home 1 つに答える (A2)。その config home を持っている**プログラムが何か**は
-instance の属性であり、**契約には出さない**。`ccmsg daemon add --harness <種別> <name> --dir <dir>` で
-その instance のファイルに書き、instance は起動時にそれを読む (§8.2)。既定は `claude` で、
+instance の属性であり、**契約には出さない**。`ccmsg daemon add <dir>` が
+目印ファイルから判定してその instance のファイルに書き (既定と違う時だけ)、instance は起動時にそれを読む (§8.2)。
+目印が 2 つある / 無い config home では `--harness` で指定する。既定は `claude` で、
 既存の entry は何も書き換えずにそのまま動く。
 
 **発見ではなく設定にする理由**: 空の config home はどのプログラムのものかを何も語らない。
@@ -1055,7 +1056,7 @@ socket path / HTTP の bind / state dir / data dir / ログ。**すべて config
 | 項目 | 中身 |
 |---|---|
 | 自 config home | この instance が見る唯一の config home (M6) |
-| peers | mesh の endpoint (instance の公開 base URL、末尾 `/`) の一覧。**自分の分を含めた同じものを全 instance に配れる** (どれが自分かは起動時の probe で確定し、読む側が自分を除く、§7.1)。**config に載る URL の一覧はこれだけ**である |
+| peers | mesh の endpoint 全部、自分の分も含む。**導かれる**: この host の instance (各ファイルが与えた address) と、`peers.json` が挙げる endpoint。どれが自分かは起動時の probe で確定し、読む側が自分を除く (§7.1)。**config に載る URL の一覧はこれだけ**である |
 | 入口の許可 | bind、source IP |
 | upstream | gateway の URL と webhook source、terminal gateway、launcher (root と テンプレ)、translate helper、sandbox origin |
 
@@ -1068,19 +1069,22 @@ config を変えたら instance を再起動する、が唯一の反映手順に
 
 **設定は TypeScript で、2 段になっている**。`${XDG_CONFIG_HOME:-~/.config}/ccmsg/` に:
 
-| ファイル | default export するもの |
+| ファイル | 中身 |
 |---|---|
-| `config.ts` | `({ builtin, config }) => config` — 全 instance の出発点 |
-| `instances/<name>.ts` | `({ builtin, default, config }) => config` — instance 1 つ分。名前はファイル名 |
-| `ccmsg-config.d.ts` | 上 2 つが書く型の宣言。`daemon add` がここに置く |
+| `config.ts` | `({ builtin, config }) => config` — この host の全 instance の出発点 |
+| `instances/<name>.ts` | `({ builtin, default, config }) => config` — instance 1 つ分。**instance が在ると言っているのはこのファイル** |
+| `peers.json` | この host が持たない mesh endpoint の配列。`ccmsg mesh add` / `remove` が出し入れする |
+| `ccmsg-config.d.ts` | 上の TypeScript 2 つが書く型の宣言。`daemon add` がここに置く |
 
-`builtin` は組み込み既定、`default` は `config.ts` が返した値で、どちらも深く凍結して渡す。`config` は 1 段上のコピー (共通ファイルなら `builtin` の、instance のファイルなら `default` の) なので、渡された物を書き換えて返す。instance のファイルは自分が答える config home の絶対パスを `config.dir` に書く。これがあることで設定の塊ではなく instance になる。同じ config home を 2 つのファイルが名乗ったら拒否する — instance とは config home そのものだから (A2)。`instances/` 下のファイルは在ることで見つかるので、instance を足すとはファイルを書くことで、外すとは消すことである。
+`builtin` は組み込み既定、`default` は `config.ts` が返した値で、どちらも深く凍結して渡す。`config` は 1 段上のコピー (共通ファイルなら `builtin` の、instance のファイルなら `default` の) なので、渡された物を書き換えて返す。instance のファイルは自分が答える config home の絶対パスを `config.dir` に書く。これがあることで設定の塊ではなく instance になる。同じ config home を 2 つのファイルが名乗ったら拒否する — instance とは config home そのものだから (A2)。ファイルは `async` でもよい。答えを作るのに何が要るか (秘密を読む、何かに尋ねる) はそのファイルの都合だからである。
 
-**マージ規則は無い。何もマージしないから**である。ファイルは土台の全体を受け取り、動かす値の全体を返す。「この一覧は下の段を置換するのか、足すのか」を設定ファイルの読み手が覚えておく必要が無い — `config.peers = […]` なら置換、`config.peers.push(…)` なら追加で、どちらのつもりかはファイルが言う。かつてパスと規則の表だったものが、その規則の対象だったファイルの中の TypeScript 2 行になった。
+**instance とは「名前になっているファイル」である**。`instances/` は 1 階層だけ読み、`<name>.ts` で `<name>` が小文字・数字・ダッシュの物だけを取る。元ファイルの隣に置いた控え (`one.ts.bak`、`one.old.ts`、`drafts/one.ts`) は見た目で instance でないと分かる。この一覧が instance を見つける手段の全部なので、`.ts` を全部拾う規則だと「設定の控えを取った瞬間に同じ config home の daemon がもう 1 つ起きる」ことになる。
 
-config home ごとに二度書くものは無い。全 instance に共通の物は `config.ts` に 1 回書き、instance のファイルには差分だけ書く。どのファイルも名乗っていない config home を `ccmsg daemon run` した場合は `config.ts` が返す値 + 組み込み既定になる。
+**マージ規則は無い。何もマージしないから**である。ファイルは土台の全体を受け取り、動かす値の全体を返す。「この一覧は下の段を置換するのか、足すのか」を設定ファイルの読み手が覚えておく必要が無い — `config.dump.presets = […]` なら置換、`.push(…)` なら追加で、どちらのつもりかはファイルが言う。全 instance に共通の物は `config.ts` に 1 回書き、instance のファイルには差分だけ書く。どのファイルも名乗っていない config home を `ccmsg daemon run` した場合は `config.ts` が返す値 + 組み込み既定になる。
 
-ファイルは `async` でもよい。答えを作るのに何が要るか (秘密を読む、何かに尋ねる) はそのファイルの都合だからである。例外を投げた・設定でない物を返した・誰も持っていない field を書いた場合は読み取りを終わらせる。綴りを間違えた field は「書いたのに効かない設定」であり、それを黙って落としたまま起動するのは §8.3 が拒否する状態そのものだからである。
+**mesh は書くものではなく導かれるもの** (§7.1)。この host の instance (それぞれ自分のファイルが与えた address) が先で、続いて `peers.json` が挙げる endpoint、同じ物を指す重複は 1 回だけ取る。設定ファイルは `peers` を書かない。書いてあったら無視ではなく拒否する — 書いた人は mesh を述べているのだから、mesh は今どこで述べるのかを答える。理由は、この host の分は既に `instances/` に書いてあり、もう一度書くのは間違えられる場所が 2 つになるということだからである。間違えた結果は「host が入っているつもりの mesh に、その instance だけ黙って入っていない」になる。
+
+誰も持っていない field を書いた場合は読み取りを終わらせる。例外を投げた場合・設定でない物を返した場合も同じ。綴りを間違えた field は「書いたのに効かない設定」であり、それを黙って落としたまま起動するのは §8.3 が拒否する状態そのものだからである。
 
 実効設定は `ccmsg daemon status` が答える (動いていない instance の分も、再起動したら効く値としてファイルから読んで返す)。
 
@@ -1136,13 +1140,21 @@ config home ごとに二度書くものは無い。全 instance に共通の物�
   `supervise_*` で契約の op と区別する — **これは契約ではない**。ホスト上のプロセスに
   ついての内部プロトコルであって、webui も mesh の相手もここには来ない。
 
-  `ccmsg daemon add` / `remove` は `instances/` のファイルを書く / 消したうえで監督者にも伝える (居なければ
+  `ccmsg daemon add <dir>` は `instances/` のファイルを 1 つ書く (名前は dir 名から、harness は
+  目印ファイルから、port は登録済みの最大 + 1 の空き) うえで監督者にも伝える。`remove` はそのファイルを消す (居なければ
   書くだけ)。`remove` は見るのをやめるだけで**子は止めない** — 一覧の編集は shutdown では
   なく、その instance と話しているセッションはそのまま話し続ける。
 
   例外は 2 つ。`ccmsg daemon run [dir]` は foreground の単発起動で監督者の管理外
   (`status` にも出ない)。`ccmsg daemon log` はファイルを直接読む — ログは死んだ後に
   読むものなので、監督者が居ないと読めない設計にはしない
+- `ccmsg mesh add | list | remove <endpoint>` — この host が持たない mesh endpoint
+  (`peers.json`、§8.2)。`daemon` の下でなく単独なのは、これがどの instance の物でもないから
+  である (この host の instance は全部同じ mesh に居る、§7.1)。add の反映は次の起動時 (他が
+  再読込しないのと同じ理由、DV-Q8)。remove は書くだけでなく動いている instance にも伝える —
+  一覧から外した endpoint は「この host が話してはいけない相手」であり、次の再起動まで link を
+  張ったままにするのは、今剥奪したその接続を残すことだからである。
+
 - `ccmsg service register` — その監督者を launchd (macOS) / systemd --user (Linux) に
   登録する。ログインを跨いで常駐させるのはこの層の責務であり、`ccmsg plugin install` が
   配るのはエージェント側の plugin だけである。`ccmsg service stop` は launchd では

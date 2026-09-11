@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, rmSync, watch, writeFileSync } from "node:fs";
 import { basename, isAbsolute, join, resolve } from "node:path";
 import type { Endpoint, InstanceId, InstancePingResult } from "@ccmsg/protocol";
-import { DEFAULT_HARNESS, type Harness, HARNESS } from "../harness/index.ts";
+import { DEFAULT_HARNESS, type Harness, HARNESS, HARNESSES } from "../harness/index.ts";
 import {
   CONFIG_FILE,
   type InstanceConfig,
@@ -154,9 +154,88 @@ const STARTING_PRESETS = [
 /** What `daemon add` takes: the config home the instance answers for, and the
  * two settings a person would otherwise open the file to write. */
 export interface AddOptions {
-  readonly dir: string;
   readonly harness?: Harness;
   readonly port?: number;
+}
+
+/** What a config home is called as an instance: its own last segment, without
+ * the dot a config home is usually hidden by.
+ *
+ * Taken from the directory rather than asked for, because the two would then
+ * be a pair a person has to keep straight, and the directory is the one of
+ * them that already exists. `.claude-personal` is `claude-personal`; a
+ * directory whose name is not one an instance may be called is refused here,
+ * where the name is being chosen, rather than at the file that would carry
+ * it. */
+export function nameFor(dir: string): string {
+  const name = basename(dir).replace(/^\.+/, "");
+  if (!INSTANCE_NAME.test(name)) {
+    throw new CommandError(
+      "invalid_args",
+      `${dir} からは instance の名前が付けられません (小文字・数字・ダッシュだけの名前になりません)`,
+    );
+  }
+  return name;
+}
+
+/** Which harness a config home runs, as the directory itself says.
+ *
+ * The marker file is the evidence: Claude Code keeps `settings.json` and Codex
+ * keeps `config.toml`, so a directory that holds one of them is that harness's
+ * (§3.8). A directory holding both, or neither, is not answered for — the
+ * first is two answers and the second is none, and guessing either way writes
+ * down a setting the instance will act on for the whole of its life. */
+export function harnessOf(dir: string): Harness {
+  const found = HARNESSES.filter((harness) => existsSync(join(dir, HARNESS[harness].marker)));
+  const only = found[0];
+  if (found.length !== 1 || only === undefined) {
+    throw new CommandError(
+      "invalid_args",
+      found.length === 0
+        ? `${dir} がどの harness の config home か分かりません (${HARNESSES.map((one) => HARNESS[one].marker).join(" / ")} がありません)。--harness で指定してください`
+        : `${dir} は ${found.join(" と ")} の両方の目印を持っています。--harness で指定してください`,
+    );
+  }
+  return only;
+}
+
+/** The port the next instance listens on: one past the highest any registered
+ * instance holds, or the first of the range when there are none.
+ *
+ * Counted from what is configured and then confirmed against the kernel,
+ * because the two answer different questions — the first is what this host has
+ * already handed out, and the second is whether anything else on the machine
+ * is on it. A person who wants a particular port says so and gets it or gets
+ * the refusal. */
+export const FIRST_PORT = 8643;
+
+/** How far the search walks before it says so rather than going on. A run of
+ * this many taken ports is a host whose ports are somebody else's business. */
+const PORT_SEARCH = 64;
+
+export async function freePort(taken: readonly number[]): Promise<number> {
+  const first = taken.length === 0 ? FIRST_PORT : Math.max(...taken) + 1;
+  for (let port = first; port < first + PORT_SEARCH; port += 1) {
+    if (taken.includes(port)) continue;
+    if (await bindable(port)) return port;
+  }
+  throw new CommandError(
+    "internal_error",
+    `${String(first)} から ${String(PORT_SEARCH)} 個のポートが全部塞がっています。--port で指定してください`,
+  );
+}
+
+/** Whether this host will give out an address, asked by taking it and letting
+ * it go again. Nothing else answers it: a port is free when the kernel says
+ * so, and every other account of it is out of date the moment it is read. */
+async function bindable(port: number): Promise<boolean> {
+  try {
+    const server = Bun.serve({ hostname: "127.0.0.1", port, fetch: () => new Response("") });
+    await server.stop(true);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** Write down one more instance: one file under `instances/`, called by the
@@ -172,28 +251,33 @@ export interface AddOptions {
  * again: what a preset names is an interest this instance has no opinion on, so
  * they are examples in a file to edit rather than a default in the code that
  * would come back after being deleted. */
-export async function add(env: Env, name: string, options: AddOptions): Promise<InstanceRow> {
-  if (!INSTANCE_NAME.test(name)) {
-    throw new CommandError(
-      "invalid_args",
-      `${name} は instance の名前になりません (英数字で始まり、以降は英数字と . _ - だけ)`,
-    );
-  }
-  const harness = options.harness ?? DEFAULT_HARNESS;
-  const home = configHome(options.dir, harness);
+export async function add(env: Env, dir: string, options: AddOptions = {}): Promise<InstanceRow> {
+  const where = isAbsolute(dir) ? dir : resolve(dir);
+  const harness = options.harness ?? harnessOf(where);
+  const home = configHome(where, harness);
+  const name = nameFor(home);
   const paths = resolvePaths(env);
   const file = join(paths.instancesDir, `${name}.ts`);
   if (existsSync(file)) {
     throw new CommandError("file_exists", `${name} は既に登録されています (${file})`);
   }
-  const taken = (await loadAll(paths.configDir)).instances.find((one) => one.dir === home);
+  const registered = (await loadAll(paths.configDir)).instances;
+  const taken = registered.find((one) => one.dir === home);
   if (taken !== undefined) {
     throw new CommandError("file_exists", `${home} は既に ${taken.name} が見ています`);
   }
+  // Every instance listens, because every instance is in the mesh of this host
+  // (§7.1) and a mesh is reached over the entry: what `--port` settles is which
+  // address, not whether there is one.
+  const port =
+    options.port ??
+    (await freePort(
+      registered.flatMap((one) => (one.config.entry === undefined ? [] : [one.config.entry.port])),
+    ));
   writeConfigTypes(paths.configDir);
   if (!existsSync(paths.configFile)) writeFileSync(paths.configFile, defaultsTemplate());
   mkdirSync(paths.instancesDir, { recursive: true });
-  writeFileSync(file, instanceTemplate(name, home, harness, options.port));
+  writeFileSync(file, instanceTemplate(name, home, harness, port));
   const target = targetFor(env, home, name);
   // The id is made here rather than at the first start, so that what `add`
   // prints is what the instance will answer to and so that a person can write
@@ -226,9 +310,8 @@ function defaultsTemplate(): string {
 /** 全 instance に配る値。\`builtin\` は組み込みの既定値 (凍結済み)、\`config\` は
  * そのコピーなので、書き換えて返す。ここに書いた値を各 instance が受け取る。 */
 const defaults: Defaults = ({ config }) => {
-  // どの mesh endpoint がこの host の instance かは起動時の probe が決めるので、
-  // 同じ一覧を全 instance に配ってよい (§7.1)。
-  config.peers = [];
+  // mesh の相手はここには書かない。この host の instance は instances/ の各
+  // ファイルから、別 host の endpoint は peers.json (ccmsg mesh add) から入る。
 
   // dump の名前付き選択。prefix は一族を、\`@name\` は他の選択をその場に広げる。
   config.dump.presets = [
@@ -261,22 +344,15 @@ function presetLiteral(preset: (typeof STARTING_PRESETS)[number]): string {
 
 /** One instance's file, as `add` first writes it: what differs from
  * `config.ts`, and nothing else. */
-function instanceTemplate(
-  name: string,
-  dir: string,
-  harness: Harness,
-  port: number | undefined,
-): string {
+function instanceTemplate(name: string, dir: string, harness: Harness, port: number): string {
   const lines = [`  config.dir = ${JSON.stringify(dir)};`];
   if (harness !== DEFAULT_HARNESS) lines.push(`  config.harness = ${JSON.stringify(harness)};`);
-  if (port !== undefined) {
-    lines.push(
-      `  config.entry = {`,
-      `    ...(config.entry ?? { host: "127.0.0.1", source_ips: [], trusted_proxies: [] }),`,
-      `    port: ${String(port)},`,
-      `  };`,
-    );
-  }
+  lines.push(
+    `  config.entry = {`,
+    `    ...(config.entry ?? { host: "127.0.0.1", source_ips: [], trusted_proxies: [] }),`,
+    `    port: ${String(port)},`,
+    `  };`,
+  );
   return `import type { Instance } from "../${TYPES_FILE.replace(/\.d\.ts$/, "")}";
 
 /** ${name}: この instance だけの設定。\`default\` は ${CONFIG_FILE} が返した値

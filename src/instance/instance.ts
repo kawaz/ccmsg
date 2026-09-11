@@ -675,7 +675,14 @@ export class Instance {
         // address is what says the caller is local (DR-0001 §2.2).
         handle: (frame, conn) => {
           const admin = adminRequestOf(frame);
-          if (admin !== undefined) return Promise.resolve(handleAdmin(this.#auth, admin));
+          if (admin !== undefined) {
+            return Promise.resolve(
+              handleAdmin(
+                { auth: this.#auth, ...(this.#mesh === undefined ? {} : { mesh: this.#mesh }) },
+                admin,
+              ),
+            );
+          }
           return this.handle(frame, conn);
         },
       }),

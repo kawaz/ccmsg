@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 import {
+  type Endpoint,
   type MessageSendArgs,
   type NotifySendArgs,
   PROTOCOL_VERSION,
@@ -44,9 +45,12 @@ const SESSION_ENV = HARNESSES.flatMap((harness) => [...HARNESS[harness].sessionE
 import { hookEvent, type StatedMeta, statedMeta } from "./greeting/index.ts";
 import {
   isRunning,
+  loadPeers,
+  resolveConfigDir,
   resolveConfigHome,
   resolvePaths,
   resolvePathsFor,
+  savePeers,
   start,
 } from "./instance/index.ts";
 import {
@@ -154,11 +158,11 @@ const ROOT: Command = {
         },
         {
           name: "add",
-          summary: "instances/<name>.ts を書き、監督者が居れば起こさせる",
-          usage: "ccmsg daemon add <name> [--dir <config home>] [--port <番号>] [--harness <種別>]",
+          summary:
+            "config home を instances/<name>.ts に書き、監督者が居れば起こさせる (name は dir 名から)",
+          usage: "ccmsg daemon add <dir> [--port <番号>] [--harness <種別>]",
           options: [
-            ["--dir <config home>", "この instance が答える config home (既定は今の config home)"],
-            ["--port <番号>", "entry の待ち受けポート (書かなければ unix socket だけ)"],
+            ["--port <番号>", "entry の待ち受けポート (既定は登録済みの最大 + 1 の空きポート)"],
             [
               "--harness <種別>",
               `config home が動かすもの: ${HARNESSES.join(" | ")} (既定 ${DEFAULT_HARNESS})`,
@@ -166,7 +170,7 @@ const ROOT: Command = {
           ],
           notes: [
             {
-              title: "設定は TypeScript で書く。書いた物を各 instance が受け取る:",
+              title: "設定は TypeScript で書く。書いた物をこの instance が受け取る:",
               docs: [
                 ["config.ts", "全 instance が受け取る値。`({builtin, config}) => config`"],
                 [
@@ -257,6 +261,42 @@ const ROOT: Command = {
           options: [["--follow", "書き足される行を待ち続ける (Ctrl-C で終わり)"]],
           bare: true,
           run: (args) => daemonLog(args),
+        },
+      ],
+    },
+    {
+      name: "mesh",
+      summary: "別 host の instance を mesh の相手として出し入れする (peers.json)",
+      usage: "ccmsg mesh <subcommand> [endpoint]",
+      notes: [
+        {
+          title: "この host の instance は instances/*.ts の port から自動で mesh に入る:",
+          docs: [
+            ["peers.json", "別 host の endpoint だけを並べる。instance id は handshake で伝わる"],
+            ["add の反映", "次に instance が起動した時 (config は起動時に 1 回だけ読む)"],
+            ["remove の反映", "即時。繋がっている相手なら切る"],
+          ],
+        },
+      ],
+      children: [
+        {
+          name: "add",
+          summary: "endpoint を peer に足す",
+          usage: "ccmsg mesh add <endpoint>",
+          run: (args) => meshPeers("add", args),
+        },
+        {
+          name: "list",
+          summary: "peers.json にある endpoint を並べる",
+          usage: "ccmsg mesh list",
+          bare: true,
+          run: (args) => meshPeers("list", args),
+        },
+        {
+          name: "remove",
+          summary: "endpoint を peer から外し、繋がっていれば切る",
+          usage: "ccmsg mesh remove <endpoint>",
+          run: (args) => meshPeers("remove", args),
         },
       ],
     },
@@ -619,14 +659,14 @@ async function supervise(): Promise<unknown> {
  * the supervisor reads the list once (DV-Q8) and would otherwise not know
  * until it is restarted. */
 async function added(args: readonly string[]): Promise<unknown> {
-  const { named, rest } = options(args, ["harness", "dir", "port"]);
-  const name = rest[0];
+  const { named, rest } = options(args, ["harness", "port"]);
+  const dir = rest[0];
   const stated = named.get("harness");
   const port = named.get("port");
-  if (name === undefined) {
+  if (dir === undefined) {
     throw new CommandError(
       "invalid_args",
-      "使い方: ccmsg daemon add <name> [--dir <config home>] [--port <番号>] [--harness <種別>]",
+      "使い方: ccmsg daemon add <dir> [--port <番号>] [--harness <種別>]",
     );
   }
   if (stated !== undefined && !isHarness(stated)) {
@@ -635,14 +675,83 @@ async function added(args: readonly string[]): Promise<unknown> {
   if (port !== undefined && !/^\d{1,5}$/.test(port)) {
     throw new CommandError("invalid_args", "--port は 0 から 65535 の番号です");
   }
-  const row = await addToConfig(process.env, name, {
-    dir: named.get("dir") ?? resolveConfigHome(),
-    harness: stated ?? DEFAULT_HARNESS,
+  const row = await addToConfig(process.env, dir, {
+    ...(stated === undefined ? {} : { harness: stated }),
     ...(port === undefined ? {} : { port: Number(port) }),
   });
   if (!(await reachable())) return { ...row, supervised: false };
   const started = (await ask({ op: "supervise_add", dir: row.dir })) as Record<string, unknown>;
-  return { ...started, name, supervised: true };
+  return { ...started, name: row.name, supervised: true };
+}
+
+/** `ccmsg mesh <what> [endpoint]`: the mesh endpoints this host does not serve
+ * itself.
+ *
+ * Its own command rather than one under `daemon`, because what it edits is not
+ * one instance's anything: every instance of this host is in the same mesh
+ * (§7.1), so the list is the host's. `peers` is what a session list is called,
+ * which is why this is called what the thing itself is called.
+ *
+ * An addition takes effect when the instances next start, for the reason
+ * nothing else reloads either (DV-Q8). A removal is told to whoever is running
+ * as well as written down: an endpoint taken off the list is one this host is
+ * not to be talking to, and leaving a live link up until the next restart would
+ * be leaving exactly the connection that was just revoked. */
+async function meshPeers(what: "add" | "list" | "remove", args: readonly string[]) {
+  const configDir = resolveConfigDir();
+  const listed = loadPeers(configDir);
+  if (what === "list") return { peers: listed };
+  const given = args[0];
+  if (given === undefined) {
+    throw new CommandError("invalid_args", `使い方: ccmsg mesh ${what} <endpoint>`);
+  }
+  const endpoint = endpointGiven(given);
+  if (what === "add") {
+    if (listed.includes(endpoint)) {
+      throw new CommandError("file_exists", `${endpoint} は既に peer です`);
+    }
+    savePeers(configDir, [...listed, endpoint]);
+    // Said rather than left to be noticed: the running instances read the list
+    // when they started, so the one thing a person wants to know here is that
+    // this peer is not dialled yet.
+    return { endpoint, added: true, restart_needed: (await running()).length > 0 };
+  }
+  if (!listed.includes(endpoint)) {
+    throw new CommandError("not_found", `${endpoint} は peer ではありません`);
+  }
+  savePeers(
+    configDir,
+    listed.filter((peer) => peer !== endpoint),
+  );
+  const cut: string[] = [];
+  for (const target of await running()) {
+    const answer = (await askInstance(target, { admin: "mesh_forget", endpoint })) as {
+      dropped?: boolean;
+    };
+    if (answer.dropped === true) cut.push(target.dir);
+  }
+  return { endpoint, removed: true, disconnected: cut };
+}
+
+/** The registered instances that have something answering right now, which are
+ * the ones a change to the mesh has to reach. */
+async function running(): Promise<Target[]> {
+  return (await registered(process.env)).filter((target) => rowFor(target).running);
+}
+
+/** An endpoint as the contract spells it, from what a person typed: the base
+ * URL of an instance, ending in the slash everything it serves hangs off. The
+ * slash is added rather than demanded — a person pasting an address from a
+ * browser has one without it, and the two are the same address. */
+function endpointGiven(given: string): Endpoint {
+  const text = given.endsWith("/") ? given : `${given}/`;
+  if (!/^https?:\/\/[^\s?#]*\/$/.test(text)) {
+    throw new CommandError(
+      "invalid_args",
+      `${given} は endpoint になりません (http:// か https:// で始まる base URL)`,
+    );
+  }
+  return text as Endpoint;
 }
 
 /** `ccmsg daemon remove <name>`: take its file away, and stop looking after it.
@@ -731,7 +840,14 @@ async function serviceOp(
  * caller is on the machine. They are not ops of the contract for the same
  * reason — the contract is what reaches an instance over a network. */
 async function passkeyAsk(unit: string | undefined, request: Record<string, unknown>) {
-  const target = targetFor(process.env, unit ?? resolveConfigHome());
+  return await askInstance(
+    targetFor(process.env, (await dirOf(unit)) ?? resolveConfigHome()),
+    request,
+  );
+}
+
+/** One administrative request, on one instance's own unix socket. */
+async function askInstance(target: Target, request: Record<string, unknown>) {
   const conn = await connect(target.paths.socket);
   if (conn === undefined) {
     throw new CommandError("not_found", `${target.dir} の instance は動いていません`);

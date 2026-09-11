@@ -172,10 +172,13 @@ describe("registering a passkey (§2.2)", () => {
     // not, and nothing else on the line says which is which.
     await registered(at, { backup: { eligible: true, state: true } });
     await registered(at, { backup: { eligible: false, state: false } });
-    const answer = handleAdmin(at.instance.auth, {
-      admin: "passkey_list",
-      request_id: "asking",
-    });
+    const answer = handleAdmin(
+      { auth: at.instance.auth },
+      {
+        admin: "passkey_list",
+        request_id: "asking",
+      },
+    );
     expect(answer.kind).toBe("reply");
     const listed = (answer as unknown as { response: { credentials: CredentialRecord[] } }).response
       .credentials;

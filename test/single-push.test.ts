@@ -83,6 +83,10 @@ describe("nothing pushes a topic frame outside the topic mechanism (M5)", () => 
       // being written and not a value compared against a previous one.
       "daemon/registry.ts",
       "daemon/supervise.ts",
+      // The mesh endpoints this host does not serve, written back as the array
+      // a person reads: `ccmsg mesh add` and `remove` edit a file, which is
+      // persistence and not a value compared against a previous one.
+      "instance/config.ts",
       "instance/log.ts",
       // The values a person saved, written whole as their namespace's file:
       // persistence again, of the one thing here nothing else holds a copy of.

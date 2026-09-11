@@ -1,4 +1,12 @@
-import { copyFileSync, existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { type DumpPreset, type Endpoint, TranscriptItemSelector } from "@ccmsg/protocol";
 import { DEFAULT_HARNESS, type Harness, HARNESSES, isHarness } from "../harness/index.ts";
@@ -110,10 +118,14 @@ export interface InstanceConfig {
    * home says nothing about the program it belongs to, and an instance that
    * guessed would walk the wrong tree for the whole of its first session. */
   readonly harness: Harness;
-  /** Every mesh endpoint, this instance's own among them (§7.1). The same list
-   * goes to every instance and names none of them in particular: which entry is
-   * this one is settled at startup by the probe, so one file can be copied to
-   * every host unchanged (§8.2). */
+  /** Every mesh endpoint, this instance's own among them (§7.1).
+   *
+   * Derived rather than written: the instances on this host are the ones whose
+   * files say which port they listen on, and the rest are the endpoints
+   * `peers.json` names. A person who had to write the local half as well would
+   * be writing down a second time what `daemon add` already settled, and could
+   * get it wrong — which is a mesh an instance is silently not in. Which entry
+   * of the list is this instance is settled at startup by the probe (§7.1). */
   readonly peers: readonly Endpoint[];
   /** Absent when this instance serves the unix socket only. */
   readonly entry?: EntryConfig;
@@ -180,15 +192,15 @@ const JSON_FILE = "config.json";
  * because a misspelled field is a setting that was written and does not take:
  * the types say so while the file is being edited, and this says so when it is
  * read. */
-const FIELDS = [
-  "harness",
-  "peers",
-  "entry",
-  "upstream",
-  "direct_delivery",
-  "fork_origin",
-  "dump",
-] as const;
+const FIELDS = ["harness", "entry", "upstream", "direct_delivery", "fork_origin", "dump"] as const;
+
+/** Where the mesh endpoints this host does not serve itself are written.
+ *
+ * Data rather than a function, because nothing about a list of addresses needs
+ * one and `ccmsg mesh add` / `remove` edit it: what a program writes back is
+ * what a program can read whole. The instances on this host are not in it —
+ * they are found from the files that already say which port each listens on. */
+export const PEERS_FILE = "peers.json";
 
 /** What one file under `instances/` says: which config home it is for, and
  * what that instance runs with. The name is the file's own, so what a person
@@ -199,10 +211,15 @@ export interface InstanceSetting {
   readonly config: InstanceConfig;
 }
 
-/** The name an instance file may be called, which is what `daemon add` takes:
- * a name that is also a filename, and that names one file rather than a path
- * to somewhere else. */
-export const INSTANCE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+/** The name an instance file may be called.
+ *
+ * Narrow on purpose: what is found under `instances/` is exactly `<name>.ts`
+ * at the top of it, spelled in lower case, digits and dashes. A backup beside
+ * the file it was taken from — `one.ts.bak`, `one.old.ts`, `drafts/one.ts` —
+ * is then not an instance, which is the whole point: a directory listing is
+ * how instances are found, so what is *not* one has to be visible from the
+ * name alone. */
+export const INSTANCE_NAME = /^[a-z0-9-]+$/;
 
 /** Everything the config home says, read once (DV-Q8).
  *
@@ -254,7 +271,80 @@ export async function loadAll(configDir: string): Promise<{
     seen.set(dir, `${name}.ts`);
     instances.push({ name, dir, config });
   }
-  return { defaults, instances };
+  // The mesh, assembled once and handed to every instance the same (§7.1): the
+  // instances of this host, which are the files just read, and the endpoints
+  // `peers.json` names. Each instance's own is in its own list, because that
+  // is what the startup probe settles which entry it is against.
+  const peers = meshOf(configDir, instances);
+  return {
+    defaults: { ...defaults, peers },
+    instances: instances.map((one) => ({ ...one, config: { ...one.config, peers } })),
+  };
+}
+
+/** Every mesh endpoint this host knows of, local ones first.
+ *
+ * Local first because they are the ones nobody wrote: the order a person reads
+ * in `daemon status` then opens with what this host is, and what was added by
+ * hand follows it. A remote entry that spells a local one is taken once —
+ * a list that named this instance twice would end its start (§7.1), and an
+ * operator who wrote the address of their own instance meant it to be in the
+ * mesh, which it already is. */
+function meshOf(configDir: string, instances: readonly InstanceSetting[]): readonly Endpoint[] {
+  const listed = instances.flatMap((one) => {
+    const entry = one.config.entry;
+    return entry === undefined ? [] : [localEndpoint(entry)];
+  });
+  const mesh = [...listed];
+  for (const peer of loadPeers(configDir)) if (!mesh.includes(peer)) mesh.push(peer);
+  return mesh;
+}
+
+/** The address another instance on this host is dialled at.
+ *
+ * A bind of every address is not an address, so a host that listens on all of
+ * them is reached at the loopback one — the peer doing the dialling is on this
+ * machine, and that is the address it has. */
+function localEndpoint(entry: EntryConfig): Endpoint {
+  const host = entry.host === "0.0.0.0" || entry.host === "::" ? "127.0.0.1" : entry.host;
+  const at = host.includes(":") ? `[${host}]` : host;
+  return `http://${at}:${String(entry.port)}/` as Endpoint;
+}
+
+/** The mesh endpoints this host does not serve, as `peers.json` states them.
+ *
+ * Absent is not broken, for `DEFAULT_CONFIG`'s reason; present and not a list
+ * of endpoints ends the read, because a mesh an instance was meant to be in
+ * and silently is not is the state §8.3 refuses to start in. */
+export function loadPeers(configDir: string): readonly Endpoint[] {
+  const file = join(configDir, PEERS_FILE);
+  let text: string;
+  try {
+    text = readFileSync(file, "utf8");
+  } catch {
+    return [];
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch (cause) {
+    throw new ConfigError(file, `not valid JSON (${String(cause)})`);
+  }
+  if (!Array.isArray(parsed)) {
+    throw new ConfigError(file, "must be an array of endpoint URLs");
+  }
+  const peers = parsed.map((peer, index) => endpointOf(file, `[${String(index)}]`, peer));
+  const repeated = peers.filter((peer, index) => peers.indexOf(peer) !== index);
+  if (repeated.length > 0) {
+    throw new ConfigError(file, `repeats ${[...new Set(repeated)].join(", ")}`);
+  }
+  return peers;
+}
+
+/** Write the endpoint list back, at the shape a person reads it in. */
+export function savePeers(configDir: string, peers: readonly Endpoint[]): void {
+  mkdirSync(configDir, { recursive: true });
+  writeFileSync(join(configDir, PEERS_FILE), `${JSON.stringify(peers, null, 2)}\n`);
 }
 
 /** The instances the config home names, in name order. */
@@ -341,6 +431,15 @@ function settingsOf(
       if (wantsDir) continue;
       throw new ConfigError(file, `dir belongs to an ${INSTANCES_DIR}/ file, which this is not`);
     }
+    if (name === "peers") {
+      // Said as its own refusal rather than as an unknown field, because a
+      // person writing one is not misspelling anything: they are stating a
+      // mesh, and the answer is where a mesh is stated now.
+      throw new ConfigError(
+        file,
+        `peers are not written here: the instances of this host are found from their own files, and the rest go in ${PEERS_FILE} (ccmsg mesh add)`,
+      );
+    }
     if (!(FIELDS as readonly string[]).includes(name)) {
       throw new ConfigError(file, `unknown field ${name}; expected ${FIELDS.join(", ")}`);
     }
@@ -355,8 +454,8 @@ function settingsOf(
 /** A copy nothing can write to, for the values a config function builds on
  * rather than edits: what `builtin` and `default` are is settled before the
  * file runs, so a file that tried to edit one is told so where it did it. */
-function frozen<T>(value: T): T {
-  return deepFreeze(structuredClone(value));
+function frozen(value: InstanceConfig): Record<string, unknown> {
+  return deepFreeze(copied(value));
 }
 
 function deepFreeze<T>(value: T): T {
@@ -365,16 +464,25 @@ function deepFreeze<T>(value: T): T {
   return Object.freeze(value);
 }
 
-/** The mutable copy a config function edits and returns. */
+/** The mutable copy a config function edits and returns.
+ *
+ * Without `peers`, which is the one field of a config that no file writes: it
+ * is derived from the instances of this host and `peers.json`, so handing it
+ * over would be offering a value that is ignored — and a file that returned it
+ * unchanged would be returning a field this refuses.  */
 function copied(value: InstanceConfig): Record<string, unknown> {
-  return structuredClone(value) as unknown as Record<string, unknown>;
+  const { peers: _derived, ...written } = structuredClone(value);
+  return written as unknown as Record<string, unknown>;
 }
 
 /** One instance's settings, read at the shape the instance uses them. */
 export function parseConfig(file: string, fields: Record<string, unknown>): InstanceConfig {
   return {
     harness: harnessOf(file, fields["harness"]),
-    peers: peersOf(file, fields["peers"]),
+    // Filled in by whoever read the config home, which is the only place the
+    // mesh is known: one file states one instance, and a mesh is every one of
+    // them plus what `peers.json` names.
+    peers: [],
     ...(fields["entry"] === undefined ? {} : { entry: entryOf(file, fields["entry"]) }),
     upstream: upstreamOf(file, fields["upstream"]),
     direct_delivery: flagOf(
@@ -525,12 +633,6 @@ function terminalGatewayOf(file: string, raw: string): string {
     );
   }
   return raw;
-}
-
-function peersOf(file: string, raw: unknown): readonly Endpoint[] {
-  if (raw === undefined) return [];
-  if (!Array.isArray(raw)) throw new ConfigError(file, "peers must be an array of endpoint URLs");
-  return raw.map((peer, index) => endpointOf(file, `peers[${index}]`, peer));
 }
 
 function entryOf(file: string, raw: unknown): EntryConfig {

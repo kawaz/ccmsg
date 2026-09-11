@@ -334,7 +334,35 @@ export class Mesh {
    * is what found which entry that is. */
   get peers(): Endpoint[] {
     const self = this.self;
-    return this.deps.peers.filter((peer) => peer !== self);
+    return this.deps.peers.filter((peer) => peer !== self && !this.#forgotten.has(peer));
+  }
+
+  /** The peers taken off this host's list while this instance was running.
+   *
+   * Config is read once (DV-Q8) and this does not change that: what a person
+   * writes goes on taking effect at the next start. What this holds is the one
+   * edit that cannot wait for one — an endpoint this host is no longer to be
+   * talking to, which would otherwise stay connected until somebody restarted
+   * the instance. */
+  readonly #forgotten = new Set<Endpoint>();
+
+  /** Stop being a peer of this endpoint: drop the link if there is one, stop
+   * dialling it, and refuse its greeting if it dials us.
+   *
+   * Answers whether anything was actually cut, so `ccmsg mesh remove` can say
+   * which instances were talking to it rather than that it asked them all. */
+  forget(peer: Endpoint): boolean {
+    this.#forgotten.add(peer);
+    const retry = this.#retries.get(peer);
+    if (retry !== undefined) {
+      clearTimeout(retry);
+      this.#retries.delete(peer);
+    }
+    const link = this.#links.get(peer);
+    if (link === undefined) return false;
+    link.conn.close();
+    this.#drop(peer, link.conn);
+    return true;
   }
 
   /** Where peers reach this instance, as the probe settled it (§7.1).
@@ -620,7 +648,7 @@ export class Mesh {
     if (claim.ver !== MESH_VER) {
       throw new OpError("invalid_args", `this instance speaks mesh handshake ${MESH_VER}`);
     }
-    if (!this.deps.peers.includes(claim.iss)) {
+    if (!this.deps.peers.includes(claim.iss) || this.#forgotten.has(claim.iss)) {
       throw new OpError("forbidden", `${claim.iss} is not a peer of this instance`);
     }
     if (claim.aud !== self) {

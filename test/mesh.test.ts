@@ -407,6 +407,28 @@ describe("what a handshake leaves behind (mesh-peer-auth §10.5)", () => {
     expect(second.mesh?.held.keys).toBe(0);
   });
 
+  test("a peer this host has stopped being one of is cut, and stays cut", async () => {
+    const [a, b] = [leasePort(), leasePort()];
+    const peers = [endpoint(a.port), endpoint(b.port)];
+    const first = await startAt(homeFor(a, peers), { reconnectMinMs: 20 });
+    const second = await startAt(homeFor(b, peers), { reconnectMinMs: 20 });
+    await eventually(() => first.mesh?.reachable(endpointOf(second)) === true);
+    // What `ccmsg mesh remove` asks of a running instance: the endpoint is off
+    // this host's list, so the link it has to it goes now rather than at the
+    // next start. Config is still read once (DV-Q8) — this is the one edit that
+    // cannot wait for a restart, because waiting leaves the revoked link up.
+    expect(first.mesh?.forget(endpointOf(second))).toBe(true);
+    expect(first.mesh?.reachable(endpointOf(second))).toBe(false);
+    expect(first.mesh?.peers).not.toContain(endpointOf(second));
+    // And it stays cut: the other end dials back, and is refused rather than
+    // quietly relinked.
+    await Bun.sleep(200);
+    expect(first.mesh?.reachable(endpointOf(second))).toBe(false);
+    // The instance that was cut off is still an instance; nothing here stopped
+    // it, which is what makes this a mesh edit and not a shutdown.
+    expect(second.self).toBeTruthy();
+  }, 20_000);
+
   test("stopping lets the links and the keys go", async () => {
     const { instance, peer } = await withFakePeer();
     await peer.greet(endpointOf(instance));

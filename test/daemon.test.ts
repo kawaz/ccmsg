@@ -15,6 +15,7 @@ import {
   registered,
   remove,
   rowFor,
+  FIRST_PORT,
   type StatusRow,
   stop,
   STOP_TIMEOUT_MS,
@@ -25,13 +26,12 @@ import {
 } from "../src/daemon/index.ts";
 import { DEFAULT_CONFIG, loadAll } from "../src/instance/index.ts";
 import { resolvePaths } from "../src/instance/paths.ts";
-import { endpoint, leasePort } from "./cluster.ts";
+import { leasePort } from "./cluster.ts";
 import { capture, Host, json, reapOrphans, writeConfigHome } from "./harness.ts";
 
-/** Register a config home under the name its own directory is called, which
- * is what a test that is not about naming would have typed. */
-function register(dir: string, options: Partial<AddOptions> = {}): Promise<InstanceRow> {
-  return add(process.env, basename(dir), { dir, ...options });
+/** Register a config home, as a test that is not about the options would. */
+function register(dir: string, options: AddOptions = {}): Promise<InstanceRow> {
+  return add(process.env, dir, options);
 }
 
 const hosts: Host[] = [];
@@ -85,10 +85,9 @@ describe("which config homes there are (daemon add / remove / list)", () => {
     expect(added.id).toMatch(/^[0-9a-f]{32}$/);
     expect((await list(process.env)).map((row) => row.dir)).toEqual([home]);
 
-    // Twice under the same name, and twice for the same config home, are both
-    // refused: one file per instance, and one instance per config home (A2).
+    // Twice is refused: one file per instance, and one instance per config
+    // home (A2), and the name a config home is registered under is its own.
     expect(register(home)).rejects.toThrow(CommandError);
-    expect(add(process.env, "elsewhere", { dir: home })).rejects.toThrow(CommandError);
     expect(await remove(process.env, "one")).toEqual({ name: "one", dir: home, removed: true });
     expect(await list(process.env)).toEqual([]);
     expect(remove(process.env, "one")).rejects.toThrow(CommandError);
@@ -119,9 +118,16 @@ describe("which config homes there are (daemon add / remove / list)", () => {
       "audit",
     ]);
     expect(instances).toMatchObject([{ name: "one", dir: home }]);
-    // What the instance runs with is the built-ins plus those presets: an
-    // instance that states nothing differs in nothing.
-    expect(instances[0]?.config).toEqual({ ...DEFAULT_CONFIG, dump: defaults.dump });
+    // What the instance runs with is the built-ins, those presets, and the one
+    // thing `add` settled for it: the address it listens on, which is also the
+    // address its peers on this host dial it at.
+    const port = instances[0]?.config.entry?.port as number;
+    expect(instances[0]?.config).toEqual({
+      ...DEFAULT_CONFIG,
+      dump: defaults.dump,
+      entry: { host: "127.0.0.1", port, source_ips: [], trusted_proxies: [] },
+      peers: [`http://127.0.0.1:${String(port)}/`],
+    });
   });
 
   test("adding a second config home leaves the presets a person edited alone", async () => {
@@ -136,11 +142,36 @@ describe("which config homes there are (daemon add / remove / list)", () => {
     expect((await loadAll(paths.configDir)).defaults.dump.presets).toEqual([]);
   });
 
-  test("a name that is not one is refused before anything is written", async () => {
+  test("a directory that is not a name is refused before anything is written", async () => {
     const at = host();
-    const home = at.home("one");
-    expect(add(process.env, "../escape", { dir: home })).rejects.toThrow(CommandError);
+    // The name is the directory's own, so a directory whose name an instance
+    // could not be called is refused where the name is chosen.
+    expect(register(at.home("Upper.Case"))).rejects.toThrow(CommandError);
     expect(await list(process.env)).toEqual([]);
+  });
+
+  test("the port is the next one after what is registered, and the harness is read off the directory", async () => {
+    const at = host();
+    const first = await register(at.home("one"));
+    const second = await register(at.home("two"));
+    const paths = resolvePaths(process.env);
+    const ports = (await loadAll(paths.configDir)).instances.map((one) => one.config.entry?.port);
+    // The range starts at 8643 and each instance after the first takes the next
+    // free one: a person adding a second config home states nothing. Which port
+    // it lands on depends on what else this machine is running, so what is
+    // fixed here is that it is in the range and that the second follows the
+    // first.
+    const [one, two] = ports as [number, number];
+    expect(one).toBeGreaterThanOrEqual(FIRST_PORT);
+    expect(two).toBe(one + 1);
+    expect([first.name, second.name]).toEqual(["one", "two"]);
+    // And each is in the mesh of this host, at the address the other dials.
+    const { instances } = await loadAll(paths.configDir);
+    expect(instances[0]?.config.peers).toEqual([
+      `http://127.0.0.1:${String(one)}/`,
+      `http://127.0.0.1:${String(two)}/`,
+    ]);
+    expect(instances[1]?.config.peers).toEqual(instances[0]?.config.peers);
   });
 });
 
@@ -182,16 +213,22 @@ describe("the round trip against real processes", () => {
       expect(row.running).toBe(true);
       expect(row.version).toBeString();
       expect(row.network).toBeString();
-      // No mesh configured, so the only instance it knows of is itself and the
-      // list of others is empty rather than absent.
-      expect(row.peers).toEqual([]);
-      // What a restart would apply, answered from the file: nothing was
-      // configured here beyond the presets `add` seeded, so the rest is the
-      // built-ins (§8.2).
+      // Two config homes on one host are two instances of one mesh (§7.1), so
+      // each names the other and neither names itself.
+      const mine = row.config.entry?.port;
+      expect(row.peers?.map((peer) => peer.endpoint)).toEqual(
+        row.config.peers.filter((peer) => !peer.includes(String(mine))),
+      );
+      // What a restart would apply, answered from the files: the presets
+      // `add` seeded, the address it picked, the mesh those addresses make,
+      // and the built-ins for everything nobody stated (§8.2).
       expect(row.config).toEqual({
         ...DEFAULT_CONFIG,
         dump: { presets: row.config.dump.presets },
+        entry: row.config.entry,
+        peers: row.config.peers,
       });
+      expect(row.config.entry?.host).toBe("127.0.0.1");
       expect(row.config.dump.presets.map((one) => one.name)).toContain("howto");
     }
 
@@ -259,7 +296,7 @@ describe("add and remove against a running supervisor", () => {
     const supervisor = await supervising();
     const home = at.home("one");
 
-    const added = await capture(() => main(["daemon", "add", "one", "--dir", home]));
+    const added = await capture(() => main(["daemon", "add", home]));
     expect(added.code).toBe(0);
     expect(json(added.out)).toMatchObject({ dir: home, running: true, supervised: true });
     expect(await loadAll(resolvePaths(process.env).configDir)).toMatchObject({
@@ -296,12 +333,13 @@ describe("add and remove against a running supervisor", () => {
     // where a link being torn down held a listener open past the point the
     // socket had already gone and the instance read as stopped.
     const leases = [leasePort(), leasePort(), leasePort()];
-    const peers = leases.map((lease) => endpoint(lease.port));
     const homes = ["one", "two", "three"].map((name) => at.home(name));
     for (const home of homes) await register(home);
+    // Nothing states the mesh: three instances of this host, each with a port
+    // of its own, are already each other's peers (§7.1).
     writeConfigHome(
       resolvePaths(process.env).configDir,
-      { peers },
+      {},
       Object.fromEntries(
         homes.map((dir, index) => [
           basename(dir),
@@ -348,7 +386,7 @@ describe("add and remove against a running supervisor", () => {
   test("with no supervisor, add writes the file and says nobody was told", async () => {
     const at = host();
     const home = at.home("one");
-    const added = await capture(() => main(["daemon", "add", "one", "--dir", home]));
+    const added = await capture(() => main(["daemon", "add", home]));
     expect(added.code).toBe(0);
     expect(json(added.out)).toMatchObject({ dir: home, running: false, supervised: false });
     expect((await loadAll(resolvePaths(process.env).configDir)).instances).toBeArrayOfSize(1);
@@ -521,14 +559,14 @@ describe("what a command answers with", () => {
     const at = host();
     const home = at.home("one");
 
-    const added = await capture(() => main(["daemon", "add", "one", "--dir", home]));
+    const added = await capture(() => main(["daemon", "add", home]));
     expect(added.code).toBe(0);
     expect(json(added.out)).toMatchObject({ dir: home, running: false });
 
     const listed = await capture(() => main(["daemon", "list"]));
     expect(json(listed.out)).toBeArrayOfSize(1);
 
-    const refused = await capture(() => main(["daemon", "add", "one", "--dir", home]));
+    const refused = await capture(() => main(["daemon", "add", home]));
     expect(refused.code).toBe(1);
     expect(refused.out).toBe("");
     expect(json(refused.err)).toMatchObject({ error: { code: "file_exists" } });

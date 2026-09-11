@@ -10,7 +10,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { OP_NAMES, PROTOCOL_VERSION } from "@ccmsg/protocol";
+import { type Endpoint, OP_NAMES, PROTOCOL_VERSION } from "@ccmsg/protocol";
 import { DUMPS } from "../src/sessions/index.ts";
 import { KV_DIR } from "../src/kv/index.ts";
 import { OpError } from "../src/dispatch/index.ts";
@@ -21,8 +21,10 @@ import {
   type Env,
   Instance,
   isRunning,
+  loadAll,
   loadConfig,
   loadInstances,
+  savePeers,
   REAL_SOCKET,
   realSocketName,
   resolvePaths,
@@ -206,10 +208,10 @@ describe("config", () => {
   test("the four things config carries (§8.2)", async () => {
     const { root, env, home } = disposable();
     const dir = shared(root, {
-      peers: ["https://elsewhere.example/ccmsg/"],
       entry: { host: "127.0.0.1", port: 0, source_ips: ["127.0.0.1"] },
       upstream: { gateway_url: "https://gateway.example" },
     });
+    savePeers(dir, ["https://elsewhere.example/ccmsg/"] as Endpoint[]);
     const config = await loadConfig(dir, home);
     // The config home is the fourth, and it is the environment's rather than
     // the file's: an instance is the config home it was started in (A2).
@@ -219,6 +221,59 @@ describe("config", () => {
     expect(config.peers).toEqual(["https://elsewhere.example/ccmsg/"]);
     expect(config.entry?.source_ips).toEqual(["127.0.0.1"]);
     expect(config.upstream.gateway_url).toBe("https://gateway.example");
+  });
+
+  test("the mesh is the instances of this host, and then what peers.json names", async () => {
+    const { root } = disposable();
+    const dir = join(root, "config");
+    const entry = { host: "127.0.0.1", source_ips: [], trusted_proxies: [] };
+    writeConfigHome(
+      dir,
+      {},
+      {
+        one: { dir: "/a/.claude", entry: { ...entry, port: 8643 } },
+        two: { dir: "/b/.claude", entry: { ...entry, port: 8644 } },
+        // An instance with no entry serves the unix socket alone, so there is
+        // no address for a peer to dial and it is in nobody's list.
+        three: { dir: "/c/.claude" },
+      },
+    );
+    savePeers(dir, [
+      "https://far.example/ccmsg/",
+      // The address of an instance of this host, written by hand: taken once,
+      // because a list naming this instance twice would end its start (§7.1).
+      "http://127.0.0.1:8643/",
+    ] as Endpoint[]);
+    const { instances } = await loadAll(dir);
+    // The same list for every instance, its own address among them, local
+    // first: what a person reads opens with what this host is.
+    for (const instance of instances) {
+      expect(instance.config.peers).toEqual([
+        "http://127.0.0.1:8643/",
+        "http://127.0.0.1:8644/",
+        "https://far.example/ccmsg/",
+      ]);
+    }
+  });
+
+  test("a mesh stated in TypeScript says where a mesh is stated", async () => {
+    const { root, home } = disposable();
+    // Not "unknown field": a person writing this is not misspelling anything,
+    // so what they are told is where the thing they meant lives now.
+    expect(loadConfig(shared(root, { peers: [] }), home)).rejects.toThrow(/peers.json/);
+  });
+
+  test("what peers.json holds is endpoints, and each of them once", async () => {
+    const { root, home } = disposable();
+    const dir = shared(root, {});
+    writeFileSync(join(dir, "peers.json"), JSON.stringify({ peers: [] }));
+    expect(loadConfig(dir, home)).rejects.toThrow(/array of endpoint/);
+    writeFileSync(join(dir, "peers.json"), JSON.stringify(["not-a-url"]));
+    expect(loadConfig(dir, home)).rejects.toThrow(ConfigError);
+    writeFileSync(join(dir, "peers.json"), "{ this is not json");
+    expect(loadConfig(dir, home)).rejects.toThrow(/JSON/);
+    savePeers(dir, ["https://one.example/", "https://one.example/"] as Endpoint[]);
+    expect(loadConfig(dir, home)).rejects.toThrow(/repeats/);
   });
 
   test("an instance's own file builds on what the shared one returned", async () => {
@@ -267,21 +322,21 @@ describe("config", () => {
       { fork_origin: true },
       {
         mine: `export default ({ default: shared, config }: any) => {
-          shared.peers.push("https://nope.example/");
+          shared.dump.presets.push({ name: "no" });
           return config;
         };\n`,
       },
     );
     expect(loadConfig(dir, home)).rejects.toThrow(ConfigError);
-    // The copy it edits is its own: what it pushes onto is not what the next
-    // file is handed.
+    // The copy it edits is its own: what one file writes onto it is not what
+    // the next file is handed.
     writeConfigHome(
       dir,
-      { peers: ["https://one.example/"] },
+      { upstream: { gateway_url: "https://shared.example" } },
       {
         mine: `export default ({ config }: any) => {
           config.dir = ${JSON.stringify(home)};
-          config.peers.push("https://two.example/");
+          config.upstream.gateway_webhook_source = "mine";
           return config;
         };\n`,
         other: `export default ({ config }: any) => {
@@ -290,11 +345,10 @@ describe("config", () => {
         };\n`,
       },
     );
-    expect((await loadConfig(dir, home)).peers).toEqual([
-      "https://one.example/",
-      "https://two.example/",
-    ]);
-    expect((await loadConfig(dir, "/elsewhere/.claude")).peers).toEqual(["https://one.example/"]);
+    expect((await loadConfig(dir, home)).upstream.gateway_webhook_source).toBe("mine");
+    expect(
+      (await loadConfig(dir, "/elsewhere/.claude")).upstream.gateway_webhook_source,
+    ).toBeUndefined();
   });
 
   test("an async config file is read the same way", async () => {
@@ -354,7 +408,6 @@ describe("config", () => {
     writeConfigHome(
       dir,
       {
-        peers: ["https://one.example/ccmsg/", "https://two.example/ccmsg/"],
         entry,
         upstream: { terminal_gateway: "https://terminal.example" },
       },
@@ -389,7 +442,9 @@ describe("config", () => {
       expect(config.entry?.source_ips).toEqual(["127.0.0.1"]);
       expect(config.entry?.trusted_proxies).toEqual(["127.0.0.1/32"]);
       expect(config.upstream.terminal_gateway).toBe("https://terminal.example");
-      expect(config.peers).toHaveLength(2);
+      // Three instances of one host are three entries of one mesh, each of
+      // them written by nobody.
+      expect(config.peers).toHaveLength(3);
     }
     expect([one, two, three].map((config) => config.entry?.port)).toEqual([8643, 8644, 8645]);
     expect(one.upstream.gateway_url).toBe("https://gateway.example");
@@ -502,7 +557,7 @@ describe("the start order (§8.3)", () => {
     // whole of the recovery, with no leftover to clear by hand.
     expect(existsSync(resolvePaths(env).socket)).toBe(false);
     expect(existsSync(resolvePaths(env).lockFile)).toBe(false);
-    writeConfigHome(join(root, "config"), { peers: [] });
+    writeConfigHome(join(root, "config"), {});
     const instance = await startAt(env);
     expect(instance.config.peers).toEqual([]);
   });
@@ -1114,8 +1169,12 @@ async function started(child: Bun.Subprocess<"ignore", "pipe", "pipe">): Promise
  * the wrong thing. */
 type Assert<T extends true> = T;
 type Same<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
-export type _ConfigFields = Assert<Same<keyof InstanceConfig, keyof Draft>>;
-export type _InstanceFields = Assert<Same<keyof InstanceConfig | "dir", keyof InstanceDraft>>;
+// `peers` is the one field of a config that no file writes: it is derived from
+// the instances of this host and `peers.json`, so the declarations a person
+// writes against do not offer it.
+type Written = Exclude<keyof InstanceConfig, "peers">;
+export type _ConfigFields = Assert<Same<Written, keyof Draft>>;
+export type _InstanceFields = Assert<Same<Written | "dir", keyof InstanceDraft>>;
 // Down through the shapes that hang below it, since a field added inside the
 // launcher or an entry is as invisible from the top level as one added beside
 // them. What the copy states differently on purpose is optionality: a file may
