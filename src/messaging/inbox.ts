@@ -33,13 +33,13 @@ type Record_ =
 
 /** What was said to a session and has not reached it.
  *
- * The one thing here that nothing else can reconstruct (§3.6): the sender's
+ * The one thing here that nothing else can reconstruct (DESIGN §2.5): the sender's
  * `message.send` has already been answered, no transcript holds a message that
  * was never handed over, and the text lives nowhere else. Losing this file
  * loses the words.
  *
  * One file rather than one per sid. Both are append-only and both mean the same
- * thing for removal and expiry (§4.3); a single file makes the write path one
+ * thing for removal and expiry (DESIGN §6.7); a single file makes the write path one
  * open handle and makes "what is undelivered right now" one replay. */
 export class Inbox {
   readonly #held = new Map<Sid, InboxMessage[]>();
@@ -100,7 +100,7 @@ export class Inbox {
   }
 
   /** Note that messages reached their session, which is what takes them out of
-   * the inbox (§4.3). */
+   * the inbox (DESIGN §6.7). */
   delivered(sid: Sid, mids: readonly string[]): void {
     const held = this.#held.get(sid);
     if (held === undefined || mids.length === 0) return;
@@ -112,7 +112,7 @@ export class Inbox {
   }
 
   /** Every session something is waiting for. What reads it is the offer of
-   * §4.3: when a session becomes able to receive, what it is owed has to be
+   * DESIGN §6.7: when a session becomes able to receive, what it is owed has to be
    * findable without asking about each sid in turn. */
   sids(): Sid[] {
     return [...this.#held.keys()];
@@ -146,7 +146,7 @@ export class Inbox {
     else this.#held.set(record.sid, left);
   }
 
-  /** Drop what is past the window the contract sets (DV-Q4). Nothing is
+  /** Drop what is past the window the contract sets (DR-0008). Nothing is
    * appended for an expiry: the same clock reaches the same verdict on the next
    * replay, so writing it down would record a conclusion rather than an event. */
   #expire(now: Timestamp, only?: Sid): void {
@@ -185,7 +185,7 @@ export class Inbox {
 }
 
 /** Where the inbox lives for an instance whose state directory is `stateDir`
- * (§8.1: every per-instance path is derived from its config home). */
+ * (DESIGN §8.1: every per-instance path is derived from its config home). */
 export function inboxPath(stateDir: string): string {
   return join(stateDir, INBOX_FILE);
 }

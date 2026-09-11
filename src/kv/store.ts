@@ -19,7 +19,7 @@ export const KV_DIR = "kv";
 
 /** The values clients keep here, and the topic that shows them changing.
  *
- * Written down, unlike almost everything else this instance holds (§3.6): a
+ * Written down, unlike almost everything else this instance holds (DESIGN §2.5): a
  * value here was typed by a person and exists nowhere else — the theme a
  * browser is showing is a copy of it, not its source — so losing it on a
  * restart loses what they set. It is not a derived value, which is what M4

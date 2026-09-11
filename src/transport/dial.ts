@@ -16,7 +16,7 @@ export interface DialOptions {
 
 /** A connection this instance opened, as the same `Conn` an accepted one is.
  *
- * daemon-v2 §3.1 has one connection type above transport, and a mesh link is a
+ * DESIGN §2.1 has one connection type above transport, and a mesh link is a
  * connection of that layer whichever end dialled it: the two differ in who
  * opened the socket and in nothing the layers above can see. */
 export async function dialWs(options: DialOptions): Promise<Conn> {

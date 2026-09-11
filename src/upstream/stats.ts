@@ -47,7 +47,7 @@ export async function readStats(
   return stats;
 }
 
-/** Read the gateway's document as this contract's answer (§3.5). The dates are
+/** Read the gateway's document as this contract's answer (DESIGN §2.4). The dates are
  * the gateway's own keys and are not reinterpreted: a day here means whatever
  * it means there. */
 export function statsOf(value: unknown): LlmStatsReadResult | undefined {

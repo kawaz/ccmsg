@@ -24,7 +24,7 @@ export function wsEndpoint(endpoint: Endpoint): string {
 /** Where one connection's key is fetched, and the challenge for it left.
  *
  * A plain request rather than a frame on the link, because this is the second
- * connection of §6: the protocol asks that the key be fetched outside the
+ * connection of mesh-peer-auth §6: the protocol asks that the key be fetched outside the
  * connection being authenticated. */
 export function jwkEndpoint(endpoint: Endpoint, kid: string): string {
   return `${endpoint}${JWK_ROUTE}${encodeURIComponent(kid)}`;
@@ -66,7 +66,7 @@ export function meshFrameOf(frame: unknown): MeshFrame | undefined {
   return typeof jws === "string" ? { mesh: "proof", jws } : undefined;
 }
 
-/** What a key request carries: the challenge the proof must sign (§6). */
+/** What a key request carries: the challenge the proof must sign (mesh-peer-auth §6). */
 export interface JwkRequest {
   readonly ver: number;
   readonly challenge: string;

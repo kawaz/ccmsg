@@ -21,7 +21,7 @@ import type { TranscriptFiles } from "../transcript/index.ts";
 
 /** Where dumps land: one directory under this instance's own state, named
  * after the config home it answers for like every other per-instance path
- * (§8.1). The caller never supplies a path, so there is none to contain. */
+ * (DESIGN §8.1). The caller never supplies a path, so there is none to contain. */
 export const DUMPS = "dumps";
 
 /** What a dump file is called. Two extensions rather than one so that a reader

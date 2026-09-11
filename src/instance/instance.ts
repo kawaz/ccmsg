@@ -111,7 +111,7 @@ export interface StartOptions {
    *
    * Passed by value rather than through the environment, because the
    * environment is read for a different question: which session the process
-   * runs inside, and therefore which config home *that* means (§3.8). A
+   * runs inside, and therefore which config home *that* means (DESIGN §4.1). A
    * `daemon run <dir>` started from inside a session of another harness would
    * otherwise answer for the config home of whoever started it. Absent means
    * the environment decides, which is what a process nobody named a directory
@@ -120,7 +120,7 @@ export interface StartOptions {
   /** Mirror the log to stderr. A foreground run wants it; a test does not. */
   readonly echoLog?: boolean;
   /** Whether this start is the one that reads the edited files and writes down
-   * what checked out (§8.2).
+   * what checked out (DESIGN §8.2).
    *
    * A supervisor does that for the instances it starts, so its children read
    * what it applied and write nothing: one writer means no two processes
@@ -144,19 +144,19 @@ export interface StartOptions {
 }
 
 /** The mesh intervals a caller may shorten. The values themselves, and why they
- * are what they are, belong to the mesh (§8.2, §8.3). */
+ * are what they are, belong to the mesh (DESIGN §8.2, §8.3). */
 export interface MeshTiming {
   readonly heartbeatMs?: number;
   readonly heartbeatTimeoutMs?: number;
   readonly reconnectMinMs?: number;
   readonly forwardTimeoutMs?: number;
-  /** The clock the retention window of §7.5 is read against, so a test can
+  /** The clock the retention window of DESIGN §7.5 is read against, so a test can
    * pass it without waiting a week. */
   readonly now?: () => Timestamp;
 }
 
 /** Startup found another instance already serving this config home. Nothing
- * was created and nothing has to be undone (§8.3 step 2). */
+ * was created and nothing has to be undone (DESIGN §8.3 step 2). */
 export interface AlreadyRunning {
   readonly kind: "already_running";
   readonly pid: number;
@@ -168,7 +168,7 @@ export function isRunning(outcome: StartOutcome): outcome is Instance {
   return outcome instanceof Instance;
 }
 
-/** Start one instance, in the order of §8.3.
+/** Start one instance, in the order of DESIGN §8.3.
  *
  * The order is the point of this function: the lock before anything is
  * created, the config before anything is derived from it, the pid before the
@@ -191,15 +191,15 @@ export async function start(options: StartOptions = {}): Promise<StartOutcome> {
   const log = new Log(paths.logFile, options.echoLog ?? true);
   try {
     // 3. the config. A broken one ends the start rather than turning the
-    // setting it carried silently off (DV-Q9).
+    // setting it carried silently off (DR-0004).
     const config = await configFor(paths, log, options.settle ?? true);
     // What the config says of the gateway, resolved before anything is built
     // from it: a webhook source whose secret cannot be read ends the start
-    // here, for the same reason a broken config does (DV-Q9).
+    // here, for the same reason a broken config does (DR-0004).
     const gateway = gatewaySetup(config.upstream, paths.configFile, env);
     // The translation helper, checked the same way and for the same reason: a
     // program that was named and cannot be run is a setting that cannot be
-    // honoured (DV-Q9).
+    // honoured (DR-0004).
     const helper = translateSetup(config.upstream, paths.configFile);
     // 4. this instance's identity, written the first time it is asked for.
     //
@@ -211,7 +211,7 @@ export async function start(options: StartOptions = {}): Promise<StartOutcome> {
     // 5. the mesh, for an instance the data names an address for.
     //
     // Which entry of the list is this instance is its own row, so nothing has
-    // to be asked of the network to settle it (§7.1). The WebSocket is still
+    // to be asked of the network to settle it (DESIGN §7.1). The WebSocket is still
     // bound here and handed over, because the instance does not exist yet and
     // a peer may dial the moment the address is up.
     const mesh = meshFor(id, config, log, options.meshTiming);
@@ -246,7 +246,7 @@ export async function start(options: StartOptions = {}): Promise<StartOutcome> {
  * the same place: what this instance runs with is a value that checked out.
  * A config that does not hold leaves the applied one standing and is written
  * to the log, because an instance that was serving a session is not something
- * a typo should take down (§8.3).
+ * a typo should take down (DESIGN §8.3).
  *
  * A config home nothing states settings for runs the built-in ones, which is
  * the unix socket and no mesh: `daemon run` on a directory nobody registered
@@ -299,7 +299,7 @@ function meshFor(
  *
  * The connection registry is shared rather than copied: a connection accepted
  * during self-identification is one of the instance's, and two registries would
- * mean the stop order (§8.5 step 3) reaching only one of them. */
+ * mean the stop order (DESIGN §8.5 step 3) reaching only one of them. */
 export interface MeshWiring {
   readonly conns: ConnRegistry;
   readonly ws: Listener;
@@ -343,11 +343,11 @@ async function bindForMesh(config: InstanceConfig, mesh: Mesh): Promise<MeshWiri
 }
 
 /** One running instance: the layers wired together, and the two lifecycle
- * orders of §8.3 and §8.5. */
+ * orders of DESIGN §8.3 and §8.5. */
 export class Instance {
   readonly startedAt: Timestamp = Date.now();
   readonly #conns: ConnRegistry;
-  /** The mesh, on an instance configured for one (§7). */
+  /** The mesh, on an instance configured for one (DESIGN §7). */
   readonly #mesh: Mesh | undefined;
   /** The WebSocket listener, when it had to be bound before this instance
    * existed so that self-identification could reach it. */
@@ -372,7 +372,7 @@ export class Instance {
   readonly #proxies: readonly Cidr[];
   readonly #handlers: Handlers;
   readonly #capabilities: ReadonlySet<Capability>;
-  /** Set the moment shutdown starts, which is the re-entry guard of §8.5 step
+  /** Set the moment shutdown starts, which is the re-entry guard of DESIGN §8.5 step
    * 1: a request arriving after it is refused rather than half-served. */
   #stopping = false;
   #stopped: Promise<void> | undefined;
@@ -425,7 +425,7 @@ export class Instance {
     ]);
     // The mesh is the rest of the cluster as the topic mechanism sees it: what
     // the peers have stated, and where a local subscription has to travel to
-    // (§7.4). An instance without one has no other instance to hear from.
+    // (DESIGN §7.4). An instance without one has no other instance to hear from.
     this.#topics = new Topics(this.self, this.#capabilities, this.#mesh);
     this.#mesh?.bind({
       handle: (frame, conn) => this.handle(frame, conn),
@@ -441,7 +441,7 @@ export class Instance {
         if (Array.isArray(stated)) this.#auth.merge(stated);
       },
       // The mesh view is this instance's own, so the topic that carries it is
-      // restated when that view moves (§7.5).
+      // restated when that view moves (DESIGN §7.5).
       changed: () => {
         this.#instances.refresh();
         this.#linkMoved();
@@ -449,7 +449,7 @@ export class Instance {
     });
 
     // What the gateway saw. It feeds two topics and one input of the sessions
-    // domain (§5.1), so it is built before both.
+    // domain (DESIGN §4.2), so it is built before both.
     this.#gateway = new Gateway({
       self: this.self,
       setup,
@@ -480,7 +480,7 @@ export class Instance {
 
     // The transcript tails and their folds. Built before the sessions domain
     // and reading from it lazily: the fold is one of the sessions domain's
-    // inputs (§5.1) while the path to follow is one of its outputs, and the
+    // inputs (DESIGN §4.2) while the path to follow is one of its outputs, and the
     // two meet at the moment a tail starts rather than at construction.
     this.#transcripts = new Transcripts({
       self: this.self,
@@ -521,7 +521,7 @@ export class Instance {
       onChanged: () => {
         this.#status.refresh();
         // A session that is live again is one route (a) can be tried against,
-        // which is what the inbox is waiting for (§4.3).
+        // which is what the inbox is waiting for (DESIGN §6.7).
         void this.#delivery.retry();
       },
       ...(pollMs === undefined ? {} : { pollMs }),
@@ -530,7 +530,7 @@ export class Instance {
     // The topics whose value is the fold's error state, over the sessions the
     // instance holds. They are the other thing that keeps a tail running: a
     // subscriber watching the list of stopped sessions is watching every
-    // session's fold, and the tails behind it run only while it does (§6.3).
+    // session's fold, and the tails behind it run only while it does (DESIGN §6.3).
     this.#status = new SessionStatus({
       self: this.self,
       sessions: () => this.#sessions.connectedSids(),
@@ -549,9 +549,9 @@ export class Instance {
 
     const inbox = new Inbox(inboxPath(paths.stateDir));
     inbox.load();
-    // Route (a) is the harness's own way in (§4.1): Claude Code's messaging
+    // Route (a) is the harness's own way in (DESIGN §6.5): Claude Code's messaging
     // socket, Codex's thread queue. Which one an instance speaks follows the
-    // config home it answers for (§3.8), and the flag turns the route off for
+    // config home it answers for (DESIGN §4.1), and the flag turns the route off for
     // either.
     this.#direct = !config.direct_delivery
       ? new DisabledDirectRoute()
@@ -597,7 +597,7 @@ export class Instance {
     this.#topics.attach("llm.status", this.#gateway.statusResource);
 
     // The one thing here that is written down and is nobody's derived value
-    // (§3.6): what a person saved through a client, which no other party holds
+    // (DESIGN §2.5): what a person saved through a client, which no other party holds
     // a copy of. It owns `kv:<ns>` and is the only publisher of it.
     const kv = new KvStore(join(paths.stateDir, KV_DIR), this.self, (topic, data) => {
       this.#topics.publish(topic, data);
@@ -606,7 +606,7 @@ export class Instance {
 
     // The credentials, tokens and removals the cluster shares (DR-0001 §2.6).
     // Written down beside the store and for the same reason: none of it is
-    // derived from anything else this instance holds (§3.6).
+    // derived from anything else this instance holds (DESIGN §2.5).
     const records = new AuthRecords({
       dir: recordsDir(paths.stateDir),
       self: this.self,
@@ -695,7 +695,7 @@ export class Instance {
     });
   }
 
-  /** 7-8 of §8.3: the pid, then the listeners with the unix socket first, then
+  /** 7-8 of DESIGN §8.3: the pid, then the listeners with the unix socket first, then
    * the peers. */
   async listen(): Promise<void> {
     // Before any listener: a client that can connect can always find the
@@ -742,13 +742,13 @@ export class Instance {
             this.accepted(conn, info);
           },
           // The gateway posts to the address this instance already serves,
-          // behind the same entry check (§3.1).
+          // behind the same entry check (DESIGN §2.1).
           route: (request, source) => this.route(request, source),
         }),
       );
     }
     // 8. the peers. Every instance dials every one of them, and one that is not
-    // there is retried rather than waited for (§7.2).
+    // there is retried rather than waited for (DESIGN §7.2).
     this.#mesh?.connect();
     await Promise.resolve();
     this.log.write("started", {
@@ -810,17 +810,17 @@ export class Instance {
   }
 
   /** Whether the sessions watch is running. It is driven by subscription
-   * (§6.3), so this is how "the upstream watches stopped" is observable from
+   * (DESIGN §6.3), so this is how "the upstream watches stopped" is observable from
    * outside the domain that owns them. */
   get watching(): boolean {
     return this.#sessions.watching;
   }
 
-  /** When the gateway last saw inference for a session (§5.1).
+  /** When the gateway last saw inference for a session (DESIGN §4.2).
    *
    * The one input of the classification that arrives from outside this host,
    * and the only place it is observable from: it is an attribute of a row
-   * rather than a state (§5.2), so nothing on the wire carries it yet. */
+   * rather than a state (DESIGN §4.3), so nothing on the wire carries it yet. */
   gatewayActiveAt(sid: Sid): Timestamp | undefined {
     return this.#gateway.activeAt(sid);
   }
@@ -845,7 +845,7 @@ export class Instance {
    * the answer is read from: a peer that answers is the link working, and
    * every configured peer silent at once is the link gone. Nothing else is
    * probed — an instance does not dial the internet to have an opinion about
-   * it, and the peers are already being dialled for their own reasons (§8.3).
+   * it, and the peers are already being dialled for their own reasons (DESIGN §8.3).
    *
    * Two cases state no verdict rather than guessing one. `off` is an instance
    * with no mesh: nothing here watches the link at all. `unknown` is a mesh
@@ -872,7 +872,7 @@ export class Instance {
     for (const conn of this.#conns) conn.send(event);
   }
 
-  /** One frame, from either transport. The re-entry guard of §8.5 step 1 sits
+  /** One frame, from either transport. The re-entry guard of DESIGN §8.5 step 1 sits
    * here because this is the single door every request comes through. */
   async handle(frame: unknown, conn: Requester): Promise<DispatchResult> {
     if (this.#stopping) {
@@ -934,7 +934,7 @@ export class Instance {
     });
     if (decided.kind !== "forward") return decided;
     // The op belongs to another instance. Mesh carries it and brings the
-    // answer back under the id the caller used (§7.3); without a mesh there is
+    // answer back under the id the caller used (DESIGN §7.3); without a mesh there is
     // nothing that can reach it, which the driver names.
     //
     // Who it is forwarded as is stated here rather than copied from the
@@ -950,7 +950,7 @@ export class Instance {
    * The subject is the session an op names, and an op that names none is about
    * this instance and stays here. A session this instance holds is its own
    * whatever the cluster last said; one it does not hold is looked for in the
-   * routing table the `peers` topic is (§7.3). */
+   * routing table the `peers` topic is (DESIGN §7.3). */
   #owner(fields: Record<string, unknown>): InstanceId | undefined {
     const sid = fields["sid"];
     if (typeof sid !== "string" || this.#mesh === undefined) return undefined;
@@ -958,7 +958,7 @@ export class Instance {
     return this.#mesh.ownerOf(sid as Sid);
   }
 
-  /** Stop, in the order of §8.5. Repeating it waits for the first one. */
+  /** Stop, in the order of DESIGN §8.5. Repeating it waits for the first one. */
   stop(): Promise<void> {
     this.#stopped ??= this.#stop().finally(() => {
       this.#done.resolve();
@@ -976,7 +976,7 @@ export class Instance {
     // 1. refuse new work
     this.#stopping = true;
     // 2. stop the upstream watches. They run only while something is
-    // subscribed (§6.3), so dropping the subscriptions is what stops them.
+    // subscribed (DESIGN §6.3), so dropping the subscriptions is what stops them.
     for (const conn of this.#conns) this.#topics.dropAll(conn);
     // A tail may also be held for a value this instance states rather than for
     // a subscriber, and those holds end here.
@@ -988,23 +988,23 @@ export class Instance {
     // with it rather than outliving the daemon that has its pipe.
     this.#translate?.stop();
     // Route (a) holds a socket of its own, bound where the sessions' sockets
-    // are so their receipts can reach it (§4.1). It has a name on disk, so it
+    // are so their receipts can reach it (DESIGN §6.5). It has a name on disk, so it
     // is taken down here rather than left for the next run to find.
     this.#direct.close();
     // The mesh's links and its timers, let go here for the same reason: they
-    // are this instance's and do not outlive it (§7).
+    // are this instance's and do not outlive it (DESIGN §7).
     this.#mesh?.stop();
     // 3. tell the connections, while they can still be told
     const restarting: RestartingEvent = { ev: "restarting", instance: this.self };
     for (const conn of this.#conns) conn.send(restarting);
     // 4. settle what is persisted. `last_live` and the inbox are written as
     // they change rather than at exit, so there is nothing held back to flush;
-    // the log's writer is synchronous for the same reason (§3.6).
+    // the log's writer is synchronous for the same reason (DESIGN §2.5).
     this.log.write("stopping", { instance: this.self });
     // 5. let the resources go, the unix socket last. Closing takes the path
     // this process bound, and only that one: the stable address is a symlink
     // nothing here touches, because a successor may have already pointed it at
-    // itself (§8.5).
+    // itself (DESIGN §8.5).
     try {
       await this.#transport.close();
     } catch (cause) {
@@ -1023,7 +1023,7 @@ export class Instance {
   }
 }
 
-/** Who may reach the WebSocket at all (§3.1): an address the operator named.
+/** Who may reach the WebSocket at all (DESIGN §2.1): an address the operator named.
  *
  * An empty `source_ips` leaves the addresses to the bind, which for the default
  * loopback host is this machine. The `Origin` a request carries is not read:

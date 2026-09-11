@@ -59,7 +59,7 @@ export interface LlmStatusDeps {
 
 /** The gateway's report on the services behind it.
  *
- * `per_instance_whole` (§6.2): a frame replaces what this instance last said
+ * `per_instance_whole` (DESIGN §6.2): a frame replaces what this instance last said
  * and leaves other instances' reports alone, because the report is one document
  * the gateway behind this instance assembles and half of it means nothing on
  * its own.
@@ -85,7 +85,7 @@ export class LlmStatus implements UpstreamResource {
       this.#settling = undefined;
       void this.read();
     }, this.deps.settleMs ?? TROUBLE_SETTLE_MS);
-    // The instance must be able to leave while this is pending (§8.5).
+    // The instance must be able to leave while this is pending (DESIGN §8.5).
     this.#settling.unref?.();
   }
 
@@ -99,7 +99,7 @@ export class LlmStatus implements UpstreamResource {
     await this.#reading;
   }
 
-  // --- UpstreamResource (§6.3)
+  // --- UpstreamResource (DESIGN §6.3)
 
   start(): void {
     this.#listening = true;
@@ -156,7 +156,7 @@ const OFFICIAL_STATES: readonly LlmStatusOfficialState[] = [
 ];
 const OBSERVED_STATES: readonly LlmStatusObservedState[] = ["reachable", "failing", "unknown"];
 
-/** Read the gateway's document as this contract's report (§3.5).
+/** Read the gateway's document as this contract's report (DESIGN §2.4).
  *
  * The gateway already answers in Unix ms under these names, so nothing is
  * converted — but nothing is passed through unread either: every field is

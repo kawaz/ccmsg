@@ -45,14 +45,14 @@ export interface GatewaySetup {
   readonly statsUrl?: string;
 }
 
-/** Read the upstream section (§8.2).
+/** Read the upstream section (DESIGN §8.2).
  *
  * A setting that is there and cannot be honoured ends the start rather than
- * leaving the feature it asked for silently off (DV-Q9): an operator who named
+ * leaving the feature it asked for silently off (DR-0004): an operator who named
  * a webhook source wants the route, and an instance that came up without it
  * looks identical to one nobody is posting to. A section that is absent is not
  * broken — it states that this instance has no gateway, which costs the rows
- * one attribute and nothing else (§5.2). */
+ * one attribute and nothing else (DESIGN §4.3). */
 export function gatewaySetup(config: UpstreamConfig, file: string, env: Env): GatewaySetup {
   const name = config.gateway_webhook_source;
   const url = config.gateway_url;
@@ -112,7 +112,7 @@ export interface GatewayDeps {
   readonly setup: GatewaySetup;
   readonly publish: (topic: string, data: unknown) => void;
   /** The gateway saw something happen for a session, which is an input of the
-   * sessions domain (§5.1) rather than of either topic. */
+   * sessions domain (DESIGN §4.2) rather than of either topic. */
   readonly onActivity?: () => void;
   /** A session already known to be running was seen again: its clock moved,
    * and the row that carries it is what says so. */
@@ -173,7 +173,7 @@ export class Gateway {
     return this.status ?? SILENT;
   }
 
-  /** When the gateway last saw inference for a session (§5.1). */
+  /** When the gateway last saw inference for a session (DESIGN §4.2). */
   activeAt(sid: Sid, now?: Timestamp): Timestamp | undefined {
     return this.requests.activeAt(sid, now);
   }
@@ -184,7 +184,7 @@ export class Gateway {
     return handleWebhook(request, this.#source, this.deps.log);
   }
 
-  /** Stop what is pending. Called from the stop order (§8.5). */
+  /** Stop what is pending. Called from the stop order (DESIGN §8.5). */
   close(): void {
     this.status?.stop();
   }

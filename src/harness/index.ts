@@ -72,7 +72,7 @@ export const HARNESS: Record<Harness, HarnessFacts> = {
  * thread to the commands of its own turn. The narrower claim is the truer one,
  * so it is asked first. The reverse nesting — a Claude Code session started
  * from inside a Codex turn — reads as Codex. `--sid` overrides only the sid a
- * command speaks as, and not which instance it speaks to (§3.8).
+ * command speaks as, and not which instance it speaks to (DESIGN §4.1).
  *
  * A process no session runs inside — a person at a terminal, a supervisor —
  * matches nothing here, and the caller falls back to what it would have done

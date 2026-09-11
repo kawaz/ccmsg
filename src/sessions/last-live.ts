@@ -46,7 +46,7 @@ const VERSION = 1;
 
 /** The sessions that were running when this instance last saw them.
  *
- * One of the three things written to disk (§3.6): losing it loses the Paused
+ * One of the three things written to disk (DESIGN §2.5): losing it loses the Paused
  * and Disappeared rows of the list entirely, and nothing else on the host
  * remembers that a session used to be here. Only observations are stored — the
  * classification is derived from them at read time, never written (M4). */
@@ -62,7 +62,7 @@ export class LastLiveStore {
     private readonly id: InstanceId,
   ) {}
 
-  /** Read at startup (§8.3 step 4), before anything can ask for the list. A
+  /** Read at startup (DESIGN §8.3 step 4), before anything can ask for the list. A
    * file that is missing or unreadable starts an empty list: the daemon has no
    * way to recover it and refusing to start would cost more than the rows. */
   load(now: Timestamp = Date.now()): void {
@@ -95,7 +95,7 @@ export class LastLiveStore {
   /** Note a session as no longer live. A `stopped_at` already recorded for it
    * survives, since the session being gone is what that stop led to; the entry
    * carries one when the session declared it was going, which is what makes it
-   * Paused rather than Disappeared (§5.2). */
+   * Paused rather than Disappeared (DESIGN §4.3). */
   record(entry: StoredEntry): void {
     const stopped = this.#entries.get(entry.sid)?.stopped_at ?? entry.stopped_at;
     this.#entries.set(entry.sid, {
@@ -136,7 +136,7 @@ export class LastLiveStore {
 }
 
 /** Where the list lives for an instance whose state directory is `stateDir`
- * (§8.1: every per-instance path is derived from its config home). */
+ * (DESIGN §8.1: every per-instance path is derived from its config home). */
 export function lastLivePath(stateDir: string): string {
   return join(stateDir, LAST_LIVE_FILE);
 }

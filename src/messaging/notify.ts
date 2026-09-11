@@ -21,7 +21,7 @@ export interface NotifyDeps {
   /** How a session is shown. The contract has the issuing instance resolve it,
    * so the label is decided here rather than carried in the arguments. */
   readonly label: (sid: Sid) => string;
-  /** The one way a value reaches subscribers (§6.1). No `to`: a notification is
+  /** The one way a value reaches subscribers (DESIGN §6.1). No `to`: a notification is
    * for whoever is watching, not for one session. */
   readonly publish: (topic: string, data: unknown, instance: InstanceId) => PublishOutcome;
 }
@@ -34,7 +34,7 @@ export interface NotifyDeps {
  * as the same frame, which is what keeps "a notification" from meaning two
  * shapes depending on which op raised it.
  *
- * The topic is `event` granularity (§6.2): nothing is held, so there is no
+ * The topic is `event` granularity (DESIGN §6.2): nothing is held, so there is no
  * snapshot and no suppression — two identical notifications are two things
  * that happened. */
 export class Notify implements UpstreamResource {
@@ -79,7 +79,7 @@ export class Notify implements UpstreamResource {
     return [...this.#unread];
   }
 
-  // --- UpstreamResource (§6.3)
+  // --- UpstreamResource (DESIGN §6.3)
 
   /** Nothing upstream to run: a notification exists because an op raised it. */
   start(): void {}
@@ -87,7 +87,7 @@ export class Notify implements UpstreamResource {
   stop(): void {}
 
   /** An event topic has no current value, so a subscriber starts at the next
-   * thing that happens (§6.2). */
+   * thing that happens (DESIGN §6.2). */
   snapshot(): readonly TopicValue[] {
     return [];
   }
@@ -102,7 +102,7 @@ export class Notify implements UpstreamResource {
     // A notification is an occurrence, so nothing folds it away and a watcher
     // that cannot keep up is what stops it. The caller hears that rather than
     // the notification going nowhere: it is the one that decides whether to
-    // raise another (§6.4).
+    // raise another (DESIGN §6.4).
     if (this.deps.publish(NOTIFY, notification, this.deps.self) === "rate_limited") {
       throw new OpError(
         "rate_limited",

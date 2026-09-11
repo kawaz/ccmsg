@@ -21,7 +21,7 @@ const ROW_TOPICS: readonly string[] = ["peers", "agents"];
 
 /** The topics a subscriber sees the whole cluster on.
  *
- * A per-instance whole is relayable by construction (§6.2): a frame replaces
+ * A per-instance whole is relayable by construction (DESIGN §6.2): a frame replaces
  * its own instance's entries and leaves every other instance's alone, so
  * several instances can state the same topic name without colliding. The rows
  * above are relayable for the same reason read one element at a time. */
@@ -56,7 +56,7 @@ function rowsOf(topic: string, data: unknown): readonly SessionRow[] {
 
 export interface RelayDeps {
   /** Hand a relayed frame to this instance's own subscribers, under the
-   * instance that produced it (§7.4). */
+   * instance that produced it (DESIGN §7.4). */
   readonly publish: (topic: string, data: unknown, instance: InstanceId) => void;
   /** The clock, so a test can move the retention window without waiting it
    * out. */
@@ -64,7 +64,7 @@ export interface RelayDeps {
 }
 
 /** What the peers said, held on this instance so that losing a peer does not
- * empty the cluster view (§7.5).
+ * empty the cluster view (DESIGN §7.5).
  *
  * Two things live here and nowhere else: the last whole value each instance
  * stated per topic, and whether that instance can be reached right now. The
@@ -78,7 +78,7 @@ export interface RelayDeps {
 export class Relay {
   /** Per instance, the last whole value it stated per topic. */
   readonly #held = new Map<InstanceId, Map<string, unknown>>();
-  /** The mark of §7.5: when this instance stopped being reachable. Absent
+  /** The mark of DESIGN §7.5: when this instance stopped being reachable. Absent
    * while it is reachable. */
   readonly #lostAt = new Map<InstanceId, Timestamp>();
 
@@ -97,7 +97,7 @@ export class Relay {
    * peer it arrived from: a mesh of three relays transitively, and the frame
    * names its origin the whole way. Held under that origin, and passed on
    * unchanged — recomputing it would put the same judgement in two places
-   * (§7.4). */
+   * (DESIGN §7.4). */
   accept(instance: InstanceId, topic: string, data: unknown, snapshot = false): void {
     if (!isClusterTopic(topic)) return;
     this.#sweep();
@@ -134,7 +134,7 @@ export class Relay {
 
   /** The link to this instance is gone. What it said is kept and marked,
    * because dropping it would empty the view until the instance comes back
-   * and restates everything (§7.5). */
+   * and restates everything (DESIGN §7.5). */
   lost(instance: InstanceId): void {
     if (!this.#lostAt.has(instance)) this.#lostAt.set(instance, this.#now());
     this.#sweep();
@@ -175,7 +175,7 @@ export class Relay {
   }
 
   /** Which instance a session belongs to, read from the cluster values the
-   * peers stated (§7.3).
+   * peers stated (DESIGN §7.3).
    *
    * `peers` names every session an instance holds, connected and lost alike,
    * and is checked first. A session whose greeting has not reached its
@@ -199,7 +199,7 @@ export class Relay {
   /** Drop what an instance said once it has been gone for the retention
    * window. The window is the contract's, shared with `last_live` and the
    * inbox: past it, everything the value would point at is gone too
-   * (§7.5, DV-Q12). */
+   * (DESIGN §7.5, DR-0014). */
   #sweep(): void {
     const now = this.#now();
     for (const [instance, since] of this.#lostAt) {

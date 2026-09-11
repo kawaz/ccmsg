@@ -17,10 +17,10 @@ import type {
 
 export interface LlmRequestsDeps {
   readonly self: InstanceId;
-  /** The one way a value reaches subscribers (§6.1). */
+  /** The one way a value reaches subscribers (DESIGN §6.1). */
   readonly publish: (topic: string, data: unknown) => void;
   /** An event moved when a session was last seen running inference, which is
-   * an input of the sessions domain (§5.1) and not of this topic. Told when
+   * an input of the sessions domain (DESIGN §4.2) and not of this topic. Told when
    * the window opened, which is the moment the classification can change. */
   readonly onActivity?: () => void;
   /** The same session seen again inside a window already open: one attribute
@@ -32,7 +32,7 @@ export interface LlmRequestsDeps {
 
 /** Which of a session's gateway facts moved.
  *
- * `live` is the moment the classification of §5.1 can change, because the
+ * `live` is the moment the classification of DESIGN §4.2 can change, because the
  * window either opened or closed, and the sessions domain recomputes for it.
  * `clock` is the same session seen again inside a window that was already open
  * — the value of an attribute, not a section anything is in — so what it asks
@@ -209,7 +209,7 @@ export class LlmRequests implements UpstreamResource {
     else if (move === "clock") this.deps.onMoved?.(sid);
   }
 
-  /** When the gateway last saw inference for a session (§5.1). Undefined once
+  /** When the gateway last saw inference for a session (DESIGN §4.2). Undefined once
    * that is old enough to say nothing about whether the session is alive. */
   activeAt(sid: Sid, now: Timestamp = Date.now()): Timestamp | undefined {
     const at = this.#activeAt.get(sid);
@@ -237,7 +237,7 @@ export class LlmRequests implements UpstreamResource {
     }));
   }
 
-  // --- UpstreamResource (§6.3). There is nothing to start: the events are
+  // --- UpstreamResource (DESIGN §6.3). There is nothing to start: the events are
   // pushed to this instance whether or not anyone is listening, because the
   // sessions domain reads the same arrivals for a value of its own.
 
@@ -258,7 +258,7 @@ export class LlmRequests implements UpstreamResource {
    * A session already inside its window moves its clock and nothing else, so
    * the row it lands on is restated on its own: inference is observed several
    * times a second, and recomputing the domain for each would spend the whole
-   * of that work on one attribute of one row (§5.2). */
+   * of that work on one attribute of one row (DESIGN §4.3). */
   private active(sid: Sid, at: Timestamp): GatewayMove {
     const held = this.#activeAt.get(sid);
     if (held !== undefined && held >= at) return "none";

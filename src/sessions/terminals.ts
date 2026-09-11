@@ -9,7 +9,7 @@ export type TerminalReader = (pid: number) => Promise<Terminal | undefined>;
  *
  * `agents` states a session's terminal and the classification reads it: a live
  * session that neither holds a connection here nor names a terminal is the one
- * nothing can reach (§5.2, `live_unmanaged`). Both want the value on every
+ * nothing can reach (DESIGN §4.3, `live_unmanaged`). Both want the value on every
  * row, and neither may pay for it on every read — the harness's directory is
  * scanned whenever any question is asked of it, and reading every session's
  * environment there would spawn a child per session per question.

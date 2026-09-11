@@ -26,13 +26,13 @@ import type { DirectRoute } from "./direct.ts";
 import type { Inbox } from "./inbox.ts";
 
 /** The topic a message reaches its session on, and the only route in use while
- * route (a) waits for confirmation (§4.1). */
+ * route (a) waits for confirmation (DESIGN §6.5). */
 const INBOX = "inbox";
 
 /** What delivery reads about a session. Two questions, both answered by the
- * sessions domain from the inputs of §5.1: where a session stands, and which
+ * sessions domain from the inputs of DESIGN §4.2: where a session stands, and which
  * sessions are around — neither is asked of anything else, which is what keeps
- * the reasons of §4.2 from growing a source per reason. */
+ * the reasons of DESIGN §6.6 from growing a source per reason. */
 export interface SessionLookup {
   classify(sid: Sid): SessionState | undefined;
   peerRows(): PeerInfo[];
@@ -43,7 +43,7 @@ export interface SessionLookup {
  * `message.send` is a `cluster` op — any instance may be asked — but a message
  * reaches a session through the session's own connections, which are held by
  * the instance it greeted. So the op is answered here by carrying it there
- * (§3.2 step 6 is about `instance-local` ops; this is the same forwarding for
+ * (DESIGN §2.2 step 6 is about `instance-local` ops; this is the same forwarding for
  * the one op whose subject is elsewhere while its op is not). */
 export interface Cluster {
   /** Which instance holds this session, or nothing when the cluster has not
@@ -67,20 +67,20 @@ export interface DeliveryDeps {
   readonly cluster?: Cluster;
   readonly inbox: Inbox;
   /** Route (a). Off until it is confirmed against a running harness, which is
-   * condition 0 of §4.1 and is why this is handed in rather than built here. */
+   * condition 0 of DESIGN §6.5 and is why this is handed in rather than built here. */
   readonly direct: DirectRoute;
-  /** The one way a value reaches subscribers (§6.1), narrowed to the session a
+  /** The one way a value reaches subscribers (DESIGN §6.1), narrowed to the session a
    * message is for. */
   readonly publish: (topic: string, data: unknown, instance: InstanceId, to: Sid) => PublishOutcome;
   /** How many of that session's connections are listening on `inbox`. */
   readonly listeners: (topic: string, to: Sid) => number;
 }
 
-/** Delivery, and the inbox topic it delivers on (§4).
+/** Delivery, and the inbox topic it delivers on (DESIGN §6.5-6.8).
  *
- * Two things, as §4 splits them: the route a message takes, and what the sender
+ * Two things, as DESIGN §6.5-6.8 splits them: the route a message takes, and what the sender
  * is told when it took none. The second reads the classification and the inbox
- * and nothing else (§4.2) — a reason is a name for a state that was already
+ * and nothing else (DESIGN §6.6) — a reason is a name for a state that was already
  * there, never a state of its own. */
 export class Delivery implements UpstreamResource {
   #counter: number;
@@ -92,7 +92,7 @@ export class Delivery implements UpstreamResource {
   /** The messages an offer has taken responsibility for, per session. They are
    * still in the inbox — an offer that does not reach the end leaves them
    * there — but they are spoken for, so the snapshot below hands them to
-   * nobody: one message goes out on one route (§4.3). */
+   * nobody: one message goes out on one route (DESIGN §6.7). */
   readonly #claimed = new Map<Sid, Set<Mid>>();
 
   constructor(private readonly deps: DeliveryDeps) {
@@ -115,14 +115,14 @@ export class Delivery implements UpstreamResource {
     const direct = await this.deps.direct.send(to, message);
     if (direct === "delivered") {
       // Route (a) reaching this session is the session being able to receive,
-      // which is what the inbox waits for (§4.3). Whatever is still held for it
+      // which is what the inbox waits for (DESIGN §6.7). Whatever is still held for it
       // is offered now, on the route that just worked.
       await this.#offer(to);
       return { delivered: true };
     }
     if (direct === "refused") {
       // Turned away for now, which is neither delivered nor undeliverable: it
-      // waits in the inbox and is offered again (§4.4).
+      // waits in the inbox and is offered again (DESIGN §6.8).
       this.deps.inbox.hold(to, message);
       return { delivered: false, reason: "throttled" };
     }
@@ -133,7 +133,7 @@ export class Delivery implements UpstreamResource {
       }
       // The session is listening but is behind on what it has already been
       // offered, which is the same standing as route (a) turning the message
-      // away: it waits in the inbox and is offered again (§4.4).
+      // away: it waits in the inbox and is offered again (DESIGN §6.8).
       this.deps.inbox.hold(to, message);
       return { delivered: false, reason: "throttled" };
     }
@@ -146,11 +146,11 @@ export class Delivery implements UpstreamResource {
    * or named as one the cluster cannot answer for right now.
    *
    * Nothing when the cluster has no such session anywhere and every instance
-   * could be asked — which is the only case `session_not_found` covers (§4.2).
+   * could be asked — which is the only case `session_not_found` covers (DESIGN §6.6).
    * While an instance is out of reach the sid may well be its, so the sender is
    * told the reason rather than that the session does not exist. The message is
    * not held here either: the inbox that would offer it again is the one on the
-   * instance that owns the session (§4.3). */
+   * instance that owns the session (DESIGN §6.7). */
   async #elsewhere(to: Sid, input: HandlerInput): Promise<MessageSendResult | undefined> {
     const cluster = this.deps.cluster;
     if (cluster === undefined) return undefined;
@@ -162,7 +162,7 @@ export class Delivery implements UpstreamResource {
     }
     // The sender, as the owning instance will run the op as: the identity the
     // connection greeted with, which is the same thing `message.send` reads to
-    // decide who a message is from (§4.1).
+    // decide who a message is from (DESIGN §6.5).
     const answer = await cluster.forward(owner, input.args, callerOf(input));
     if (answer.kind === "reply") {
       const { ok: _ok, request_id: _id, ...body } = answer.response;
@@ -197,7 +197,7 @@ export class Delivery implements UpstreamResource {
   /** Hand a session what it is owed, oldest first, over route (a).
    *
    * Stops at the first message the route does not carry, whatever it answered:
-   * a refusal means the session is taking nothing more for now (§4.4), and an
+   * a refusal means the session is taking nothing more for now (DESIGN §6.8), and an
    * unavailable route means route (b) is the one that applies — either way the
    * rest stay held, in order, for the next time this session becomes able to
    * receive. */
@@ -223,7 +223,7 @@ export class Delivery implements UpstreamResource {
     }
   }
 
-  // --- UpstreamResource (§6.3)
+  // --- UpstreamResource (DESIGN §6.3)
 
   /** Nothing upstream to run: what is undelivered is already in hand, and the
    * messages that arrive later come through `send`. */
@@ -232,12 +232,12 @@ export class Delivery implements UpstreamResource {
   stop(): void {}
 
   /** The current value of `inbox` for whoever subscribed: everything still
-   * undelivered for that session (§6.2, element granularity — the snapshot is
+   * undelivered for that session (DESIGN §6.2, element granularity — the snapshot is
    * every element, a later frame is one).
    *
    * Subscribing is receiving, so the snapshot empties the inbox: the frame is
    * queued on the connection before this returns, and a message the session has
-   * been handed is not one that is still waiting for it (§4.3). A connection
+   * been handed is not one that is still waiting for it (DESIGN §6.7). A connection
    * with no session — a person watching — is handed nothing, because the topic
    * carries what was said to a session and they are not one.
    *
@@ -260,7 +260,7 @@ export class Delivery implements UpstreamResource {
   }
 
   /** The reason a message is waiting, named from the classification alone
-   * (§4.2). `preparing` is the live session with nowhere to put it: it is there,
+   * (DESIGN §6.6). `preparing` is the live session with nowhere to put it: it is there,
    * route (a) did not carry it, and nothing of its is listening yet.
    *
    * `instance_unreachable` is not here: it is the mesh's answer about an
@@ -280,7 +280,7 @@ export class Delivery implements UpstreamResource {
 
   /** The answer for a message that went to the inbox. Candidates ride along
    * when the addressee is gone, since that is when sending somewhere else is
-   * the sender's next move (§4.2). */
+   * the sender's next move (DESIGN §6.6). */
   #undelivered(to: Sid, reason: UndeliveredReason): MessageSendResult {
     if (reason !== "paused" && reason !== "disappeared") return { delivered: false, reason };
     const candidates = this.#candidates(to);
@@ -289,7 +289,7 @@ export class Delivery implements UpstreamResource {
       : { delivered: false, reason, candidates };
   }
 
-  /** Sessions live now in the repository the addressee belongs to (§4.2).
+  /** Sessions live now in the repository the addressee belongs to (DESIGN §6.6).
    *
    * The rows are one list of sessions, connected and lost alike, so which of
    * them can be written to is the classification — asked of the domain, the
@@ -319,7 +319,7 @@ export class Delivery implements UpstreamResource {
   }
 
   /** Who the message is from: the identity the connection greeted as, never
-   * anything the caller put in the arguments (§4.1).
+   * anything the caller put in the arguments (DESIGN §6.5).
    *
    * A session names itself with its sid. A person greets without one, which is
    * what the sender literal stands for — spelled out so a reader tells "a

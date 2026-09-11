@@ -1,6 +1,6 @@
 /** One bound address, and the way to give it up.
  *
- * `kind` exists for the stop order of daemon-v2 §8.5: the UDS is released after
+ * `kind` exists for the stop order of DESIGN §8.5: the UDS is released after
  * everything else, because a client reads "the unix socket refuses" as the
  * instance having finished leaving, and a successor may take the resources it
  * sees freed before that. */
@@ -15,7 +15,7 @@ export interface Listener {
   close(): Promise<void>;
 }
 
-/** The listeners one instance holds, closed in the order §8.5 requires. */
+/** The listeners one instance holds, closed in the order DESIGN §8.5 requires. */
 export class Transport {
   readonly #listeners: Listener[] = [];
 
@@ -29,7 +29,7 @@ export class Transport {
   }
 
   /** Release every address, the unix socket last. Callers do the steps that
-   * come before this one (§8.5 1-4: refuse new work, stop upstream watches,
+   * come before this one (DESIGN §8.5 1-4: refuse new work, stop upstream watches,
    * tell the connections, settle what is persisted). */
   async close(): Promise<void> {
     const held = [...this.#listeners];

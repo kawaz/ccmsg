@@ -7,7 +7,7 @@ import type { Harness } from "../harness/index.ts";
  * an answer, alongside a `waitingFor` naming what it waits on.
  *
  * Read out of the harness binary (2.1.263): `{status:"waiting",waitingFor:…}`.
- * This is the one thing the raw status decides (§5.1 / DV-Q5) — busy and idle
+ * This is the one thing the raw status decides (DESIGN §4.2 / DR-0009) — busy and idle
  * are the gateway's to say, so no other value of it is read here. */
 const WAITING = "waiting";
 
@@ -16,9 +16,9 @@ const WAITING = "waiting";
  * `fs.watch` is the route; this is not. macOS/Bun delivers FSEvents tens of
  * seconds late under load (measured in the old daemon while many test children
  * ran), and the poll exists so a change the watch is sitting on is picked up
- * before a person notices it is missing (§5.1). Five seconds is the interval
+ * before a person notices it is missing (DESIGN §4.2). Five seconds is the interval
  * the old daemon's `claude agents` poller ran at as its only route, and this
- * one replaces it as a backstop (DV-Q6), so it cannot be the slower of the
+ * one replaces it as a backstop (DR-0009), so it cannot be the slower of the
  * two. */
 export const CONFIRM_POLL_MS = 5_000;
 
@@ -32,11 +32,11 @@ const STATE_FILE = /^\d+\.json$/;
  * states and what the `agents` topic is; Codex says only that a thread has a
  * live writer, which answers "is it there" and nothing else. So `rows` is what
  * can be reported and `present` is what the classification reads, and a harness
- * that reports nothing still has its sessions classified (§5.1). */
+ * that reports nothing still has its sessions classified (DESIGN §4.2). */
 export interface OwnSessions {
   readonly running: boolean;
   /** Begins watching. Called when the first subscriber arrives and not before
-   * (§6.3 / §8.3: no upstream is read until somebody is listening). */
+   * (DESIGN §6.3 / §8.3: no upstream is read until somebody is listening). */
   start(): void;
   stop(): void;
   /** The harness's own rows, as `agents` answers with them. Empty for a
@@ -46,7 +46,7 @@ export interface OwnSessions {
   present(): ReadonlySet<Sid>;
 }
 
-/** The one this config home runs (§3.8). */
+/** The one this config home runs (DESIGN §4.1). */
 export function ownSessions(
   harness: Harness,
   configHome: string,
@@ -117,11 +117,11 @@ class CodexThreads implements OwnSessions {
 /** The sessions the harness itself reports, read from one config home.
  *
  * The directory is the whole input: it says which sessions exist and which is
- * waiting on a dialog (§5.1). Only the config home this instance was given is
+ * waiting on a dialog (DESIGN §4.2). Only the config home this instance was given is
  * ever opened (M6) — the path is handed in, and nothing here searches for
  * another one.
  *
- * Two things live here, and §6.3 separates them. Reading the directory answers
+ * Two things live here, and DESIGN §6.3 separates them. Reading the directory answers
  * a question, and is done whenever one is asked. Watching it says the answer
  * may have changed, which is only worth knowing while somebody is subscribed —
  * so the watch is what the subscription drives, and no answer waits on it. */
@@ -163,7 +163,7 @@ export class HarnessSessions implements OwnSessions {
   /** The directory as it is at this instant.
    *
    * Every answer comes from here rather than from anything the watch left
-   * behind. Which sessions exist is an input to the classification (§5.1), and
+   * behind. Which sessions exist is an input to the classification (DESIGN §4.2), and
    * classifying happens inside `message.send`'s decision and inside the
    * recompute that writes `last_live` — neither of which can hand back a
    * promise without changing what it means, and neither of which may depend on
@@ -209,7 +209,7 @@ export class HarnessSessions implements OwnSessions {
 /** One directory that says what the harness's sessions are, watched while
  * somebody is subscribed and read whenever an answer is wanted.
  *
- * The two things §6.3 separates live here. Reading the directory answers a
+ * The two things DESIGN §6.3 separates live here. Reading the directory answers a
  * question, and is done whenever one is asked. Watching it says the answer may
  * have changed, which is only worth knowing while somebody is listening — so
  * the watch is what the subscription drives, and no answer waits on it. */
@@ -274,7 +274,7 @@ type RowResult =
   | { readonly complete: true; readonly row?: AgentInfo };
 
 /** The conversion of one upstream document into the contract's spelling
- * (§3.5): renamed to snake_case, instants in Unix ms, and nothing carried over
+ * (DESIGN §2.4): renamed to snake_case, instants in Unix ms, and nothing carried over
  * that the contract does not name.
  *
  * A row whose process is gone is dropped: the file outlives a session that did
@@ -316,7 +316,7 @@ function alive(pid: number): boolean {
     return true;
   } catch {
     // EPERM would mean alive but ours to signal — impossible here, since the
-    // daemon and the sessions of its config home run as one uid (§2 A4).
+    // daemon and the sessions of its config home run as one uid (DESIGN §1.4 A4).
     return false;
   }
 }

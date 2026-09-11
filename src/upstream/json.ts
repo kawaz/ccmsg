@@ -1,6 +1,6 @@
 import type { Timestamp } from "@ccmsg/protocol";
 
-/** What every read of an upstream document is built from (§3.5).
+/** What every read of an upstream document is built from (DESIGN §2.4).
  *
  * The gateway's three documents are read the same way — a field is taken only
  * at the type this contract states for it, and anything else is absent — so the

@@ -11,7 +11,7 @@ import type {
   Timestamp,
 } from "@ccmsg/protocol";
 
-/** Everything one session's transcript is folded into (§3.3).
+/** Everything one session's transcript is folded into (DESIGN §2.3).
  *
  * One fold, not one per consumer: the same line settles whether the session is
  * stopped, when a person last spoke to it, which files it named and what is
@@ -23,9 +23,9 @@ import type {
 export interface TranscriptFacts {
   /** The error the latest turn ended on. Present only while it stands: a real
    * turn after it clears it, so this is the session's current state and not
-   * every error it ever hit. One of the two things §5.2 calls Waiting. */
+   * every error it ever hit. One of the two things DESIGN §4.3 calls Waiting. */
   readonly api_error?: SessionApiError;
-  /** When a person last put something into the session (§5.3). */
+  /** When a person last put something into the session (DESIGN §4.4). */
   readonly last_user_input_at?: Timestamp;
   /** What answered on the latest turn, and how hard it was asked to think.
    *
@@ -66,7 +66,7 @@ export const NO_FACTS: TranscriptFacts = {
  * Nothing outside this module parses a transcript record. A line arrives, the
  * fold updates what it can from it, and the values the domain states are read
  * off the result — so a value can never be derived by two different readings
- * of the same file (§3.3, M5).
+ * of the same file (DESIGN §2.3, M5).
  *
  * Feeding lines is order-dependent by design: the api error is the state of
  * the latest turn, so a later line undoing an earlier one is the point.
@@ -135,7 +135,7 @@ export class TranscriptFold {
     if (!isRecord(row)) return false;
     // A Codex rollout line settles one of these facts and none of the others,
     // so it is folded on its own rather than run past readers of records it
-    // does not have (§3.8).
+    // does not have (DESIGN §4.1).
     const rollout = rolloutRecord(row, str(row["type"]));
     if (rollout !== undefined) return this.#foldRollout(rollout);
     // Every value this fold derives, derived from the one parse (M5).
@@ -155,7 +155,7 @@ export class TranscriptFold {
    * The harness writes its own failures as assistant messages carrying
    * `isApiErrorMessage: true` ("Prompt is too long", "API Error: 500 …",
    * "Please run /login"): the turn stopped and the session sits idle until a
-   * person intervenes, which is why it counts as Waiting (§5.2). A row the
+   * person intervenes, which is why it counts as Waiting (DESIGN §4.3). A row the
    * model actually produced clears it — a row the harness wrote itself carries
    * `model: "<synthetic>"` and does not, so the harness's own "No response
    * requested." cannot pass for the agent answering again. A user row is not a
@@ -729,7 +729,7 @@ function merge(before: readonly string[] | undefined, added: unknown): string[] 
  * read one that has stopped growing. Both are the same act of interpretation,
  * so both live here: nothing outside this module turns a transcript line into
  * meaning, and the harness's own spellings — its record types, its block
- * kinds, its ISO instants — stop at this boundary (§3.5). */
+ * kinds, its ISO instants — stop at this boundary (DESIGN §2.4). */
 export interface TranscriptRecord {
   /** The record id a dump's bounds cut at. */
   readonly uuid?: string;
@@ -787,7 +787,7 @@ export function readRecord(line: string): TranscriptRecord | undefined {
  * uses appear in no Claude Code transcript — so the two formats are told apart
  * by the line rather than by anything the reader was told beforehand.
  *
- * What is read is what §5 asks a transcript for and a rollout answers: when a
+ * What is read is what DESIGN §4 asks a transcript for and a rollout answers: when a
  * person last spoke, and where the session runs. The rest of the fold's facts —
  * a session's todos, its teammates, the files it named — are Claude Code's own
  * records, and a Codex session simply declares none of them.
@@ -887,7 +887,7 @@ function isHuman(text: string): boolean {
 }
 
 /** A transcript instant, in the contract's spelling. The harness writes ISO
- * strings; the contract's `Timestamp` is Unix ms (§3.5). */
+ * strings; the contract's `Timestamp` is Unix ms (DESIGN §2.4). */
 function instant(value: unknown): Timestamp | undefined {
   const text = str(value);
   if (text === undefined) return undefined;

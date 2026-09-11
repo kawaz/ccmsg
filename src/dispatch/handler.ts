@@ -5,7 +5,7 @@ import type { ConnIdentity, SettledIdentity } from "./identity.ts";
  *
  * It is the `Conn` transport accepted, narrowed to what an op may do with it:
  * read the identity, push frames, and learn that the connection is gone. A
- * subscription is held by a connection and ends with it (daemon-v2 §6.3), so
+ * subscription is held by a connection and ends with it (DESIGN §6.3), so
  * this is what the topic mechanism keys its subscribers on. Declared here
  * rather than imported from transport because dispatch sits below it. */
 export interface Requester {
@@ -25,12 +25,12 @@ export interface Requester {
 /** What an op implementation receives.
  *
  * The arguments are already validated and the caller is already allowed
- * (daemon-v2 §3.2): a handler starts from "this may be run", so it holds no
+ * (DESIGN §2.2): a handler starts from "this may be run", so it holds no
  * check of its own. */
 export interface HandlerInput {
   readonly op: OpName;
   /** The connection the request arrived on. Ops that hold something for the
-   * length of a connection — the subscriptions of daemon-v2 §6.3 — need it;
+   * length of a connection — the subscriptions of DESIGN §6.3 — need it;
    * ops that only answer ignore it. */
   readonly conn: Requester;
   /** The whole request frame, validated against the op's request schema. */
@@ -40,7 +40,7 @@ export interface HandlerInput {
   /** Set only for ops the attribute table marks `scope: "role"`, where the role
    * changes what the reply may contain rather than whether the call is allowed.
    * This is the only route by which a role reaches an implementation
-   * (daemon-v2 §3.2). */
+   * (DESIGN §2.2). */
   readonly role?: Role;
 }
 

@@ -13,7 +13,7 @@ const AGENT_PREFIX = "agent-";
 const TEAMMATE_TASK = "in_process_teammate";
 
 /** Where one harness keeps transcripts under its config home, and how a file
- * there says which session it belongs to (§3.8).
+ * there says which session it belongs to (DESIGN §4.1).
  *
  * Two facts, because the two harnesses file the same thing differently. Claude
  * Code keeps one directory per working directory and names the file after the
@@ -76,9 +76,9 @@ const TEAMMATE = /^[A-Za-z0-9_-]{1,64}$/;
  * (M6) — nothing searches for another one. */
 export interface TranscriptFilesDeps {
   readonly configHome: string;
-  /** Which harness's tree is under it (§3.8). */
+  /** Which harness's tree is under it (DESIGN §4.1). */
   readonly harness: Harness;
-  /** Where a connected session said its transcript is (§5.1). A session that
+  /** Where a connected session said its transcript is (DESIGN §4.2). A session that
    * never greeted has none, and the walk below answers for it. */
   readonly announced: (sid: Sid) => string | undefined;
 }
@@ -133,7 +133,7 @@ export class TranscriptFiles {
   }
 
   /** Which standing a transcript was written from, which every item read out
-   * of it states (§3.6).
+   * of it states (DESIGN §2.5).
    *
    * The file itself does not say whether an agent was a teammate or an errand:
    * both are marked as sidechains and both are briefed the same way. What says

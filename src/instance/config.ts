@@ -14,7 +14,7 @@ import { parseCidr } from "./client.ts";
 
 /** Where the instance accepts WebSocket connections, and from whom.
  *
- * The two allowlists are the entry check of §3.1: what transport asks before a
+ * The two allowlists are the entry check of DESIGN §2.1: what transport asks before a
  * request is upgraded. They are config-driven because who may reach an
  * instance is a deployment fact, not a property of the code. */
 export interface EntryConfig {
@@ -111,14 +111,14 @@ export interface DumpConfig {
 }
 
 export interface InstanceConfig {
-  /** Which harness this config home runs (§3.8).
+  /** Which harness this config home runs (DESIGN §4.1).
    *
    * A setting rather than something discovered, because it decides where the
    * instance looks before there is anything there to look at: an empty config
    * home says nothing about the program it belongs to, and an instance that
    * guessed would walk the wrong tree for the whole of its first session. */
   readonly harness: Harness;
-  /** Every instance of the mesh, this one among them (§7.1).
+  /** Every instance of the mesh, this one among them (DESIGN §7.1).
    *
    * Data, and the same data on every host: a settings function is handed it
    * and may read it — an instance that wants to know who else there is has it
@@ -127,7 +127,7 @@ export interface InstanceConfig {
    * settles `endpoint` below. */
   readonly endpoints: readonly EndpointRow[];
   /** Where peers and people reach this instance: its own row of the mesh
-   * (§7.1).
+   * (DESIGN §7.1).
    *
    * Not something a settings file states — the row is, and two places to write
    * one address is one place for it to be wrong. An instance behind a reverse
@@ -140,7 +140,7 @@ export interface InstanceConfig {
   readonly entry?: EntryConfig;
   readonly upstream: UpstreamConfig;
   /** Whether delivery tries the harness's messaging socket before the `inbox`
-   * topic (§4.1 condition 0). On, because the protocol has been read off a
+   * topic (DESIGN §6.5 condition 0). On, because the protocol has been read off a
    * running harness; off is for a harness generation that turns out to speak
    * something else, and costs only the reach route (b) never had. */
   readonly direct_delivery: boolean;
@@ -157,7 +157,7 @@ export interface InstanceConfig {
  *
  * Its own class so startup can tell "the operator wrote something wrong" from
  * any other failure, and refuse to run rather than continuing with the feature
- * that setting was for silently off (§8.3, DV-Q9). */
+ * that setting was for silently off (DESIGN §8.3, DR-0004). */
 export class ConfigError extends Error {
   constructor(
     readonly file: string,
@@ -184,7 +184,7 @@ export const DEFAULT_CONFIG: InstanceConfig = {
 
 /** The file every instance's settings start from, and the directory holding
  * one file per instance. Both are read from the config home a person edits
- * (§8.2). The names are held here alone, so what the files are called is one
+ * (DESIGN §8.2). The names are held here alone, so what the files are called is one
  * edit rather than a search. */
 export const CONFIG_FILE = "config_v2.ts";
 export const INSTANCES_DIR = "instances";
@@ -216,10 +216,10 @@ const INSTANCE_FIELDS = ["dir", "name"] as const;
  * instance cannot work out for itself — which address of the several a host
  * has is the one its peers dial, and which of the entries is this instance.
  * Both are answered by the row carrying its own id, which is what settles
- * `self` (§7.1) without asking the network anything.
+ * `self` (DESIGN §7.1) without asking the network anything.
  *
  * Every instance of the mesh is in it, this host's and the others', so one
- * file can be copied to every host unchanged (§8.2). */
+ * file can be copied to every host unchanged (DESIGN §8.2). */
 export const ENDPOINTS_FILE = "endpoints.json";
 
 /** Which of them this host starts. An id here and not in the endpoints is a
@@ -233,7 +233,7 @@ export const SUPERVISOR_FILE = "supervisor.json";
  * Apart from the files a person edits because the two answer different
  * questions: what is being written, and what is running. A config that does
  * not check out never reaches here, which is what lets a broken edit be
- * reported without taking the host down (§8.3). */
+ * reported without taking the host down (DESIGN §8.3). */
 export const STATE_CONFIG_DIR = "config";
 export const SATISFIED_FILE = "satisfied.json";
 export const REJECTED_DIR = "config.rejected";
@@ -292,7 +292,7 @@ export function instanceFileName(id: string): string {
 }
 
 /** Read everything a person edits, call what has to be called, and check the
- * whole of it (DV-Q8, §8.3).
+ * whole of it (DR-0004, DESIGN §8.3).
  *
  * One pass rather than a check per file, because what makes a config right is
  * mostly between files: an id the supervisor starts has to be an entry of the
@@ -400,7 +400,7 @@ function readEndpoints(
     if (rows.some((row) => row.id === id)) at(file, `${where}.id repeats ${id}`);
     else if (rows.some((row) => row.endpoint === endpoint)) {
       // Two entries at one address would each be this instance to whoever
-      // dialled it, and neither could be told from the other (§7.1).
+      // dialled it, and neither could be told from the other (DESIGN §7.1).
       at(file, `${where}.endpoint repeats ${endpoint}`);
     } else rows.push({ id, endpoint: endpoint as Endpoint });
   }
@@ -468,7 +468,7 @@ async function instanceOf(
   if (read === undefined) return undefined;
   // Where this instance is reached: its own row of the mesh. An instance the
   // data does not name could not be dialled by anybody and could not settle
-  // what a handshake calls it (§7.1), so it is a config error rather than an
+  // what a handshake calls it (DESIGN §7.1), so it is a config error rather than an
   // instance with no address.
   const mine = endpoints.find((row) => row.id === id);
   if (mine === undefined) {

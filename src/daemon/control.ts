@@ -64,7 +64,7 @@ export function greetAsUser(conn: Conn): Promise<Record<string, unknown>> {
  * and everything else.
  *
  * By `request_id` rather than by arrival order, because the two are not the
- * same stream: an instance pushes topic frames of its own accord (§6), and one
+ * same stream: an instance pushes topic frames of its own accord (DESIGN §6), and one
  * of those landing between a request and its reply would otherwise be read as
  * the reply. It is not a rare window — greeting an instance that has mesh peers
  * is enough, since a peer connecting moves a row on `instances`. */

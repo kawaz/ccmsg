@@ -13,10 +13,10 @@ import { workspaceFolders } from "./workspace.ts";
 
 /** What the fold says stopped a session, read in one place.
  *
- * Three values rest on it: whether a live session is Waiting (§5.2), what
+ * Three values rest on it: whether a live session is Waiting (DESIGN §4.3), what
  * `session.errors` lists, and the `api_error` of `session.status:<sid>`. They
  * ask this rather than each reading the fold's field, so the three cannot come
- * to different answers about the same session (§7.4, M5). */
+ * to different answers about the same session (DESIGN §7.4, M5). */
 export function stoppedOn(facts: TranscriptFacts): SessionApiError | undefined {
   return facts.api_error;
 }
@@ -60,7 +60,7 @@ export function sessionStatusOf(
   };
 }
 
-/** Where a session works, as it greeted (§5.1). The same two values the file
+/** Where a session works, as it greeted (DESIGN §4.2). The same two values the file
  * surfaces are decided against, asked for here so that what `session.status`
  * says and what a read is admitted by come from one answer. */
 export interface SessionWhere {
@@ -72,7 +72,7 @@ export interface SessionStatusDeps {
   readonly self: InstanceId;
   /** The sessions this instance can follow a transcript of: the ones that
    * greeted, since a greeting is the only thing that names a transcript path
-   * (§5.1). A session it cannot follow has no error to fold. */
+   * (DESIGN §4.2). A session it cannot follow has no error to fold. */
   readonly sessions: () => readonly Sid[];
   readonly facts: (sid: Sid) => TranscriptFacts;
   /** Where each session works, for the two fields the transcript does not
@@ -81,12 +81,12 @@ export interface SessionStatusDeps {
   /** The tail behind a session's fold, asked for and let go by name. */
   readonly hold: (sid: Sid) => void;
   readonly release: (sid: Sid) => void;
-  /** The one way a value reaches subscribers (§6.1). */
+  /** The one way a value reaches subscribers (DESIGN §6.1). */
   readonly publish: (topic: string, data: unknown) => void;
 }
 
 /** The two topics the fold's error state feeds, and the tails they keep
- * running (§6.3).
+ * running (DESIGN §6.3).
  *
  * `session.errors` is one list for the instance and `session.status:<sid>` is
  * one session, so what they hold differs: the first wants every session's fold
@@ -108,7 +108,7 @@ export class SessionStatus implements UpstreamResource {
 
   constructor(private readonly deps: SessionStatusDeps) {}
 
-  // --- UpstreamResource (§6.3)
+  // --- UpstreamResource (DESIGN §6.3)
 
   start(topic: string): void {
     this.#wanted.add(topic);

@@ -86,7 +86,7 @@ const SKILL_FILE = join("skills", "ccmsg", "SKILL.md");
  * started against the default home has no variable saying so, and a Codex
  * session started from inside a Claude Code session inherits that session's
  * `CLAUDE_CONFIG_DIR` and session id — so a hook that only added its own would
- * still greet the other instance, as the other session (§3.8, measured). What
+ * still greet the other instance, as the other session (DESIGN §4.1, measured). What
  * is dropped is named here rather than left to the shell: the hook has to
  * speak for the session it fired for.
  *

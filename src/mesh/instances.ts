@@ -34,7 +34,7 @@ export function clusterView(
   );
 }
 
-/** The `instances` topic (§7.5).
+/** The `instances` topic (DESIGN §7.5).
  *
  * A link going down reaches a subscriber where it is already listening, rather
  * than only on its next greeting. The value is whole per instance: `reachable`
@@ -43,7 +43,7 @@ export function clusterView(
  * one sender's view entire and leaves every other sender's alone.
  *
  * Nothing is started or stopped by a subscription. The view exists because the
- * mesh exists, and reading it costs a walk over the configured peers (§6.3:
+ * mesh exists, and reading it costs a walk over the configured peers (DESIGN §6.3:
  * what subscription drives is a watch, and there is none here). */
 export class Instances implements UpstreamResource {
   constructor(

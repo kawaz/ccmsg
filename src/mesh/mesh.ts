@@ -58,7 +58,7 @@ export interface MeshClaim {
  * In the range WebSocket leaves to applications. It exists so the far end can
  * tell this closure from a fault: losing a glare is its normal course, and
  * reconnecting on it would reopen exactly the connection both sides just
- * agreed to drop (§8.1). */
+ * agreed to drop (mesh-peer-auth §8.1). */
 export const GLARE_CLOSE = 4000;
 
 /** How often a link is asked whether it is still there, and how long silence
@@ -78,7 +78,7 @@ export const GLARE_CLOSE = 4000;
 export const HEARTBEAT_MS = 20_000;
 export const HEARTBEAT_TIMEOUT_MS = 3 * HEARTBEAT_MS;
 
-/** The reconnection backoff (§8.2).
+/** The reconnection backoff (mesh-peer-auth §8.2).
  *
  * Loose on purpose: a peer that comes back dials us, so the moment it recovers
  * is signalled by its own start rather than found by our retries. What this
@@ -88,7 +88,7 @@ export const RECONNECT_MAX_MS = 60_000;
 
 /** How many key requests are answered per second, over all callers.
  *
- * The key endpoint is reached before anything is proven (§6), so it is the one
+ * The key endpoint is reached before anything is proven (mesh-peer-auth §6), so it is the one
  * surface an unauthenticated caller can make this instance do work on. The cap
  * is well above what a mesh of any size needs — one request per connection
  * established — and well below what would cost anything. */
@@ -96,7 +96,7 @@ const JWK_RATE_LIMIT = 20;
 const JWK_RATE_WINDOW_MS = 1_000;
 
 /** How long a forwarded op may take before its caller is told the instance
- * could not be reached (§7.3).
+ * could not be reached (DESIGN §7.3).
  *
  * Chosen rather than derived: no primary source states a deadline. The
  * reasoning is that the two outcomes this sits between are both worse than a
@@ -109,13 +109,13 @@ export const FORWARD_TIMEOUT_MS = 10_000;
 /** What the instance gives the mesh once it exists.
  *
  * The mesh is built before the instance, because the listener has to be up for
- * self-identification to reach it (§8.3), so the two things a link needs from
+ * self-identification to reach it (DESIGN §8.3), so the two things a link needs from
  * the instance arrive afterwards rather than through the constructor. */
 export interface MeshHost {
-  /** The one door a frame goes through (§3.2). A request a peer carried here
+  /** The one door a frame goes through (DESIGN §2.2). A request a peer carried here
    * is answered by the same dispatch every other request is. */
   handle(frame: unknown, conn: Requester): Promise<DispatchResult>;
-  /** Hand a relayed frame to this instance's own subscribers (§7.4). */
+  /** Hand a relayed frame to this instance's own subscribers (DESIGN §7.4). */
   publish(topic: string, data: unknown, instance: InstanceId): void;
   /** Take a frame on a topic the relay does not carry.
    *
@@ -125,7 +125,7 @@ export interface MeshHost {
    * receives it is the set itself, which merges by key (DR-0001 §2.6). */
   element(topic: string, instance: InstanceId, data: unknown): void;
   /** Which instances can be reached has changed, which is part of what this
-   * instance states on `peers` (§7.5). */
+   * instance states on `peers` (DESIGN §7.5). */
   changed(): void;
 }
 
@@ -134,7 +134,7 @@ export interface MeshDeps {
   readonly id: InstanceId;
   /** Every mesh endpoint, this instance's own among them. */
   readonly peers: readonly Endpoint[];
-  /** Which of them is this instance, as the data says (§7.1). */
+  /** Which of them is this instance, as the data says (DESIGN §7.1). */
   readonly self: Endpoint;
   readonly conns: ConnRegistry;
   readonly log?: (msg: string, fields?: Record<string, unknown>) => void;
@@ -144,7 +144,7 @@ export interface MeshDeps {
   readonly heartbeatTimeoutMs?: number;
   readonly reconnectMinMs?: number;
   readonly forwardTimeoutMs?: number;
-  /** The clock the retention window of §7.5 is read against. */
+  /** The clock the retention window of DESIGN §7.5 is read against. */
   readonly now?: () => Timestamp;
 }
 
@@ -153,16 +153,16 @@ interface Link {
   readonly conn: Requester;
   /** One actor per caller this link has spoken for, keyed by the identity
    * itself. Cached rather than made per request because a subscription is held
-   * by a connection and released when it closes (§6.3): the topic mechanism
+   * by a connection and released when it closes (DESIGN §6.3): the topic mechanism
    * has to see the same object each time one caller subscribes. */
   readonly actors: Map<string, PeerActor>;
-  /** Which end opened the socket, which is what the glare rule compares (§8.1). */
+  /** Which end opened the socket, which is what the glare rule compares (mesh-peer-auth §8.1). */
   readonly dialledByUs: boolean;
   readonly heartbeat: ReturnType<typeof setInterval>;
   lastHeard: number;
 }
 
-/** One request this instance forwarded and is waiting on (§7.3). */
+/** One request this instance forwarded and is waiting on (DESIGN §7.3). */
 interface Forwarded {
   readonly peer: Endpoint;
   /** The id the caller used, restored on the reply so the caller's connection
@@ -178,10 +178,10 @@ interface Forwarded {
  * The envelope's `caller` is taken as said. It is the one thing the
  * destination believes on the forwarder's word, and it can, because the link
  * is authenticated: mesh-peer-auth proved the far end is an instance on the
- * peer list, and a peer list is one deployment (§8.2). Everything else is
+ * peer list, and a peer list is one deployment (DESIGN §8.2). Everything else is
  * decided here — the role check reads this identity against this instance's
  * own attribute table, and so do the capability and locality checks, which is
- * what §7.3 means by putting a forwarded op through the steps again rather
+ * what DESIGN §7.3 means by putting a forwarded op through the steps again rather
  * than taking the forwarder's outcome for it.
  *
  * `from_instance` is not part of that judgement: the field says where the
@@ -213,11 +213,11 @@ class PeerActor implements Requester {
   }
 }
 
-/** One handshake this instance is verifying, as the receiving end (§5).
+/** One handshake this instance is verifying, as the receiving end (mesh-peer-auth §5).
  *
  * Everything the verification needs is here and nowhere else, so the whole of
  * what a handshake leaves behind is one map entry that is deleted when it
- * finishes — which is what §10.5 asks be true. */
+ * finishes — which is what mesh-peer-auth §10.5 asks be true. */
 interface Pending {
   readonly claim: MeshClaim;
   readonly challenge: string;
@@ -225,14 +225,14 @@ interface Pending {
   readonly fail: (cause: Error) => void;
 }
 
-/** One key this instance minted for a connection it dialled (§7). */
+/** One key this instance minted for a connection it dialled (mesh-peer-auth §7). */
 interface Minted {
   readonly key: EphemeralKey;
   readonly aud: Endpoint;
   conn?: Requester;
 }
 
-/** Which of two connections to one peer survives a glare (§8.1).
+/** Which of two connections to one peer survives a glare (mesh-peer-auth §8.1).
  *
  * The connection opened by the smaller `iss` is the one that stays. Neither is
  * better than the other — both were verified before either was dropped — so
@@ -249,7 +249,7 @@ export function glareKeepsNew(self: Endpoint, peer: Endpoint, dialledByUs: boole
  * what each of them is.
  *
  * Every instance dials every peer, so there is no side that owns a link and no
- * peer that cannot be recovered from the other end (§8, and §12's reason for
+ * peer that cannot be recovered from the other end (mesh-peer-auth §8, and mesh-peer-auth §12's reason for
  * not assigning the duty to one side). */
 export class Mesh {
   readonly #links = new Map<Endpoint, Link>();
@@ -258,7 +258,7 @@ export class Mesh {
   readonly #retries = new Map<Endpoint, ReturnType<typeof setTimeout>>();
   readonly #backoff = new Map<Endpoint, number>();
   /** Which of the configured endpoints is this instance, as the data said
-   * before anything is dialled and fixed from then on (§5.5). */
+   * before anything is dialled and fixed from then on (mesh-peer-auth §5.5). */
   readonly #self: Endpoint;
   /** The authenticated endpoint-to-id mapping (DR-0001 §2.1), in both
    * directions: a handshake writes it, `to_instance` reads it to find the link
@@ -280,13 +280,13 @@ export class Mesh {
   readonly #linkOf = new Map<Requester, Link>();
   readonly #forwarded = new Map<string, Forwarded>();
   /** The relayed topics local subscribers are asking for right now. `peers` is
-   * always among them: it is the routing table of §7.3, and a question about
+   * always among them: it is the routing table of DESIGN §7.3, and a question about
    * where a session lives is answered whether or not anyone is subscribed
-   * (§6.3, "reading the current value is not what subscription drives"). */
+   * (DESIGN §6.3, "reading the current value is not what subscription drives"). */
   readonly #demanded = new Set<string>(["peers", AUTH_TOPIC]);
   #host: MeshHost | undefined;
 
-  /** What the peers said, kept across a disconnection (§7.5). */
+  /** What the peers said, kept across a disconnection (DESIGN §7.5). */
   readonly relay: Relay;
 
   constructor(private readonly deps: MeshDeps) {
@@ -304,13 +304,13 @@ export class Mesh {
     });
   }
 
-  /** Give the mesh the instance it belongs to (§8.3). */
+  /** Give the mesh the instance it belongs to (DESIGN §8.3). */
   bind(host: MeshHost): void {
     this.#host = host;
   }
 
   /** The registry the mesh's own connections are in. It is the instance's, and
-   * is shared because a mesh link is one of its connections (§3.1). */
+   * is shared because a mesh link is one of its connections (DESIGN §2.1). */
   get conns(): ConnRegistry {
     return this.deps.conns;
   }
@@ -332,7 +332,7 @@ export class Mesh {
   /** The peers this instance dials: the configured list without itself.
    *
    * The list is the same on every instance, which is what lets one file be
-   * distributed to all of them (§8.2) — and it names this instance too, so
+   * distributed to all of them (DESIGN §8.2) — and it names this instance too, so
    * removing ourselves is the reader's job rather than the writer's. `identify`
    * is what found which entry that is. */
   get peers(): Endpoint[] {
@@ -342,7 +342,7 @@ export class Mesh {
 
   /** The peers taken off this host's list while this instance was running.
    *
-   * Config is read once (DV-Q8) and this does not change that: what a person
+   * Config is read once (DR-0004) and this does not change that: what a person
    * writes goes on taking effect at the next start. What this holds is the one
    * edit that cannot wait for one — an endpoint this host is no longer to be
    * talking to, which would otherwise stay connected until somebody restarted
@@ -369,7 +369,7 @@ export class Mesh {
   }
 
   /** Where peers reach this instance: the row of the mesh carrying its own id
-   * (§7.1). Everything that reads it — the handshake's `aud`, the mesh's own
+   * (DESIGN §7.1). Everything that reads it — the handshake's `aud`, the mesh's own
    * routes, what `hello` reports — is the one address the data states. */
   get self(): Endpoint {
     return this.#self;
@@ -385,7 +385,7 @@ export class Mesh {
   }
 
   /** What `hello` reports: this instance, then every configured peer, with
-   * whether it can be reached right now (§7.5).
+   * whether it can be reached right now (DESIGN §7.5).
    *
    * A peer no handshake has settled yet is listed without an id. The operator
    * configured that endpoint, so it is an entry of the cluster whether or not
@@ -409,7 +409,7 @@ export class Mesh {
   /** Whether any peer is currently out of reach.
    *
    * What separates "no instance in the cluster knows this session" from "an
-   * instance that might know it cannot be asked" — the one distinction §4.2
+   * instance that might know it cannot be asked" — the one distinction DESIGN §6.6
    * says rests on the mesh's connection state and on nothing else. */
   anyUnreachable(): boolean {
     return this.peers.some((peer) => !this.reachable(peer));
@@ -420,7 +420,7 @@ export class Mesh {
    * A session the cluster has named belongs to the instance its `peers` row
    * states. One nobody has named while a peer is out of reach is answered with
    * that peer: forwarding there fails and the caller is told
-   * `instance_unreachable`, which is what §4.2 asks for in place of deciding
+   * `instance_unreachable`, which is what DESIGN §6.6 asks for in place of deciding
    * the session does not exist. */
   ownerOf(sid: Sid): InstanceId | undefined {
     const owner = this.relay.owner(sid);
@@ -436,7 +436,7 @@ export class Mesh {
     return undefined;
   }
 
-  // --- op forwarding (§7.3) ---
+  // --- op forwarding (DESIGN §7.3) ---
 
   /** Carry one op to the instance that owns its subject, and bring the answer
    * back.
@@ -499,7 +499,7 @@ export class Mesh {
    * What the person's authentication needs of a peer (`auth.resolve`,
    * `auth.rotate`) is a fact only its issuer holds, asked for by the instance
    * that needs it — so the `caller` is this instance's own role, and the
-   * request travels the ordinary forwarding path (§7.3, DR-0001 §2.6).
+   * request travels the ordinary forwarding path (DESIGN §7.3, DR-0001 §2.6).
    *
    * The body of the reply is answered, and a refusal is thrown as the error the
    * far end named, so a caller reads one outcome rather than a result kind. */
@@ -528,7 +528,7 @@ export class Mesh {
     return this.#linkOf.has(conn);
   }
 
-  /** The connection a forwarded request is dispatched as (§7.3).
+  /** The connection a forwarded request is dispatched as (DESIGN §7.3).
    *
    * The caller the envelope names, on the link it arrived over. A request that
    * names none is dispatched as the link itself, whose role is `instance` —
@@ -549,7 +549,7 @@ export class Mesh {
     return actor;
   }
 
-  // --- event relay (§7.4) ---
+  // --- event relay (DESIGN §7.4) ---
 
   /** The current value of a relayed topic, one entry per instance that has
    * stated one. Handed to a fresh local subscriber beside this instance's own
@@ -561,12 +561,12 @@ export class Mesh {
   /** A local subscriber appeared on a cluster topic, or the last one left.
    *
    * The subscription travels: what a subscriber asks of this instance, this
-   * instance asks of every peer, and the frames come back unchanged (§7.4).
+   * instance asks of every peer, and the frames come back unchanged (DESIGN §7.4).
    * `peers` is never given up, because it is also the routing table. */
   demand(topic: string, wanted: boolean): void {
     // `auth.records` is never given up and never asked for on demand: every
     // instance holds the whole set whether or not anything local is watching
-    // it, the way `peers` is also the routing table (§7.4, DR-0001 §2.6).
+    // it, the way `peers` is also the routing table (DESIGN §7.4, DR-0001 §2.6).
     if (topic === AUTH_TOPIC || !isClusterTopic(topic)) return;
     if (wanted) {
       if (this.#demanded.has(topic)) return;
@@ -594,7 +594,7 @@ export class Mesh {
       // The instance asks on behalf of whoever subscribed to it, and what they
       // have in common is that they are this deployment's people rather than
       // any one session: a cluster topic is the same value for all of them
-      // (§6.2), so there is nothing narrower to name.
+      // (DESIGN §6.2), so there is nothing narrower to name.
       //
       // `auth.records` is the exception, and the one topic no person may hear:
       // it carries the tokens that authenticate them, so the instance asks for
@@ -621,10 +621,10 @@ export class Mesh {
    * The whole judgement is here, inside the op that dispatch already validated
    * and allowed: nothing settles an identity on another path, and a handshake
    * that fails any step throws, which is what leaves the connection anonymous
-   * (§3.2 step 7). */
+   * (DESIGN §2.2 step 7). */
   async greet(conn: Requester, claim: MeshClaim): Promise<void> {
     const self = this.self;
-    // 1-3 of §5.7, asked before the key is fetched: the cheap comparisons come
+    // 1-3 of mesh-peer-auth §5.7, asked before the key is fetched: the cheap comparisons come
     // first because the fetch reaches out to another host.
     if (claim.ver !== MESH_VER) {
       throw new OpError("invalid_args", `this instance speaks mesh handshake ${MESH_VER}`);
@@ -657,7 +657,7 @@ export class Mesh {
     try {
       // The key comes over a connection of its own, opened to the endpoint the
       // greeting names. Asking for it on this connection would let whoever
-      // opened it answer with their own key and pass their own signature (§6).
+      // opened it answer with their own key and pass their own signature (mesh-peer-auth §6).
       const jwk = await this.#fetchKey(claim, challenge);
       const jws = await withTimeout(
         proof.promise,
@@ -674,7 +674,7 @@ export class Mesh {
           );
     } finally {
       // The challenge is spent whatever happened, so there is no record of it
-      // anywhere once the handshake ends (§5.5, §10.5).
+      // anywhere once the handshake ends (mesh-peer-auth §5.5, §10.5).
       this.#pending.delete(conn);
     }
     // The claim is checked again now that it is trusted: the fetch and the wait
@@ -709,7 +709,7 @@ export class Mesh {
   /** A frame that is not an op. True when the mesh took it.
    *
    * The proof arrives here because it belongs on the connection being
-   * authenticated (§5), which is the one connection the op vocabulary has no
+   * authenticated (mesh-peer-auth §5), which is the one connection the op vocabulary has no
    * name for: mesh carries no ops of its own (contract, `Plane`). */
   frame(conn: Requester, frame: unknown): boolean {
     const mesh = meshFrameOf(frame);
@@ -724,7 +724,7 @@ export class Mesh {
     }
     const pending = this.#pending.get(conn);
     // A proof with no handshake waiting for it: either none was started, or the
-    // challenge it answers has already been spent. Neither is retried (§5.5).
+    // challenge it answers has already been spent. Neither is retried (mesh-peer-auth §5.5).
     if (pending === undefined) {
       conn.close();
       return true;
@@ -734,7 +734,7 @@ export class Mesh {
   }
 
   /** What a proven link wrote that is not a request: a topic frame to relay
-   * (§7.4), or the reply to something this instance forwarded (§7.3).
+   * (DESIGN §7.4), or the reply to something this instance forwarded (DESIGN §7.3).
    *
    * Only a link is read this way. A client connection could otherwise guess a
    * forwarded id and settle a request it has nothing to do with, and could
@@ -777,12 +777,12 @@ export class Mesh {
   }
 
   /** Whether this connection is mid-handshake, which is what makes an ordinary
-   * request on it a protocol violation rather than an early call (§5.8). */
+   * request on it a protocol violation rather than an early call (mesh-peer-auth §5.8). */
   handshaking(conn: Requester): boolean {
     return this.#pending.has(conn);
   }
 
-  // --- the HTTP surface: the key of §6 ---
+  // --- the HTTP surface: the key of mesh-peer-auth §6 ---
 
   /** Answer the one request that is served before anything is proven, or
    * nothing when the request is not it. */
@@ -813,7 +813,7 @@ export class Mesh {
     }
     const minted = this.#minted.get(kid);
     // Unknown to us, or known and no longer connected to the handshake it was
-    // made for. Either way there is no key to give (§6.1).
+    // made for. Either way there is no key to give (mesh-peer-auth §6.1).
     if (minted === undefined || minted.conn === undefined) {
       return new Response("no such key", { status: 404 });
     }
@@ -846,7 +846,7 @@ export class Mesh {
     return this.#jwkServed <= JWK_RATE_LIMIT;
   }
 
-  // --- the dialling end (§5, steps 1-3 and 13) ---
+  // --- the dialling end (mesh-peer-auth §5, steps 1-3 and 13) ---
 
   async #dial(peer: Endpoint): Promise<void> {
     if (this.#stopping || this.#links.has(peer)) return;
@@ -887,7 +887,7 @@ export class Mesh {
 
   /** What the far end wrote on a connection we opened.
    *
-   * The greeting's reply is the acknowledgement of §5.8: it is what says the
+   * The greeting's reply is the acknowledgement of mesh-peer-auth §5.8: it is what says the
    * peer finished verifying, which is both the moment this instance may speak
    * and the moment its key has no further use. */
   #dialledFrame(peer: Endpoint, conn: Requester, frame: unknown, kid: string): void {
@@ -897,7 +897,7 @@ export class Mesh {
       // A request the peer forwarded to us. A dialled connection is answered by
       // whoever dialled it (transport, `DialOptions`), so the reply goes out
       // here rather than through the driver — but what decides it is the same
-      // dispatch every other request goes through (§7.3).
+      // dispatch every other request goes through (DESIGN §7.3).
       if (typeof fields["op"] === "string") this.#answer(conn, fields);
       return;
     }
@@ -962,7 +962,7 @@ export class Mesh {
    * one is already held.
    *
    * Both connections are verified before either is dropped, so whichever
-   * survives is one that was proven (§8.1). */
+   * survives is one that was proven (mesh-peer-auth §8.1). */
   #hold(peer: Endpoint, conn: Requester, dialledByUs: boolean): void {
     const self = this.self;
     const held = this.#links.get(peer);
@@ -996,7 +996,7 @@ export class Mesh {
       this.#drop(peer, conn);
     });
     // What it said before is still held and stops being marked; what it says
-    // now replaces it, which is the whole of "restored by reconnection" (§7.5).
+    // now replaces it, which is the whole of "restored by reconnection" (DESIGN §7.5).
     // Under the id, because that is what its frames name themselves with: the
     // endpoint is where the link was dialled and says nothing about the value.
     const id = this.#idOf.get(peer);
@@ -1008,7 +1008,7 @@ export class Mesh {
 
   /** Say that the set of reachable instances moved. Two listeners: whatever
    * the deps gave, and the instance, which restates `peers` — the topic the
-   * view rides on (§7.5). */
+   * view rides on (DESIGN §7.5). */
   #changed(): void {
     this.deps.onChanged?.();
     this.#host?.changed();
@@ -1021,7 +1021,7 @@ export class Mesh {
     if (silence > (this.deps.heartbeatTimeoutMs ?? HEARTBEAT_TIMEOUT_MS)) {
       // Nothing has come back for long enough that the link is gone whatever
       // the socket believes — which is the whole reason for the heartbeat
-      // (§8.3): a middlebox drops a connection without telling either end.
+      // (mesh-peer-auth §8.3): a middlebox drops a connection without telling either end.
       this.deps.log?.("mesh peer went silent", { peer, silence_ms: silence });
       link.conn.close();
       this.#drop(peer, link.conn);
@@ -1043,7 +1043,7 @@ export class Mesh {
     this.#links.delete(peer);
     this.#linkOf.delete(conn);
     // Its sessions become a kind of Disappeared and its values are marked
-    // rather than dropped (§7.5), and anything on its way there is answered
+    // rather than dropped (DESIGN §7.5), and anything on its way there is answered
     // now instead of waiting out a deadline it can no longer beat.
     const id = this.#idOf.get(peer);
     if (id !== undefined) this.relay.lost(id);
@@ -1080,7 +1080,7 @@ export class Mesh {
     this.#retries.set(peer, timer);
   }
 
-  /** Let every link and every timer go. Called from the stop order (§8.5). */
+  /** Let every link and every timer go. Called from the stop order (DESIGN §8.5). */
   stop(): void {
     this.#stopping = true;
     for (const timer of this.#retries.values()) clearTimeout(timer);
@@ -1091,14 +1091,14 @@ export class Mesh {
     // The far end has no other way to learn this instance is going: it would
     // keep the link, keep answering `reachable`, and keep routing
     // `instance-local` ops here until its own heartbeat gave up minutes later,
-    // where the disconnection of §7.5 is supposed to be immediate. Which side
+    // where the disconnection of DESIGN §7.5 is supposed to be immediate. Which side
     // dialled a link is decided by the glare rule from a comparison of
-    // endpoint strings (§8.1), so which of a peer's links this instance
+    // endpoint strings (mesh-peer-auth §8.1), so which of a peer's links this instance
     // accepted is not something either end chose — leaving those open makes a
     // clean stop look like a silent one to whichever half of the cluster the
     // comparison put on this side.
     //
-    // An accepted socket is transport's to release (§8.5 step 5), and left to
+    // An accepted socket is transport's to release (DESIGN §8.5 step 5), and left to
     // it the far end is told whenever the listener gets round to it: measured
     // against Bun 1.3.13, `stop` on a server that has itself closed a
     // WebSocket — which the mesh does, to drop the loser of a glare — never
@@ -1107,7 +1107,7 @@ export class Mesh {
     // Closing here is what makes the notice the mesh's own rather than a side
     // effect of a listener going down. The step-3 notice this precedes is
     // `restarting`, which is addressed to clients — a peer learns from the
-    // link, and that is the whole of what §7.5 asks for.
+    // link, and that is the whole of what DESIGN §7.5 asks for.
     for (const link of this.#links.values()) {
       clearInterval(link.heartbeat);
       link.conn.close();
@@ -1116,7 +1116,7 @@ export class Mesh {
     this.#links.clear();
     this.#linkOf.clear();
     // Keys die with the connections they were made for, and none outlives this
-    // (§7).
+    // (mesh-peer-auth §7).
     this.#minted.clear();
     for (const pending of this.#pending.values()) {
       pending.fail(new Error("this instance is stopping"));
@@ -1125,7 +1125,7 @@ export class Mesh {
   }
 
   /** What is held per handshake right now, so a test can state that nothing is
-   * kept once one has finished (§10.5). */
+   * kept once one has finished (mesh-peer-auth §10.5). */
   get held(): { keys: number; handshakes: number; links: number } {
     return {
       keys: this.#minted.size,
@@ -1141,7 +1141,7 @@ export class Mesh {
     const response = await fetch(jwkEndpoint(claim.iss, claim.kid), {
       method: "POST",
       // One request and close, which is what the second connection is
-      // (§6.2): it exists to carry the key and the challenge, and keeping it
+      // (mesh-peer-auth §6.2): it exists to carry the key and the challenge, and keeping it
       // pooled afterwards would leave a connection nothing speaks on.
       headers: { "content-type": "application/json", connection: "close" },
       body: JSON.stringify(body),
@@ -1149,14 +1149,14 @@ export class Mesh {
     });
     if (!response.ok) throw new Error(`${claim.iss} did not hand out the key ${claim.kid}`);
     const jwk = (await response.json()) as MeshJwk;
-    // §5.7-8, the third of the three ids that have to agree: a key served under
+    // mesh-peer-auth §5.7-8, the third of the three ids that have to agree: a key served under
     // one id and answering to another would break the correspondence the whole
     // exchange is keyed on.
     if (jwk.kid !== claim.kid) throw new Error("the key served is not the key asked for");
     return jwk;
   }
 
-  /** §5.7, steps 4 to 8. */
+  /** mesh-peer-auth §5.7, steps 4 to 8. */
   #verify(jws: string, claim: MeshClaim, challenge: string, jwk: MeshJwk): void {
     let parsed;
     try {

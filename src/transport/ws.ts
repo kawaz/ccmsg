@@ -37,7 +37,7 @@ export interface WsOptions {
    *
    * It shares this listener rather than opening a second one: a producer that
    * posts to this instance reaches it at the address it already has, and the
-   * entry check of §3.1 runs before this is asked, so a route cannot be
+   * entry check of DESIGN §2.1 runs before this is asked, so a route cannot be
    * reached by anyone the WebSocket could not be. Answering `undefined` leaves
    * the request to the upgrade, which refuses it.
    *
@@ -54,7 +54,7 @@ export interface WsOptions {
  * newline-delimited framing as the unix socket: one line is one frame, whether
  * a message holds one line or several. Backpressure differs from UDS — a send
  * is either buffered whole by Bun or dropped whole — and the queue absorbs
- * that difference here (§3.1). */
+ * that difference here (DESIGN §2.1). */
 export function serveWs(options: WsOptions): Listener {
   const path = options.path ?? ENTRY_PATH;
   const entry = options.entry ?? OPEN;

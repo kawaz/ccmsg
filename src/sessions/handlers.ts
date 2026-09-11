@@ -62,7 +62,7 @@ export interface SessionOpsDeps {
    * instance last saw them. The sessions domain owns the list; this op only
    * asks it to forget a row. */
   readonly forget: (sid: Sid) => boolean;
-  /** The named selections this instance is configured with (§3.6). */
+  /** The named selections this instance is configured with (DESIGN §2.5). */
   readonly presets: readonly DumpPreset[];
 }
 
@@ -138,7 +138,7 @@ export function sessionHandlers(deps: SessionOpsDeps) {
     "transcript.read": (input: HandlerInput): TranscriptReadResult => {
       const args = input.args as unknown as TranscriptReadArgs;
       if (!sees(args.sid, viewer(input))) {
-        // The role sets the visible range, not the permission (§3.2): outside
+        // The role sets the visible range, not the permission (DESIGN §2.2): outside
         // it there is no transcript to speak of, which is the one code this op
         // declares. A refusal that named the session would answer a question
         // the caller was not entitled to ask.

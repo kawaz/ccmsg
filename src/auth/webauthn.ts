@@ -245,7 +245,7 @@ export const SUPPORTED_ALGORITHMS: readonly number[] = [ES256, EdDSA, RS256];
  * Done at registration rather than at the first assertion: a key that cannot be
  * imported is a credential that can never be used, and finding that out when
  * the person tries to sign in leaves a record nobody can explain. The imported
- * key itself is thrown away — an assertion imports its own (§2.10). */
+ * key itself is thrown away — an assertion imports its own (DR-0001 §2.10). */
 export async function checkPublicKey(cose: Uint8Array): Promise<void> {
   const key = decodeCborWhole(cose);
   const alg = mapEntry(key, 3);

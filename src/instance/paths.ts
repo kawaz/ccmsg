@@ -12,7 +12,7 @@ import {
   SUPERVISOR_FILE,
 } from "./config.ts";
 
-/** Every path one instance uses, decided in one place (daemon-v2 §8.1).
+/** Every path one instance uses, decided in one place (DESIGN §8.1).
  *
  * All of them are derived from the config home, because the config home is
  * what an instance is (A2): two instances differ in exactly that, so deriving
@@ -35,7 +35,7 @@ export interface InstancePaths {
   readonly endpointsFile: string;
   readonly supervisorFile: string;
   /** Where what has been read and checked is kept, which is the only thing the
-   * supervisor and the instances read (§8.2). */
+   * supervisor and the instances read (DESIGN §8.2). */
   readonly stateRoot: string;
   readonly satisfiedFile: string;
   /** Where a file is put before it is overwritten by the checked copy. */
@@ -49,7 +49,7 @@ export interface InstancePaths {
    * Bun unlinks the path it listened on when the listener stops (measured
    * against Bun 1.3.13), so binding the stable path directly would mean a
    * departing instance deleting the address its successor had already taken
-   * over (§8.5). Binding a path of its own leaves it deleting only its own. */
+   * over (DESIGN §8.5). Binding a path of its own leaves it deleting only its own. */
   readonly socketReal: string;
   /** Where both of the above live, so the orphan sweep has one directory. */
   readonly socketDir: string;
@@ -60,7 +60,7 @@ export interface InstancePaths {
   readonly pidFile: string;
   readonly lockFile: string;
   readonly logFile: string;
-  /** Where this instance's own id is kept (§3.6). It lives with the state
+  /** Where this instance's own id is kept (DESIGN §2.5). It lives with the state
    * because moving an instance is moving that directory: the id has to travel
    * with it, since everything the instance issued is keyed by it. */
   readonly instanceIdFile: string;
@@ -92,7 +92,7 @@ export type Env = Record<string, string | undefined>;
  * process belongs to. Reading the config-home variables in a fixed order
  * instead would send a Codex session's commands to the Claude Code instance,
  * because a session started from inside another one inherits its whole
- * environment and so names both homes at once (§3.8).
+ * environment and so names both homes at once (DESIGN §4.1).
  *
  * With no session claiming the process — a person at a terminal — each
  * harness's own variable is read in turn, and Claude Code's home is the
@@ -128,7 +128,7 @@ export function resolvePaths(env: Env = process.env): InstancePaths {
  * The one to call wherever the config home is decided rather than discovered —
  * a command naming a directory, an install naming an agent's own home. Going
  * through the environment instead would have that answer re-derived from
- * whichever session the process happens to be running inside (§3.8), and a
+ * whichever session the process happens to be running inside (DESIGN §4.1), and a
  * command that named a directory would silently act on another one. */
 export function resolvePathsFor(configHome: string, env: Env = process.env): InstancePaths {
   const key = instanceKey(configHome);

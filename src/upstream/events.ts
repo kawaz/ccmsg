@@ -4,7 +4,7 @@ import type { LlmRequestInfo, Sid, Timestamp } from "@ccmsg/protocol";
  * instance decides whether its series is the session's main one.
  *
  * `main` is a verdict about a session's several series, so it needs the other
- * series to be made and cannot be read off one event (§3.5 renames, it does not
+ * series to be made and cannot be read off one event (DESIGN §2.4 renames, it does not
  * derive). `instance` is stamped by whoever publishes, since an event says
  * nothing about which instance received it. */
 export type LlmRequestObservation = Omit<LlmRequestInfo, "main" | "instance">;
@@ -68,7 +68,7 @@ export type GatewayItem =
       /** The name of the lifetime this request promised, when it promised one.
        * Kept beside the observation rather than inside it: it is how two
        * notices of the gateway's are matched to each other, and nothing a
-       * client reads (§3.5). */
+       * client reads (DESIGN §2.4). */
       readonly notice?: string;
     }
   | { readonly kind: "response"; readonly info: LlmResponseObservation }
@@ -95,7 +95,7 @@ const SAME_NAME_NUMBERS = [
 
 /** The instants the gateway names without the suffix this contract requires of
  * every field that is a point in time. Renamed here, at the boundary, so
- * nothing downstream sees the gateway's spelling (§3.5). */
+ * nothing downstream sees the gateway's spelling (DESIGN §2.4). */
 const RENAMED_INSTANTS = [
   ["cache_since", "cache_since_at"],
   ["cache_until", "cache_until_at"],

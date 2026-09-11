@@ -9,7 +9,7 @@ export interface FrameHandler {
 }
 
 /** The ops whose reply settles the connection's identity. Transport knows these
- * three op names because binding the identity is its job (daemon-v2 §3.1);
+ * three op names because binding the identity is its job (DESIGN §2.1);
  * every other op is opaque to it. */
 
 /** Drive one connection: a line in, a frame answered on the same connection.
@@ -36,7 +36,7 @@ export function createDriver(conn: Conn, handle: FrameHandler) {
           settleIfHello(conn, frame, result);
           conn.send(responseOf(result));
           // Whatever the implementation queued for after its reply — the
-          // snapshot of a fresh subscription (§6.1) — goes out here.
+          // snapshot of a fresh subscription (DESIGN §6.1) — goes out here.
           conn.flushDeferred();
         },
         (cause: unknown) => {

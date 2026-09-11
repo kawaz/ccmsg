@@ -2,9 +2,9 @@ import { linkSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "no
 import { dirname } from "node:path";
 import { randomUUID } from "node:crypto";
 
-/** The right to be the instance for one config home (§8.3 step 2).
+/** The right to be the instance for one config home (DESIGN §8.3 step 2).
  *
- * A handle, not state (§3.6): it says who is running right now and means
+ * A handle, not state (DESIGN §2.5): it says who is running right now and means
  * nothing once the process is gone. */
 export interface Lock {
   release(): void;

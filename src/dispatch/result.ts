@@ -3,7 +3,7 @@ import type { ErrorCode, ErrorResponse, InstanceId } from "@ccmsg/protocol";
 /** What dispatch decided about one frame.
  *
  * `forward` is the only outcome that is not an answer: the op belongs to
- * another instance and mesh has to carry it there (daemon-v2 §3.2 step 6).
+ * another instance and mesh has to carry it there (DESIGN §2.2 step 6).
  * There is no mesh yet, so dispatch names the destination and stops. */
 export type DispatchResult =
   /** The frame was not a request and has no answer. The mesh handshake's own
@@ -32,7 +32,7 @@ export class OpError extends Error {
 }
 
 /** The reply envelope, built here and nowhere else so the wire shape stays in
- * one place (daemon-v2 §11.1). */
+ * one place (DESIGN §9.1). */
 export function reply(
   requestId: string,
   body: unknown,

@@ -57,7 +57,7 @@ function covers(tombstone: string, key: string): boolean {
 }
 
 export interface RecordsDeps {
-  /** Where the set is written down (§3.6). */
+  /** Where the set is written down (DESIGN §2.5). */
   readonly dir: string;
   /** This instance's id, which is the one thing that makes a record arriving
    * from a peer refusable on sight: a family this instance minted is written by
@@ -76,7 +76,7 @@ export interface RecordsDeps {
  * write to the keys it covers, so a peer coming back from a partition cannot
  * carry a revoked credential in as news.
  *
- * Written down for the same reason the store is (§3.6): none of it is derived
+ * Written down for the same reason the store is (DESIGN §2.5): none of it is derived
  * from anything else this instance holds. A credential exists nowhere but here
  * and in the authenticator, and losing a family logs its person out. */
 export class AuthRecords {

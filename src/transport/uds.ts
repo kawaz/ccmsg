@@ -13,7 +13,7 @@ interface UdsState {
 export interface UdsOptions {
   /** The socket path.
    *
-   * §8.5 asks that closing leave the path alone, because a successor's socket
+   * DESIGN §8.5 asks that closing leave the path alone, because a successor's socket
    * may already stand there. Bun's listener unlinks it in `stop()` regardless
    * (measured against Bun 1.3.13: the path is gone the moment `stop` returns),
    * so this layer cannot honour that on its own — what it can do is not add a
@@ -29,7 +29,7 @@ export interface UdsOptions {
  *
  * `socket.write` hands the bytes to sendto(2) and returns a short count when
  * the socket buffer is full, so the unsent tail is kept by the queue and
- * written again on `drain` — the difference from WS that §3.1 puts in this
+ * written again on `drain` — the difference from WS that DESIGN §2.1 puts in this
  * layer. */
 export function listenUds(options: UdsOptions): Listener {
   const server = Bun.listen<UdsState>({

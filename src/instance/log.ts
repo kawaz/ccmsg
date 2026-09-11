@@ -2,7 +2,7 @@ import { appendFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
 /** The instance's log: one writer, and every line on disk before the call
- * returns (§3.6).
+ * returns (DESIGN §2.5).
  *
  * The reason to read a log is to find out why a process stopped, so the line
  * that matters most is the last one written before it did. A buffered writer

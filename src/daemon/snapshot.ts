@@ -41,7 +41,7 @@ interface Greeted {
  * leave.
  *
  * A subscription opens with one `snapshot: true` frame per instance that has a
- * value (§6.2), so the current value of a topic is read by subscribing and
+ * value (DESIGN §6.2), so the current value of a topic is read by subscribing and
  * stopping at the frames rather than by an op of its own. The local instance's
  * frame is deferred behind the acknowledgement and is therefore already on the
  * wire; the relayed ones are what the budget is for.

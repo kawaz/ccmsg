@@ -8,7 +8,7 @@ import {
 /** One accepted connection, as the layers above transport see it.
  *
  * UDS and WS produce this same type, so nothing above transport can tell them
- * apart (daemon-v2 §3.1). Everything that differs between the two — how a line
+ * apart (DESIGN §2.1). Everything that differs between the two — how a line
  * reaches the peer, how a blocked write is retried — is settled behind `send`. */
 export interface Conn extends Requester {
   /** Distinguishes connections within one process run. It is not an identity:
@@ -34,7 +34,7 @@ export interface Conn extends Requester {
    * (mesh-peer-auth §8.1). Transports that carry no such code ignore it. */
   close(code?: number, reason?: string): void;
   /** Run when the connection is gone. Anything held per connection — the
-   * subscriptions of §6.3 once they exist — is released here, because a closed
+   * subscriptions of DESIGN §6.3 once they exist — is released here, because a closed
    * connection is the only end a subscription has. */
   onClose(listener: () => void): void;
 }
@@ -101,7 +101,7 @@ export class BaseConn implements Conn {
 
 /** The connections one instance currently holds.
  *
- * It exists so shutdown (§8.5 step 3) can reach every connection before any
+ * It exists so shutdown (DESIGN §8.5 step 3) can reach every connection before any
  * listener is closed, and so tests can see that a closed connection is gone. */
 export class ConnRegistry {
   readonly #conns = new Set<Conn>();

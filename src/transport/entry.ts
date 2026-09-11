@@ -1,4 +1,4 @@
-/** Who is allowed to reach this instance at all (daemon-v2 §3.1, "入口の許可").
+/** Who is allowed to reach this instance at all (DESIGN §2.1, "入口の許可").
  *
  * Two questions, because they are asked of different things. `allowRequest`
  * runs for every HTTP request the listener takes, the routed ones included, and

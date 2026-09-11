@@ -23,14 +23,14 @@ function isItems(topic: string): boolean {
 export interface TranscriptsDeps {
   readonly self: InstanceId;
   /** Where a session's transcript is: what it announced when it greeted
-   * (§5.1), or the `<sid>.jsonl` under this instance's `projects/` that
+   * (DESIGN §4.2), or the `<sid>.jsonl` under this instance's `projects/` that
    * carries its name. A sid neither names nor is named by a file there has
    * none, and nothing is guessed for it. */
   readonly pathOf: (sid: Sid) => string | undefined;
-  /** The one way a value reaches subscribers (§6.1). */
+  /** The one way a value reaches subscribers (DESIGN §6.1). */
   readonly publish: (topic: string, data: unknown) => void;
   /** The fold now says something different about this session. What the fold
-   * settles is an input to the sessions domain (§5.1), so the domain that
+   * settles is an input to the sessions domain (DESIGN §4.2), so the domain that
    * states those values is told to state them again. */
   readonly onFacts: (sid: Sid) => void;
   /** Overrides the confirmation poll, for a test that cannot wait. */
@@ -38,14 +38,14 @@ export interface TranscriptsDeps {
 }
 
 /** One tail and one fold per session, and the `transcript:<sid>` topic they
- * feed (§3.3).
+ * feed (DESIGN §2.3).
  *
  * The fold is one per session, not one per consumer: a line is read once and
  * every value it settles is settled from that read, so the api error, the last
  * human input and the appended bytes are three uses of one pass rather than
  * three passes (M5).
  *
- * A tail runs while something wants it and stops when nothing does (§6.3).
+ * A tail runs while something wants it and stops when nothing does (DESIGN §6.3).
  * Subscription is one such want; a `hold` is the other, for the values the
  * sessions domain states about a session nobody is watching the transcript of.
  * They are counted together, so the last one to go is what stops the tail. */
@@ -54,7 +54,7 @@ export class Transcripts implements UpstreamResource {
 
   constructor(private readonly deps: TranscriptsDeps) {}
 
-  // --- UpstreamResource (§6.3)
+  // --- UpstreamResource (DESIGN §6.3)
 
   start(topic: string): void {
     const sid = topicParam(topic);
@@ -68,7 +68,7 @@ export class Transcripts implements UpstreamResource {
 
   /** Where the transcript ends as the subscription begins. What follows starts
    * there, which is the whole of the snapshot for a topic whose frames are an
-   * append rather than a value (§6.2). A session whose transcript this
+   * append rather than a value (DESIGN §6.2). A session whose transcript this
    * instance cannot find has nothing to state, and the subscriber begins at
    * the first thing appended after one appears. */
   snapshot(topic: string): readonly TopicValue[] {

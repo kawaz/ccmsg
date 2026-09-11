@@ -32,7 +32,7 @@ import { stoppedOn } from "./status.ts";
 import { TerminalCache, type TerminalReader } from "./terminals.ts";
 
 /** What the harness says at one instant: the rows it reports, and which
- * sessions it says are there (§3.8).
+ * sessions it says are there (DESIGN §4.1).
  *
  * Two readings of one moment, passed together so a caller answering several
  * questions about that moment reads once. They are the same set for a harness
@@ -45,7 +45,7 @@ interface Own {
 
 /** What the sessions domain needs from the instance around it. */
 export interface SessionsDeps {
-  /** Which harness this config home runs (§3.8). It decides what says a
+  /** Which harness this config home runs (DESIGN §4.1). It decides what says a
    * session is there and, through that, what `agents` can report. */
   readonly harness: Harness;
   readonly self: InstanceId;
@@ -58,30 +58,30 @@ export interface SessionsDeps {
    * opened (DR-0001 §2.5). Absent on the unix socket, where reaching the
    * instance is itself the permission, and on a mesh link. */
   readonly authExpiresAt?: (conn: Requester) => Timestamp | undefined;
-  /** The one config home this instance answers for (§8.2). Its `sessions/` is
+  /** The one config home this instance answers for (DESIGN §8.2). Its `sessions/` is
    * the only directory read, and no other config home is ever looked for (M6). */
   readonly configHome: string;
   /** Where `last_live` is written. Derived from the config home by the caller,
-   * which is where every per-instance path is decided (§8.1). */
+   * which is where every per-instance path is decided (DESIGN §8.1). */
   readonly stateDir: string;
   readonly capabilities: readonly Capability[];
   /** The daemon build, reported by `hello` for display. */
   readonly version: string;
   readonly startedAt: Timestamp;
-  /** The one way a value reaches subscribers (§6.1). */
+  /** The one way a value reaches subscribers (DESIGN §6.1). */
   readonly publish: (topic: string, data: unknown) => void;
-  /** What the transcript fold says about a session (§5.1). Absent while
+  /** What the transcript fold says about a session (DESIGN §4.2). Absent while
    * nothing folds transcripts, in which case the two values it settles are
    * simply unknown and every rule that reads them behaves as it does for a
    * session whose transcript has said nothing. */
   readonly transcript?: TranscriptSource;
-  /** What the gateway has seen of a session (§5.1). Absent on an instance with
+  /** What the gateway has seen of a session (DESIGN §4.2). Absent on an instance with
    * no gateway configured, which costs the classification one of its five
    * inputs and none of its states. */
   readonly gateway?: GatewaySource;
   /** The sessions this instance speaks about, or what the fold says about one,
    * has changed. What rests on either — the topics whose value is derived from
-   * the same fold, and the tails they keep running (§6.3) — is told to catch
+   * the same fold, and the tails they keep running (DESIGN §6.3) — is told to catch
    * up. Absent when nothing does. */
   readonly onChanged?: () => void;
   /** How often the confirmation poll runs, for a test that cannot wait. */
@@ -99,7 +99,7 @@ export interface SessionsDeps {
   readonly terminals?: TerminalReader;
   /** The mesh, on an instance that has one. It answers the one greeting this
    * domain cannot judge: a peer's, whose claim is settled by an exchange of its
-   * own rather than by anything a session says (§7.2). */
+   * own rather than by anything a session says (DESIGN §7.2). */
   readonly mesh?: MeshSource;
   /** Where a person opens the terminal a session runs in, which `hello` states
    * as `terminal_gateway`. The same value that gates the `terminal` capability
@@ -110,7 +110,7 @@ export interface SessionsDeps {
 }
 
 /** What `hello` needs of the mesh: verify the greeting of a peer, and say which
- * instances there are and which of them can be reached (§7.5). */
+ * instances there are and which of them can be reached (DESIGN §7.5). */
 export interface MeshSource {
   greet(conn: Requester, claim: MeshClaim): Promise<void>;
   instances(): InstanceInfo[];
@@ -121,13 +121,13 @@ type MeshClaim = HelloInstanceArgs["mesh"];
 
 /** The fold, as the sessions domain reads it: two values about one session,
  * asked for when a payload is built rather than copied here when they change
- * (§3.3 — the current value lives with whoever owns it). */
+ * (DESIGN §2.3 — the current value lives with whoever owns it). */
 export interface TranscriptSource {
   facts(sid: Sid): TranscriptFacts;
 }
 
 /** The gateway, as the sessions domain reads it: when it last saw inference
- * for one session, asked for when a payload is built (§3.3). */
+ * for one session, asked for when a payload is built (DESIGN §2.3). */
 export interface GatewaySource {
   activeAt(sid: Sid): Timestamp | undefined;
 }
@@ -164,7 +164,7 @@ interface Connected {
   readonly meta: SessionMeta;
   /** The most recent request on any of its connections. Distinct from when a
    * person last spoke to it, which is folded out of the transcript and is the
-   * one an attention-ordered list wants (§5.3). */
+   * one an attention-ordered list wants (DESIGN §4.4). */
   last_activity_at: Timestamp;
   /** More than one client process of a session may hold a connection. */
   conns: number;
@@ -173,10 +173,10 @@ interface Connected {
 /** The sessions this instance can speak about, and the two topics that carry
  * them.
  *
- * The current value lives here rather than in the topic mechanism (§3.3): what
+ * The current value lives here rather than in the topic mechanism (DESIGN §2.3): what
  * is connected is held in memory and dies with the process, what the harness
  * reports is re-read from `sessions/`, and only `last_live` survives a restart.
- * The classification of §5.2 is derived from those three whenever a payload is
+ * The classification of DESIGN §4.3 is derived from those three whenever a payload is
  * built, and never stored (M4). */
 export class Sessions implements UpstreamResource {
   readonly #connected = new Map<Sid, Connected>();
@@ -187,7 +187,7 @@ export class Sessions implements UpstreamResource {
    * being live is what writes its `last_live` entry. */
   #live = new Map<Sid, StoredEntry>();
   /** The topic names currently subscribed. Both topics rest on the same
-   * directory watch, so it runs while either has a listener (§6.3). */
+   * directory watch, so it runs while either has a listener (DESIGN §6.3). */
   readonly #wanted = new Set<string>();
   /** What a session said about itself when it last greeted, kept for as long
    * as the harness still names the session.
@@ -277,7 +277,7 @@ export class Sessions implements UpstreamResource {
   /** `hello.instance`. A peer's greeting is answered only once the connection
    * has been proven to be the endpoint it names. The verification rejects when
    * it is not, and the connection stays anonymous because nothing settles an
-   * identity but a reply (mesh-peer-auth §5, daemon-v2 §3.2 step 7). This is
+   * identity but a reply (mesh-peer-auth §5, DESIGN §2.2 step 7). This is
    * the one greeting that has to wait for something, which is why it is the one
    * that answers with a promise. */
   helloInstance = (input: HandlerInput): Promise<HelloResult> => {
@@ -327,7 +327,7 @@ export class Sessions implements UpstreamResource {
     };
   }
 
-  /** Where a session stands (§5.2). Undefined for a sid this instance has
+  /** Where a session stands (DESIGN §4.3). Undefined for a sid this instance has
    * never seen live and does not hold in `last_live`. */
   classify(
     sid: Sid,
@@ -371,7 +371,7 @@ export class Sessions implements UpstreamResource {
    *
    * The harness's rows are read here rather than taken from the watch. Which
    * sessions the harness has is a fact about this config home, true whether or
-   * not anybody subscribed to hear about it (§5.1) — the watch of §6.3 exists
+   * not anybody subscribed to hear about it (DESIGN §4.2) — the watch of DESIGN §6.3 exists
    * to push a change to subscribers, and reading its cache instead would make
    * "a session exists" mean "somebody is listening", which is how a live
    * session becomes `session_not_found` to a sender and how a session that is
@@ -417,7 +417,7 @@ export class Sessions implements UpstreamResource {
     if (held !== undefined) held.last_activity_at = at;
   }
 
-  /** Where a session's transcript is, as it announced it (§5.1). Whoever
+  /** Where a session's transcript is, as it announced it (DESIGN §4.2). Whoever
    * follows one needs the path, and the greeting is the only thing that
    * states it. */
   transcriptPath(sid: Sid): string | undefined {
@@ -431,7 +431,7 @@ export class Sessions implements UpstreamResource {
     const meta = this.#connected.get(sid)?.meta;
     const cwd = meta?.cwd ?? this.#own().rows.get(sid)?.cwd;
     // The container when the session named one, the working directory
-    // otherwise — the same order `repo_root` is meant in (§4.2).
+    // otherwise — the same order `repo_root` is meant in (DESIGN §6.6).
     const root = meta?.repo_root ?? cwd;
     return {
       ...(root === undefined || root === "" ? {} : { root }),
@@ -441,7 +441,7 @@ export class Sessions implements UpstreamResource {
 
   /** The harness's sessions as they are right now, read rather than taken
    * from the watch's cache. What acts on a session's process resolves its pid
-   * through this: the watch runs only while somebody is subscribed (§6.3), and
+   * through this: the watch runs only while somebody is subscribed (DESIGN §6.3), and
    * a pid from a poll that has not run is a number belonging to nobody. */
   rowsNow(): ReadonlyMap<Sid, AgentInfo> {
     return this.#own().rows;
@@ -463,7 +463,7 @@ export class Sessions implements UpstreamResource {
   }
 
   /** `session.stopping`: a session saying it is about to go, which is what
-   * makes it Paused rather than Disappeared once it is gone (§5.2).
+   * makes it Paused rather than Disappeared once it is gone (DESIGN §4.3).
    *
    * Nothing is recorded now and nothing is published: the session is still
    * here, and the list this changes is the one it is not on yet. What the
@@ -481,7 +481,7 @@ export class Sessions implements UpstreamResource {
     return { stopped_at: at };
   };
 
-  // --- UpstreamResource (§6.3): the directory is read while, and only while,
+  // --- UpstreamResource (DESIGN §6.3): the directory is read while, and only while,
   // somebody is subscribed to a topic that rests on it.
 
   start(topic: string): void {
@@ -524,7 +524,7 @@ export class Sessions implements UpstreamResource {
    * client that held two lists would have to move an entry between them to
    * follow one field.
    *
-   * Live is not the same as connected (§5.2). A session the harness names is
+   * Live is not the same as connected (DESIGN §4.3). A session the harness names is
    * live whether or not it ever greeted us, and it has to be on this list for
    * the same reason it is classified at all: a restart forgets every greeting,
    * and a list that showed only what had greeted this daemon would show a host
@@ -573,7 +573,7 @@ export class Sessions implements UpstreamResource {
     };
   }
 
-  /** The gateway saw inference for one session again (§5.1).
+  /** The gateway saw inference for one session again (DESIGN §4.2).
    *
    * What moved is one attribute of one row, so that row is what goes out. The
    * sessions domain is not recomputed for it: which sessions there are has not
@@ -718,12 +718,12 @@ export class Sessions implements UpstreamResource {
   }
 
   #peer(session: Connected, now: Timestamp, own: Own): PeerInfo {
-    // The two "last activity" values are different questions (§5.3): the one
+    // The two "last activity" values are different questions (DESIGN §4.4): the one
     // above moves on every request the session makes, this one only when a
     // person speaks, and the fold is the only place that knows the second.
     const userInput = this.deps.transcript?.facts(session.sid).last_user_input_at;
     // What the gateway last saw run for this session: an attribute of the row
-    // beside the classification, not folded into it (§5.1). Absent from an
+    // beside the classification, not folded into it (DESIGN §4.2). Absent from an
     // instance with no gateway, where nothing observes inference at all.
     const gatewayActiveAt = this.#gatewayActiveAt(session.sid, own.present.has(session.sid));
     return {
@@ -741,11 +741,11 @@ export class Sessions implements UpstreamResource {
     };
   }
 
-  /** A session the harness names that holds no connection here (§5.1).
+  /** A session the harness names that holds no connection here (DESIGN §4.2).
    *
    * It is on the same list as the connected ones because it is live in the same
    * sense: the classification is what separates them, and a client groups on
-   * that field alone (§5.2). What it cannot carry is everything a greeting
+   * that field alone (DESIGN §4.3). What it cannot carry is everything a greeting
    * states — the session never said where it works, so the working directory
    * comes from the harness's own row and the display names it does not know are
    * simply absent.
@@ -772,7 +772,7 @@ export class Sessions implements UpstreamResource {
   }
 
   /** When the gateway last saw inference for a session, for a session this
-   * instance knows (§5.1).
+   * instance knows (DESIGN §4.2).
    *
    * The gateway sits above every config home and its events name only a session
    * id, so what it reports is not by itself evidence about *this* instance's
@@ -807,7 +807,7 @@ export class Sessions implements UpstreamResource {
    * `repo` and `ws` have no fallback: they are display names for a layout this
    * instance has no stated way to read out of a path, so a session that does
    * not name them is shown without them rather than with a guess. The same
-   * goes for `repo_root`, which §4.2 says to derive from `cwd` when it is not
+   * goes for `repo_root`, which DESIGN §6.6 says to derive from `cwd` when it is not
    * given — no primary source states that derivation, so it is left unstated
    * until one does. */
   #where(

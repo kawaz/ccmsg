@@ -30,7 +30,7 @@ import {
  *   still holds the lock needs only the moment that takes, so the first retry
  *   is short enough to be invisible.
  * - `maxMs` bounds a spin. The failure this is really for is a config the
- *   instance refuses to start with (DV-Q9): it fails in milliseconds and will
+ *   instance refuses to start with (DR-0004): it fails in milliseconds and will
  *   fail again identically until somebody edits the file, so the cap is the
  *   rate at which the supervisor is willing to say so in its log while waiting
  *   for that edit.
@@ -93,7 +93,7 @@ class Supervised {
 /** The foreground supervisor: the instances the shared file lists, kept up, and
  * a socket over which they are asked about.
  *
- * The list is read once, when this starts (DV-Q8). What changes it afterwards
+ * The list is read once, when this starts (DR-0004). What changes it afterwards
  * is a request — `daemon add` and `daemon remove` tell the supervisor as well
  * as the file — rather than the file being re-read, so the supervisor's idea of
  * which instances there are and the file's cannot silently disagree about
@@ -122,7 +122,7 @@ export class Supervisor {
   }
 
   /** Read the edited files, check them, write down what held, and look after
-   * what it names (§8.2).
+   * what it names (DESIGN §8.2).
    *
    * This is the one thing that writes the applied settings: the children read
    * them and write nothing, so nothing races over the file and there is one
@@ -316,7 +316,7 @@ export class Supervisor {
   /** Stop one child, and leave it stopped.
    *
    * Asked over its own socket rather than signalled, so what runs is the
-   * ordered shutdown of §8.5 — the same departure a client sees from an
+   * ordered shutdown of DESIGN §8.5 — the same departure a client sees from an
    * `instance.shutdown`. */
   async stopOne(dir: string): Promise<{ dir: string; stopped: boolean }> {
     const unit = this.#units.get(dir);

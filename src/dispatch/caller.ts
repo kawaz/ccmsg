@@ -10,7 +10,7 @@ export class CallerError extends Error {}
  * The role is read here because it decides which fields the value has to
  * carry — `sid` is present exactly when the role is `session` — and not
  * whether anything is allowed: what the identity may do is decided afterwards,
- * by dispatch, against the attribute table (§3.2). It is the same question
+ * by dispatch, against the attribute table (DESIGN §2.2). It is the same question
  * `hello` asks of a greeting, whose shape depends on its role in the same way
  * and for the same reason: one schema covers all three roles, so the schema
  * cannot state the rule and the instance does.

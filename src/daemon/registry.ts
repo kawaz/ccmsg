@@ -32,7 +32,7 @@ import { CommandError } from "./link.ts";
  *
  * The harness's own settings file is what says the directory is a config home
  * rather than any directory somebody typed, so which file is looked for
- * follows which harness the directory runs (§3.8). Checked where a directory
+ * follows which harness the directory runs (DESIGN §4.1). Checked where a directory
  * is named — `add` and `run` — rather than at every use, so the mistake is
  * caught when it is made. */
 export function configHome(dir: string, harness: Harness = DEFAULT_HARNESS): string {
@@ -49,7 +49,7 @@ export function configHome(dir: string, harness: Harness = DEFAULT_HARNESS): str
 
 /** Which harness a registered config home runs, as its own file says.
  *
- * Read from the same file the instance itself will read (§8.2), so a command
+ * Read from the same file the instance itself will read (DESIGN §8.2), so a command
  * that has to know before anything is running — `run`, and the supervisor's
  * own start — reaches the same answer the instance does. A directory no file
  * names runs whatever the defaults say, which is what an unregistered
@@ -99,7 +99,7 @@ export interface InstanceRow {
    * settings for has none. */
   readonly name?: string;
   readonly dir: string;
-  /** The address it binds, and the one its peers dial (§7.1). */
+  /** The address it binds, and the one its peers dial (DESIGN §7.1). */
   readonly port?: number;
   readonly endpoint?: string;
   readonly running: boolean;
@@ -113,7 +113,7 @@ export interface StatusRow extends InstanceRow {
    * what is written. */
   readonly config_problems?: readonly ConfigProblem[];
   /** What this config home's instance is configured with, after the shared
-   * file's defaults and its own entry are merged (§8.2).
+   * file's defaults and its own entry are merged (DESIGN §8.2).
    *
    * Answered whether or not anything is running, and read from the file rather
    * than asked of the instance: this is what a restart would apply, which is
@@ -249,7 +249,7 @@ export function nameFor(dir: string): string {
  *
  * The marker file is the evidence: Claude Code keeps `settings.json` and Codex
  * keeps `config.toml`, so a directory that holds one of them is that harness's
- * (§3.8). A directory holding both, or neither, is not answered for — the
+ * (DESIGN §4.1). A directory holding both, or neither, is not answered for — the
  * first is two answers and the second is none, and guessing either way writes
  * down a setting the instance will act on for the whole of its life. */
 export function harnessOf(dir: string): Harness {
@@ -333,7 +333,7 @@ export async function add(env: Env, dir: string, options: AddOptions = {}): Prom
   // is keyed by, and a fresh one gets its id here rather than at its first
   // start (DR-0001 §2.1).
   const id = instanceIdentity(targetFor(env, home).paths.instanceIdFile);
-  // Every instance listens, because an instance is an entry of the mesh (§7.1)
+  // Every instance listens, because an instance is an entry of the mesh (DESIGN §7.1)
   // and a mesh is reached over the entry: what `--port` settles is which
   // address, not whether there is one.
   const port =
@@ -353,7 +353,7 @@ export async function add(env: Env, dir: string, options: AddOptions = {}): Prom
   );
   // The loopback address, because that is the one this host is certainly
   // reached at. A proxy in front of it is a deployment fact nothing here can
-  // see, so an operator who has one edits this row (§8.2).
+  // see, so an operator who has one edits this row (DESIGN §8.2).
   saveEndpoints(paths.configDir, [
     ...readEndpointRows(paths.configDir).filter((row) => row.id !== id),
     { id, endpoint: `http://127.0.0.1:${String(port)}/` as EndpointRow["endpoint"] },
@@ -563,7 +563,7 @@ export async function status(target: Target): Promise<StatusRow> {
     config: own?.config ?? DEFAULT_CONFIG,
     // What a person has to be told even though the instance is running: an
     // edit that did not check out is not applied, and the only sign of it
-    // otherwise is a setting that did not take (§8.3).
+    // otherwise is a setting that did not take (DESIGN §8.3).
     ...(read.problems.length === 0 ? {} : { config_problems: read.problems }),
   };
   const conn = await connect(target.paths.socket);
@@ -596,7 +596,7 @@ export async function status(target: Target): Promise<StatusRow> {
  *
  * The contract's op rather than a signal, so the request goes through the same
  * authorization every other op does and the caller is told it was accepted
- * before the process goes down (§8.5). */
+ * before the process goes down (DESIGN §8.5). */
 export async function stop(target: Target): Promise<{ dir: string; stopped: boolean }> {
   const conn = await connect(target.paths.socket);
   if (conn === undefined) {
@@ -639,7 +639,7 @@ export const spawnInstance: SpawnInstance = (dir, env) => {
   // The directory is an argument and not an environment variable: `daemon run`
   // takes it from there and hands it to the instance by value, so which config
   // home the child answers for cannot depend on which session the supervisor
-  // was started from (§3.8).
+  // was started from (DESIGN §4.1).
   const proc = Bun.spawn([process.execPath, ENTRY, "daemon", "run", dir], {
     stdio: ["ignore", "ignore", "ignore"],
     env: { ...env } as Record<string, string>,
@@ -679,7 +679,7 @@ export function awaitSocket(paths: InstancePaths, timeoutMs: number): Promise<vo
 }
 
 /** Wait for the lock to be released, which is the last thing a departing
- * instance does (§8.5). */
+ * instance does (DESIGN §8.5). */
 export function awaitGone(paths: InstancePaths, timeoutMs: number): Promise<void> {
   return awaitEntry(paths, timeoutMs, () => {
     const pid = lockHolder(paths.lockFile);

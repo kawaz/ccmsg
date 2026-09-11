@@ -1,4 +1,4 @@
-/** Newline-delimited JSON, in one place for both transports (daemon-v2 §3.1).
+/** Newline-delimited JSON, in one place for both transports (DESIGN §2.1).
  *
  * The limit and the backpressure handling live here rather than in the UDS and
  * WS listeners, so the two cannot drift into two framings. */

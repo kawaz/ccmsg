@@ -94,7 +94,7 @@ export async function handleWebhook(
 /** Whether the request presents exactly this source's token.
  *
  * Compared in constant time. The route is reachable only by whoever the entry
- * check of §3.1 already let through, but a comparison that leaks its prefix
+ * check of DESIGN §2.1 already let through, but a comparison that leaks its prefix
  * through timing is the kind of thing that quietly stops being enough once an
  * instance is bound past loopback. */
 function authorized(header: string | null, token: string): boolean {

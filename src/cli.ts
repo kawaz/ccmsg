@@ -76,7 +76,7 @@ import {
 import { type Run, runCommand, serviceFor } from "./service/index.ts";
 import { VERSION } from "./version.ts";
 
-/** The session this process runs inside, as its environment says (§3.8).
+/** The session this process runs inside, as its environment says (DESIGN §4.1).
  *
  * One reading for every command that speaks as a session: which harness
  * claimed the process settles both who the sender is and which instance it
@@ -644,9 +644,9 @@ async function runInstance(given: string | undefined): Promise<unknown> {
   // The directory is handed over rather than put in the environment: the
   // instance would otherwise read it back through the question "which session
   // is this process inside", and a `daemon run` issued from a session of
-  // another harness would answer for that session's config home (§3.8).
+  // another harness would answer for that session's config home (DESIGN §4.1).
   // With a supervisor up, it is the one that reads the files and writes down
-  // what held (§8.2); this start reads what it applied. With none, this
+  // what held (DESIGN §8.2); this start reads what it applied. With none, this
   // process is the only one there is, so it does both.
   const outcome = await start({ configHome: home, settle: !(await reachable()) });
   if (!isRunning(outcome)) {
@@ -657,7 +657,7 @@ async function runInstance(given: string | undefined): Promise<unknown> {
   }
   const instance = outcome;
   // A signal is a request to leave, and leaving is the ordered shutdown of
-  // §8.5 — the same one `instance.shutdown` runs, so a client sees the same
+  // DESIGN §8.5 — the same one `instance.shutdown` runs, so a client sees the same
   // departure either way. The listeners are removed once it has run, because a
   // signal listener keeps the event loop alive and the process would sit at an
   // empty loop instead of exiting.
@@ -689,7 +689,7 @@ async function supervise(): Promise<unknown> {
  * The file first and the supervisor second, because the file is what survives:
  * a host with no supervisor running still gets the config home added, and the
  * next supervisor starts it. Told rather than left to be discovered, because
- * the supervisor reads the list once (DV-Q8) and would otherwise not know
+ * the supervisor reads the list once (DR-0004) and would otherwise not know
  * until it is restarted. */
 async function added(args: readonly string[]): Promise<unknown> {
   const { named, rest } = options(args, ["harness", "port"]);
@@ -722,11 +722,11 @@ async function added(args: readonly string[]): Promise<unknown> {
  *
  * Its own command rather than one under `daemon`, because what it edits is not
  * one instance's anything: every instance of this host is in the same mesh
- * (§7.1), so the list is the host's. `peers` is what a session list is called,
+ * (DESIGN §7.1), so the list is the host's. `peers` is what a session list is called,
  * which is why this is called what the thing itself is called.
  *
  * An addition takes effect when the instances next start, for the reason
- * nothing else reloads either (DV-Q8). A removal is told to whoever is running
+ * nothing else reloads either (DR-0004). A removal is told to whoever is running
  * as well as written down: an endpoint taken off the list is one this host is
  * not to be talking to, and leaving a live link up until the next restart would
  * be leaving exactly the connection that was just revoked. */
@@ -829,7 +829,7 @@ async function configShow(args: readonly string[]): Promise<unknown> {
   }
   // A dry run: the files are read and the settings functions are called, and
   // nothing is written. They are expected to have no side effects for exactly
-  // this reason (§8.2).
+  // this reason (DESIGN §8.2).
   const read = await evaluate(resolveConfigDir());
   if (read.satisfied === undefined) {
     throw new CommandError(
@@ -1437,7 +1437,7 @@ function notify(args: readonly string[]): Promise<unknown> {
 
 /** `ccmsg stopping`: this session is about to go.
  *
- * What it buys is the difference between Paused and Disappeared (§5.2): the
+ * What it buys is the difference between Paused and Disappeared (DESIGN §4.3): the
  * instance holds the declaration until the connection closes, and the entry it
  * then writes carries the instant it was told. The connection closing is the
  * second half of that, so the command says its piece and leaves — which is
@@ -1570,7 +1570,7 @@ async function plugin(
   // The config home is that agent's own, and not whichever variable happens to
   // be set: a Codex session started from a Claude Code session carries both,
   // and an install that read the wrong one would write Codex's hooks into
-  // Claude Code's config home (§3.8). The marker check is what says the
+  // Claude Code's config home (DESIGN §4.1). The marker check is what says the
   // directory really is that agent's.
   const home = configHome(homeOf(which), which);
   const paths = resolvePathsFor(home);

@@ -2,7 +2,7 @@ import type { Role, Sid } from "@ccmsg/protocol";
 
 /** What dispatch knows about the connection a frame arrived on.
  *
- * transport settles this (daemon-v2 §3.1): a connection starts anonymous and
+ * transport settles this (DESIGN §2.1): a connection starts anonymous and
  * becomes `settled` when `hello` binds a role, and a session's `sid`, to it.
  * Nothing else about the connection reaches dispatch — the authorization steps
  * read the op attribute table, not the connection. */

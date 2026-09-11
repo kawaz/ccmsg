@@ -17,10 +17,10 @@ export interface HelperChannel {
   kill(): void;
 }
 
-/** Read the helper the config names (§8.2).
+/** Read the helper the config names (DESIGN §8.2).
  *
  * A helper that is named and cannot be run ends the start rather than leaving
- * translation silently off (DV-Q9): an instance without the capability looks
+ * translation silently off (DR-0004): an instance without the capability looks
  * exactly like one nobody configured, and the operator who named a program
  * meant to have it. */
 export function translateSetup(config: UpstreamConfig, file: string): string | undefined {

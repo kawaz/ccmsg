@@ -13,7 +13,7 @@ export const READ_LIMIT = 512 * 1024;
 
 /** A slice of a transcript, read backwards from an offset.
  *
- * Paging is by byte offset aligned to line boundaries (§3.3): the end of the
+ * Paging is by byte offset aligned to line boundaries (DESIGN §2.3): the end of the
  * file is read first, and each further page asks for what began before the
  * slice just read. Nothing is scanned whole and no index is built, which is
  * what lets a transcript of any size be read from its end.

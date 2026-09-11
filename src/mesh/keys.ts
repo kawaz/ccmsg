@@ -16,17 +16,17 @@ export const MESH_VER = 1;
  *
  * A set rather than one name, because the JWS header is not trusted: the header
  * names an algorithm and this is what decides whether that name may be used at
- * all, which is what stops `alg: none` and algorithm confusion (§5.7-7). Two
+ * all, which is what stops `alg: none` and algorithm confusion (mesh-peer-auth §5.7-7). Two
  * entries have to be expressible for a migration, so it is a set even while it
  * holds one. */
 export const ALLOWED_ALGS: ReadonlySet<string> = new Set(["EdDSA"]);
 
-/** How long a proof stays valid (§5.9). A handshake within one region completes
+/** How long a proof stays valid (mesh-peer-auth §5.9). A handshake within one region completes
  * in tens to hundreds of milliseconds, and a peer that cannot manage this could
  * not hold a mesh link anyway. */
 export const PROOF_LIFETIME_MS = 10_000;
 
-/** 128 bits, the floor §5.9 sets for both the challenge and the key id: the only
+/** 128 bits, the floor mesh-peer-auth §5.9 sets for both the challenge and the key id: the only
  * requirement on either is that it cannot be predicted. */
 const RANDOM_BYTES = 16;
 
@@ -38,7 +38,7 @@ export function randomId(): string {
  *
  * The id is on the key because the receiver compares three of them — the
  * greeting's, the proof header's, and this one — and a key that arrived without
- * its own id could not be part of that comparison (§5.7-8). */
+ * its own id could not be part of that comparison (mesh-peer-auth §5.7-8). */
 export interface MeshJwk {
   readonly kty: string;
   readonly crv?: string;
@@ -50,7 +50,7 @@ export interface MeshJwk {
  *
  * It lives as long as the handshake it was made for: created when the dial
  * starts, fetched once by the peer, and destroyed when the acknowledgement
- * arrives or the connection goes, whichever comes first (§7). Nothing rotates
+ * arrives or the connection goes, whichever comes first (mesh-peer-auth §7). Nothing rotates
  * it because nothing outlives one connection. */
 export class EphemeralKey {
   readonly kid = randomId();
@@ -67,7 +67,7 @@ export class EphemeralKey {
     return { ...(this.#public.export({ format: "jwk" }) as object), kid: this.kid } as MeshJwk;
   }
 
-  /** The proof of §5.4: the challenge, and the two endpoint URLs, signed.
+  /** The proof of mesh-peer-auth §5.4: the challenge, and the two endpoint URLs, signed.
    *
    * The URLs are signed even though the greeting already carried them, because
    * the greeting is not signed and therefore states nothing. */
@@ -102,7 +102,7 @@ export class ProofError extends Error {}
  * with an algorithm outside the allowed set.
  *
  * The algorithm is checked here, before the key is even looked at, because the
- * check exists to decide whether the header may be acted on at all (§5.7-7). */
+ * check exists to decide whether the header may be acted on at all (mesh-peer-auth §5.7-7). */
 export function parseProof(jws: string): ParsedProof {
   const parts = jws.split(".");
   if (parts.length !== 3) throw new ProofError("a proof is a compact JWS of three parts");

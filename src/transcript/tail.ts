@@ -9,7 +9,7 @@ import { CONFIRM_POLL_MS } from "../sessions/harness.ts";
  * is the recent end of the file, not its history. A megabyte is a few hundred
  * records at the sizes the harness writes, which reaches back past the current
  * turn by a wide margin while costing one read of fixed size however large the
- * file has grown (§3.3: a transcript of any size is read from its end).
+ * file has grown (DESIGN §2.3: a transcript of any size is read from its end).
  *
  * A person who has not spoken within it is reported as having no known input
  * rather than as having spoken long ago, which is what the contract's absent
@@ -42,10 +42,10 @@ export interface TailDeps {
   readonly pollMs?: number;
 }
 
-/** One transcript file, followed while somebody wants it (§6.3).
+/** One transcript file, followed while somebody wants it (DESIGN §6.3).
  *
  * Watch plus a low-rate confirmation poll, for the reason and at the interval
- * the sessions directory uses (§5.1): the watch is the route and the poll is
+ * the sessions directory uses (DESIGN §4.2): the watch is the route and the poll is
  * the backstop for what a delayed FSEvents queue is still sitting on. The
  * interval is shared rather than chosen again, so the two watches cannot
  * drift into two different answers to the same question. */

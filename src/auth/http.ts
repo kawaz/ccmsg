@@ -60,7 +60,7 @@ export function endpointPath(pathname: string): string {
 /** The cookie path for a request: everything up to and including its `/auth/`.
  *
  * It narrows what the browser sends where, and nothing more — same-origin
- * script can fetch any path, so this is not an authorization boundary (§2.4).
+ * script can fetch any path, so this is not an authorization boundary (DR-0001 §2.4).
  * What it is for is that two endpoints behind one origin (`/` and `/personal`)
  * get cookies of their own. */
 export function cookiePath(pathname: string): string {
@@ -102,7 +102,7 @@ export interface AuthRoutesDeps {
  *
  * Everything unauthenticated shares one rate limit and one origin check: these
  * routes are reachable before anything is proven, and the work behind them is a
- * signature verification (§2.4). */
+ * signature verification (DR-0001 §2.4). */
 export async function handleAuth(
   request: Request,
   deps: AuthRoutesDeps,
@@ -116,7 +116,7 @@ export async function handleAuth(
   // anything else, including the preflight that would tell it to try. Compared
   // whole rather than by domain: `/auth/refresh` answers with a person's access
   // token, and a browser attaches the cookie it is asked for by domain, so a
-  // sibling subdomain let in here could read that token (§2.3).
+  // sibling subdomain let in here could read that token (DR-0001 §2.3).
   if (origin !== null && !deps.auth.knownOrigins().includes(origin)) {
     return new Response("Forbidden", { status: 403 });
   }

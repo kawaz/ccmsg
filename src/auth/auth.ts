@@ -44,7 +44,7 @@ import { CborError } from "./cbor.ts";
 
 /** How long an access token is accepted, and how long a refresh token is.
  *
- * Chosen rather than derived, within the DR's "hours" and "days" (§2.4). The
+ * Chosen rather than derived, within the DR's "hours" and "days" (DR-0001 §2.4). The
  * access token's life is also a connection's: a client renews on the
  * connection it already holds, so the period is what bounds a stolen token
  * rather than how often a person is interrupted. The refresh token's life is
@@ -84,7 +84,7 @@ export const CODE_ATTEMPTS = 5;
 /** How many `/auth/*` requests are answered per second, over all callers.
  *
  * The routes are reached before anything is proven, like the mesh's key
- * endpoint (§6), and the work behind them is a signature verification. The cap
+ * endpoint (mesh-peer-auth §6), and the work behind them is a signature verification. The cap
  * is far above what a person at a keyboard produces and far below what would
  * cost this instance anything. */
 export const AUTH_RATE_LIMIT = 30;
@@ -102,7 +102,7 @@ interface Pending {
   attempts: number;
 }
 
-/** One challenge this instance issued, good once (§2.6). */
+/** One challenge this instance issued, good once (DR-0001 §2.6). */
 interface Issued {
   readonly expiresAt: Timestamp;
 }
@@ -194,7 +194,7 @@ export class Auth {
     return (this.deps.now ?? Date.now)();
   }
 
-  // --- issuing a registration URL (§2.2) ---
+  // --- issuing a registration URL (DR-0001 §2.2) ---
 
   /** Make one registration URL and the code that goes with it.
    *
@@ -345,7 +345,7 @@ export class Auth {
     for (const sub of removed) this.disconnect(sub);
   }
 
-  // --- challenges (§2.6) ---
+  // --- challenges (DR-0001 §2.6) ---
 
   challenge(): AuthChallengeResult {
     this.#forget();
@@ -365,7 +365,7 @@ export class Auth {
   }
 
   /** Spend a challenge wherever it was issued: here, or at the instance the
-   * caller says issued it (§2.4, behind a load balancer either may be
+   * caller says issued it (DR-0001 §2.4, behind a load balancer either may be
    * reached). */
   async #spendAnywhere(challenge: AuthChallenge): Promise<void> {
     if (challenge.issuer === this.deps.self) {
@@ -402,13 +402,13 @@ export class Auth {
     return ask(iss, op, args);
   }
 
-  // --- registration (§2.2) ---
+  // --- registration (DR-0001 §2.2) ---
 
   /** Verify a registration and write the credential down.
    *
    * The registration URL is checked where its secret is, which may be another
    * instance; everything else — the WebAuthn verification, the record — is done
-   * here, by whoever the browser reached (§2.6). */
+   * here, by whoever the browser reached (DR-0001 §2.6). */
   async register(
     args: AuthRegisterArgs,
     from: { ip?: string; userAgent?: string; path?: string } = {},
@@ -493,7 +493,7 @@ export class Auth {
    *
    * The claims come back from the issuer having been checked and consumed, and
    * everything after this — the WebAuthn verification, the record — is done by
-   * whichever instance the browser actually reached (§2.6). */
+   * whichever instance the browser actually reached (DR-0001 §2.6). */
   async #claimsOf(args: AuthRegisterArgs): Promise<RegisterClaims> {
     const stated = claimsOf(args.token);
     if (stated.iss === this.deps.self) return this.resolveRegistration(args.token, args.code);
@@ -530,7 +530,7 @@ export class Auth {
     if (code === undefined || !equalStrings(code, held.code)) {
       held.attempts += 1;
       // The URL itself is spent once the tries are gone, so guessing the code
-      // costs the whole registration rather than one attempt (§2.2).
+      // costs the whole registration rather than one attempt (DR-0001 §2.2).
       if (held.attempts >= CODE_ATTEMPTS) {
         this.#pending.delete(stated.jti);
         throw new OpError(
@@ -544,7 +544,7 @@ export class Auth {
     return held.claims;
   }
 
-  // --- assertion (§2.5) ---
+  // --- assertion (DR-0001 §2.5) ---
 
   async assert(
     args: AuthAssertArgs,
@@ -620,7 +620,7 @@ export class Auth {
    *
    * The one the credential was registered under, which the record carries: a
    * passkey only ever answers for the domain it was made under, and the
-   * endpoint being reached says nothing about that (§2.3). Nothing is widened
+   * endpoint being reached says nothing about that (DR-0001 §2.3). Nothing is widened
    * to a suffix, and a record from before the field existed names the host of
    * the endpoint it was registered for. */
   #rpIdFor(record: CredentialRecord): string[] {
@@ -633,9 +633,9 @@ export class Auth {
    *
    * Its own is there because a browser may land here holding a URL another
    * instance issued — the page it runs the exchange from is then this
-   * instance's, and the issuer is only asked to spend the URL (§2.6).
+   * instance's, and the issuer is only asked to spend the URL (DR-0001 §2.6).
    *
-   * Read by the HTTP carrier, which compares them whole (§2.3). Not the relying
+   * Read by the HTTP carrier, which compares them whole (DR-0001 §2.3). Not the relying
    * party: an RP ID is a domain, so a page at any host under it would be let in
    * — and `/auth/refresh` answers a cookie the browser attaches by domain, so a
    * sibling subdomain admitted here would read a person's access token. What
@@ -651,7 +651,7 @@ export class Auth {
     return [...origins];
   }
 
-  // --- tokens (§2.4) ---
+  // --- tokens (DR-0001 §2.4) ---
 
   /** Make a family for this person, minted by this instance. */
   mint(sub: Subject): MintedSession {
@@ -673,7 +673,7 @@ export class Auth {
    * A family is written by its `iss` alone, so a rotation that landed here for
    * a family minted elsewhere is carried there rather than done here — two
    * instances rotating one family in parallel would merge by last write and
-   * read exactly like a stolen token being replayed (§2.4). */
+   * read exactly like a stolen token being replayed (DR-0001 §2.4). */
   async refreshToken(value: Base64Url, from: RefreshFrom = {}): Promise<MintedSession> {
     const held = this.deps.records.byRefresh(value);
     if (held === undefined) {
@@ -783,7 +783,7 @@ export class Auth {
 
   /** A value that is nobody's standing token but was somebody's: the family it
    * belonged to is failed, because a token in use twice is a token that was
-   * taken (§2.4).
+   * taken (DR-0001 §2.4).
    *
    * Recognised three ways: the standing refresh token past its expiry, the one
    * before it past its grace, and any generation this instance rotated away
@@ -813,7 +813,7 @@ export class Auth {
     }
   }
 
-  // --- connections (§2.5) ---
+  // --- connections (DR-0001 §2.5) ---
 
   /** Whether an access token opens a connection, and until when. */
   admits(access: Base64Url): { sub: Subject; expiresAt: Timestamp } | undefined {
@@ -861,7 +861,7 @@ export class Auth {
     return this.#authorized.get(conn)?.expiresAt;
   }
 
-  /** Extend a live connection with a token got from `/auth/refresh` (§2.5). */
+  /** Extend a live connection with a token got from `/auth/refresh` (DR-0001 §2.5). */
   extend(conn: Requester, args: AuthExtendArgs): AuthExtendResult {
     const held = this.#authorized.get(conn);
     if (held === undefined) {
@@ -879,7 +879,7 @@ export class Auth {
     return { auth_expires_at: admitted.expiresAt };
   }
 
-  // --- the rate limit the unauthenticated routes share (§2.4) ---
+  // --- the rate limit the unauthenticated routes share (DR-0001 §2.4) ---
 
   allowRequest(): boolean {
     const now = this.#now();
@@ -929,7 +929,7 @@ export function authHandlers(auth: Auth) {
       }
       // The digits arrive unjudged from wherever the browser landed, and are
       // checked here — this is the instance holding both the secret that signed
-      // the URL and the count of tries against it (§2.2).
+      // the URL and the count of tries against it (DR-0001 §2.2).
       return { kind: "register", claims: auth.resolveRegistration(args.token, args.code) };
     },
     "auth.rotate": (input: HandlerInput): AuthRotateResult => {
@@ -1011,7 +1011,7 @@ function token(): Base64Url {
  * A JWS with HS256, because the value travels in a URL fragment and has to
  * survive being carried there: the shape is the conventional one, and the
  * verifier is the issuer itself, so nothing about it is a key anyone else
- * needs (§2.2). */
+ * needs (DR-0001 §2.2). */
 function sign(claims: RegisterClaims, secret: Buffer): string {
   const header = Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT" })).toString("base64url");
   const body = Buffer.from(JSON.stringify(claims)).toString("base64url");
@@ -1060,7 +1060,7 @@ function challengeIn(clientDataJson: Base64Url): Base64Url {
   return challenge;
 }
 
-/** The host an endpoint names, which is the relying party by default (§2.3). */
+/** The host an endpoint names, which is the relying party by default (DR-0001 §2.3). */
 export function hostOf(endpoint: Endpoint): string {
   return new URL(endpoint).hostname;
 }

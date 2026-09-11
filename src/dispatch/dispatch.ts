@@ -20,7 +20,7 @@ export interface DispatchDeps {
   readonly capabilities: ReadonlySet<Capability>;
   /** The instance that owns the subject of an `instance-local` op, or
    * `undefined` when no other instance owns it and we answer ourselves.
-   * The routing table behind this is the `peers` topic (daemon-v2 §7.3). */
+   * The routing table behind this is the `peers` topic (DESIGN §7.3). */
   readonly resolveInstance: (op: OpName, frame: Record<string, unknown>) => InstanceId | undefined;
   readonly handlers: Handlers;
 }
@@ -31,7 +31,7 @@ function isOpName(op: string): op is OpName {
 
 /** Decide one frame.
  *
- * The six steps of daemon-v2 §3.2 are written once, here, and read the op
+ * The six steps of DESIGN §2.2 are written once, here, and read the op
  * attribute table for every op. Adding an op is a row in the table plus a
  * schema and an implementation — never a check in this function (M1). */
 export async function dispatch(
@@ -101,7 +101,7 @@ export async function dispatch(
   //
   // A request that has already been here is dropped before that: a cycle in
   // the routing would otherwise send it round the same instances until every
-  // deadline expired (§7.3). It is answered rather than left unanswered,
+  // deadline expired (DESIGN §7.3). It is answered rather than left unanswered,
   // because the caller learns the same thing sooner and the code is the one
   // the contract gives a destination that could not be reached.
   const hops = fields["hops"];
@@ -123,7 +123,7 @@ export async function dispatch(
       args: fields,
       conn,
       identity: identity.state === "settled" ? identity : undefined,
-      // The one route by which a role reaches an implementation (§3.2).
+      // The one route by which a role reaches an implementation (DESIGN §2.2).
       role: attrs.scope === "role" && identity.state === "settled" ? identity.role : undefined,
     });
     return reply(requestId, body);

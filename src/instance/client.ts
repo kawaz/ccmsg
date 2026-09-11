@@ -1,5 +1,5 @@
 /** Where a request came from, when something in front of us is forwarding it
- * (§3.1).
+ * (DESIGN §2.1).
  *
  * The address the listener observed is the one thing here that cannot be
  * claimed, and behind a reverse proxy it is always the proxy's. `X-Forwarded-*`

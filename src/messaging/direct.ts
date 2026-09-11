@@ -5,30 +5,30 @@ import { dirname, join } from "node:path";
 import { type InboxMessage, renderDirectDelivery, type Sid } from "@ccmsg/protocol";
 import { HARNESS, HARNESSES } from "../harness/index.ts";
 
-/** What route (a) answered (§4.1).
+/** What route (a) answered (DESIGN §6.5).
  *
  * `unavailable` is every way the route does not apply — the flag is off, the
  * harness names no messaging socket, the generation is one we do not speak, the
- * key cannot be read, the acknowledgement did not come. §4.1 gives them one
+ * key cannot be read, the acknowledgement did not come. DESIGN §6.5 gives them one
  * outcome on purpose: the route either carried the message or it did not, and
  * route (b) is tried the same way in each case.
  *
  * `refused` is separate because it is not "the route does not apply": the
  * session is there and turned this message away for now, which is the one
- * outcome that reaches the sender as its own reason (§4.4). */
+ * outcome that reaches the sender as its own reason (DESIGN §6.8). */
 export type DirectOutcome = "delivered" | "unavailable" | "refused";
 
 /** Route (a): the harness's own messaging socket. */
 export interface DirectRoute {
   send(sid: Sid, message: InboxMessage): Promise<DirectOutcome>;
   /** Let go of what the route holds open. The status inbox below is a bound
-   * socket with a name on disk, and it leaves when the instance does (§8.5). */
+   * socket with a name on disk, and it leaves when the instance does (DESIGN §8.5). */
   close(): void;
 }
 
-/** Route (a) turned off by config (§4.1 condition 0). Delivery is unchanged by
+/** Route (a) turned off by config (DESIGN §6.5 condition 0). Delivery is unchanged by
  * this: route (b) is the fallback, and a fallback that always runs is still the
- * same semantics (§4.1). */
+ * same semantics (DESIGN §6.5). */
 export class DisabledDirectRoute implements DirectRoute {
   send(): Promise<DirectOutcome> {
     return Promise.resolve("unavailable");
@@ -39,7 +39,7 @@ export class DisabledDirectRoute implements DirectRoute {
 
 /** The `peerProtocol` generation this speaks. One value, because one is what
  * has been read off a running harness (2.1.263); any other generation is a
- * protocol nobody here has seen, which is condition 1 of §4.1. */
+ * protocol nobody here has seen, which is condition 1 of DESIGN §6.5. */
 export const PEER_PROTOCOL = 1;
 
 /** How long one attempt has to reach the point where the harness holds our
@@ -52,7 +52,7 @@ export const PEER_PROTOCOL = 1;
 export const DIRECT_ACK_MS = 2_000;
 
 /** How long the status inbox is watched for word about this message before the
- * send is taken to have landed (§4.1 condition 3).
+ * send is taken to have landed (DESIGN §6.5 condition 3).
  *
  * Provisional. What is known from the harness (2.1.263) is where the receipt
  * is raised, not how long it takes to arrive: the receiving session decides a
@@ -74,11 +74,11 @@ export const DIRECT_STATUS_MS = 250;
  *
  * `held` is among them because a parked message is not delivered yet: it waits
  * on somebody's approval there, which is the same "there, and not taking it
- * now" that §4.4 keeps in our inbox and offers again. */
+ * now" that DESIGN §6.8 keeps in our inbox and offers again. */
 const REFUSING = new Set(["refused", "denied", "dropped", "expired", "held"]);
 
 /** The socket this daemon offers so the receiving session can say what became
- * of a message (§4.1 condition 3).
+ * of a message (DESIGN §6.5 condition 3).
  *
  * It lives in the directory the target's own socket is in, and not in this
  * instance's state directory, because the receiving harness vets the address it
@@ -213,7 +213,7 @@ export interface SocketRouteOptions {
   readonly statusMs?: number;
 }
 
-/** Route (a) against the harness's messaging socket (§4.1).
+/** Route (a) against the harness's messaging socket (DESIGN §6.5).
  *
  * The path is `sessions/<pid>.json` of this instance's own config home, which
  * is also the answer to condition 2: a key beside it that this uid can read is
@@ -222,7 +222,7 @@ export interface SocketRouteOptions {
  * instance cannot see a state file for is simply not reachable this way.
  *
  * The directory is read per send rather than taken from the sessions domain's
- * watch: that watch runs only while a topic is subscribed (§6.3), and route (a)
+ * watch: that watch runs only while a topic is subscribed (DESIGN §6.3), and route (a)
  * exists precisely for the session that subscribes to nothing. */
 export class ClaudeCodeSocketRoute implements DirectRoute {
   readonly #sessionsDir: string;
@@ -243,7 +243,7 @@ export class ClaudeCodeSocketRoute implements DirectRoute {
    *
    * The message is written, and then the receipt channel is watched for word
    * about it. What can arrive is a session saying it did not take the message
-   * (§4.4); what cannot is a session saying it did, because none is sent for
+   * (DESIGN §6.8); what cannot is a session saying it did, because none is sent for
    * the ordinary case. So the outcome is refusal if it says so in time, and
    * delivery if it says nothing — which is the same shape as the acknowledged
    * send it stands in for, decided on a channel that carries the refusals
@@ -281,7 +281,7 @@ export class ClaudeCodeSocketRoute implements DirectRoute {
   }
 
   /** The state file naming this session, if it names a socket of a generation
-   * we speak (§4.1 conditions 1). */
+   * we speak (DESIGN §6.5 conditions 1). */
   async #target(sid: Sid): Promise<HarnessTarget | undefined> {
     let names: string[];
     try {
@@ -303,7 +303,7 @@ export class ClaudeCodeSocketRoute implements DirectRoute {
     return undefined;
   }
 
-  /** The `peerToken` the harness wrote for this session (§4.1 condition 2).
+  /** The `peerToken` the harness wrote for this session (DESIGN §6.5 condition 2).
    *
    * Found by the pid the key is named after rather than by rebuilding the rest
    * of the name: the digest in `<pid>.<digest>.key` is stated to be over the
@@ -341,7 +341,7 @@ type Env = Record<string, string>;
  * Passed through, they would tell the Codex CLI about a config home this
  * instance is not about and a session that is not the one being written to.
  * The home this route means is named explicitly, and the rest is dropped
- * (§3.8). */
+ * (DESIGN §4.1). */
 const DROPPED = HARNESSES.filter((harness) => harness !== "codex").flatMap((harness) => [
   HARNESS[harness].homeEnv,
   ...HARNESS[harness].sessionEnv,
@@ -360,7 +360,7 @@ const DROPPED = HARNESSES.filter((harness) => harness !== "codex").flatMap((harn
  * The budget is here for what is not being predicted: a child that never
  * answers would hold `message.send` open for as long as it lived, and route
  * (b) exists exactly so a route that does not come through costs a message
- * nothing (§4.1). It is generous next to a call that has been measured to
+ * nothing (DESIGN §6.5). It is generous next to a call that has been measured to
  * return at once. */
 export const QUEUE_MS = 10_000;
 
@@ -380,7 +380,7 @@ const runCodex: RunCodex = async (args, env) => {
     });
   } catch {
     // No `codex` on `PATH`, which is the same as the route not applying: the
-    // message goes by route (b) and nothing about it is lost (§4.1).
+    // message goes by route (b) and nothing about it is lost (DESIGN §6.5).
     return { code: 127 };
   }
   // The timer is held so it can be cleared: a send that answered in a
@@ -408,7 +408,7 @@ export interface QueueRouteOptions {
   readonly run?: RunCodex;
 }
 
-/** Route (a) against a Codex thread's queue (§4.1).
+/** Route (a) against a Codex thread's queue (DESIGN §6.5).
  *
  * Codex has no socket a message can be written to: what it has is a queue per
  * thread, held by the app-server the thread belongs to, and `codex queue` is
@@ -460,7 +460,7 @@ export class CodexQueueRoute implements DirectRoute {
  * into a message nobody receives rather than one the wrong session does.
  *
  * `from` is the address of our own status inbox, and is fixed by ccmsg rather
- * than taken from the caller (§4.1). It is what the receiving session answers
+ * than taken from the caller (DESIGN §6.5). It is what the receiving session answers
  * to about this message, and the message's `mid` is what it answers about — so
  * the two travel together, and a route with no inbox to offer sends neither
  * rather than naming an address nothing is listening on. */
@@ -476,7 +476,7 @@ function frames(sid: Sid, token: string, message: InboxMessage, from?: string): 
   return `${JSON.stringify(auth)}\n${JSON.stringify(user)}\n`;
 }
 
-/** Connect and write, and answer whether the harness holds our bytes (§4.1
+/** Connect and write, and answer whether the harness holds our bytes (DESIGN §6.5
  * condition 3).
  *
  * That is the whole of what this can decide. The connection carries nothing
@@ -520,7 +520,7 @@ async function write(path: string, payload: string, ackMs: number): Promise<Dire
     });
   } catch {
     // No socket at the path, or nothing listening on it: the session ended and
-    // took its socket with it, or never had one (§4.1 condition 1).
+    // took its socket with it, or never had one (DESIGN §6.5 condition 1).
     return "unavailable";
   }
 
@@ -543,7 +543,7 @@ async function readJson(path: string): Promise<Record<string, unknown> | undefin
     return document as Record<string, unknown>;
   } catch {
     // Missing, unreadable by this uid, or half written — all of them are
-    // "route (a) does not apply here" (§4.1 conditions 1 and 2).
+    // "route (a) does not apply here" (DESIGN §6.5 conditions 1 and 2).
     return undefined;
   }
 }

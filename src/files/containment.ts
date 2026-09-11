@@ -53,13 +53,13 @@ export interface Located {
  * range a caller has are decided in one place and cannot come apart.
  *
  * `Viewer` is that visible range, and it is where the role of a `scope: "role"`
- * op arrives (§3.2): a session reads its own session's files, a person reads
+ * op arrives (DESIGN §2.2): a session reads its own session's files, a person reads
  * any session's, and a role the rule does not name reaches nothing rather than
  * being guessed at. An op the attribute table gives no `scope` states no role
  * here, and needs none — dispatch has already settled who may call it. */
 export interface Viewer {
   /** Present only for an op the attribute table marks `scope: "role"`, which
-   * is the one route by which a role reaches an implementation (§3.2). */
+   * is the one route by which a role reaches an implementation (DESIGN §2.2). */
   readonly role?: Role;
   /** The session the connection speaks for, when it speaks for one. */
   readonly sid?: Sid;

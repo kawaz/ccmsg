@@ -64,7 +64,7 @@ export async function readUsage(
   return usage;
 }
 
-/** Read the gateway's document as this contract's answer (§3.5).
+/** Read the gateway's document as this contract's answer (DESIGN §2.4).
  *
  * The names that differ are the two the gateway spells its own way — `reset`
  * and `window_seconds` — and both are already Unix ms and seconds, so the

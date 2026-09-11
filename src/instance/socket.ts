@@ -29,7 +29,7 @@ export function publishSocket(paths: InstancePaths): void {
  *
  * The stable address is never swept. It may already point at a successor, and
  * one pointing at a socket that is gone is the "the unix socket refuses"
- * a client reads as this instance having finished leaving (§8.5). */
+ * a client reads as this instance having finished leaving (DESIGN §8.5). */
 export function sweepOrphanSockets(paths: InstancePaths): void {
   let names: string[];
   try {
