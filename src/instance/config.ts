@@ -1,6 +1,6 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute } from "node:path";
-import type { DumpPreset, Endpoint } from "@ccmsg/protocol";
+import { type DumpPreset, type Endpoint, TranscriptItemSelector } from "@ccmsg/protocol";
 import { DEFAULT_HARNESS, type Harness, HARNESSES, isHarness } from "../harness/index.ts";
 import { parseCidr } from "./client.ts";
 
@@ -47,7 +47,7 @@ export interface LauncherTemplateConfig {
 /** What the launcher may start, and where.
  *
  * Structured rather than a string because it is a form: the roots bound where a
- * session may run, and the recipes are what `launcher_config_read` answers
+ * session may run, and the recipes are what `launcher.config.read` answers
  * with. Present is what gives this instance the `launcher` capability. */
 export interface LauncherConfig {
   /** Absolute directories a session may be started in. A launch or a walk
@@ -55,7 +55,7 @@ export interface LauncherConfig {
   readonly root_dirs: readonly string[];
   /** In configured order; the first is the default recipe. */
   readonly templates: readonly LauncherTemplateConfig[];
-  /** How deep `dir_tree` walks when a request names no depth. */
+  /** How deep `dir.tree` walks when a request names no depth. */
   readonly depth: number;
   /** How long a launch may run before it is stopped. */
   readonly timeout_secs: number;
@@ -98,7 +98,7 @@ export interface UpstreamConfig {
  * not a property of the wire. A type name stays one to one with what a record
  * is, and the groupings people reach for are made by naming a set of them. */
 export interface DumpConfig {
-  /** In configured order, which is the order `dump_presets_read` answers in. */
+  /** In configured order, which is the order `dump.presets.read` answers in. */
   readonly presets: readonly DumpPreset[];
 }
 
@@ -330,9 +330,18 @@ export function parseConfig(file: string, fields: Record<string, unknown>): Inst
   };
 }
 
-/** One element of a selection, as the contract spells it: a type name, a
- * prefix of one, either negated with `-`, or `@name` for a preset. */
-const SELECTOR = /^-?(?:@[A-Za-z0-9][A-Za-z0-9_-]*|[a-z]+(?::[A-Za-z0-9_.-]+)*)$/;
+/** One element of a selection: a type name, a prefix of one, either negated
+ * with `-`, or `@name` for a preset. Taken from the contract's own schema
+ * rather than written again here, so a config file and a request are held to
+ * the one spelling. */
+const SELECTOR = new RegExp(
+  TranscriptItemSelector.pattern ??
+    // A selector schema with no pattern would let every string through here,
+    // which is the one outcome worse than refusing the config file.
+    (() => {
+      throw new Error("the contract's item selector states no pattern");
+    })(),
+);
 
 function dumpOf(file: string, raw: unknown): DumpConfig {
   if (raw === undefined) return { presets: [] };
@@ -368,9 +377,12 @@ function presetsOf(file: string, raw: unknown): DumpPreset[] {
     const types = stringsOf(file, `${at}.opts.types`, opts["types"]);
     const wrong = types.filter((element) => !SELECTOR.test(element));
     if (wrong.length > 0) {
+      // Named rather than dropped: a selection nothing can match would dump an
+      // empty file and say why nowhere. The preset is named beside the strings
+      // so the line to edit is the one the message points at.
       throw new ConfigError(
         file,
-        `${at}.opts.types must be item types, prefixes, exclusions or @presets, got ${wrong.join(", ")}`,
+        `dump.presets[${name}].opts.types must be item types, prefixes, exclusions or @presets, got ${wrong.join(", ")}`,
       );
     }
     return {
@@ -515,7 +527,7 @@ function upstreamOf(file: string, raw: unknown): UpstreamConfig {
   };
 }
 
-/** How deep `dir_tree` walks, and how long a launch may take, when the config
+/** How deep `dir.tree` walks, and how long a launch may take, when the config
  * says neither. */
 const DEFAULT_DEPTH = 2;
 const DEFAULT_TIMEOUT_SECS = 10;
