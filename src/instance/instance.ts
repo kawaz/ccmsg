@@ -308,12 +308,11 @@ export interface MeshWiring {
   attach(instance: Instance): void;
 }
 
-/** Bind the WebSocket, settle which endpoint this instance is, and hand both on.
+/** Bind the WebSocket before the instance exists, and hand it on.
  *
- * The listener answers the two pre-authentication routes from the moment it is
- * up — the probe of self-identification and the key of mesh-peer-auth §6 — and
- * refuses everything else until the instance exists, which is a window of one
- * round of probes. */
+ * A peer may dial the moment the address is up, so the listener answers the one
+ * pre-authentication route from that moment — the key of mesh-peer-auth §6 —
+ * and refuses everything else until there is an instance to answer. */
 async function bindForMesh(config: InstanceConfig, mesh: Mesh): Promise<MeshWiring> {
   const entry = config.entry as EntryConfig;
   let instance: Instance | undefined;

@@ -73,9 +73,8 @@ export function leasePort(): PortLease {
  *
  * Not a lease, because a lease answers — and what these cases are about is a
  * peer that does not. A stranger arriving on the address afterwards cannot be
- * mistaken for one of ours: being counted as this instance takes echoing our
- * own probe token back to us (§7.2), and being reached takes speaking the mesh
- * handshake. */
+ * mistaken for one of ours: being reached takes speaking the mesh handshake,
+ * and being believed takes proving the id the mesh names (§7.2). */
 export function deadPort(): number {
   const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("") });
   const port = server.port as number;
@@ -92,9 +91,9 @@ export function endpoint(port: number): Endpoint {
 /** A second URL that reaches the instance at `target`: what an alias, or a
  * proxy in front of one instance, looks like from the peer list.
  *
- * It forwards the path it was asked for, which is all a probe needs — the
- * receiver never reads the URL the request came in on, so a probe through here
- * lands as though it had been sent to the address directly (§4.2). */
+ * It forwards the path it was asked for, which is all the mesh's own routes
+ * need — a receiver never reads the URL a request came in on, so one through
+ * here lands as though it had been sent to the address directly. */
 export function proxyTo(target: Endpoint): Endpoint {
   const to = new URL(target);
   const server = Bun.serve({
@@ -132,10 +131,9 @@ const leaseOf = new WeakMap<Env, PortLease>();
 
 /** One instance's disposable home, configured to listen and to know the peers.
  *
- * The peer list is the same for every instance in a test, itself included,
- * which is exactly what §8.2 says a peer list is: one file that can go to all
- * of them. Nothing here says which entry this home is: that is what the probe
- * settles at startup (§7.1). */
+ * The mesh is the same for every instance in a test, itself included, which is
+ * exactly what §8.2 says it is: one file that can go to all of them. Which
+ * entry this home is is the row carrying its own id (§7.1). */
 export function homeFor(lease: PortLease, peers: readonly Endpoint[], endpoint?: Endpoint): Env {
   const port = lease.port;
   const root = mkdtempSync(join(tmpdir(), "ccmsg-mesh-"));
@@ -207,7 +205,7 @@ export async function startAt(env: Env, timing: Timing = NO_RETRY): Promise<Inst
   return outcome;
 }
 
-/** Where this instance is reached, as the probe settled it.
+/** Where this instance is reached, as the mesh names it.
  *
  * Apart from `instance.self`, which is the id: a test writes endpoints into the
  * config and reads ids back off the wire, and the two are not interchangeable
@@ -291,10 +289,6 @@ export class FakePeer {
       port,
       fetch: async (request, srv) => {
         const path = new URL(request.url).pathname;
-        // A probe is answered so that a real instance counts this endpoint as
-        // reachable; nothing is done with the token, because a peer replaying
-        // one is a case of its own below.
-        if (path === "/mesh/probe") return Response.json({});
         if (path.startsWith("/mesh/jwk/")) return await this.#serveKey(request);
         // The real instance dials us too. The connection is accepted and its
         // greeting refused, which leaves this peer's own dial the only link
