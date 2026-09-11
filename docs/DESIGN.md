@@ -611,7 +611,9 @@ delivery means, and determining the reason for non-delivery.
 - (a) **arrives even if the receiving side does not have a ccmsg long-running process**. The
   gap "messages don't reach a session that hasn't subscribed yet" (which the old daemon
   plugged with a 3-minute rewind window) disappears as a property of the route rather than
-  being closed by a time window
+  being closed by a time window. That **its only input is `sessions/`** is the same property
+  from the other side: resolving the addressee and writing to it both hold for a session whose
+  greeting was never heard — which, to a restarted instance, is every session
 - (b) is ccmsg's own protocol, so it works for peers where (a) is unusable (generation
   mismatch, no socket, cannot read the key). There are combinations that work with only one of
   the two but not the other
@@ -742,6 +744,23 @@ drifts per instance.
 | `last_live` + `stopped_at` | Previously running / intentionally stopped | a file we wrote ourselves |
 | transcript's fold | Whether it's stopped on an API error, the last human input | tail |
 
+**The two lists of `peers` are split by "alive" and "not alive"**, never by whether there is a
+connection. The one thing that greets is the `SessionStart` hook, so when an instance restarts
+**the sessions already running never greet it again** — putting only what holds a connection on
+`peers[]` makes a host full of running sessions read as "nothing alive". A session `sessions/`
+names is a row of `peers[]` whether or not it ever greeted, and which of the two it is is what
+the row's `state` says (§5.2).
+
+A row with no connection carries none of the fields that are about one (`connected_at`,
+`last_activity_at`, `client_version`, `protocol_version`): no client ever announced itself, so
+the generation is left unsaid rather than guessed. What a greeting did say — `repo`, `ws` and
+the rest — is kept for as long as `sessions/` names that sid, so it does not leave the row when
+the hook's connection closes.
+
+**One session is never on both lists.** What takes an entry off `last_live` is being alive
+again, not greeting: resuming a session gives it a new process and a new state file, and
+nothing about that is a greeting.
+
 **The classification's inputs do not depend on subscription.** Reading `sessions/` and
 watching it are two different things, and what §6.3 makes subordinate to subscription is only
 the latter. Which sessions exist is a fact about the instance itself, so the directory is read
@@ -793,6 +812,12 @@ alive (unmanaged) = alive but connected to neither ccmsg nor a terminal
 Paused         = present in last_live and has a stopped_at
 Disappeared    = present in last_live and has no stopped_at
 ```
+
+**"Unmanaged" does not look at the delivery route.** "Connected" here means "is there a handle
+to type into", not "can a message arrive". Route (a) puts a message on the messaging socket
+`sessions/` names or on Codex's thread queue, so a message reaches an unmanaged row too
+(§4.1) — arriving and being operable are different questions, and only the second one is the
+classification.
 
 Because "Busy and Idle are not split" (issue session-list-sections), **busyness within alive
 is emitted as a row attribute, not a classification**. Busyness is derived from gateway events
@@ -1060,10 +1085,9 @@ webui ──▶ instance A ──(envelope: to_instance=B, from_instance=A, hops
   named, rather than the forwarding instance's outcome
 
 How "the owning instance of the target" is decided: the sid-to-owning-instance mapping is
-looked for, in order, in the `peers` topic's `peers[]` (connected), then the `agents` topic's
-`agents[]` (every session the harness knows of, including one that has not yet appeared in
-`peers`), then the `peers` topic's `last_live[]` (disconnected but still within the retention
-window). An unknown sid means "nowhere in the cluster" = `session_not_found`. However, while an
+looked for, in order, in the `peers` topic's `peers[]` (alive), then the `agents` topic's
+`agents[]` (every session the harness knows of), then the `peers` topic's `last_live[]` (not
+alive, but still within the retention window). An unknown sid means "nowhere in the cluster" = `session_not_found`. However, while an
 unreachable instance exists, the judgment is deferred (§4.2).
 
 ### 7.4 Event relay

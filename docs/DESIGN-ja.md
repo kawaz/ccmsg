@@ -533,7 +533,9 @@ daemon 側の実装はその 2 つ (配送手段と、届かない理由の判�
 
 - (a) は**受信側が ccmsg の常駐を持っていなくても届く**。「まだ subscribe を張っていない
   セッションには届かない」という穴 (旧 daemon が 3 分の巻き戻し窓で塞いでいたもの) が、
-  時間窓ではなく経路の性質として消える
+  時間窓ではなく経路の性質として消える。**入力が `sessions/` だけ**であることも同じ性質の
+  裏返しで、hello を聞いていないセッション — 再起動した instance から見た全セッション —
+  にも宛先の解決と送信がそのまま成立する
 - (b) は ccmsg 自身のプロトコルなので、(a) が使えない相手 (世代違い・socket 不在・
   key を読めない) でも成立する。片方だけでは成立しない組み合わせが両方に存在する
 
@@ -645,6 +647,21 @@ webui が生の値を組み合わせて分類すると、instance ごとに解�
 | `last_live` + `stopped_at` | 前回稼働中・意図して止めた | 自分が書いたファイル |
 | transcript の fold | API error で止まっているか、最後の人間入力 | tail |
 
+**`peers` の 2 つの list は「生存」と「生存していない」で分かれる**。接続の有無ではない。
+hello するのは `SessionStart` hook ひとつなので、instance が再起動すると**既に動いている
+セッションは二度と hello して来ない** — 接続を持つものだけを `peers[]` に出すと、走っている
+セッションで埋まったホストが「稼働 0」に見える。`sessions/` が名乗るセッションは hello の
+有無に関わらず `peers[]` の行であり、どちらなのかは行の `state` (§5.2) が言う。
+
+接続が無い行には、接続についての field (`connected_at` / `last_activity_at` /
+`client_version` / `protocol_version`) が無い。名乗った client が居ないので、世代は
+推測するのではなく言わない。hello が名乗った `repo` / `ws` 等は `sessions/` がその sid を
+名乗っている間は保持するので、hook の接続が閉じても行から消えない。
+
+**1 つのセッションが両方の list に載ることはない**。`last_live` の entry が外れる条件は
+「再び生存になったこと」であって hello ではない。resume は新しいプロセスと新しい状態ファイルを
+作るだけで、hello を伴うとは限らない。
+
 **分類の入力は購読に依存しない**。`sessions/` を「読むこと」と「監視すること」は別物で、
 §6.3 が購読に従属させるのは後者だけ。どのセッションが存在するかは instance 自身の事実
 なので、判定が要る瞬間 (message_send の宛先判定 / last_live の記録 / classify) には
@@ -691,6 +708,11 @@ Pinned       = 利用者が固定した (daemon は印を持つだけで、分�
 Paused       = last_live にあり stopped_at がある
 Disappeared  = last_live にあり stopped_at が無い
 ```
+
+**「管理外」は配送経路を見ない**。ここで言う「繋がっている」は「こちらから打ち込める口が
+あるか」であって、message が届くかではない。経路 (a) は `sessions/` の messaging socket や
+Codex の thread queue に載せるので、管理外の行にも message は届く (§4.1) — 届くことと
+操作できることは別の問いで、後者だけが分類である。
 
 「Busy と Idle を分けない」(issue session-list-sections) ので、**生存の中の忙しさは
 分類ではなく行の属性**として出す。忙しさは gateway のイベントから導き (§5.1)、
@@ -913,9 +935,8 @@ webui ──▶ instance A ──(封筒: to_instance=B, from_instance=A, hops=[
 - やり直す相手は封筒の `caller` (認証済み link が名乗った呼び出し元) であって、転送元の判断ではない
 
 「対象の担当 instance」の決め方: sid → 担当 instance の対応は `peers` topic の `peers[]`
-（接続中）→ `agents` topic の `agents[]`（ハーネスが把握している全セッション、`peers` に
-まだ現れていないものを含む）→ `peers` topic の `last_live[]`（切断済みだが保持期間内）の
-順で探す。知らない sid は「cluster のどこにもない」= `session_not_found`。ただし到達不能な
+（生存中）→ `agents` topic の `agents[]`（ハーネスが把握している全セッション）→ `peers`
+topic の `last_live[]`（生存していないが保持期間内）の順で探す。知らない sid は「cluster のどこにもない」= `session_not_found`。ただし到達不能な
 instance がある間は判定を保留する (§4.2)。
 
 ### 7.4 event の relay
