@@ -176,7 +176,7 @@ export async function start(options: StartOptions = {}): Promise<StartOutcome> {
   try {
     // 3. the config. A broken one ends the start rather than turning the
     // setting it carried silently off (DV-Q9).
-    const config = loadConfig(paths.configFile, paths.configHome);
+    const config = await loadConfig(paths.configDir, paths.configHome);
     // What the config says of the gateway, resolved before anything is built
     // from it: a webhook source whose secret cannot be read ends the start
     // here, for the same reason a broken config does (DV-Q9).

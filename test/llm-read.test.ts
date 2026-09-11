@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -11,6 +11,7 @@ import {
 } from "@ccmsg/protocol";
 import { type Env, type Instance, isRunning, start } from "../src/instance/index.ts";
 import { connectUds, type LineClient } from "./client.ts";
+import { writeConfigHome } from "./harness.ts";
 
 const NOW = 1_800_000_000_000;
 
@@ -102,12 +103,9 @@ function fakeGateway(): { url: string; asked: () => string[] } {
 async function greet(gatewayUrl?: string): Promise<LineClient> {
   const root = mkdtempSync(join(tmpdir(), "ccmsg-llm-"));
   mkdirSync(join(root, "home", "sessions"), { recursive: true });
-  mkdirSync(join(root, "config"), { recursive: true });
-  writeFileSync(
-    join(root, "config", "config.json"),
-    JSON.stringify({
-      defaults: gatewayUrl === undefined ? {} : { upstream: { gateway_url: gatewayUrl } },
-    }),
+  writeConfigHome(
+    join(root, "config"),
+    gatewayUrl === undefined ? {} : { upstream: { gateway_url: gatewayUrl } },
   );
   const env: Env = {
     CLAUDE_CONFIG_DIR: join(root, "home"),

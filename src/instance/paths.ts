@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { basename, isAbsolute, join } from "node:path";
 import { currentSession, HARNESS } from "../harness/index.ts";
+import { CONFIG_FILE, INSTANCES_DIR } from "./config.ts";
 
 /** Every path one instance uses, decided in one place (daemon-v2 §8.1).
  *
@@ -14,10 +15,14 @@ export interface InstancePaths {
   readonly configHome: string;
   /** What distinguishes this instance's files from another instance's. */
   readonly key: string;
-  /** The one file a person edits, shared by every instance on this host: it
-   * carries the defaults and the list of config homes, so it is not derived
-   * from the config home the way the rest of these are. */
+  /** Where a person writes settings, shared by every instance on this host: it
+   * holds what every instance starts from and one file per instance, so it is
+   * not derived from the config home the way the rest of these are. */
+  readonly configDir: string;
+  /** The file every instance's settings start from. */
   readonly configFile: string;
+  /** Where the file naming this config home lives, one per instance. */
+  readonly instancesDir: string;
   readonly stateDir: string;
   /** The address clients connect to. A symlink to whichever `socketReal` is
    * currently serving, so a client's path outlives the process behind it. */
@@ -116,7 +121,9 @@ export function resolvePathsFor(configHome: string, env: Env = process.env): Ins
   return {
     configHome,
     key,
-    configFile: join(configDir, "config.json"),
+    configDir,
+    configFile: join(configDir, CONFIG_FILE),
+    instancesDir: join(configDir, INSTANCES_DIR),
     stateDir,
     socketDir,
     socket: join(socketDir, SOCKET_NAME),
@@ -169,9 +176,10 @@ export function resolveSupervisorSocket(env: Env = process.env): string {
 
 export const SUPERVISOR_SOCKET = "supervise.sock";
 
-/** The shared config file, for a caller that has no instance to resolve. */
+/** The file every instance's settings start from, for a caller that has no
+ * instance to resolve. */
 export function resolveConfigFile(env: Env = process.env): string {
-  return join(resolveConfigDir(env), "config.json");
+  return join(resolveConfigDir(env), CONFIG_FILE);
 }
 
 /** A name for one config home that is readable and cannot collide.

@@ -19,6 +19,7 @@ import {
   reportOf,
 } from "../src/upstream/index.ts";
 import { connectWs, type LineClient } from "./client.ts";
+import { writeConfigHome } from "./harness.ts";
 import { SELF, SID } from "./frames.ts";
 
 const TOKEN = "webhook-secret-0123456789";
@@ -188,8 +189,7 @@ async function startWith(
   writeFileSync(tokenFile, `${TOKEN}\n`);
   const config: Record<string, unknown> = { entry: { host: "127.0.0.1", port: 0 } };
   if (upstream !== undefined) config["upstream"] = upstream(tokenFile);
-  mkdirSync(join(root, "config"), { recursive: true });
-  writeFileSync(join(root, "config", "config.json"), JSON.stringify({ defaults: config }));
+  writeConfigHome(join(root, "config"), config);
   const env: Env = {
     CLAUDE_CONFIG_DIR: home,
     CCMSG_STATE_DIR: join(root, "state"),

@@ -8,13 +8,13 @@
  * thread.
  */
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type InboxMessage, type InstanceId, Sid, validationErrors } from "@ccmsg/protocol";
 import { add, harnessFor } from "../src/daemon/index.ts";
 import { currentSession } from "../src/harness/index.ts";
-import { DEFAULT_CONFIG, loadShared, parseConfig } from "../src/instance/config.ts";
+import { DEFAULT_CONFIG, parseConfig } from "../src/instance/config.ts";
 import {
   type Instance,
   isRunning,
@@ -79,31 +79,34 @@ describe("config", () => {
     expect(() => parseConfig("c.json", { harness: "cursor" })).toThrow(/harness must be one of/);
   });
 
-  test("`daemon add --harness codex` writes it down, and the instance reads it back", () => {
+  test("`daemon add --harness codex` writes it down, and the instance reads it back", async () => {
     const at = env();
     const home = codexHome();
-    add(at, home, "codex");
-    const shared = loadShared(resolvePaths(at).configFile);
-    expect(shared.instances[0]).toEqual({ dir: home, settings: { harness: "codex" } });
-    expect(harnessFor(at, home)).toBe("codex");
+    await add(at, "mine", { dir: home, harness: "codex" });
+    const written = readFileSync(join(resolvePaths(at).instancesDir, "mine.ts"), "utf8");
+    expect(written).toContain(`config.harness = "codex";`);
+    expect(await harnessFor(at, home)).toBe("codex");
   });
 
-  test("the default is not written down, so an entry states only what differs", () => {
+  test("the default is not written down, so a file states only what differs", async () => {
     const at = env();
     const home = temp("ccmsg-claude-home-");
     writeFileSync(join(home, "settings.json"), "{}");
-    add(at, home);
-    expect(loadShared(resolvePaths(at).configFile).instances[0]?.settings).toEqual({});
+    await add(at, "mine", { dir: home });
+    expect(readFileSync(join(resolvePaths(at).instancesDir, "mine.ts"), "utf8")).not.toContain(
+      "harness",
+    );
+    expect(await harnessFor(at, home)).toBe("claude");
   });
 
   test("a directory is a config home when it holds that harness's own settings", () => {
     const at = env();
     // A Codex home has no `settings.json`, and Claude Code's has no
     // `config.toml`: each is refused by the other's check.
-    expect(() => add(at, codexHome())).toThrow(/settings\.json/);
+    expect(add(at, "mine", { dir: codexHome() })).rejects.toThrow(/settings\.json/);
     const claude = temp("ccmsg-claude-home-");
     writeFileSync(join(claude, "settings.json"), "{}");
-    expect(() => add(at, claude, "codex")).toThrow(/config\.toml/);
+    expect(add(at, "mine", { dir: claude, harness: "codex" })).rejects.toThrow(/config\.toml/);
   });
 });
 

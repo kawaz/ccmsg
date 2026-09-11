@@ -105,6 +105,34 @@ export async function reapOrphans(): Promise<string[]> {
   return leaked.map((one) => one.argv);
 }
 
+/** Settings written as the files a person writes: `config.ts`, and one file
+ * per instance under `instances/`.
+ *
+ * Each is a function assigning what the test states over what it was handed,
+ * which is the plainest thing a config file can be — a test about what one
+ * instance runs with says the settings and not the ceremony around them. A
+ * source string is taken as the whole file, for the tests that are about what
+ * a file may do rather than about what it says. */
+export function writeConfigHome(
+  configDir: string,
+  defaults: Record<string, unknown> | string,
+  instances: Readonly<Record<string, Record<string, unknown> | string>> = {},
+): string {
+  mkdirSync(configDir, { recursive: true });
+  writeFileSync(join(configDir, "config.ts"), configSource(defaults));
+  if (Object.keys(instances).length > 0)
+    mkdirSync(join(configDir, "instances"), { recursive: true });
+  for (const [name, settings] of Object.entries(instances)) {
+    writeFileSync(join(configDir, "instances", `${name}.ts`), configSource(settings));
+  }
+  return join(configDir, "config.ts");
+}
+
+function configSource(settings: Record<string, unknown> | string): string {
+  if (typeof settings === "string") return settings;
+  return `export default ({ config }: { config: Record<string, unknown> }) => Object.assign(config, ${JSON.stringify(settings)});\n`;
+}
+
 /** A host of its own: an XDG config home and state home nobody else uses, with
  * config homes made inside it on demand.
  *

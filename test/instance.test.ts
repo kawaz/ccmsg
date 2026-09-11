@@ -22,18 +22,26 @@ import {
   Instance,
   isRunning,
   loadConfig,
-  loadShared,
-  MERGE_RULES,
+  loadInstances,
   REAL_SOCKET,
   realSocketName,
   resolvePaths,
-  saveShared,
-  settingsFor,
   start,
 } from "../src/instance/index.ts";
+import type {
+  Config as Draft,
+  InstanceConfig as InstanceDraft,
+} from "../src/instance/ccmsg-config";
+import type {
+  DumpConfig,
+  EntryConfig,
+  InstanceConfig,
+  LauncherConfig,
+  UpstreamConfig,
+} from "../src/instance/config.ts";
 import { connectUds, type LineClient } from "./client.ts";
 import { SID } from "./frames.ts";
-import { reapOrphans, trackRoot } from "./harness.ts";
+import { reapOrphans, trackRoot, writeConfigHome } from "./harness.ts";
 
 const CLI = join(import.meta.dir, "..", "src", "cli.ts");
 
@@ -129,57 +137,80 @@ describe("paths", () => {
     expect(Buffer.byteLength(paths.socket)).toBeLessThan(104);
   });
 });
-
 describe("config", () => {
-  /** The shared file, with one flat block of settings as the defaults. Every
-   * instance sees them, which is what makes this the short way to write "an
-   * instance configured like so". */
-  function shared(root: string, defaults: Record<string, unknown>): string {
-    const file = join(root, "config", "config.json");
-    mkdirSync(join(root, "config"), { recursive: true });
-    writeFileSync(file, JSON.stringify({ defaults }));
-    return file;
+  /** A config home whose `config.ts` states one flat block of settings. Every
+   * instance starts from what that file returns, which is what makes this the
+   * short way to write "an instance configured like so". */
+  function shared(root: string, defaults: Record<string, unknown> | string): string {
+    return join(writeConfigHome(join(root, "config"), defaults), "..");
   }
 
-  test("no config file is not a broken one", () => {
+  test("no config file is not a broken one", async () => {
     const { root, home } = disposable();
-    expect(loadConfig(join(root, "config", "config.json"), home)).toEqual(DEFAULT_CONFIG);
+    expect(await loadConfig(join(root, "config"), home)).toEqual(DEFAULT_CONFIG);
   });
 
-  test("route (a) is on unless the config turns it off, and only by a boolean", () => {
+  test("route (a) is on unless the config turns it off, and only by a boolean", async () => {
     const { root, home } = disposable();
-    expect(loadConfig(shared(root, {}), home).direct_delivery).toBe(true);
-    expect(loadConfig(shared(root, { direct_delivery: false }), home).direct_delivery).toBe(false);
+    expect((await loadConfig(shared(root, {}), home)).direct_delivery).toBe(true);
+    expect((await loadConfig(shared(root, { direct_delivery: false }), home)).direct_delivery).toBe(
+      false,
+    );
     const wrong = shared(root, { direct_delivery: "no" });
-    expect(() => loadConfig(wrong, home)).toThrow(ConfigError);
+    expect(loadConfig(wrong, home)).rejects.toThrow(ConfigError);
   });
 
-  test("a broken config throws rather than dropping the setting it carried", () => {
+  test("a config file that cannot be read ends the read rather than dropping what it carried", async () => {
     const { root, home } = disposable();
-    const file = join(root, "config", "config.json");
-    mkdirSync(join(root, "config"), { recursive: true });
-    writeFileSync(file, "{ this is not json");
-    expect(() => loadConfig(file, home)).toThrow(ConfigError);
-    expect(() => loadConfig(shared(root, { peers: ["not-a-url"] }), home)).toThrow(ConfigError);
-    expect(() => loadConfig(shared(root, { entry: { port: "8643" } }), home)).toThrow(ConfigError);
-    // The shape of the file itself is checked the same way: a settings block
-    // written at the top level would otherwise be read as no settings at all.
-    writeFileSync(file, JSON.stringify({ peers: [] }));
-    expect(() => loadConfig(file, home)).toThrow(ConfigError);
-    writeFileSync(file, JSON.stringify({ instances: [{ dir: "relative" }] }));
-    expect(() => loadConfig(file, home)).toThrow(ConfigError);
-    writeFileSync(file, JSON.stringify({ instances: [{ dir: "/a" }, { dir: "/a" }] }));
-    expect(() => loadShared(file)).toThrow(ConfigError);
+    const dir = join(root, "config");
+    // Nothing to call: a file that states no function states no settings, and
+    // reading it as none would turn every setting it was meant to carry off.
+    expect(loadConfig(shared(root, "export const settings = {};\n"), home)).rejects.toThrow(
+      ConfigError,
+    );
+    // A file that throws is the operator's mistake, reported where they made it.
+    expect(
+      loadConfig(shared(root, "export default () => { throw new Error('nope'); };\n"), home),
+    ).rejects.toThrow(ConfigError);
+    // A field nobody has: the types say so while it is being written, and this
+    // says so when it is read, because a misspelled field is a setting that was
+    // written and does not take.
+    expect(loadConfig(shared(root, { direct_deliver: false }), home)).rejects.toThrow(/unknown/);
+    // The values themselves are held to the same shapes as before.
+    expect(loadConfig(shared(root, { peers: ["not-a-url"] }), home)).rejects.toThrow(ConfigError);
+    expect(loadConfig(shared(root, { entry: { port: "8643" } }), home)).rejects.toThrow(
+      ConfigError,
+    );
+    // `dir` is what an instance file names, so the shared file naming one is a
+    // file written in the wrong place.
+    expect(loadConfig(shared(root, { dir: home }), home)).rejects.toThrow(/dir/);
+    // And an instance file that names none, or names a relative one, is an
+    // instance nothing can answer for.
+    writeConfigHome(dir, {}, { one: {} });
+    expect(loadConfig(dir, home)).rejects.toThrow(/dir/);
+    writeConfigHome(dir, {}, { one: { dir: "relative" } });
+    expect(loadConfig(dir, home)).rejects.toThrow(/dir/);
+    // Two files answering for one config home would take each other's lock.
+    writeConfigHome(dir, {}, { one: { dir: home }, two: { dir: home } });
+    expect(loadConfig(dir, home)).rejects.toThrow(/already/);
   });
 
-  test("the four things config carries (§8.2)", () => {
+  test("settings that are still JSON say where they have moved to", async () => {
+    const { root, home } = disposable();
+    const dir = join(root, "config");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "config.json"), JSON.stringify({ defaults: {}, instances: [] }));
+    expect(loadConfig(dir, home)).rejects.toThrow(/config\.ts/);
+  });
+
+  test("the four things config carries (§8.2)", async () => {
     const { root, env, home } = disposable();
-    const file = shared(root, {
+    const dir = shared(root, {
       peers: ["https://elsewhere.example/ccmsg/"],
       entry: { host: "127.0.0.1", port: 0, source_ips: ["127.0.0.1"] },
       upstream: { gateway_url: "https://gateway.example" },
     });
-    const config = loadConfig(file, home);
+    const config = await loadConfig(dir, home);
     // The config home is the fourth, and it is the environment's rather than
     // the file's: an instance is the config home it was started in (A2).
     expect(resolvePaths(env).configHome).toBe(home);
@@ -190,160 +221,169 @@ describe("config", () => {
     expect(config.upstream.gateway_url).toBe("https://gateway.example");
   });
 
-  test("an instance's own entry wins over the defaults, key by key", () => {
+  test("an instance's own file builds on what the shared one returned", async () => {
     const { root, home } = disposable();
-    const file = join(root, "config", "config.json");
-    mkdirSync(join(root, "config"), { recursive: true });
-    writeFileSync(
-      file,
-      JSON.stringify({
-        defaults: {
-          direct_delivery: false,
-          fork_origin: true,
-          upstream: { gateway_url: "https://shared.example" },
-        },
-        instances: [
-          { dir: home, direct_delivery: true },
-          { dir: "/elsewhere/.claude", fork_origin: false },
-        ],
-      }),
+    const dir = join(root, "config");
+    writeConfigHome(
+      dir,
+      {
+        direct_delivery: false,
+        fork_origin: true,
+        upstream: { gateway_url: "https://shared.example" },
+      },
+      {
+        mine: { dir: home, direct_delivery: true },
+        other: { dir: "/elsewhere/.claude", fork_origin: false },
+      },
     );
-    const mine = loadConfig(file, home);
-    // Stated in my entry: mine. Stated only in the defaults: the defaults'.
-    // Stated in nobody's: the built-in.
+    const mine = await loadConfig(dir, home);
+    // Stated in my file: mine. Stated only in the shared one: the shared one's.
+    // Stated in neither: the built-in.
     expect(mine.direct_delivery).toBe(true);
     expect(mine.fork_origin).toBe(true);
     expect(mine.upstream.gateway_url).toBe("https://shared.example");
     expect(mine.peers).toEqual([]);
-    // The override is per instance, so the other entry keeps the default.
-    expect(loadConfig(file, "/elsewhere/.claude").direct_delivery).toBe(false);
-    expect(loadConfig(file, "/elsewhere/.claude").fork_origin).toBe(false);
-    // A config home the file does not list is the defaults and nothing else.
-    expect(loadConfig(file, "/unlisted/.claude").direct_delivery).toBe(false);
+    // What one instance writes is that instance's, so the other keeps what the
+    // shared file handed it.
+    expect((await loadConfig(dir, "/elsewhere/.claude")).direct_delivery).toBe(false);
+    expect((await loadConfig(dir, "/elsewhere/.claude")).fork_origin).toBe(false);
+    // A config home no file names is the shared file's answer and nothing else.
+    expect((await loadConfig(dir, "/unlisted/.claude")).direct_delivery).toBe(false);
   });
 
-  /** A settings block holding `value` at a dotted field path, and the read back
-   * out of one. Written from the path so a rule can be exercised without the
-   * test naming the nesting each rule happens to sit at. */
-  function at(path: string, value: unknown): Record<string, unknown> {
-    return path
-      .split(".")
-      .reduceRight<unknown>((held, name) => ({ [name]: held }), value) as Record<string, unknown>;
-  }
-
-  function read(settings: Record<string, unknown>, path: string): unknown {
-    return path
-      .split(".")
-      .reduce<unknown>((held, name) => (held as Record<string, unknown>)[name], settings);
-  }
-
-  /** One shared file with both levels written out, read as one config home. */
-  function twoLevel(
-    root: string,
-    defaults: Record<string, unknown>,
-    instances: readonly Record<string, unknown>[],
-  ): string {
-    const file = join(root, "config", "config.json");
-    mkdirSync(join(root, "config"), { recursive: true });
-    writeFileSync(file, JSON.stringify({ defaults, instances }));
-    return file;
-  }
-
-  test("every declared path merges or replaces as the table says", () => {
-    for (const [path, rule] of Object.entries(MERGE_RULES)) {
-      // A value of the shape the rule is about: `merge` is only ever declared
-      // for an object, and the rest of the table is what an array does.
-      const [mine, theirs] =
-        rule === "merge"
-          ? [{ kept: "defaults", beaten: "defaults" }, { beaten: "instance" }]
-          : [["defaults"], ["instance"]];
-      const settings = settingsFor(
-        {
-          defaults: at(path, mine),
-          instances: [{ dir: "/a/.claude", settings: at(path, theirs) }],
-        },
-        "/a/.claude",
-      );
-      expect(read(settings, path)).toEqual(
-        rule === "merge" ? { kept: "defaults", beaten: "instance" } : ["instance"],
-      );
-    }
-  });
-
-  test("a path the table does not name replaces, whatever it holds", () => {
-    const shared = {
-      defaults: { harness: "claude", peers: ["https://a.example/"], upstream: { launcher: {} } },
-      instances: [{ dir: "/a/.claude", settings: { harness: "codex", peers: [] } }],
-    };
-    const settings = settingsFor(shared, "/a/.claude");
-    // A scalar is the plain case; `peers` is the array the table names replace
-    // on purpose, so an instance can run with fewer peers than the defaults
-    // hand out rather than only more.
-    expect(settings["harness"]).toBe("codex");
-    expect(settings["peers"]).toEqual([]);
-  });
-
-  test("no declared path hangs below one that replaces", () => {
-    // A rule under a parent that takes its value whole would never be read:
-    // the child is only reached when the parent is merged field by field.
-    for (const path of Object.keys(MERGE_RULES)) {
-      const cut = path.lastIndexOf(".");
-      if (cut === -1) continue;
-      expect(MERGE_RULES[path.slice(0, cut)]).toBe("merge");
-    }
-  });
-
-  test("what an instance leaves out, an empty value, and a stated one differ", () => {
-    const { root } = disposable();
-    const defaults = {
-      entry: { host: "10.0.0.1", port: 8643, trusted_proxies: ["10.0.0.0/8"] },
-    };
-    const file = twoLevel(root, defaults, [
-      { dir: "/a/.claude", entry: { port: 8644 } },
-      { dir: "/b/.claude", entry: { trusted_proxies: [] } },
-      { dir: "/c/.claude", entry: { trusted_proxies: ["127.0.0.1/32"] } },
+  test("what a file is handed to build on cannot be written to", async () => {
+    const { root, home } = disposable();
+    const dir = join(root, "config");
+    // The deep freeze is what makes "state your difference" a thing a file can
+    // be written against: `builtin` and `default` are settled before it runs,
+    // so a file that edited one would be editing what another file reads.
+    writeConfigHome(
+      dir,
+      "export default ({ builtin }: any) => { builtin.dump.presets.push(1); };\n",
+    );
+    expect(loadConfig(dir, home)).rejects.toThrow(ConfigError);
+    writeConfigHome(
+      dir,
+      { fork_origin: true },
+      {
+        mine: `export default ({ default: shared, config }: any) => {
+          shared.peers.push("https://nope.example/");
+          return config;
+        };\n`,
+      },
+    );
+    expect(loadConfig(dir, home)).rejects.toThrow(ConfigError);
+    // The copy it edits is its own: what it pushes onto is not what the next
+    // file is handed.
+    writeConfigHome(
+      dir,
+      { peers: ["https://one.example/"] },
+      {
+        mine: `export default ({ config }: any) => {
+          config.dir = ${JSON.stringify(home)};
+          config.peers.push("https://two.example/");
+          return config;
+        };\n`,
+        other: `export default ({ config }: any) => {
+          config.dir = "/elsewhere/.claude";
+          return config;
+        };\n`,
+      },
+    );
+    expect((await loadConfig(dir, home)).peers).toEqual([
+      "https://one.example/",
+      "https://two.example/",
     ]);
-    // Left out: the defaults', down to the fields the instance did not write.
-    const a = loadConfig(file, "/a/.claude").entry;
-    expect(a).toEqual({
+    expect((await loadConfig(dir, "/elsewhere/.claude")).peers).toEqual(["https://one.example/"]);
+  });
+
+  test("an async config file is read the same way", async () => {
+    const { root, home } = disposable();
+    const dir = join(root, "config");
+    // What a file has to do to answer — read a secret, ask something — is its
+    // business, so the answer is awaited rather than required to be at hand.
+    writeConfigHome(
+      dir,
+      `export default async ({ config }: any) => {
+      await Promise.resolve();
+      config.fork_origin = true;
+      return config;
+    };\n`,
+    );
+    expect((await loadConfig(dir, home)).fork_origin).toBe(true);
+  });
+
+  test("what an instance leaves out, an empty value, and a stated one differ", async () => {
+    const { root } = disposable();
+    const dir = join(root, "config");
+    const entry = { host: "10.0.0.1", port: 8643, trusted_proxies: ["10.0.0.0/8"] };
+    writeConfigHome(
+      dir,
+      { entry },
+      {
+        a: { dir: "/a/.claude", entry: { ...entry, port: 8644 } },
+        b: { dir: "/b/.claude", entry: { ...entry, trusted_proxies: [] } },
+        c: { dir: "/c/.claude", entry: { ...entry, trusted_proxies: ["127.0.0.1/32"] } },
+      },
+    );
+    // Left out: what the shared file returned, down to the fields this one did
+    // not touch — the copy it edits already holds them.
+    expect((await loadConfig(dir, "/a/.claude")).entry).toEqual({
       host: "10.0.0.1",
       port: 8644,
       trusted_proxies: ["10.0.0.0/8"],
       source_ips: [],
     });
     // Written empty: empty, which is how an instance trusts nobody while the
-    // defaults trust somebody. No delete sentinel is needed for it.
-    expect(loadConfig(file, "/b/.claude").entry?.trusted_proxies).toEqual([]);
-    // Written: whole, rather than added to what the defaults hold.
-    expect(loadConfig(file, "/c/.claude").entry?.trusted_proxies).toEqual(["127.0.0.1/32"]);
+    // shared file trusts somebody. No delete sentinel is needed for it.
+    expect((await loadConfig(dir, "/b/.claude")).entry?.trusted_proxies).toEqual([]);
+    expect((await loadConfig(dir, "/c/.claude")).entry?.trusted_proxies).toEqual(["127.0.0.1/32"]);
   });
 
-  test("what every instance shares is written once (§8.2)", () => {
+  test("what every instance shares is written once (§8.2)", async () => {
     const { root } = disposable();
+    const dir = join(root, "config");
     // The shape a host with several config homes ends up at: one entry and one
-    // upstream in the defaults, and per instance only what actually differs.
-    const file = twoLevel(
-      root,
+    // upstream in the shared file, and per instance only what actually differs.
+    const entry = {
+      host: "127.0.0.1",
+      source_ips: ["127.0.0.1"],
+      trusted_proxies: ["127.0.0.1/32"],
+      port: 0,
+    };
+    writeConfigHome(
+      dir,
       {
         peers: ["https://one.example/ccmsg/", "https://two.example/ccmsg/"],
-        entry: { host: "127.0.0.1", source_ips: ["127.0.0.1"], trusted_proxies: ["127.0.0.1/32"] },
+        entry,
         upstream: { terminal_gateway: "https://terminal.example" },
       },
-      [
-        {
-          dir: "/a/.claude",
-          entry: { port: 8643 },
-          upstream: { gateway_url: "https://gateway.example", gateway_webhook_source: "gw" },
-        },
-        { dir: "/b/.claude", entry: { port: 8644 } },
-        { dir: "/c/.codex", harness: "codex", entry: { port: 8645 } },
-      ],
+      {
+        a: `export default ({ config }: any) => {
+          config.dir = "/a/.claude";
+          config.entry.port = 8643;
+          config.upstream.gateway_url = "https://gateway.example";
+          config.upstream.gateway_webhook_source = "gw";
+          return config;
+        };\n`,
+        b: `export default ({ config }: any) => {
+          config.dir = "/b/.claude";
+          config.entry.port = 8644;
+          return config;
+        };\n`,
+        c: `export default ({ config }: any) => {
+          config.dir = "/c/.codex";
+          config.harness = "codex";
+          config.entry.port = 8645;
+          return config;
+        };\n`,
+      },
     );
-    const one = loadConfig(file, "/a/.claude");
-    const two = loadConfig(file, "/b/.claude");
-    const three = loadConfig(file, "/c/.codex");
-    // Each instance reaches the same shared values it would have got from an
-    // entry that repeated them, and only the port and the gateway differ.
+    const one = await loadConfig(dir, "/a/.claude");
+    const two = await loadConfig(dir, "/b/.claude");
+    const three = await loadConfig(dir, "/c/.codex");
+    // Each instance reaches the same shared values it would have got from a
+    // file that repeated them, and only the port and the gateway differ.
     for (const config of [one, two, three]) {
       expect(config.entry?.host).toBe("127.0.0.1");
       expect(config.entry?.source_ips).toEqual(["127.0.0.1"]);
@@ -353,17 +393,18 @@ describe("config", () => {
     }
     expect([one, two, three].map((config) => config.entry?.port)).toEqual([8643, 8644, 8645]);
     expect(one.upstream.gateway_url).toBe("https://gateway.example");
-    // The one upstream an instance states does not take the shared one with
-    // it: `upstream` is merged field by field.
+    // What one instance wrote is that instance's: the field it set beside the
+    // shared ones is not one the next instance has.
     expect(two.upstream.gateway_url).toBeUndefined();
     expect(three.harness).toBe("codex");
     expect(one.harness).toBe("claude");
   });
 
-  test("the launcher is merged down to its own fields", () => {
+  test("the launcher is a form the instance edits field by field", async () => {
     const { root } = disposable();
-    const file = twoLevel(
-      root,
+    const dir = join(root, "config");
+    writeConfigHome(
+      dir,
       {
         upstream: {
           launcher: {
@@ -374,26 +415,47 @@ describe("config", () => {
           },
         },
       },
-      [{ dir: "/a/.claude", upstream: { launcher: { root_dirs: ["/elsewhere"] } } }],
+      {
+        a: `export default ({ config }: any) => {
+          config.dir = "/a/.claude";
+          config.upstream.launcher.root_dirs = ["/elsewhere"];
+          return config;
+        };\n`,
+      },
     );
-    const launcher = loadConfig(file, "/a/.claude").upstream.launcher;
+    const launcher = (await loadConfig(dir, "/a/.claude")).upstream.launcher;
     expect(launcher?.root_dirs).toEqual(["/elsewhere"]);
     expect(launcher?.templates.map((one) => one.name)).toEqual(["shell"]);
     expect(launcher?.clean_env).toEqual(["CLAUDE_*"]);
     expect(launcher?.depth).toBe(3);
   });
 
-  test("the shared file survives a round trip through the registry's writer", () => {
+  test("the instances are the files there are, by the name each is called", async () => {
     const { root, home } = disposable();
-    const file = join(root, "config", "config.json");
-    saveShared(file, {
-      defaults: { fork_origin: true },
-      instances: [{ dir: home, settings: { direct_delivery: false } }],
-    });
-    const read = loadShared(file);
-    expect(read.defaults).toEqual({ fork_origin: true });
-    expect(read.instances).toEqual([{ dir: home, settings: { direct_delivery: false } }]);
-    expect(loadConfig(file, home).direct_delivery).toBe(false);
+    const dir = join(root, "config");
+    writeConfigHome(
+      dir,
+      {},
+      { two: { dir: "/b/.claude" }, one: { dir: home }, "not a name": { dir: "/c/.claude" } },
+    );
+    const found = await loadInstances(dir);
+    // In name order, so a listing is the same on every host, and only files
+    // whose name an instance could be called by.
+    expect(found.map((instance) => instance.name)).toEqual(["one", "two"]);
+    expect(found.map((instance) => instance.dir)).toEqual([home, "/b/.claude"]);
+  });
+
+  test("a file edited between two reads is read again", async () => {
+    const { root, home } = disposable();
+    const dir = join(root, "config");
+    writeConfigHome(dir, { fork_origin: false });
+    expect((await loadConfig(dir, home)).fork_origin).toBe(false);
+    // An import is cached by its specifier, so a process that reads a config
+    // home twice — a supervisor told to add an instance — would otherwise be
+    // reading the first version of a file somebody has since edited.
+    await Bun.sleep(10);
+    writeConfigHome(dir, { fork_origin: true });
+    expect((await loadConfig(dir, home)).fork_origin).toBe(true);
   });
 });
 
@@ -425,8 +487,10 @@ describe("what this instance is called (DR-0001 §2.1)", () => {
 describe("the start order (§8.3)", () => {
   test("a broken config fails the start, and leaves no lock behind", async () => {
     const { root, env } = disposable();
-    mkdirSync(join(root, "config"), { recursive: true });
-    writeFileSync(join(root, "config", "config.json"), "{{{");
+    writeConfigHome(
+      join(root, "config"),
+      "export default ({ config }: any) => { config.peers = ['nope']; return config; };\n",
+    );
     let refused: unknown;
     try {
       await start({ env, echoLog: false });
@@ -438,7 +502,7 @@ describe("the start order (§8.3)", () => {
     // whole of the recovery, with no leftover to clear by hand.
     expect(existsSync(resolvePaths(env).socket)).toBe(false);
     expect(existsSync(resolvePaths(env).lockFile)).toBe(false);
-    writeFileSync(join(root, "config", "config.json"), JSON.stringify({ defaults: { peers: [] } }));
+    writeConfigHome(join(root, "config"), { peers: [] });
     const instance = await startAt(env);
     expect(instance.config.peers).toEqual([]);
   });
@@ -1038,3 +1102,28 @@ async function started(child: Bun.Subprocess<"ignore", "pipe", "pipe">): Promise
   if (await Promise.race([up, child.exited.then(() => false)])) return;
   throw new Error(`the daemon exited with ${await child.exited} instead of starting`);
 }
+
+/** The declarations a config file writes against, held to what the instance
+ * actually reads.
+ *
+ * They are a copy — self-contained on purpose, so that a relative
+ * `import type` resolves in a config home with no tsconfig and no
+ * node_modules near it — and a copy is a thing that drifts. This is where it
+ * is caught: a field added, renamed or retyped on one side and not the other
+ * stops the build rather than reaching a person as a type that quietly says
+ * the wrong thing. */
+type Assert<T extends true> = T;
+type Same<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
+export type _ConfigFields = Assert<Same<keyof InstanceConfig, keyof Draft>>;
+export type _InstanceFields = Assert<Same<keyof InstanceConfig | "dir", keyof InstanceDraft>>;
+// Down through the shapes that hang below it, since a field added inside the
+// launcher or an entry is as invisible from the top level as one added beside
+// them. What the copy states differently on purpose is optionality: a file may
+// leave out what the parser fills in, so the fields are compared and the
+// requiredness is not.
+export type _EntryFields = Assert<Same<keyof EntryConfig, keyof NonNullable<Draft["entry"]>>>;
+export type _UpstreamFields = Assert<Same<keyof UpstreamConfig, keyof Draft["upstream"]>>;
+export type _LauncherFields = Assert<
+  Same<keyof LauncherConfig, keyof NonNullable<Draft["upstream"]["launcher"]>>
+>;
+export type _DumpFields = Assert<Same<keyof DumpConfig, keyof Draft["dump"]>>;

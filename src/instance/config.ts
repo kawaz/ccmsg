@@ -1,5 +1,5 @@
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, isAbsolute } from "node:path";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
+import { isAbsolute, join } from "node:path";
 import { type DumpPreset, type Endpoint, TranscriptItemSelector } from "@ccmsg/protocol";
 import { DEFAULT_HARNESS, type Harness, HARNESSES, isHarness } from "../harness/index.ts";
 import { parseCidr } from "./client.ts";
@@ -161,155 +161,213 @@ export const DEFAULT_CONFIG: InstanceConfig = {
   dump: { presets: [] },
 };
 
-/** Read the config, once, at startup (DV-Q8).
- *
- * There is no watch and no reload: the file is small, an instance is cheap to
- * restart because almost nothing it holds is persistent (§3.6), and restarting
- * is therefore the whole of "apply a config change" (§8.2). */
-export function loadConfig(file: string, dir: string): InstanceConfig {
-  return parseConfig(file, settingsFor(loadShared(file), dir));
-}
+/** The file every instance's settings start from, and the directory holding
+ * one file per instance. Both are read from the config home a person edits
+ * (§8.2). */
+export const CONFIG_FILE = "config.ts";
+export const INSTANCES_DIR = "instances";
 
-/** One config home the shared file knows about.
- *
- * `dir` is the config home itself, which is what an instance is (A2); the rest
- * is whatever that instance sets differently from `defaults`, held raw because
- * it is merged before it is read. */
-export interface InstanceEntry {
+/** The declarations a config file writes against, as they are called where
+ * they are copied to. */
+export const TYPES_FILE = "ccmsg-config.d.ts";
+
+/** What the settings used to be written in. Named so a config home that still
+ * holds one is told where its settings have moved to, rather than starting
+ * with every setting it carried silently absent. */
+const JSON_FILE = "config.json";
+
+/** The fields a config function may hand back. Checked rather than ignored,
+ * because a misspelled field is a setting that was written and does not take:
+ * the types say so while the file is being edited, and this says so when it is
+ * read. */
+const FIELDS = [
+  "harness",
+  "peers",
+  "entry",
+  "upstream",
+  "direct_delivery",
+  "fork_origin",
+  "dump",
+] as const;
+
+/** What one file under `instances/` says: which config home it is for, and
+ * what that instance runs with. The name is the file's own, so what a person
+ * calls an instance is where they wrote it down. */
+export interface InstanceSetting {
+  readonly name: string;
   readonly dir: string;
-  readonly settings: Record<string, unknown>;
+  readonly config: InstanceConfig;
 }
 
-/** The one file a person edits: what every instance gets, and which config
- * homes run one.
+/** The name an instance file may be called, which is what `daemon add` takes:
+ * a name that is also a filename, and that names one file rather than a path
+ * to somewhere else. */
+export const INSTANCE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+/** Everything the config home says, read once (DV-Q8).
  *
- * One file rather than one per config home because both of the things it
- * carries are facts about the set — the peer list is the same for every
- * instance (§7.1), and "which config homes run an instance" is a question no
- * single instance can answer about itself. */
-export interface SharedConfig {
-  readonly defaults: Record<string, unknown>;
-  readonly instances: readonly InstanceEntry[];
-}
-
-export const EMPTY_SHARED: SharedConfig = { defaults: {}, instances: [] };
-
-/** Read the shared file. Absent is not broken, for `DEFAULT_CONFIG`'s reason,
- * so it reads as the empty one; present and wrong ends the read (DV-Q9). */
-export function loadShared(file: string): SharedConfig {
-  let text: string;
-  try {
-    text = readFileSync(file, "utf8");
-  } catch {
-    return EMPTY_SHARED;
-  }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(text);
-  } catch (cause) {
-    throw new ConfigError(file, `not valid JSON (${String(cause)})`);
-  }
-  const top = objectOf(file, "the top level", parsed);
-  for (const name of Object.keys(top)) {
-    if (name !== "defaults" && name !== "instances") {
-      throw new ConfigError(file, `unknown top-level key ${name}; expected defaults or instances`);
+ * There is no watch and no reload: the files are small, an instance is cheap
+ * to restart because almost nothing it holds is persistent (§3.6), and
+ * restarting is therefore the whole of "apply a config change" (§8.2).
+ *
+ * The functions are handed frozen copies of what they build on and a mutable
+ * copy of their own starting point, so what an instance runs with is what its
+ * file returned: there is no merge rule to know, because the file does the
+ * combining itself and can see exactly what it is combining with. */
+export async function loadAll(configDir: string): Promise<{
+  readonly defaults: InstanceConfig;
+  readonly instances: readonly InstanceSetting[];
+}> {
+  const file = join(configDir, CONFIG_FILE);
+  if (!existsSync(file)) {
+    const legacy = join(configDir, JSON_FILE);
+    if (existsSync(legacy)) {
+      throw new ConfigError(
+        legacy,
+        `settings are TypeScript now: write ${file} and ${join(configDir, INSTANCES_DIR, "<name>.ts")}`,
+      );
     }
+    return { defaults: DEFAULT_CONFIG, instances: [] };
   }
-  const raw = top["instances"];
-  if (raw !== undefined && !Array.isArray(raw)) {
-    throw new ConfigError(file, "instances must be an array of config homes");
-  }
-  const seen = new Set<string>();
-  const instances = ((raw ?? []) as unknown[]).map((entry, index) => {
-    const fields = objectOf(file, `instances[${index}]`, entry);
-    const { dir, ...settings } = fields;
-    if (typeof dir !== "string" || !isAbsolute(dir)) {
-      throw new ConfigError(file, `instances[${index}].dir must be an absolute config home`);
-    }
-    if (seen.has(dir)) throw new ConfigError(file, `instances[${index}].dir repeats ${dir}`);
-    seen.add(dir);
-    return { dir, settings };
+  const returned = await called(file, {
+    builtin: frozen(DEFAULT_CONFIG),
+    config: copied(DEFAULT_CONFIG),
   });
-  return {
-    defaults: top["defaults"] === undefined ? {} : objectOf(file, "defaults", top["defaults"]),
-    instances,
-  };
-}
-
-/** Write the shared file back, at the shape a person reads it in. */
-export function saveShared(file: string, shared: SharedConfig): void {
-  const instances = shared.instances.map((entry) => ({ dir: entry.dir, ...entry.settings }));
-  mkdirSync(dirname(file), { recursive: true });
-  writeFileSync(file, `${JSON.stringify({ defaults: shared.defaults, instances }, null, 2)}\n`);
-}
-
-/** How one field of the shared file combines an instance's entry with the
- * defaults.
- *
- * `merge` takes the two field by field, so an instance states only what it
- * differs in; `replace` takes the instance's value whole. */
-export type MergeRule = "merge" | "replace";
-
-/** The rule for every field path that holds an object or an array, which are
- * the only ones where "combine" could mean more than one thing.
- *
- * Declared beside the parsers rather than derived from the values, because
- * whether a list is a sequence or a set is a fact about what the field means
- * and every list looks the same without it. A path not named here replaces:
- * that is what a scalar can do, and it is what an array does until some field
- * is a set and says so. */
-export const MERGE_RULES: Readonly<Record<string, MergeRule>> = {
-  // The same finished list goes to every instance (§7.1), so an instance that
-  // writes its own means to run with that one and no other.
-  peers: "replace",
-  entry: "merge",
-  "entry.source_ips": "replace",
-  "entry.trusted_proxies": "replace",
-  upstream: "merge",
-  "upstream.launcher": "merge",
-  "upstream.launcher.root_dirs": "replace",
-  "upstream.launcher.templates": "replace",
-  "upstream.launcher.clean_env": "replace",
-  "upstream.launcher.keep_env": "replace",
-  dump: "merge",
-  // A preset list is a whole vocabulary: an instance that names its own means
-  // to dump by those and not by the defaults' as well, since a name it did not
-  // write could shadow or be referenced by one it did.
-  "dump.presets": "replace",
-};
-
-function ruleFor(path: string): MergeRule {
-  return MERGE_RULES[path] ?? "replace";
-}
-
-function plainObject(raw: unknown): raw is Record<string, unknown> {
-  return typeof raw === "object" && raw !== null && !Array.isArray(raw);
-}
-
-function merged(
-  base: Record<string, unknown>,
-  over: Record<string, unknown>,
-  at: string,
-): Record<string, unknown> {
-  const out: Record<string, unknown> = { ...base };
-  for (const [name, value] of Object.entries(over)) {
-    const path = at === "" ? name : `${at}.${name}`;
-    const under = out[name];
-    out[name] =
-      ruleFor(path) === "merge" && plainObject(under) && plainObject(value)
-        ? merged(under, value, path)
-        : value;
+  const defaults = settingsOf(file, returned, false).config;
+  const instances: InstanceSetting[] = [];
+  const seen = new Map<string, string>();
+  for (const name of instanceNames(join(configDir, INSTANCES_DIR))) {
+    const at = join(configDir, INSTANCES_DIR, `${name}.ts`);
+    const answer = await called(at, {
+      builtin: frozen(DEFAULT_CONFIG),
+      default: frozen(defaults),
+      config: { ...copied(defaults), dir: "" },
+    });
+    const { dir, config } = settingsOf(at, answer, true);
+    // Two instances answering for one config home would take each other's
+    // lock and state (A2), so which of the two files is wrong is asked here
+    // rather than discovered as a start that never settles.
+    const already = seen.get(dir);
+    if (already !== undefined) {
+      throw new ConfigError(at, `dir ${dir} is already what ${already} answers for`);
+    }
+    seen.set(dir, `${name}.ts`);
+    instances.push({ name, dir, config });
   }
-  return out;
+  return { defaults, instances };
 }
 
-/** What one config home's instance is configured with: its own entry over the
- * shared defaults, by the rule each field path declares. A config home the file
- * does not list still resolves — `daemon run` on an unregistered directory is
- * the defaults plus the built-ins. */
-export function settingsFor(shared: SharedConfig, dir: string): Record<string, unknown> {
-  const entry = shared.instances.find((one) => one.dir === dir);
-  return merged(shared.defaults, entry?.settings ?? {}, "");
+/** The instances the config home names, in name order. */
+export async function loadInstances(configDir: string): Promise<readonly InstanceSetting[]> {
+  return (await loadAll(configDir)).instances;
+}
+
+/** What one config home's instance runs with. A config home no file names
+ * still resolves — `daemon run` on an unregistered directory is what
+ * `config.ts` returns, plus the built-ins. */
+export async function loadConfig(configDir: string, dir: string): Promise<InstanceConfig> {
+  const all = await loadAll(configDir);
+  return all.instances.find((one) => one.dir === dir)?.config ?? all.defaults;
+}
+
+/** Put the declarations a config file writes against beside the files that
+ * write against them.
+ *
+ * Copied into the config home rather than reached where this build keeps them:
+ * a relative `import type` resolves with no tsconfig and no node_modules
+ * anywhere near it, and it goes on resolving when this checkout moves. */
+export function writeConfigTypes(configDir: string): string {
+  const at = join(configDir, TYPES_FILE);
+  mkdirSync(configDir, { recursive: true });
+  copyFileSync(new URL(`./${TYPES_FILE}`, import.meta.url).pathname, at);
+  return at;
+}
+
+/** The instance files there are, by the name each one is called. */
+function instanceNames(dir: string): string[] {
+  let entries: string[];
+  try {
+    entries = readdirSync(dir);
+  } catch {
+    return [];
+  }
+  return entries
+    .filter((entry) => entry.endsWith(".ts") && !entry.endsWith(".d.ts"))
+    .map((entry) => entry.slice(0, -".ts".length))
+    .filter((name) => INSTANCE_NAME.test(name))
+    .sort();
+}
+
+/** Import one config file and call what it exports.
+ *
+ * The modified time rides on the specifier because an import is cached by it:
+ * a file read again in the same process after being edited — a supervisor
+ * asked to add an instance, a test writing two configs — would otherwise be
+ * the first read over again. */
+async function called(file: string, ctx: Record<string, unknown>): Promise<unknown> {
+  let module: { default?: unknown };
+  try {
+    module = (await import(`${file}?mtime=${String(statSync(file).mtimeMs)}`)) as {
+      default?: unknown;
+    };
+  } catch (cause) {
+    throw new ConfigError(file, `cannot be loaded (${String(cause)})`);
+  }
+  const define = module.default;
+  if (typeof define !== "function") {
+    throw new ConfigError(
+      file,
+      "must default export a function taking { config } and returning it",
+    );
+  }
+  try {
+    return await (define as (given: unknown) => unknown)(ctx);
+  } catch (cause) {
+    if (cause instanceof ConfigError) throw cause;
+    throw new ConfigError(file, `threw while being read (${String(cause)})`);
+  }
+}
+
+/** What one config function handed back, checked at the shape an instance uses
+ * it. */
+function settingsOf(
+  file: string,
+  returned: unknown,
+  wantsDir: boolean,
+): { dir: string; config: InstanceConfig } {
+  const fields = objectOf(file, "what the config function returned", returned);
+  for (const name of Object.keys(fields)) {
+    if (name === "dir") {
+      if (wantsDir) continue;
+      throw new ConfigError(file, `dir belongs to an ${INSTANCES_DIR}/ file, which this is not`);
+    }
+    if (!(FIELDS as readonly string[]).includes(name)) {
+      throw new ConfigError(file, `unknown field ${name}; expected ${FIELDS.join(", ")}`);
+    }
+  }
+  const dir = fields["dir"];
+  if (wantsDir && (typeof dir !== "string" || !isAbsolute(dir))) {
+    throw new ConfigError(file, "dir must be the absolute config home this instance answers for");
+  }
+  return { dir: wantsDir ? (dir as string) : "", config: parseConfig(file, fields) };
+}
+
+/** A copy nothing can write to, for the values a config function builds on
+ * rather than edits: what `builtin` and `default` are is settled before the
+ * file runs, so a file that tried to edit one is told so where it did it. */
+function frozen<T>(value: T): T {
+  return deepFreeze(structuredClone(value));
+}
+
+function deepFreeze<T>(value: T): T {
+  if (typeof value !== "object" || value === null) return value;
+  for (const held of Object.values(value)) deepFreeze(held);
+  return Object.freeze(value);
+}
+
+/** The mutable copy a config function edits and returns. */
+function copied(value: InstanceConfig): Record<string, unknown> {
+  return structuredClone(value) as unknown as Record<string, unknown>;
 }
 
 /** One instance's settings, read at the shape the instance uses them. */

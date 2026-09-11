@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { TranscriptItem, TranscriptItemSelector, validationErrors } from "@ccmsg/protocol";
-import { ConfigError, MERGE_RULES, parseConfig, settingsFor } from "../src/instance/config.ts";
+import { ConfigError, parseConfig } from "../src/instance/config.ts";
 import {
   classify,
   fields,
@@ -955,20 +955,12 @@ describe("presets in the config", () => {
     ).toThrow(/repeats a/);
   });
 
-  test("an instance that names its own selections runs with those and not the defaults' as well", () => {
-    expect(MERGE_RULES["dump.presets"]).toBe("replace");
-    const settings = settingsFor(
-      {
-        defaults: { dump: { presets: [{ name: "shared", opts: { types: ["thinking"] } }] } },
-        instances: [
-          {
-            dir: "/a",
-            settings: { dump: { presets: [{ name: "mine", opts: { types: ["tool"] } }] } },
-          },
-        ],
-      },
-      "/a",
-    );
-    expect(parseConfig(FILE, settings).dump.presets.map((one) => one.name)).toEqual(["mine"]);
+  test("an instance that names its own selections runs with those and not the shared ones as well", () => {
+    // A preset list is a whole vocabulary: an instance file that writes its own
+    // over the copy it was handed means to dump by those, since a name it did
+    // not write could shadow or be referenced by one it did.
+    const shared = { dump: { presets: [{ name: "shared", opts: { types: ["thinking"] } }] } };
+    const mine = { ...shared, dump: { presets: [{ name: "mine", opts: { types: ["tool"] } }] } };
+    expect(parseConfig(FILE, mine).dump.presets.map((one) => one.name)).toEqual(["mine"]);
   });
 });

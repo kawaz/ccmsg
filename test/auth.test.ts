@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type CredentialRecord, PROTOCOL_VERSION } from "@ccmsg/protocol";
@@ -19,6 +19,7 @@ import {
 } from "../src/auth/index.ts";
 import { SoftAuthenticator } from "./authenticator.ts";
 import { connectWs, type LineClient } from "./client.ts";
+import { writeConfigHome } from "./harness.ts";
 
 /** The person's authentication end to end (DR-0001): a registration URL made
  * on the machine, a credential registered against it, an assertion, the tokens
@@ -51,13 +52,7 @@ async function serving(
   const origin = `http://127.0.0.1:${String(port)}`;
   const root = mkdtempSync(join(tmpdir(), "ccmsg-auth-"));
   mkdirSync(join(root, "home", "sessions"), { recursive: true });
-  mkdirSync(join(root, "config"), { recursive: true });
-  writeFileSync(
-    join(root, "config", "config.json"),
-    JSON.stringify({
-      defaults: { entry: { host: "127.0.0.1", port } },
-    }),
-  );
+  writeConfigHome(join(root, "config"), { entry: { host: "127.0.0.1", port } });
   const env: Env = {
     CLAUDE_CONFIG_DIR: join(root, "home"),
     CCMSG_STATE_DIR: join(root, "state"),

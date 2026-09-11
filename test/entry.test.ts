@@ -1,11 +1,12 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PROTOCOL_VERSION } from "@ccmsg/protocol";
 import { type Env, type Instance, isRunning, start } from "../src/instance/index.ts";
 import { entryPath } from "../src/transport/index.ts";
 import { connectWs, type LineClient } from "./client.ts";
+import { writeConfigHome } from "./harness.ts";
 
 /** Who may reach the WebSocket (daemon-v2 §3.1).
  *
@@ -26,11 +27,7 @@ afterEach(async () => {
 async function serving(entry: Record<string, unknown> = {}): Promise<Instance> {
   const root = mkdtempSync(join(tmpdir(), "ccmsg-entry-"));
   mkdirSync(join(root, "home", "sessions"), { recursive: true });
-  mkdirSync(join(root, "config"), { recursive: true });
-  writeFileSync(
-    join(root, "config", "config.json"),
-    JSON.stringify({ defaults: { entry: { host: "127.0.0.1", port: 0, ...entry } } }),
-  );
+  writeConfigHome(join(root, "config"), { entry: { host: "127.0.0.1", port: 0, ...entry } });
   const env: Env = {
     CLAUDE_CONFIG_DIR: join(root, "home"),
     CCMSG_STATE_DIR: join(root, "state"),

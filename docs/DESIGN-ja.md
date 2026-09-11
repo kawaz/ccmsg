@@ -341,7 +341,7 @@ teammate の `agent_id` は起動の答えで判るので、そちらが `agent`
 `@<preset 名>` (config の preset をその位置に展開、再帰可) で、無指定は `system.attachment` を除く全部。
 preset は契約に焼かず config の `dump.presets` に置く (名前が指すのは「関心の切り方」であって wire の性質ではない)。
 循環参照と未定義の preset 名は **config 読み込み時に拒否**する (dump のたびに落ちるのでは遅い)。
-`daemon add` は編集の出発点として 5 つの例を shared file の `defaults` に書く。一覧は `dump.presets.read` で引く。
+`daemon add` は編集の出発点として 5 つの例を `config.ts` に書く。一覧は `dump.presets.read` で引く。
 **file の形も契約が持つ** (`SessionDumpFile`)。path だけを返して本文は file にあるので、path を渡された後継セッションが読む形は契約の側で決まっていないと読めない。file は
 `{sid, agent_id?, written_at, types, items, ids}` で、`types` は **展開・除外適用後の選択そのもの**である
 (file は要求より長生きするので、何の dump で何を落としたかを file 自身が言えなければならない)。`ids` 台帳は型ではないので選択で落ちない。
@@ -480,8 +480,8 @@ key で畳む。roles は `instance` だけで、relay が `caller` を付ける
 ### 3.8 ハーネス
 
 instance は config home 1 つに答える (A2)。その config home を持っている**プログラムが何か**は
-instance の属性であり、**契約には出さない**。`ccmsg daemon add --harness <種別> <dir>` で
-共通 config の当該 entry に書き、instance は起動時にそれを読む (§8.2)。既定は `claude` で、
+instance の属性であり、**契約には出さない**。`ccmsg daemon add --harness <種別> <name> --dir <dir>` で
+その instance のファイルに書き、instance は起動時にそれを読む (§8.2)。既定は `claude` で、
 既存の entry は何も書き換えずにそのまま動く。
 
 **発見ではなく設定にする理由**: 空の config home はどのプログラムのものかを何も語らない。
@@ -1066,41 +1066,23 @@ config は小さく、再起動が安い (状態のほとんどが揮発で、�
 「編集が次のリクエストから効く」ための mtime 監視・再読込・再配線を持つ理由がない。
 config を変えたら instance を再起動する、が唯一の反映手順になる。
 
-**ファイルは 1 つで、2 段になっている**。`${XDG_CONFIG_HOME:-~/.config}/ccmsg/config.json` に
+**設定は TypeScript で、2 段になっている**。`${XDG_CONFIG_HOME:-~/.config}/ccmsg/` に:
 
-```json
-{ "defaults": { ...全 instance に配る設定... },
-  "instances": [ { "dir": "<config home>", ...この instance だけの上書き... } ] }
-```
-
-を置き、instance の各項目は `instances[].<パス>` → `defaults.<パス>` → 組み込み既定 の順に
-解決する。config home ごとに別ファイルを持たないのは、この 2 つがどちらも「集合についての
-事実」だからである — peers は全 instance に同じものを配れる (§7.1) し、「どの config home が
-instance を持つか」は個々の instance が自分について答えられる問いではない。`instances[]` に
-無い config home を `ccmsg daemon run` した場合は `defaults` + 組み込み既定になる。
-
-**重なる単位はトップレベルの key ではなく field path** であり、**規則はパスごとに schema
-側が宣言する**。object と array は「重ねる」が一通りに決まらない唯一の場所なので、どちらで
-あるかを値の形から推測せず表に書く。宣言の無いパスは置換で、これは scalar にできる唯一の
-ことであり、array がどれかの field を集合として扱うと宣言するまで array のふるまいでもある。
-
-| field path | 規則 |
+| ファイル | default export するもの |
 |---|---|
-| `peers` | 置換。完成済みの同じ一覧を全 instance に配る (§7.1) ので、自分の分を書いた instance はそれだけで動く意思表示になる |
-| `entry` | field ごとに重ねる |
-| `entry.source_ips`、`entry.trusted_proxies` | 置換 |
-| `upstream` | field ごとに重ねる |
-| `upstream.launcher` | field ごとに重ねる |
-| `upstream.launcher.root_dirs`、`templates`、`clean_env`、`keep_env` | 置換 |
-| 上に無いパス (scalar 全部) | 置換 |
+| `config.ts` | `({ builtin, config }) => config` — 全 instance の出発点 |
+| `instances/<name>.ts` | `({ builtin, default, config }) => config` — instance 1 つ分。名前はファイル名 |
+| `ccmsg-config.d.ts` | 上 2 つが書く型の宣言。`daemon add` がここに置く |
 
-削除の sentinel は持たない。**書かない = defaults を継ぐ、`[]` や `""` を書く = その値**で
-両者は区別が付き、`null` を実値にできなくする代償を払う理由がない。集合として足し引きしたい
-field が実際に出てきたときに、その field に `set` 規則と明示的な除去操作を一緒に設計する。
+`builtin` は組み込み既定、`default` は `config.ts` が返した値で、どちらも深く凍結して渡す。`config` は 1 段上のコピー (共通ファイルなら `builtin` の、instance のファイルなら `default` の) なので、渡された物を書き換えて返す。instance のファイルは自分が答える config home の絶対パスを `config.dir` に書く。これがあることで設定の塊ではなく instance になる。同じ config home を 2 つのファイルが名乗ったら拒否する — instance とは config home そのものだから (A2)。`instances/` 下のファイルは在ることで見つかるので、instance を足すとはファイルを書くことで、外すとは消すことである。
 
-この表は実装の 1 か所 (`MERGE_RULES`) が正本で、`ccmsg daemon add --help` が同じものを出す。
-マージ後の実効 config は `ccmsg daemon status` が答える (動いていない instance の分も、再起動
-したら効く値としてファイルから読んで返す)。
+**マージ規則は無い。何もマージしないから**である。ファイルは土台の全体を受け取り、動かす値の全体を返す。「この一覧は下の段を置換するのか、足すのか」を設定ファイルの読み手が覚えておく必要が無い — `config.peers = […]` なら置換、`config.peers.push(…)` なら追加で、どちらのつもりかはファイルが言う。かつてパスと規則の表だったものが、その規則の対象だったファイルの中の TypeScript 2 行になった。
+
+config home ごとに二度書くものは無い。全 instance に共通の物は `config.ts` に 1 回書き、instance のファイルには差分だけ書く。どのファイルも名乗っていない config home を `ccmsg daemon run` した場合は `config.ts` が返す値 + 組み込み既定になる。
+
+ファイルは `async` でもよい。答えを作るのに何が要るか (秘密を読む、何かに尋ねる) はそのファイルの都合だからである。例外を投げた・設定でない物を返した・誰も持っていない field を書いた場合は読み取りを終わらせる。綴りを間違えた field は「書いたのに効かない設定」であり、それを黙って落としたまま起動するのは §8.3 が拒否する状態そのものだからである。
+
+実効設定は `ccmsg daemon status` が答える (動いていない instance の分も、再起動したら効く値としてファイルから読んで返す)。
 
 ### 8.3 起動の順序
 
@@ -1114,7 +1096,7 @@ field が実際に出てきたときに、その field に `set` 規則と明示
    できない、はどちらも「設定したはずの機能」が黙って効かない状態そのものである
 4. **instance id を読む** (state に無ければここで生成する、§3.6)。id から導かれるもの
    すべてより前に置く: `mid`・store の鍵・`last_live` はどれもこの id で引かれるので、
-   id が無いうちに作ってよいものが 1 つも無い。共有ファイルの `instances[]` に無い
+   id が無いうちに作ってよいものが 1 つも無い。`instances/` のどのファイルも名乗っていない
    config home を `ccmsg daemon run` で起こした場合も、初回の id はここで持つ
    (DR-0001 §2.1)
 5. **自分の endpoint の確定** (§7.1)。mesh を持つ構成では **WS を先に bind してから**行う:
@@ -1140,7 +1122,7 @@ field が実際に出てきたときに、その field に `set` 規則と明示
 **lazy 起動 (その config home のセッションが最初に `ccmsg` を呼んだ時に起動する) は採らない**
 (DV-Q10)。instance は常駐し、**常駐の面倒を見るのは 2 段の監督**である。
 
-- `ccmsg daemon supervise` — foreground の監督者。共通 config の `instances[]` を起動時に
+- `ccmsg daemon supervise` — foreground の監督者。共通 config の `instances/` を起動時に
   1 回読み (DV-Q8)、各 config home の instance を子プロセスとして起動し、落ちたら上げ直す。
   再起動の待ちは指数的に伸びる (根拠は実装のコメント: 起動直後に落ちる config 不備を
   spin させないため)。SIGTERM を受けたら各子を `instance.shutdown` で §8.5 の順に止める。
@@ -1154,7 +1136,7 @@ field が実際に出てきたときに、その field に `set` 規則と明示
   `supervise_*` で契約の op と区別する — **これは契約ではない**。ホスト上のプロセスに
   ついての内部プロトコルであって、webui も mesh の相手もここには来ない。
 
-  `ccmsg daemon add` / `remove` は共通 config を書いたうえで監督者にも伝える (居なければ
+  `ccmsg daemon add` / `remove` は `instances/` のファイルを書く / 消したうえで監督者にも伝える (居なければ
   書くだけ)。`remove` は見るのをやめるだけで**子は止めない** — 一覧の編集は shutdown では
   なく、その instance と話しているセッションはそのまま話し続ける。
 

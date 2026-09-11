@@ -118,7 +118,18 @@ export class Supervisor {
     this.#startTimeoutMs = options.startTimeoutMs ?? START_TIMEOUT_MS;
     this.#stopTimeoutMs = options.stopTimeoutMs ?? STOP_TIMEOUT_MS;
     this.#log = options.log ?? ((line) => process.stderr.write(`${JSON.stringify(line)}\n`));
-    for (const target of registered(this.#env)) this.#units.set(target.dir, new Supervised(target));
+  }
+
+  /** Read which config homes there are.
+   *
+   * In `run` rather than in the constructor because the files are TypeScript
+   * and reading one is an import: a caller holding a supervisor that has not
+   * run yet is holding one that has not read the list yet, which is the same
+   * moment it was already true that nothing had been started. */
+  async #adopt(): Promise<void> {
+    for (const target of await registered(this.#env)) {
+      this.#units.set(target.dir, new Supervised(target));
+    }
   }
 
   /** The config homes this supervisor is looking after right now. */
@@ -138,6 +149,7 @@ export class Supervisor {
   }
 
   async #serve(): Promise<void> {
+    await this.#adopt();
     await this.#listen();
     for (const unit of this.#units.values()) this.#keep(unit);
     // What ends the run is being asked to, not the children ending: a
@@ -307,7 +319,7 @@ export class Supervisor {
    * behind it is the state `add` exists to leave behind only when there is no
    * supervisor to tell. */
   async addOne(dir: string): Promise<StatusRow> {
-    const home = configHome(dir, harnessFor(this.#env, dir));
+    const home = configHome(dir, await harnessFor(this.#env, dir));
     if (this.#units.has(home)) {
       throw new CommandError("file_exists", `${home} は既に見ています`);
     }

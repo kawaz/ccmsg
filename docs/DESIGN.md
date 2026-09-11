@@ -387,7 +387,7 @@ place (recursively). Absent keeps everything but `system.attachment`. Presets li
 `dump.presets` rather than in the contract, because what a preset names is an interest and not a
 property of the wire. A cycle, or a preset name nobody configured, is **refused when the config is
 read** — finding it per request would be finding it far too late. `daemon add` writes five
-examples into the shared file's `defaults` as a starting point to edit, and `dump.presets.read`
+examples into `config.ts` as a starting point to edit, and `dump.presets.read`
 lists them. **The file's own shape is the contract's too** (`SessionDumpFile`): the reply names a
 path rather than carrying the items, so a successor session handed that path would otherwise be
 reading a format nothing states. It is `{sid, agent_id?, written_at, types, items, ids}`, where
@@ -556,7 +556,7 @@ days.
 
 An instance answers for one config home (A2). **Which program owns that config home** is an
 attribute of the instance and **is not stated in the contract**. `ccmsg daemon add --harness
-<kind> <dir>` writes it into that entry of the shared config, and the instance reads it at
+<kind> <name> --dir <dir>` writes it into that instance's own file, and the instance reads it at
 startup (§8.2). The default is `claude`, so an existing entry runs unchanged.
 
 **Why a setting rather than a discovery**: an empty config home says nothing about the program
@@ -1232,47 +1232,40 @@ persisted are the 5 kinds in §3.6), there is no reason to hold mtime watching /
 rewiring so that "an edit takes effect on the next request." Restarting the instance is the
 sole way to make a config change take effect.
 
-**There is one file, and it has two levels.** `${XDG_CONFIG_HOME:-~/.config}/ccmsg/config.json`
-holds
+**Settings are TypeScript, and there are two levels of them.** Under
+`${XDG_CONFIG_HOME:-~/.config}/ccmsg/`:
 
-```json
-{ "defaults": { ...settings handed to every instance... },
-  "instances": [ { "dir": "<config home>", ...overrides for this instance alone... } ] }
-```
-
-and each of an instance's settings resolves in the order `instances[].<path>` →
-`defaults.<path>` → the built-in default. There is no file per config home because both of the
-things this one carries are facts about the set — the same peer list can go to every instance
-(§7.1), and "which config homes have an instance" is not a question a single instance can
-answer about itself. A config home that `instances[]` does not list, run with
-`ccmsg daemon run`, is `defaults` plus the built-in defaults.
-
-**What combines is a field path, not a top-level key**, and **the rule for each path is
-declared by the schema**. Objects and arrays are the only place where "combine" could mean
-more than one thing, so which it is here is written down rather than guessed from the shape of
-the value. A path that is not declared replaces, which is what a scalar can do and what an
-array does until some field declares itself a set.
-
-| field path | Rule |
+| File | What it default exports |
 |---|---|
-| `peers` | Replace. The same finished list goes to every instance (§7.1), so an instance that writes its own means to run with that one and no other |
-| `entry` | Merged field by field |
-| `entry.source_ips`, `entry.trusted_proxies` | Replace |
-| `upstream` | Merged field by field |
-| `upstream.launcher` | Merged field by field |
-| `upstream.launcher.root_dirs`, `templates`, `clean_env`, `keep_env` | Replace |
-| Any path not above (every scalar) | Replace |
+| `config.ts` | `({ builtin, config }) => config` — what every instance starts from |
+| `instances/<name>.ts` | `({ builtin, default, config }) => config` — one instance, called by the name of its file |
+| `ccmsg-config.d.ts` | The declarations the two write against, copied here by `daemon add` |
 
-There is no delete sentinel. **Leaving a field out inherits the defaults' value, and writing
-`[]` or `""` is that value**: the two are already told apart, so there is no reason to pay for
-telling them apart by making `null` unusable as a real value. When a field genuinely has to be
-added to and subtracted from as a set, that field gets a `set` rule and an explicit removal
-operation, designed together.
+`builtin` is the built-in defaults and `default` is what `config.ts` returned; both are handed
+over deeply frozen. `config` is a mutable copy of the level above — of `builtin` in the shared
+file, of `default` in an instance's — so a file edits what it was given and returns it. An
+instance's file states `config.dir`, the absolute config home it answers for, and that is what
+makes it an instance rather than a settings block; two files naming one config home are
+refused, because an instance *is* a config home (A2). The files under `instances/` are found by
+being there, so adding an instance is writing a file and removing one is deleting it.
 
-The table has one source in the implementation (`MERGE_RULES`), and `ccmsg daemon add --help`
-prints the same one. The effective config a merge produces is what `ccmsg daemon status`
-answers with — for a config home with nothing running too, read from the file as the value a
-restart would apply.
+**There is no merge rule, because nothing merges.** A file is handed the whole of what it
+builds on and returns the whole of what it runs with, so "does this list replace or add to the
+one below it?" is not a question the reader of a config file has to hold — `config.peers = […]`
+replaces, `config.peers.push(…)` adds, and the file says which it meant. What used to be a
+table of paths and rules is now two lines of TypeScript in the file the rule was about.
+
+There is nothing per config home to write down twice: what every instance shares is stated once
+in `config.ts`, and an instance's own file states only what differs. A config home no file
+names, run with `ccmsg daemon run`, is what `config.ts` returns plus the built-in defaults.
+
+A file may be `async`, since what it has to do to answer — read a secret, ask something — is its
+own business. A file that throws, returns something that is not settings, or states a field
+nobody has ends the read: a misspelled field is a setting that was written and does not take,
+and starting with it silently absent is the state §8.3 refuses to run in.
+
+The effective settings are what `ccmsg daemon status` answers with — for a config home with
+nothing running too, read from the files as the value a restart would apply.
 
 ### 8.3 Startup order
 
@@ -1289,7 +1282,7 @@ restart would apply.
 4. **Read the instance id** (generating it here when the state directory has none, §3.6). It
    comes before everything derived from it: `mid`, the store's keys and `last_live` are all
    keyed by that id, so there is nothing that may be built while it does not exist. A config
-   home the shared file's `instances[]` does not list, started with `ccmsg daemon run`, gets
+   home no `instances/` file names, started with `ccmsg daemon run`, gets
    its first id here too (DR-0001 §2.1)
 5. **Settle this instance's endpoint** (§7.1). On a configuration with mesh, **the WebSocket is
    bound first**: what settles it is the probe this instance sent arriving at its own listener,
@@ -1319,8 +1312,8 @@ subscription.
 adopted** (DV-Q10). The instance is long-running (resident), and **keeping it that way is two
 levels of supervision**:
 
-- `ccmsg daemon supervise` — the foreground supervisor. It reads the shared config's
-  `instances[]` once at startup (DV-Q8), starts each config home's instance as a child
+- `ccmsg daemon supervise` — the foreground supervisor. It reads the config home's
+  `instances/` files once at startup (DV-Q8), starts each config home's instance as a child
   process, and starts it again when it dies. The wait before a restart grows exponentially
   (the reason is on the values themselves: a config that fails at startup must not spin the
   supervisor). On SIGTERM it stops each child with `instance.shutdown`, in the order of §8.5.
@@ -1335,7 +1328,7 @@ levels of supervision**:
   keep them apart from the contract's — **this is not the contract**. It is an internal
   protocol about processes on this host; no web UI and no mesh peer reaches it.
 
-  `ccmsg daemon add` / `remove` write the shared config and then tell the supervisor (with
+  `ccmsg daemon add` / `remove` write and delete one `instances/` file and then tell the supervisor (with
   none running, they only write). `remove` stops it being looked after and **does not stop
   the child**: editing a list is not a shutdown, and a session already talking to that
   instance keeps talking to it.

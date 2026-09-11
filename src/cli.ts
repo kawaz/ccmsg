@@ -30,6 +30,7 @@ import {
   tailOf,
   type Target,
   targetFor,
+  targetNamed,
 } from "./daemon/index.ts";
 import { readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -43,22 +44,11 @@ const SESSION_ENV = HARNESSES.flatMap((harness) => [...HARNESS[harness].sessionE
 import { hookEvent, type StatedMeta, statedMeta } from "./greeting/index.ts";
 import {
   isRunning,
-  MERGE_RULES,
   resolveConfigHome,
   resolvePaths,
   resolvePathsFor,
   start,
 } from "./instance/index.ts";
-
-/** The merge rules as the help prints them: one line per field path, in the
- * order the schema declares them, so the table a person reads is the table the
- * merge runs on. */
-const MERGE_DOCS: readonly Doc[] = Object.entries(MERGE_RULES).map(([path, rule]) => [
-  path,
-  rule === "merge"
-    ? "instances[] 側にある field だけを defaults に重ねる"
-    : "instances[] 側にあれば丸ごと置換する (追加・和にはならない)",
-]);
 import {
   type Agent,
   AGENTS,
@@ -151,7 +141,7 @@ const ROOT: Command = {
         {
           name: "run",
           summary: "この config home の instance を foreground で起動する (監督者の管理外)",
-          usage: "ccmsg daemon run [dir]",
+          usage: "ccmsg daemon run [name | dir]",
           bare: true,
           run: (args) => runInstance(args[0]),
         },
@@ -164,9 +154,11 @@ const ROOT: Command = {
         },
         {
           name: "add",
-          summary: "共通 config の instances[] に足し、監督者が居れば起こさせる",
-          usage: "ccmsg daemon add <dir> [--harness <種別>]",
+          summary: "instances/<name>.ts を書き、監督者が居れば起こさせる",
+          usage: "ccmsg daemon add <name> [--dir <config home>] [--port <番号>] [--harness <種別>]",
           options: [
+            ["--dir <config home>", "この instance が答える config home (既定は今の config home)"],
+            ["--port <番号>", "entry の待ち受けポート (書かなければ unix socket だけ)"],
             [
               "--harness <種別>",
               `config home が動かすもの: ${HARNESSES.join(" | ")} (既定 ${DEFAULT_HARNESS})`,
@@ -174,17 +166,23 @@ const ROOT: Command = {
           ],
           notes: [
             {
-              title:
-                "共通 config で instances[] の値が defaults に重なる規則 (掲載の無いパスは丸ごと置換):",
-              docs: MERGE_DOCS,
+              title: "設定は TypeScript で書く。書いた物を各 instance が受け取る:",
+              docs: [
+                ["config.ts", "全 instance が受け取る値。`({builtin, config}) => config`"],
+                [
+                  "instances/<name>.ts",
+                  "1 instance 分の差分。`({builtin, default, config}) => config`",
+                ],
+                ["ccmsg-config.d.ts", "設定ファイルが `import type` で参照する型 (ccmsg が置く)"],
+              ],
             },
           ],
           run: (args) => added(args),
         },
         {
           name: "remove",
-          summary: "instances[] から外す (監督者は以後見ないが、子は止めない)",
-          usage: "ccmsg daemon remove <dir>",
+          summary: "instances/<name>.ts を消す (監督者は以後見ないが、子は止めない)",
+          usage: "ccmsg daemon remove <name>",
           run: (args) => removed(args[0]),
         },
         {
@@ -192,30 +190,30 @@ const ROOT: Command = {
           summary: "登録されている config home と、動いているかを並べる",
           usage: "ccmsg daemon list",
           bare: true,
-          run: () => Promise.resolve(listInstances(process.env)),
+          run: () => listInstances(process.env),
         },
         {
           name: "start",
           summary: "監督者に、この config home の子を起こさせる",
-          usage: "ccmsg daemon start <dir> | --all",
+          usage: "ccmsg daemon start <name | dir> | --all",
           run: (args) => supervised("supervise_start", args),
         },
         {
           name: "stop",
           summary: "監督者に、子を止めさせる (instance.shutdown、以後は上げ直さない)",
-          usage: "ccmsg daemon stop <dir> | --all",
+          usage: "ccmsg daemon stop <name | dir> | --all",
           run: (args) => supervised("supervise_stop", args),
         },
         {
           name: "restart",
           summary: "監督者に、止めてから起こし直させる",
-          usage: "ccmsg daemon restart <dir> | --all",
+          usage: "ccmsg daemon restart <name | dir> | --all",
           run: (args) => supervised("supervise_restart", args),
         },
         {
           name: "status",
           summary: "監督者が各子に instance.ping して version・network・peers を答える",
-          usage: "ccmsg daemon status [dir] | --all",
+          usage: "ccmsg daemon status [name | dir] | --all",
           bare: true,
           run: (args) => supervised("supervise_status", args, true),
         },
@@ -255,7 +253,7 @@ const ROOT: Command = {
         {
           name: "log",
           summary: "instance の daemon.log を出す (--all は行に id を足して多重化)",
-          usage: "ccmsg daemon log [dir] | --all [--follow]",
+          usage: "ccmsg daemon log [name | dir] | --all [--follow]",
           options: [["--follow", "書き足される行を待ち続ける (Ctrl-C で終わり)"]],
           bare: true,
           run: (args) => daemonLog(args),
@@ -568,10 +566,11 @@ function section(lines: string[], title: string, docs: readonly Doc[] | undefine
   lines.push("");
 }
 
-/** `ccmsg daemon run [dir]`: this config home's instance, in the foreground. */
-async function runInstance(dir: string | undefined): Promise<unknown> {
-  const named = dir ?? resolveConfigHome();
-  const home = configHome(named, harnessFor(process.env, named));
+/** `ccmsg daemon run [name | dir]`: this config home's instance, in the
+ * foreground. */
+async function runInstance(given: string | undefined): Promise<unknown> {
+  const named = (await dirOf(given)) ?? resolveConfigHome();
+  const home = configHome(named, await harnessFor(process.env, named));
   // The directory is handed over rather than put in the environment: the
   // instance would otherwise read it back through the question "which session
   // is this process inside", and a `daemon run` issued from a session of
@@ -620,31 +619,42 @@ async function supervise(): Promise<unknown> {
  * the supervisor reads the list once (DV-Q8) and would otherwise not know
  * until it is restarted. */
 async function added(args: readonly string[]): Promise<unknown> {
-  const { named, rest } = options(args, ["harness"]);
-  const dir = rest[0];
+  const { named, rest } = options(args, ["harness", "dir", "port"]);
+  const name = rest[0];
   const stated = named.get("harness");
-  if (dir === undefined) {
-    throw new CommandError("invalid_args", "使い方: ccmsg daemon add <dir> [--harness <種別>]");
+  const port = named.get("port");
+  if (name === undefined) {
+    throw new CommandError(
+      "invalid_args",
+      "使い方: ccmsg daemon add <name> [--dir <config home>] [--port <番号>] [--harness <種別>]",
+    );
   }
   if (stated !== undefined && !isHarness(stated)) {
     throw new CommandError("invalid_args", `--harness は ${HARNESSES.join(" | ")} のどれかです`);
   }
-  const row = addToConfig(process.env, dir, stated ?? DEFAULT_HARNESS);
+  if (port !== undefined && !/^\d{1,5}$/.test(port)) {
+    throw new CommandError("invalid_args", "--port は 0 から 65535 の番号です");
+  }
+  const row = await addToConfig(process.env, name, {
+    dir: named.get("dir") ?? resolveConfigHome(),
+    harness: stated ?? DEFAULT_HARNESS,
+    ...(port === undefined ? {} : { port: Number(port) }),
+  });
   if (!(await reachable())) return { ...row, supervised: false };
   const started = (await ask({ op: "supervise_add", dir: row.dir })) as Record<string, unknown>;
-  return { ...started, supervised: true };
+  return { ...started, name, supervised: true };
 }
 
-/** `ccmsg daemon remove <dir>`: take it off the list, and stop looking after it.
+/** `ccmsg daemon remove <name>`: take its file away, and stop looking after it.
  *
- * The instance itself is left alone: a list edit is not a shutdown, and a
+ * The instance itself is left alone: removing the file is not a shutdown, and a
  * session already talking to that instance keeps it. `daemon stop` is how one
  * is stopped, and keeping the two apart is what makes that true. */
-async function removed(dir: string | undefined): Promise<unknown> {
-  if (dir === undefined) {
-    throw new CommandError("invalid_args", "使い方: ccmsg daemon remove <dir>");
+async function removed(name: string | undefined): Promise<unknown> {
+  if (name === undefined) {
+    throw new CommandError("invalid_args", "使い方: ccmsg daemon remove <name>");
   }
-  const row = removeFromConfig(process.env, dir);
+  const row = await removeFromConfig(process.env, name);
   if (!(await reachable())) return { ...row, supervised: false };
   await ask({ op: "supervise_remove", dir: row.dir });
   return { ...row, supervised: false };
@@ -666,12 +676,24 @@ async function supervised(
   const all = parsed.flags.has("all");
   const named = parsed.rest[0];
   if (all && named !== undefined) {
-    throw new CommandError("invalid_args", "--all と dir は同時に指定できません");
+    throw new CommandError("invalid_args", "--all と name は同時に指定できません");
   }
   if (all) return await ask({ op, all: true });
-  const dir = named ?? (hereByDefault ? resolveConfigHome() : undefined);
-  if (dir === undefined) throw new CommandError("invalid_args", "dir か --all が要ります");
+  const dir = (await dirOf(named)) ?? (hereByDefault ? resolveConfigHome() : undefined);
+  if (dir === undefined) throw new CommandError("invalid_args", "name か --all が要ります");
   return await ask({ op, dir });
+}
+
+/** The config home a command was given, by either of the two things a person
+ * has to hand: the name they added it under, or the directory itself.
+ *
+ * A name first, because that is what `daemon add` took and so what a person
+ * has written down; anything nobody registered under that name is taken as the
+ * directory it looks like, which is what makes `daemon run` on an unregistered
+ * config home reachable. */
+async function dirOf(given: string | undefined): Promise<string | undefined> {
+  if (given === undefined) return undefined;
+  return (await targetNamed(process.env, given))?.dir ?? given;
 }
 
 /** `ccmsg service <what>`: the supervisor's registration with the host. */
@@ -694,7 +716,7 @@ async function serviceOp(
     kind: service.kind,
     unit: service.unitFile,
     ...state,
-    instances: registered(process.env).map((target) => {
+    instances: (await registered(process.env)).map((target) => {
       const row = rowFor(target);
       return { id: row.id, dir: row.dir, running: row.running };
     }),
@@ -772,7 +794,7 @@ async function daemonLog(args: readonly string[]): Promise<undefined> {
   // shape whether the host runs one or five.
   const many = parsed.flags.has("all");
   const targets = many
-    ? registered(process.env)
+    ? await registered(process.env)
     : [targetFor(process.env, parsed.rest[0] ?? resolveConfigHome())];
   const write = (target: Target, lines: readonly string[]): void => {
     for (const line of lines) {
@@ -1191,7 +1213,7 @@ async function plugin(
   }
   // `status` with no agent named answers for the config home this process
   // belongs to, which is what the instance there runs.
-  const which = agent ?? harnessFor(process.env, resolvePaths().configHome);
+  const which = agent ?? (await harnessFor(process.env, resolvePaths().configHome));
   // The config home is that agent's own, and not whichever variable happens to
   // be set: a Codex session started from a Claude Code session carries both,
   // and an install that read the wrong one would write Codex's hooks into

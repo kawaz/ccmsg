@@ -6,12 +6,12 @@
  * travels over it once there is one — and a second copy of "how an instance is
  * started" would let the two drift into testing different deployments. */
 import { expect } from "bun:test";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type Endpoint, type InstanceId, PROTOCOL_VERSION } from "@ccmsg/protocol";
 import { type Env, Instance, isRunning, start } from "../src/instance/index.ts";
-import { reapOrphans, trackRoot } from "./harness.ts";
+import { reapOrphans, trackRoot, writeConfigHome } from "./harness.ts";
 import {
   EphemeralKey,
   type MeshJwk,
@@ -143,18 +143,12 @@ export function homeFor(lease: PortLease, peers: readonly Endpoint[]): Env {
   const home = join(root, "home");
   mkdirSync(join(home, "sessions"), { recursive: true });
   const configDir = join(root, "config");
-  mkdirSync(configDir, { recursive: true });
-  writeFileSync(
-    join(configDir, "config.json"),
-    JSON.stringify({
-      defaults: {
-        peers,
-        // The page this instance serves, so the `/auth/*` routes have an origin
-        // to compare against (DR-0001 §2.3).
-        entry: { host: "127.0.0.1", port, origins: [`http://127.0.0.1:${String(port)}`] },
-      },
-    }),
-  );
+  writeConfigHome(configDir, {
+    peers,
+    // The page this instance serves, so the `/auth/*` routes have an origin
+    // to compare against (DR-0001 §2.3).
+    entry: { host: "127.0.0.1", port, origins: [`http://127.0.0.1:${String(port)}`] },
+  });
   const env: Env = {
     CLAUDE_CONFIG_DIR: home,
     CCMSG_STATE_DIR: join(root, "state"),

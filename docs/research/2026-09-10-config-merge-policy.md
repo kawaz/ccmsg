@@ -1,5 +1,7 @@
 # 設定ファイルのフィールド別マージ方針
 
+> 撤去済み。ここで決めた field 別マージ規則は実装に入らず、設定は TypeScript に移った (現行は DESIGN §8.2)。
+
 - Date: 2026-09-10
 - Status: Concluded
 

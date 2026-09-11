@@ -1,14 +1,16 @@
 import { afterAll, afterEach, describe, expect, test } from "bun:test";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { main } from "../src/cli.ts";
 import {
+  add,
+  type AddOptions,
   type Child,
   CommandError,
-  add,
   awaitGone,
   follow,
   idOf,
+  type InstanceRow,
   list,
   registered,
   remove,
@@ -21,10 +23,16 @@ import {
   tailOf,
   targetFor,
 } from "../src/daemon/index.ts";
-import { DEFAULT_CONFIG, loadShared, saveShared } from "../src/instance/index.ts";
+import { DEFAULT_CONFIG, loadAll } from "../src/instance/index.ts";
 import { resolvePaths } from "../src/instance/paths.ts";
 import { endpoint, leasePort } from "./cluster.ts";
-import { capture, Host, json, reapOrphans } from "./harness.ts";
+import { capture, Host, json, reapOrphans, writeConfigHome } from "./harness.ts";
+
+/** Register a config home under the name its own directory is called, which
+ * is what a test that is not about naming would have typed. */
+function register(dir: string, options: Partial<AddOptions> = {}): Promise<InstanceRow> {
+  return add(process.env, basename(dir), { dir, ...options });
+}
 
 const hosts: Host[] = [];
 const supervisors: Supervisor[] = [];
@@ -44,7 +52,7 @@ afterEach(async () => {
   for (const supervisor of supervisors.splice(0)) await supervisor.stop();
   await Promise.all(runs.splice(0));
   for (const one of hosts) {
-    for (const target of registered(process.env)) {
+    for (const target of await registered(process.env)) {
       if (rowFor(target).running) await stop(target).catch(() => undefined);
     }
     one.release();
@@ -61,58 +69,78 @@ afterAll(async () => {
 });
 
 describe("which config homes there are (daemon add / remove / list)", () => {
-  test("a directory that is not a config home is not added", () => {
+  test("a directory that is not a config home is not added", async () => {
     const at = host();
     const stranger = at.home("stranger", false);
-    expect(() => add(process.env, stranger)).toThrow(CommandError);
-    // Nothing was written, so a mistyped path leaves no entry to clean up.
-    expect(list(process.env)).toEqual([]);
+    expect(register(stranger)).rejects.toThrow(CommandError);
+    // Nothing was written, so a mistyped path leaves no file to clean up.
+    expect(await list(process.env)).toEqual([]);
   });
 
-  test("add lists it, twice refuses, and remove takes it off again", () => {
+  test("add lists it, twice refuses, and remove takes it off again", async () => {
     const at = host();
     const home = at.home("one");
-    const added = add(process.env, home);
-    expect(added).toMatchObject({ dir: home, running: false });
+    const added = await register(home);
+    expect(added).toMatchObject({ name: "one", dir: home, running: false });
     expect(added.id).toMatch(/^[0-9a-f]{32}$/);
-    expect(list(process.env).map((row) => row.dir)).toEqual([home]);
+    expect((await list(process.env)).map((row) => row.dir)).toEqual([home]);
 
-    expect(() => add(process.env, home)).toThrow(CommandError);
-    expect(remove(process.env, home)).toEqual({ dir: home, removed: true });
-    expect(list(process.env)).toEqual([]);
-    expect(() => remove(process.env, home)).toThrow(CommandError);
+    // Twice under the same name, and twice for the same config home, are both
+    // refused: one file per instance, and one instance per config home (A2).
+    expect(register(home)).rejects.toThrow(CommandError);
+    expect(add(process.env, "elsewhere", { dir: home })).rejects.toThrow(CommandError);
+    expect(await remove(process.env, "one")).toEqual({ name: "one", dir: home, removed: true });
+    expect(await list(process.env)).toEqual([]);
+    expect(remove(process.env, "one")).rejects.toThrow(CommandError);
   });
 
-  test("what add writes is the shape a person edits", () => {
+  test("what add writes is the file a person edits", async () => {
     const at = host();
     const home = at.home("one");
-    add(process.env, home);
-    const shared = loadShared(resolvePaths(process.env).configFile);
-    // The entry states only what differs from the defaults, which for a config
-    // home running the default harness is nothing.
-    expect(shared.instances).toEqual([{ dir: home, settings: {} }]);
-    // The one thing written to `defaults` is the dump presets: what a preset
-    // names is an interest, which this instance has no opinion on, so they are
-    // examples in the file rather than a default in the code.
-    expect(Object.keys(shared.defaults)).toEqual(["dump"]);
-    const presets = (shared.defaults["dump"] as { presets: { name: string }[] }).presets;
-    expect(presets.map((one) => one.name)).toEqual([
+    await register(home);
+    const paths = resolvePaths(process.env);
+    // The declarations the two files write against, put beside them: a
+    // relative `import type` resolves with no tsconfig anywhere near it.
+    expect(existsSync(join(paths.configDir, "ccmsg-config.d.ts"))).toBe(true);
+    // One file per instance, called what the instance is called, stating what
+    // differs from the shared file and nothing else.
+    const written = readFileSync(join(paths.instancesDir, "one.ts"), "utf8");
+    expect(written).toContain(`config.dir = ${JSON.stringify(home)};`);
+    expect(written).not.toContain("harness");
+    // The dump presets go in the shared file: what a preset names is an
+    // interest, which this instance has no opinion on, so they are examples in
+    // a file to edit rather than a default in the code.
+    const { defaults, instances } = await loadAll(paths.configDir);
+    expect(defaults.dump.presets.map((one) => one.name)).toEqual([
       "file",
       "howto",
       "journal",
       "handoff",
       "audit",
     ]);
+    expect(instances).toMatchObject([{ name: "one", dir: home }]);
+    // What the instance runs with is the built-ins plus those presets: an
+    // instance that states nothing differs in nothing.
+    expect(instances[0]?.config).toEqual({ ...DEFAULT_CONFIG, dump: defaults.dump });
   });
 
-  test("adding a second config home leaves the presets a person edited alone", () => {
+  test("adding a second config home leaves the presets a person edited alone", async () => {
     const at = host();
-    add(process.env, at.home("one"));
-    const file = resolvePaths(process.env).configFile;
-    const edited = loadShared(file);
-    saveShared(file, { ...edited, defaults: { dump: { presets: [] } } });
-    add(process.env, at.home("two"));
-    expect(loadShared(file).defaults).toEqual({ dump: { presets: [] } });
+    await register(at.home("one"));
+    const paths = resolvePaths(process.env);
+    writeFileSync(
+      paths.configFile,
+      "export default ({ config }: { config: { dump: unknown } }) => { config.dump = { presets: [] }; return config; };\n",
+    );
+    await register(at.home("two"));
+    expect((await loadAll(paths.configDir)).defaults.dump.presets).toEqual([]);
+  });
+
+  test("a name that is not one is refused before anything is written", async () => {
+    const at = host();
+    const home = at.home("one");
+    expect(add(process.env, "../escape", { dir: home })).rejects.toThrow(CommandError);
+    expect(await list(process.env)).toEqual([]);
   });
 });
 
@@ -140,9 +168,9 @@ describe("the round trip against real processes", () => {
     const at = host();
     const one = at.home("one");
     const two = at.home("two");
-    add(process.env, one);
-    add(process.env, two);
-    expect(list(process.env).every((row) => !row.running)).toBe(true);
+    await register(one);
+    await register(two);
+    expect((await list(process.env)).every((row) => !row.running)).toBe(true);
 
     // A supervisor starts what it is looking after, so by the time it is up
     // both children are serving and `start` is what puts a stopped one back.
@@ -171,7 +199,7 @@ describe("the round trip against real processes", () => {
     expect(stopped.every((row) => row.stopped)).toBe(true);
     // Stopped and left stopped: the restart loop reads a departure it asked for
     // as one not to recover from.
-    for (const target of registered(process.env)) expect(rowFor(target).running).toBe(false);
+    for (const target of await registered(process.env)) expect(rowFor(target).running).toBe(false);
 
     const again = (await ask({ op: "supervise_start", all: true })) as StatusRow[];
     expect(again.every((row) => row.running)).toBe(true);
@@ -181,7 +209,7 @@ describe("the round trip against real processes", () => {
 
   test("with no supervisor there is nobody to ask, and the command says so", async () => {
     const at = host();
-    add(process.env, at.home("one"));
+    await register(at.home("one"));
     for (const op of ["start", "stop", "restart", "status"]) {
       const asked = await capture(() => main(["daemon", op, "--all"]));
       expect(asked.code).toBe(1);
@@ -197,7 +225,7 @@ describe("the round trip against real processes", () => {
   test("starting one that is already running is refused rather than doubled", async () => {
     const at = host();
     const home = at.home("one");
-    add(process.env, home);
+    await register(home);
     const supervisor = await supervising();
     const running = rowFor(targetFor(process.env, home));
     expect(running.running).toBe(true);
@@ -209,7 +237,7 @@ describe("the round trip against real processes", () => {
   test("stopping one that is not running says so rather than pretending", async () => {
     const at = host();
     const home = at.home("one");
-    add(process.env, home);
+    await register(home);
     const supervisor = await supervising();
     await supervisor.stopOne(home);
     expect(supervisor.stopOne(home)).rejects.toThrow(CommandError);
@@ -231,12 +259,12 @@ describe("add and remove against a running supervisor", () => {
     const supervisor = await supervising();
     const home = at.home("one");
 
-    const added = await capture(() => main(["daemon", "add", home]));
+    const added = await capture(() => main(["daemon", "add", "one", "--dir", home]));
     expect(added.code).toBe(0);
     expect(json(added.out)).toMatchObject({ dir: home, running: true, supervised: true });
-    expect(loadShared(resolvePaths(process.env).configFile).instances).toEqual([
-      { dir: home, settings: {} },
-    ]);
+    expect(await loadAll(resolvePaths(process.env).configDir)).toMatchObject({
+      instances: [{ name: "one", dir: home }],
+    });
     expect(supervisor.targets.map((target) => target.dir)).toEqual([home]);
     await supervisor.stop();
   }, 60_000);
@@ -244,12 +272,12 @@ describe("add and remove against a running supervisor", () => {
   test("remove stops it being looked after and leaves the instance running", async () => {
     const at = host();
     const home = at.home("one");
-    add(process.env, home);
+    await register(home);
     const supervisor = await supervising();
     const before = rowFor(targetFor(process.env, home));
     expect(before.running).toBe(true);
 
-    const removed = await capture(() => main(["daemon", "remove", home]));
+    const removed = await capture(() => main(["daemon", "remove", "one"]));
     expect(json(removed.out)).toMatchObject({ dir: home, removed: true, supervised: false });
     expect(supervisor.targets).toEqual([]);
     // Still there, and still the same process: a list edit is not a shutdown.
@@ -270,26 +298,29 @@ describe("add and remove against a running supervisor", () => {
     const leases = [leasePort(), leasePort(), leasePort()];
     const peers = leases.map((lease) => endpoint(lease.port));
     const homes = ["one", "two", "three"].map((name) => at.home(name));
-    for (const home of homes) add(process.env, home);
-    const configFile = resolvePaths(process.env).configFile;
-    writeFileSync(
-      configFile,
-      JSON.stringify({
-        instances: homes.map((dir, index) => ({
-          dir,
-          peers,
-          entry: {
-            host: "127.0.0.1",
-            port: (leases[index] as (typeof leases)[number]).port,
-            origins: [peers[index]],
+    for (const home of homes) await register(home);
+    writeConfigHome(
+      resolvePaths(process.env).configDir,
+      { peers },
+      Object.fromEntries(
+        homes.map((dir, index) => [
+          basename(dir),
+          {
+            dir,
+            entry: {
+              host: "127.0.0.1",
+              port: (leases[index] as (typeof leases)[number]).port,
+              source_ips: [],
+              trusted_proxies: [],
+            },
           },
-        })),
-      }),
+        ]),
+      ),
     );
     for (const lease of leases) await lease.release();
 
     const supervisor = await supervising();
-    const logs = registered(process.env).map((target) => target.paths.logFile);
+    const logs = (await registered(process.env)).map((target) => target.paths.logFile);
     // A link each way, read as the state each peer is left in rather than as a
     // count of the lines: both ends dial, one of the two connections is dropped
     // as the duplicate, and the peer that says so says `established` twice.
@@ -309,7 +340,7 @@ describe("add and remove against a running supervisor", () => {
     // Answering is the children having gone, so what this measures is the
     // whole of the shutdown and not the moment it was asked for.
     expect(Date.now() - started).toBeLessThan(STOP_TIMEOUT_MS);
-    for (const target of registered(process.env)) {
+    for (const target of await registered(process.env)) {
       expect(rowFor(target).running).toBe(false);
     }
   }, 60_000);
@@ -317,10 +348,10 @@ describe("add and remove against a running supervisor", () => {
   test("with no supervisor, add writes the file and says nobody was told", async () => {
     const at = host();
     const home = at.home("one");
-    const added = await capture(() => main(["daemon", "add", home]));
+    const added = await capture(() => main(["daemon", "add", "one", "--dir", home]));
     expect(added.code).toBe(0);
     expect(json(added.out)).toMatchObject({ dir: home, running: false, supervised: false });
-    expect(loadShared(resolvePaths(process.env).configFile).instances).toBeArrayOfSize(1);
+    expect((await loadAll(resolvePaths(process.env).configDir)).instances).toBeArrayOfSize(1);
   });
 });
 
@@ -343,7 +374,7 @@ describe("the supervisor", () => {
   test("a child that dies is started again, after a wait that grows", async () => {
     const at = host();
     const home = at.home("one");
-    add(process.env, home);
+    await register(home);
 
     const children: (Child & { die(code: number): void })[] = [];
     const waited: number[] = [];
@@ -380,7 +411,7 @@ describe("the supervisor", () => {
 
   test("a child that will not leave is signalled, and then killed", async () => {
     const at = host();
-    add(process.env, at.home("one"));
+    await register(at.home("one"));
 
     // Deaf to everything but SIGKILL, and unreachable besides: the supervisor
     // gets no further than asking, and every stage after that is a signal.
@@ -416,7 +447,7 @@ describe("the supervisor", () => {
   test("a child that takes the shutdown and then stays is signalled anyway", async () => {
     const at = host();
     const home = at.home("one");
-    add(process.env, home);
+    await register(home);
 
     // The shape the wedge takes in the field: the instance answers `hello` and
     // `instance.shutdown`, writes `stopping`, and never exits. The graceful
@@ -470,12 +501,18 @@ describe("the supervisor", () => {
     expect(stages).toEqual(["asked", "sigterm", "sigkill", "exited"]);
   }, 15_000);
 
-  test("it supervises exactly the config homes the shared file lists", () => {
+  test("it supervises exactly the config homes the files name", async () => {
     const at = host();
     const one = at.home("one");
-    add(process.env, one);
+    await register(one);
     at.home("two"); // made, not added
-    expect(new Supervisor({ spawn: () => fakeChild(1) }).targets.map((t) => t.dir)).toEqual([one]);
+    // Read when the run starts rather than in the constructor: the files are
+    // TypeScript, and reading one is an import.
+    const supervisor = new Supervisor({ spawn: () => fakeChild(1) });
+    supervisors.push(supervisor);
+    runs.push(supervisor.run());
+    await waitFor(() => supervisor.targets.length > 0);
+    expect(supervisor.targets.map((t) => t.dir)).toEqual([one]);
   });
 });
 
@@ -484,19 +521,17 @@ describe("what a command answers with", () => {
     const at = host();
     const home = at.home("one");
 
-    const added = await capture(() => main(["daemon", "add", home]));
+    const added = await capture(() => main(["daemon", "add", "one", "--dir", home]));
     expect(added.code).toBe(0);
     expect(json(added.out)).toMatchObject({ dir: home, running: false });
 
     const listed = await capture(() => main(["daemon", "list"]));
     expect(json(listed.out)).toBeArrayOfSize(1);
 
-    const refused = await capture(() => main(["daemon", "add", home]));
+    const refused = await capture(() => main(["daemon", "add", "one", "--dir", home]));
     expect(refused.code).toBe(1);
     expect(refused.out).toBe("");
-    expect(json(refused.err)).toEqual({
-      error: { code: "file_exists", msg: `${home} は既に登録されています` },
-    });
+    expect(json(refused.err)).toMatchObject({ error: { code: "file_exists" } });
   });
 
   test("run refuses a directory that is not a config home", async () => {
@@ -517,8 +552,8 @@ describe("what a command answers with", () => {
   test("over --all, one config home refusing is a row rather than the whole answer", async () => {
     const at = host();
     const one = at.home("one");
-    add(process.env, one);
-    add(process.env, at.home("two"));
+    await register(one);
+    await register(at.home("two"));
     const supervisor = await supervising();
     // One of the two is already stopped, so stopping both is one refusal and
     // one success — and the caller can see which was which.
@@ -551,7 +586,7 @@ describe("reading a log (daemon log)", () => {
   test("one config home's log comes out as it was written", async () => {
     const at = host();
     const home = at.home("one");
-    add(process.env, home);
+    await register(home);
     wrote(targetFor(process.env, home), "listening", "stopping");
 
     const shown = await capture(() => main(["daemon", "log", home]));
@@ -565,7 +600,7 @@ describe("reading a log (daemon log)", () => {
 
   test("a log nothing has written yet is no lines rather than a failure", async () => {
     const at = host();
-    add(process.env, at.home("one"));
+    await register(at.home("one"));
     const shown = await capture(() => main(["daemon", "log", "--all"]));
     expect(shown.code).toBe(0);
     expect(shown.out).toBe("");
@@ -575,8 +610,8 @@ describe("reading a log (daemon log)", () => {
     const at = host();
     const one = at.home("one");
     const two = at.home("two");
-    add(process.env, one);
-    add(process.env, two);
+    await register(one);
+    await register(two);
     wrote(targetFor(process.env, one), "from one");
     wrote(targetFor(process.env, two), "from two");
 
@@ -594,7 +629,7 @@ describe("reading a log (daemon log)", () => {
   test("a line that is not JSON is shown rather than dropped", async () => {
     const at = host();
     const home = at.home("one");
-    add(process.env, home);
+    await register(home);
     const target = targetFor(process.env, home);
     mkdirSync(target.paths.stateDir, { recursive: true });
     // What a runtime prints when it dies: the one thing somebody opening a log

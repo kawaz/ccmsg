@@ -1,11 +1,12 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cookieName } from "../src/auth/index.ts";
 import { clientAddress, parseCidr, trusted } from "../src/instance/client.ts";
 import { loadConfig } from "../src/instance/config.ts";
 import { type Env, type Instance, isRunning, start } from "../src/instance/index.ts";
+import { writeConfigHome } from "./harness.ts";
 
 /** Where a request came from when a proxy is in front of the instance (§3.1).
  *
@@ -145,11 +146,9 @@ describe("what the instance keeps (DR-0001 §2.2)", () => {
     const port = (nextPort += 1);
     const root = mkdtempSync(join(tmpdir(), "ccmsg-forwarded-"));
     mkdirSync(join(root, "home", "sessions"), { recursive: true });
-    mkdirSync(join(root, "config"), { recursive: true });
-    writeFileSync(
-      join(root, "config", "config.json"),
-      JSON.stringify({ defaults: { entry: { host: "127.0.0.1", port, trusted_proxies } } }),
-    );
+    writeConfigHome(join(root, "config"), {
+      entry: { host: "127.0.0.1", port, source_ips: [], trusted_proxies },
+    });
     const env: Env = {
       CLAUDE_CONFIG_DIR: join(root, "home"),
       CCMSG_STATE_DIR: join(root, "state"),
@@ -212,44 +211,39 @@ describe("what the instance keeps (DR-0001 §2.2)", () => {
 
   test("a block that is not one is refused where it is written", () => {
     const root = mkdtempSync(join(tmpdir(), "ccmsg-forwarded-config-"));
-    mkdirSync(join(root, "config"), { recursive: true });
-    writeFileSync(
-      join(root, "config", "config.json"),
-      JSON.stringify({
-        defaults: {
-          entry: { host: "127.0.0.1", port: 0, trusted_proxies: ["10.0.0.0/8", "nope"] },
-        },
-      }),
-    );
     const dir = join(root, "config");
-    expect(() => loadConfig(join(dir, "config.json"), dir)).toThrow(/trusted_proxies/);
+    writeConfigHome(dir, {
+      entry: {
+        host: "127.0.0.1",
+        port: 0,
+        source_ips: [],
+        trusted_proxies: ["10.0.0.0/8", "nope"],
+      },
+    });
+    expect(loadConfig(dir, root)).rejects.toThrow(/trusted_proxies/);
   });
 });
 
 describe("upstream.terminal_gateway", () => {
   function writeUpstream(terminal_gateway: unknown): string {
     const root = mkdtempSync(join(tmpdir(), "ccmsg-terminal-gateway-config-"));
-    mkdirSync(join(root, "config"), { recursive: true });
-    writeFileSync(
-      join(root, "config", "config.json"),
-      JSON.stringify({ defaults: { upstream: { terminal_gateway } } }),
-    );
+    writeConfigHome(join(root, "config"), { upstream: { terminal_gateway } });
     return join(root, "config");
   }
 
-  test("a value in the contract's shape is kept", () => {
+  test("a value in the contract's shape is kept", async () => {
     const dir = writeUpstream("https://terminals.example/gw");
-    const config = loadConfig(join(dir, "config.json"), dir);
+    const config = await loadConfig(dir, dir);
     expect(config.upstream.terminal_gateway).toBe("https://terminals.example/gw");
   });
 
   test("a trailing slash is refused where it is written", () => {
     const dir = writeUpstream("https://terminals.example/gw/");
-    expect(() => loadConfig(join(dir, "config.json"), dir)).toThrow(/terminal_gateway/);
+    expect(loadConfig(dir, dir)).rejects.toThrow(/terminal_gateway/);
   });
 
   test("a scheme the contract does not accept is refused", () => {
     const dir = writeUpstream("ftp://terminals.example/gw");
-    expect(() => loadConfig(join(dir, "config.json"), dir)).toThrow(/terminal_gateway/);
+    expect(loadConfig(dir, dir)).rejects.toThrow(/terminal_gateway/);
   });
 });

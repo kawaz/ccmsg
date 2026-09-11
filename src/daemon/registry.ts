@@ -1,15 +1,16 @@
-import { existsSync, mkdirSync, watch } from "node:fs";
+import { existsSync, mkdirSync, rmSync, watch, writeFileSync } from "node:fs";
 import { basename, isAbsolute, join, resolve } from "node:path";
 import type { Endpoint, InstanceId, InstancePingResult } from "@ccmsg/protocol";
-import { DEFAULT_HARNESS, type Harness, HARNESS, isHarness } from "../harness/index.ts";
+import { DEFAULT_HARNESS, type Harness, HARNESS } from "../harness/index.ts";
 import {
+  CONFIG_FILE,
   type InstanceConfig,
-  type InstanceEntry,
+  INSTANCE_NAME,
+  loadAll,
   loadConfig,
-  loadShared,
-  saveShared,
-  settingsFor,
-  type SharedConfig,
+  loadInstances,
+  TYPES_FILE,
+  writeConfigTypes,
 } from "../instance/config.ts";
 import { instanceIdentity } from "../instance/identity.ts";
 import { alive, lockHolder } from "../instance/lock.ts";
@@ -37,24 +38,25 @@ export function configHome(dir: string, harness: Harness = DEFAULT_HARNESS): str
   return path;
 }
 
-/** Which harness a registered config home runs, as the shared file records it.
+/** Which harness a registered config home runs, as its own file says.
  *
- * Read from the same entry the instance itself will read (§8.2), so a command
+ * Read from the same file the instance itself will read (§8.2), so a command
  * that has to know before anything is running — `run`, and the supervisor's
- * own start — reaches the same answer the instance does. A directory the file
- * does not list runs the default, which is what an unregistered `daemon run`
- * is. */
-export function harnessFor(env: Env, dir: string): Harness {
+ * own start — reaches the same answer the instance does. A directory no file
+ * names runs whatever the defaults say, which is what an unregistered
+ * `daemon run` is. */
+export async function harnessFor(env: Env, dir: string): Promise<Harness> {
   const path = isAbsolute(dir) ? dir : resolve(dir);
-  const settings = settingsFor(loadShared(resolvePaths(env).configFile), path);
-  const named = settings["harness"];
-  return isHarness(named) ? named : DEFAULT_HARNESS;
+  return (await loadConfig(resolvePaths(env).configDir, path)).harness;
 }
 
 /** One row of `daemon list`: which config home, and whether anything answers
  * for it right now. */
 export interface InstanceRow {
   readonly id: InstanceId;
+  /** What the file naming this config home is called, where a file names it.
+   * A `daemon run` on an unregistered directory has none. */
+  readonly name?: string;
   readonly dir: string;
   readonly running: boolean;
   readonly pid?: number;
@@ -81,18 +83,29 @@ export interface StatusRow extends InstanceRow {
 
 /** Everything one command needs to reach one config home. */
 export interface Target {
+  /** The name of the file that says this config home runs an instance, where
+   * one does. */
+  readonly name?: string;
   readonly dir: string;
   readonly paths: InstancePaths;
 }
 
-export function targetFor(env: Env, dir: string): Target {
-  return { dir, paths: resolvePathsFor(dir, env) };
+export function targetFor(env: Env, dir: string, name?: string): Target {
+  return { ...(name === undefined ? {} : { name }), dir, paths: resolvePathsFor(dir, env) };
 }
 
-/** The config homes the shared file lists, in the order it lists them. */
-export function registered(env: Env): Target[] {
+/** The config homes the config dir names, in name order. */
+export async function registered(env: Env): Promise<Target[]> {
   const paths = resolvePaths(env);
-  return loadShared(paths.configFile).instances.map((entry) => targetFor(env, entry.dir));
+  return (await loadInstances(paths.configDir)).map((entry) =>
+    targetFor(env, entry.dir, entry.name),
+  );
+}
+
+/** The config home one name is for, for a command given a name instead of a
+ * directory: what `daemon add` took is what every command after it takes. */
+export async function targetNamed(env: Env, name: string): Promise<Target | undefined> {
+  return (await registered(env)).find((target) => target.name === name);
 }
 
 /** The selections the shared file starts with.
@@ -138,32 +151,50 @@ const STARTING_PRESETS = [
   },
 ];
 
-/** Add a config home to the shared file. The settings it will run with are the
- * defaults until somebody edits its entry, so the entry starts empty — save
- * for the harness, which is written down when it is not the default because it
- * is the one setting the directory itself cannot be asked for (§3.8).
+/** What `daemon add` takes: the config home the instance answers for, and the
+ * two settings a person would otherwise open the file to write. */
+export interface AddOptions {
+  readonly dir: string;
+  readonly harness?: Harness;
+  readonly port?: number;
+}
+
+/** Write down one more instance: one file under `instances/`, called by the
+ * name the instance is called.
  *
- * The dump presets above go to `defaults`, and only where the file names none:
- * they are the same for every instance and are examples to edit, so writing
- * them per entry would repeat them and re-adding a config home would bring
- * back what somebody deleted. */
-export function add(env: Env, dir: string, harness: Harness = DEFAULT_HARNESS): InstanceRow {
-  const home = configHome(dir, harness);
-  const file = resolvePaths(env).configFile;
-  const shared = loadShared(file);
-  if (shared.instances.some((entry) => entry.dir === home)) {
-    throw new CommandError("file_exists", `${home} は既に登録されています`);
+ * A template rather than an empty file, because what the file has to say —
+ * which config home, and how a setting is written at all — is exactly what a
+ * person adding their second instance does not yet know. It states only what
+ * differs from `config.ts`, which is what makes the shared half worth having:
+ * everything left out is whatever that file returns.
+ *
+ * `config.ts` is written the first time, with the dump presets in it, and never
+ * again: what a preset names is an interest this instance has no opinion on, so
+ * they are examples in a file to edit rather than a default in the code that
+ * would come back after being deleted. */
+export async function add(env: Env, name: string, options: AddOptions): Promise<InstanceRow> {
+  if (!INSTANCE_NAME.test(name)) {
+    throw new CommandError(
+      "invalid_args",
+      `${name} は instance の名前になりません (英数字で始まり、以降は英数字と . _ - だけ)`,
+    );
   }
-  const entry: InstanceEntry = {
-    dir: home,
-    settings: harness === DEFAULT_HARNESS ? {} : { harness },
-  };
-  const defaults =
-    shared.defaults["dump"] === undefined
-      ? { ...shared.defaults, dump: { presets: STARTING_PRESETS } }
-      : shared.defaults;
-  saveShared(file, { defaults, instances: [...shared.instances, entry] });
-  const target = targetFor(env, home);
+  const harness = options.harness ?? DEFAULT_HARNESS;
+  const home = configHome(options.dir, harness);
+  const paths = resolvePaths(env);
+  const file = join(paths.instancesDir, `${name}.ts`);
+  if (existsSync(file)) {
+    throw new CommandError("file_exists", `${name} は既に登録されています (${file})`);
+  }
+  const taken = (await loadAll(paths.configDir)).instances.find((one) => one.dir === home);
+  if (taken !== undefined) {
+    throw new CommandError("file_exists", `${home} は既に ${taken.name} が見ています`);
+  }
+  writeConfigTypes(paths.configDir);
+  if (!existsSync(paths.configFile)) writeFileSync(paths.configFile, defaultsTemplate());
+  mkdirSync(paths.instancesDir, { recursive: true });
+  writeFileSync(file, instanceTemplate(name, home, harness, options.port));
+  const target = targetFor(env, home, name);
   // The id is made here rather than at the first start, so that what `add`
   // prints is what the instance will answer to and so that a person can write
   // the id into a peer's config before anything has run (DR-0001 §2.1).
@@ -171,22 +202,93 @@ export function add(env: Env, dir: string, harness: Harness = DEFAULT_HARNESS): 
   return rowFor(target);
 }
 
-/** Take a config home off the list.
+/** Take one instance's file away.
  *
- * The instance it names is left alone: what this changes is what the supervisor
+ * The instance it named is left alone: what this changes is what the supervisor
  * starts and what `--all` reaches, and an instance already serving a session is
- * not something a list edit should take away from it. `daemon stop` is how one
+ * not something a file edit should take away from it. `daemon stop` is how one
  * is stopped, and saying so is the point of keeping the two apart. */
-export function remove(env: Env, dir: string): { dir: string; removed: boolean } {
-  const home = isAbsolute(dir) ? dir : resolve(dir);
-  const file = resolvePaths(env).configFile;
-  const shared: SharedConfig = loadShared(file);
-  const kept = shared.instances.filter((entry) => entry.dir !== home);
-  if (kept.length === shared.instances.length) {
-    throw new CommandError("not_found", `${home} は登録されていません`);
+export async function remove(
+  env: Env,
+  name: string,
+): Promise<{ name: string; dir: string; removed: boolean }> {
+  const paths = resolvePaths(env);
+  const target = await targetNamed(env, name);
+  if (target === undefined) throw new CommandError("not_found", `${name} は登録されていません`);
+  rmSync(join(paths.instancesDir, `${name}.ts`));
+  return { name, dir: target.dir, removed: true };
+}
+
+/** The file every instance's settings start from, as it is first written. */
+function defaultsTemplate(): string {
+  return `import type { Defaults } from "./${TYPES_FILE.replace(/\.d\.ts$/, "")}";
+
+/** 全 instance に配る値。\`builtin\` は組み込みの既定値 (凍結済み)、\`config\` は
+ * そのコピーなので、書き換えて返す。ここに書いた値を各 instance が受け取る。 */
+const defaults: Defaults = ({ config }) => {
+  // どの mesh endpoint がこの host の instance かは起動時の probe が決めるので、
+  // 同じ一覧を全 instance に配ってよい (§7.1)。
+  config.peers = [];
+
+  // dump の名前付き選択。prefix は一族を、\`@name\` は他の選択をその場に広げる。
+  config.dump.presets = [
+${STARTING_PRESETS.map((preset) => presetLiteral(preset)).join("\n")}
+  ];
+
+  return config;
+};
+
+export default defaults;
+`;
+}
+
+/** One starting preset as a person would have typed it.
+ *
+ * Written out rather than stringified, because what this produces is a file
+ * somebody edits: JSON's quoted keys in the middle of a TypeScript file are
+ * the shape of a thing that was generated, and the next preset a person adds
+ * beside it would not look like it. */
+function presetLiteral(preset: (typeof STARTING_PRESETS)[number]): string {
+  const types = preset.opts.types.map((type) => JSON.stringify(type)).join(", ");
+  return [
+    "    {",
+    `      name: ${JSON.stringify(preset.name)},`,
+    `      description: ${JSON.stringify(preset.description)},`,
+    `      opts: { types: [${types}] },`,
+    "    },",
+  ].join("\n");
+}
+
+/** One instance's file, as `add` first writes it: what differs from
+ * `config.ts`, and nothing else. */
+function instanceTemplate(
+  name: string,
+  dir: string,
+  harness: Harness,
+  port: number | undefined,
+): string {
+  const lines = [`  config.dir = ${JSON.stringify(dir)};`];
+  if (harness !== DEFAULT_HARNESS) lines.push(`  config.harness = ${JSON.stringify(harness)};`);
+  if (port !== undefined) {
+    lines.push(
+      `  config.entry = {`,
+      `    ...(config.entry ?? { host: "127.0.0.1", source_ips: [], trusted_proxies: [] }),`,
+      `    port: ${String(port)},`,
+      `  };`,
+    );
   }
-  saveShared(file, { ...shared, instances: kept });
-  return { dir: home, removed: true };
+  return `import type { Instance } from "../${TYPES_FILE.replace(/\.d\.ts$/, "")}";
+
+/** ${name}: この instance だけの設定。\`default\` は ${CONFIG_FILE} が返した値
+ * (凍結済み)、\`config\` はそのコピーなので、差分だけ書き換えて返す。 */
+const instance: Instance = ({ config }) => {
+${lines.join("\n")}
+
+  return config;
+};
+
+export default instance;
+`;
 }
 
 /** What an instance is called, whether or not it is running.
@@ -204,20 +306,24 @@ export function rowFor(target: Target): InstanceRow {
   const running = pid !== undefined && alive(pid);
   return {
     id: idOf(target),
+    ...(target.name === undefined ? {} : { name: target.name }),
     dir: target.dir,
     running,
     ...(running ? { pid } : {}),
   };
 }
 
-export function list(env: Env): InstanceRow[] {
-  return registered(env).map((target) => rowFor(target));
+export async function list(env: Env): Promise<InstanceRow[]> {
+  return (await registered(env)).map((target) => rowFor(target));
 }
 
 /** Ask one instance how it is. A config home with nothing behind it answers the
  * list's row and nothing more: not running is a state, not a failure. */
 export async function status(target: Target): Promise<StatusRow> {
-  const row = { ...rowFor(target), config: loadConfig(target.paths.configFile, target.dir) };
+  const row = {
+    ...rowFor(target),
+    config: await loadConfig(target.paths.configDir, target.dir),
+  };
   const conn = await connect(target.paths.socket);
   if (conn === undefined) return row;
   try {
