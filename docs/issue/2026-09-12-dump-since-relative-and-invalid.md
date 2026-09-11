@@ -3,7 +3,7 @@ title: dump --since/--until が相対指定未対応、かつ不正値でも黙�
 status: open
 category: bug
 created: 2026-09-12T06:45:43+09:00
-last_read:
+last_read: 2026-09-12T06:46:23+09:00
 open_entered: 2026-09-12T06:45:43+09:00
 wip_entered:
 blocked_entered:
