@@ -10,16 +10,26 @@ dump は transcript の行をそのまま並べるのではなく、**アイテ�
 
 ### message — 会話
 
-| 型 | 意味 | jsonl 上の抽出 | webui の単位 | csa |
+2 段目が名指すのは**相手が何者か**で、主語自身の立ち位置ではない。dump は「誰と話していたか」を読むためのもので、主語は自分の位置だけは問えない。相手の種別は 5 つ: 人 (`user`)、上 (`parent`)、使い捨ての下 (`sub`)、名前を持って居続ける仲間 (`team`)、別セッション (`session`)。
+
+| 型 | 意味 (主語相対) | jsonl 上の抽出 | webui の単位 | csa |
 |---|---|---|---|---|
-| `message:user:in` | 人 → main の発言 | `type:"user"` かつ下記 `notice` / `system` のどれでもない行。`content` が string、または text / image ブロックのみの配列 | `UserMessageKind` = `user-prompt` / `slash-command-prompt` | `U` |
-| `message:user:out` | main → 人 への応答 | `type:"assistant"` の `content[].type=="text"` | `Segment` = `text` (role: assistant) | `R` |
-| `message:sub:out` | main → subagent の指示 | `content[].type=="tool_use"` かつ `name=="Agent"` の `input.prompt` (`description` / `subagent_type` / `name` を添える)、および `name=="SendMessage"` で宛先が subagent のもの | `agent-spawn` / `agent-send` | `A` |
-| `message:sub:in` | subagent → main の答え | `origin.kind=="task-notification"` の user 行のうち `<subagent>` と `<result>` を持つもの。全文が要るときは `<sid>/subagents/agent-<agentId>.jsonl` の末尾 assistant text | `task-notification` | `I` |
-| `message:session:out` | main → 他セッション | `tool_use` `name=="Bash"` の `command` が `ccmsg post` / `ccmsg reply`、および `name=="SendMessage"` で宛先が sid のもの | `SessionReply` | (なし) |
-| `message:session:in` | 他セッション → main | user 行の本文に含まれる `<cross-session-message …>` 封筒。`ccmsg` の直接配送は `<teammate-message …>` の形でも届く | `IncomingMessage` (`extractIncomingMessages`) | `I` |
+| `message:user:in` | 人 → 主語 の発言 | `type:"user"` かつ下記 `notice` / `system` のどれでもない素の行。`content` が string、または text / image ブロックのみの配列 | `UserMessageKind` = `user-prompt` / `slash-command-prompt` | `U` |
+| `message:user:out` | 主語 → 人 への応答 | `type:"assistant"` の `content[].type=="text"` | `Segment` = `text` (role: assistant) | `R` |
+| `message:parent:in` | 親 → 主語 の指示 | worker transcript 先頭の user 行 (`parentUuid` が `null`)、および `<teammate-message …>` 封筒のうち送り手が lead のもの | (未) | `U` |
+| `message:parent:out` | 主語 → 親 への送信・回答 | `name=="SendMessage"` で `to` が `"main"` / `"team-lead"` のもの、および worker の assistant text (末尾が最終回答、途中も同型) | (未) | `R` |
+| `message:sub:out` | 主語 → 使い捨て worker の指示 | `content[].type=="tool_use"` かつ `name=="Agent"` で `name` 引数を持たないもの (`input.prompt` に `description` / `subagent_type` を添える) | `agent-spawn` | `A` |
+| `message:sub:in` | 使い捨て worker → 主語 の答え | `origin.kind=="task-notification"` の user 行のうち `<subagent>` と `<result>` を持つもの。全文が要るときは `<sid>/subagents/agent-<agentId>.jsonl` の末尾 assistant text | `task-notification` | `I` |
+| `message:team:out` | 主語 → teammate の送信 | `name=="Agent"` の tool_use で `name` / `team` 引数を持つもの (= teammate の起動)、および `name=="SendMessage"` で宛先が teammate 名のもの | `agent-send` | `A` |
+| `message:team:in` | teammate → 主語 の受信 | `<teammate-message …>` 封筒のうち送り手が teammate のもの。起動した teammate の完了は `<subagent>` 付き task-notification | `IncomingMessage` | `I` |
+| `message:session:out` | 主語 → 他セッション | `tool_use` `name=="Bash"` の `command` が `ccmsg post` / `ccmsg reply`、および `name=="SendMessage"` で宛先が sid のもの | `SessionReply` | (なし) |
+| `message:session:in` | 他セッション → 主語 | user 行の本文に含まれる `<cross-session-message …>` 封筒 | `IncomingMessage` (`extractIncomingMessages`) | `I` |
+
+ハーネスの実名 (`main` / `team-lead` / teammate 名) は型に畳まず、`to` / `from` に主語が書いたままの綴りで残す。型が言うのは種別で、綴りは相手の名前になる。
 
 `message:sub` の in と out は同じ Agent 呼び出しに属する。`tool_use.id` → `tool_result.tool_use_id` → `toolUseResult.agentId` の鎖で対応が取れる (実測でこの鎖は全件つながった) ので、`tool:*` と同じくリンクで結ぶ (out 側が `result_item`、in 側が `parent_item`)。worker の答えは何 turn も後に来るため、1 アイテムには畳まない。
+
+`sub` と `team` を分けるのは **往復の畳み方が違う**から。使い捨ての worker は起動されて 1 度答えて終わるので、in が out の結果として対になる。teammate は名前を持って居続け、返信は呼び出しの答えではなく**それ自体が 1 通の message** として届く。対を持つのは teammate を起動した呼び出しだけで、以降の往復は互いに独立した message になる。`message:parent:out` が呼び出しとは限らないのも同じで、worker の回答は呼び出しの無い素の assistant text なので、`tool_use_id` を必須にすると worker が必ず送る唯一の message が名乗れない。
 
 ### thinking
 
@@ -169,6 +179,32 @@ wire 上は `type:"user"` / `type:"assistant"` / `type:"attachment"` に化け�
 
 [f04b71c8] message:sub:out  agent=b83e0f114 type=sonnet5-worker-medium  (未着)  10:41:03
   INDEX の再生成だけやって。
+```
+
+### `message:parent:in` / `:out`
+
+主語が worker / teammate のときの相手側。回答 (呼び出しを伴わない assistant text) は見出しに宛先を出さない。
+
+```
+[a9f30d15] message:parent:in  10:15:11
+  docs/design/dump-kinds.md を書き直す。範囲は csa と同じ since / until。
+[b0e41c26] message:parent:out  to=main  10:17:40
+  型一覧は 4 群に分けた。preset の例まで直してよいか
+[c1f52d37] message:parent:out  10:19:23
+  型一覧を 4 群に整理し、preset の例も揃えた。
+```
+
+### `message:team:out` / `:in`
+
+起動だけが往復として対になり (`→` でリンク)、以降の受信は独立した 1 通として自分の時刻に並ぶ。
+
+```
+[c8a2f371] message:team:out  to=contract-dump-items type=opus5-worker-high  → d4c1a0b2  10:21:02
+  契約に message:parent と message:team を足して。
+[e5b70c93] message:team:in  from=contract-dump-items  10:33:15
+  fixtures まで通ったので ci を回す。
+[d4c1a0b2] message:team:in  ← c8a2f371  status=ok 4m00s  10:41:50
+  4 型を足して 1.17.0 を切った。
 ```
 
 ### `message:session:in` / `:out`
@@ -329,17 +365,20 @@ csa の turn 番号 / marker は **採らない**。turn 番号はファイル�
 
 `agent-` の接頭辞はファイル名の形をそのまま採る。sid と agent id はどちらも不透明な文字列で、区切りを見ただけでどちらがどちらか分かる必要があるため。
 
-### 主語が worker のときの各型
+### 主語ごとに普通に出る型
 
-型の定義は変えない。主語が入れ替わることで指すものが移る。
+型の定義は変えない。主語が入れ替わることで指す相手が移る。
 
-| 型 | 主語が main | 主語が worker |
-|---|---|---|
-| `message:user:in` | 人 → main の発言 | **親 → worker の指示書** (Agent tool の `input.prompt`。worker の transcript では `parentUuid` が `null` の先頭 user 行) |
-| `message:user:out` | main → 人 への応答 | **worker → 親 への回答** (assistant の text。末尾のものが最終回答、途中のものも同型) |
-| `message:sub:out` / `:in` | main → subagent とその答え | **worker が呼んだ孫 Agent** とその答え |
-| `message:session:*` | main と他セッションの往復 | worker が `ccmsg` を叩いた場合のみ現れる |
-| `thinking` / `tool:*` / `notice:*` | main のもの | **worker のもの** |
+| 型 | 主語 = main | 主語 = worker (使い捨て) | 主語 = teammate |
+|---|---|---|---|
+| `message:user:in/out` | 人との往復 | (出ない) | 人が直接打てるので出る |
+| `message:parent:in/out` | (出ない) | **親の指示書と、親への回答** | lead からの指示と、lead への返信 |
+| `message:sub:out/in` | 起動した worker とその答え | **孫 worker** | 孫 worker |
+| `message:team:out/in` | teammate への送信と受信 | (出ない) | 他の teammate との往復 |
+| `message:session:*` | 他セッションとの往復 | `ccmsg` を叩いた場合のみ | 同左 |
+| `thinking` / `tool:*` / `notice:*` | main のもの | **worker のもの** | **teammate のもの** |
+
+「出ない」は**禁止ではない**。来たら拾う — 想定外の行も行であって、名前の合う型で出す。黙って消えるのが dump にとって最も困る壊れ方になるのは、未知の型と同じ。
 
 `ids` 台帳も主語相対になる。worker を主語にした台帳の `agent_id` はその worker が起動した孫であって、自分自身ではない。
 
@@ -370,12 +409,21 @@ worker の transcript は 1 ファイルで完結し、全行が `isSidechain: t
       {
         "name": "howto",
         "description": "調査のノウハウだけ。何を考えて何を叩いて何を読み書きしたか",
-        "opts": { "types": ["thinking", "message:user", "message:sub", "tool:Bash", "@file"] }
+        "opts": {
+          "types": [
+            "thinking",
+            "message:user",
+            "message:parent",
+            "message:sub",
+            "tool:Bash",
+            "@file"
+          ]
+        }
       },
       {
         "name": "journal",
         "description": "日記用。人との往復と worker の答え、思考は要点だけ",
-        "opts": { "types": ["message:user", "message:sub:in", "thinking"] }
+        "opts": { "types": ["message:user", "message:parent", "message:sub:in", "message:team:in", "thinking"] }
       },
       {
         "name": "handoff",
