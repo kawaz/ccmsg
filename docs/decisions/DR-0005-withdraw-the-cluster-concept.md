@@ -1,13 +1,13 @@
 # DR-0005: cluster 概念の撤回
 
-Status: Accepted (2026-09-12。kawaz 裁定 r303 m28 / m40)
+Status: Accepted (2026-09-12。kawaz 裁定)
 Date: 2026-09-12
-Sponsor: kawaz r303m28/m40 (2026-09-12)「cluster 議論は権限構造が未解決のまま。実装も設定・コード・文書からの言及も全て打ち消す」
+Sponsor: kawaz (2026-09-12)「cluster 議論は権限構造が未解決のまま。実装も設定・コード・文書からの言及も全て打ち消す」
 関連: 設計 §7 (mesh)、§8.2 (設定)、[DR-0004](DR-0004-config-edited-and-applied.md)、[DR-0001](DR-0001-passkey-auth-for-people.md) (認証 record の複製)、issue archive `2026-09-11-multiple-clusters-per-host` / `2026-09-11-auth-records-per-cluster-store` (どちらも discarded)
 
 ## 1. 背景
 
-1 ホストに複数の cluster (本人 / 家族 / ホームエージェント等) を立て、クレデンシャルは cluster 内の instance に紐づき、cluster がセグメント単位の役割を持つ、という想定があった (r303m11)。これを受けて v0.10.x で `clusters.json` / `clusters/` / `ccmsg mesh` サブコマンド / `--cluster` オプションを実装した。
+1 ホストに複数の cluster (本人 / 家族 / ホームエージェント等) を立て、クレデンシャルは cluster 内の instance に紐づき、cluster がセグメント単位の役割を持つ、という想定があった (kawaz 2026-09-11)。これを受けて v0.10.x で `clusters.json` / `clusters/` / `ccmsg mesh` サブコマンド / `--cluster` オプションを実装した。
 
 しかし **cluster が何の区切りなのか (誰が何をできるか) が決まらないまま、構造だけが先行した**。認証 record を cluster 単位の共有ストアに寄せるか instance ごとのままにするか、多重所属をどう扱うか、admin の権限をどこに置くかが全部未解決で、実装は「複数の cluster を書ける設定ファイルの形」だけを持っている状態だった。
 

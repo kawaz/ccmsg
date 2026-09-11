@@ -1,8 +1,8 @@
 # DR-0002: 契約が語彙を持ち、daemon が分類を持つ
 
-Status: Accepted (2026-09-12。骨子は kawaz 裁定 r303 m45/m46、細部は統括判断)
+Status: Accepted (2026-09-12。骨子は kawaz 裁定、細部は統括判断)
 Date: 2026-09-12
-Sponsor: kawaz r303m45 (2026-09-12)「契約が語彙、daemon が分類、webui は型付き item を受ける」
+Sponsor: kawaz (2026-09-12)「契約が語彙、daemon が分類、webui は型付き item を受ける」
 関連: 設計 §2 (契約との関係と層)、§5 (transcript の分類と dump)、§9.3 (増やさないの検査)、[DR-0003](DR-0003-naming-rules.md) (名前の規則)、[DR-0006](DR-0006-dump-writes-typed-items.md) (dump)
 
 ## 1. 背景

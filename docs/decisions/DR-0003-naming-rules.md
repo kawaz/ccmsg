@@ -1,6 +1,6 @@
 # DR-0003: op / topic / 型名の統一規則
 
-Status: Accepted (2026-09-11。統括裁定、kawaz 裁定 r303「hello 前に許すのは `hello.*` だけ」を含む)
+Status: Accepted (2026-09-11。統括裁定。「hello 前に許すのは `hello.*` だけ」は kawaz 裁定 2026-09-11)
 Date: 2026-09-11
 Sponsor: 統括裁定 (2026-09-11)。対応表の起草に対する 13 項の裁定
 関連: 設計 §2 (契約との関係と層)、§3.1 (挨拶と役割)、§7 (mesh)、[DR-0002](DR-0002-contract-holds-the-vocabulary.md)

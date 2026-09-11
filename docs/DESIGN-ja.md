@@ -116,7 +116,7 @@ frame 1 個に対して、順に:
 | upstream | `sessions/<pid>.json` / llm-gateway から写した値 | 外部 (§2.4) |
 | mesh | 各 peer が最後に述べた cluster 全体の topic の全量と、その到達可否の印 (§7.4 / §7.5) | 発生元の instance |
 
-**transcript の fold は 1 本にする。** 旧 daemon は同じ 1 行を status / errors / user-input の 3 系統が独立に fold していた。v2 は tail 1 本 → fold 1 本 → そこから各 topic の値を導く形にする (M5)。「全 peer には軽い fold、購読中の sid には重い fold」の 2 段構えは持たない (DR-0009)。負荷が問題になるなら fold の中身を軽くするのであって、fold を増やして解かない。
+**transcript の fold は 1 本にする。** 旧 daemon は同じ 1 行を status / errors / user-input の 3 系統が独立に fold していた。v2 は tail 1 本 → fold 1 本 → そこから各 topic の値を導く形にする (M5。fold を 2 段構えにしない理由は DR-0009)。負荷が問題になるなら fold の中身を軽くするのであって、fold を増やして解かない。
 
 §7。domain の隣に置くのは、mesh が「他 instance の domain を自分の domain に見せる」層だからである。
 
@@ -250,13 +250,13 @@ sid は両者とも harness 自身が名乗る値をそのまま使う。codex �
 
 **codex のセッションは端末を名乗らない。** 分類の「管理外」は「生きているが、こちらから打ち込む手がかりが無い」の意味で (§4.3)、Codex の thread に端末として打ち込む道は無い。よって接続を持たない codex の生存セッションは `live_unmanaged` として読まれる。配送はこれとは別で、経路 (a) が thread の queue に載せる (§6.5)。
 
-**`claude agents` の subprocess は持たない** (DR-0009)。自 config home の `sessions/` を監視すれば同じ集合が得られるので、5 秒ごとの子プロセス起動が丸ごと消える (M3)。ファイル監視は取りこぼしうるので、低頻度の確認 poll を**併走**させる — これは旧 daemon が transcript tail で実測を根拠に採った形と同じで、間隔の根拠は「監視が落とした変化を、利用者が気づく前に拾う」であって、取得の主経路ではない。
+**セッションの集合は自 config home の `sessions/` を監視して得る** (`claude agents` を子プロセスとして起こさない理由は DR-0009)。5 秒ごとの子プロセス起動は持たない (M3)。ファイル監視は取りこぼしうるので、低頻度の確認 poll を**併走**させる — これは旧 daemon が transcript tail で実測を根拠に採った形と同じで、間隔の根拠は「監視が落とした変化を、利用者が気づく前に拾う」であって、取得の主経路ではない。
 
 `sessions/<pid>.json` は書き換えの途中で一時的に空または不完全な文書になりうる。その瞬間もファイルが存在するなら、daemon はそのファイルから最後に正常に読めた行を保持し、不完全な読み取りをセッション消滅として publish しない。完全な文書でプロセス不在と読めた時と、ファイル自体が消えた時は直ちに行を除く。監視は変化を知らせる資源であり、一時的な中間表現を現在値に昇格させる根拠ではない。
 
 **gateway のイベントは自分が知っている sid にだけ効かせる**。gateway は全 config home の上に立っていて、イベントは sid しか名乗らない。よって「gateway が見た」だけでは**この instance のセッションについての証拠にならない** — 別 config home の sid を live と分類し、`peers` に行を出し、`message.send` がこの instance に inbox を持たない宛先を受け付けてしまう。生存 (`gateway_active_at`) の入力として効かせるのは、**hello 済み (接続中または `last_live` に残っている) か、自 config home の `sessions/` が名乗っている sid だけ**。イベント自体は捨てず `llm.requests` topic には流す — あれは「この instance のセッション」ではなく「gateway が見ているもの」の写しだからである。
 
-**生 status の使い道を絞る** (DR-0009)。`sessions/<pid>.json` の status は「そのセッションが存在すること」と `waiting` (dialog が開いている) の判定にだけ使い、**Busy / Idle の判定には使わない**。忙しさの正本は gateway の request / response イベントで、実際に推論が走ったかを知っているのはそちらだけである。
+**生 status の使い道を絞る。** `sessions/<pid>.json` の status は「そのセッションが存在すること」と `waiting` (dialog が開いている) の判定にだけ使い、**Busy / Idle の判定には使わない**。忙しさの正本は gateway の request / response イベントで、実際に推論が走ったかを知っているのはそちらだけである。
 
 ### 4.3 導出
 
@@ -504,7 +504,7 @@ status socket の**置き場は state dir ではなく、宛先 socket と同じ
 | 上限 | 1 sid あたりの件数上限。超過分は古い方から落とし `inbox_full` を返す | 契約 §2.1 |
 | 保持期限・件数上限の値 | **契約の値を参照する** (daemon は決め直さない) | 契約 §2.1 |
 
-**永続化する** (DR-0008、§2.5)。形式は append-only の jsonl で、配送できた時点で消し込む。append-only なので、書き込みは末尾追記 1 種類に閉じ、途中で落ちても末尾の 1 行が壊れるだけになる。
+**永続化する** (§2.5)。形式は append-only の jsonl で、配送できた時点で消し込む。append-only なので、書き込みは末尾追記 1 種類に閉じ、途中で落ちても末尾の 1 行が壊れるだけになる。
 
 sid 単位のファイルにするか 1 本にするかは実装の裁量に残す (どちらでも消し込みと保持期限の意味は変わらない)。
 
@@ -522,7 +522,7 @@ sid 単位のファイルにするか 1 本にするかは実装の裁量に残�
 
 ## 7. mesh
 
-mesh は専用の op を持たない。instance 同士のやり取りは `hello.instance` と、転送の封筒 (`RequestEnvelope`) の欄で表される (DR-0003 / DR-0014)。
+mesh は専用の op を持たない。instance 同士のやり取りは `hello.instance` と、転送の封筒 (`RequestEnvelope`) の欄で表される (DR-0003)。
 
 ### 7.1 endpoint と id
 
@@ -596,7 +596,7 @@ socket path / HTTP の bind / state dir / data dir / ログ。**すべて config
 
 `upstream.terminal_gateway` は rename の経路であると同時に、人が terminal を開く先として `hello` で名乗る値でもある (§3.1)。
 
-**config は起動時に 1 回だけ読む。無再起動での反映は持たない** (DR-0004)。instance ごとの config は小さく、再起動が安い (状態のほとんどが揮発で、永続化するのは §2.5 の 6 種だけ) ので、「編集が次のリクエストから効く」ための mtime 監視・再読込・再配線を持つ理由がない。config を変えたら instance を再起動する、が唯一の反映手順になる。
+**config は起動時に 1 回だけ読む** (無再起動で反映しない理由は DR-0004)。instance ごとの config は小さく、再起動が安い (状態のほとんどが揮発で、永続化するのは §2.5 の 6 種だけ) ので、「編集が次のリクエストから効く」ための mtime 監視・再読込・再配線を持つ理由がない。config を変えたら instance を再起動する、が唯一の反映手順になる。
 
 **設定は、判断であるところは TypeScript、一覧であるところは JSON。そして人が編集する物と instance が読む物は別**。人が編集するのは `${XDG_CONFIG_HOME:-~/.config}/ccmsg/`:
 
@@ -641,9 +641,9 @@ instance と監督者が読むのは `$CCMSG_STATE_DIR/config/` の方である:
 
 ### 8.4 instance は常駐する
 
-**lazy 起動 (その config home のセッションが最初に `ccmsg` を呼んだ時に起動する) は採らない** (DR-0013)。instance は常駐し、**常駐の面倒を見るのは 2 段の監督**である。
+**instance は常駐する** (lazy 起動 — その config home のセッションが最初に `ccmsg` を呼んだ時に起こす形 — を採らない理由は DR-0013)。**常駐の面倒を見るのは 2 段の監督**である。
 
-- `ccmsg daemon supervise` — foreground の監督者。共通 config の `instances/` を起動時に 1 回読み (DR-0004)、各 config home の instance を子プロセスとして起動し、落ちたら上げ直す。再起動の待ちは指数的に伸びる (根拠は実装のコメント: 起動直後に落ちる config 不備を spin させないため)。SIGTERM を受けたら各子を `instance.shutdown` で §8.5 の順に止める。
+- `ccmsg daemon supervise` — foreground の監督者。共通 config の `instances/` を起動時に 1 回読み、各 config home の instance を子プロセスとして起動し、落ちたら上げ直す。再起動の待ちは指数的に伸びる (根拠は実装のコメント: 起動直後に落ちる config 不備を spin させないため)。SIGTERM を受けたら各子を `instance.shutdown` で §8.5 の順に止める。
 
   **instance を起こす経路は監督者だけである。** `ccmsg daemon start / stop / restart / status` は監督者への要求であり、CLI が自分で子を起こす経路は持たない — 別経路で起きた instance は「誰も上げ直さず、誰も知らない」状態になり、常駐が言っていることと食い違うからである。監督者が居なければこれらは `{"error":{"code":"supervisor_not_running"}}` で失敗する。要求は state に置く control socket (`<state root>/supervise.sock`、0600) を JSON lines で流れ、op 名は `supervise_*` で契約の op と区別する — **これは契約ではない**。ホスト上のプロセスについての内部プロトコルであって、webui も mesh の相手もここには来ない。
 
@@ -743,7 +743,7 @@ protocol リポが持つ「実 wire の JSON が schema を通る」fixture を�
 - 転送のループ検出 (`hops` に自分がいる request が落ちる)
 - instance 断絶中の `instance-local` op が `instance_unreachable` になり、復帰後に成功する
 - 断絶した instance の分の全量が消えず、復帰時に置き換わり、保持窓を過ぎたら破棄される (§7.5)
-- 到達しない peer がある状態で起動でき、その peer は dial 対象に残る (§7.1、DR-0014)
+- 到達しない peer がある状態で起動でき、その peer は dial 対象に残る (§7.1)
 - 同じ `peers` を配った 2 instance が、それぞれ自分の endpoint に確定する (§7.1)
 - 一致 0 (`peers` に自分が居ない) / 一致 2 以上 (同じ instance に届く URL が 2 つ) で起動失敗する (§7.1)
 - 別の endpoint に束縛済みの id を名乗る hello が、新しく来た側を close する (§7.1)

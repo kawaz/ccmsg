@@ -116,7 +116,7 @@ For a single frame, in order:
 | upstream | values copied from `sessions/<pid>.json` / llm-gateway | external (§2.4) |
 | mesh | the last whole value each peer stated on a cluster-wide topic, and the mark saying whether it can be reached (§7.4 / §7.5) | the originating instance |
 
-**The transcript's fold is a single one.** The old daemon had status / errors / user-input independently fold the same line through 3 lineages. v2 shapes it as tail 1 → fold 1 → deriving each topic's value from that (M5). It does not have the two-tier setup of "a light fold for every peer, a heavy fold for a subscribed sid" (DR-0009). If load becomes a problem, the answer is to lighten the fold's content, not to add more folds.
+**The transcript's fold is a single one.** The old daemon had status / errors / user-input independently fold the same line through 3 lineages. v2 shapes it as tail 1 → fold 1 → deriving each topic's value from that (M5; why it is not a two-tier fold is DR-0009). If load becomes a problem, the answer is to lighten the fold's content, not to add more folds.
 
 §7. It is placed next to domain because mesh is the layer that "shows another instance's domain as if it were one's own domain."
 
@@ -250,13 +250,13 @@ A row with no connection carries none of the fields that are about one (`connect
 
 **A Codex session names no terminal.** "Unmanaged" in the classification means "alive, but with no handle to type into" (§4.3), and there is no way to type into a Codex thread the way a terminal is typed into. So a live Codex session this instance holds no connection to reads as `live_unmanaged`. Delivery is a separate matter: route (a) puts the message on the thread's queue (§6.5).
 
-**No subprocess for `claude agents`** (DR-0009). Watching our own config home's `sessions/` yields the same set, so the child-process launch every 5 seconds disappears entirely (M3). Since file watching can miss events, a low-frequency confirmation poll **runs alongside it** — this is the same shape the old daemon adopted for transcript tail based on measurement, and the rationale for the interval is "catch changes that the watch dropped before the user notices," not the primary acquisition route.
+**The set of sessions comes from watching our own config home's `sessions/`** (why no `claude agents` child process is DR-0009). There is no child-process launch every 5 seconds (M3). Since file watching can miss events, a low-frequency confirmation poll **runs alongside it** — this is the same shape the old daemon adopted for transcript tail based on measurement, and the rationale for the interval is "catch changes that the watch dropped before the user notices," not the primary acquisition route.
 
 A rewrite can leave `sessions/<pid>.json` temporarily empty or incomplete. While the file still exists, the daemon retains the last row read completely from that file and does not publish an incomplete read as the session's disappearance. It removes the row immediately when a complete document names a process that is gone or when the file itself disappears. The watch is a resource that announces possible change; an intermediate representation is not evidence of a new current value.
 
 **The gateway's events count only for sids we know.** The gateway stands above every config home and its events name nothing but a sid, so "the gateway saw it" is not by itself evidence about *this* instance's sessions — a sid belonging to another config home would classify as live here, put a row on `peers`, and make `message.send` accept an addressee that has no inbox here. What counts as an input to liveness (`gateway_active_at`) is only a sid that **has greeted us — still connected or remembered in `last_live` — or that our own config home's `sessions/` names**. The events themselves are not dropped: they go out on the `llm.requests` topic, which is a view of what the gateway sees rather than of this instance's sessions.
 
-**Narrow the use of the raw status** (DR-0009). The status in `sessions/<pid>.json` is used only to determine "that this session exists" and `waiting` (a dialog is open), and is **never used to determine Busy / Idle**. The source of truth for busyness is the gateway's request/response events; only that side knows whether inference actually ran.
+**Narrow the use of the raw status.** The status in `sessions/<pid>.json` is used only to determine "that this session exists" and `waiting` (a dialog is open), and is **never used to determine Busy / Idle**. The source of truth for busyness is the gateway's request/response events; only that side knows whether inference actually ran.
 
 ### 4.3 Derivation
 
@@ -512,7 +512,7 @@ For `paused` / `disappeared`, the sid attached to `candidates` is "a session cur
 | Limit | a per-sid count limit. Excess is dropped from the oldest, returning `inbox_full` | contract §2.1 |
 | Retention period / count limit values | **reference the contract's values** (the daemon does not decide them independently) | contract §2.1 |
 
-**Persisted** (DR-0008, §2.5). The format is append-only jsonl, cleared out once delivered. Because it's append-only, writes are closed to a single kind (appending to the end), so a crash mid-write only corrupts the trailing line.
+**Persisted** (§2.5). The format is append-only jsonl, cleared out once delivered. Because it's append-only, writes are closed to a single kind (appending to the end), so a crash mid-write only corrupts the trailing line.
 
 Whether to use a per-sid file or a single file is left to implementation discretion (either way the meaning of clearing and retention period is unchanged).
 
@@ -530,7 +530,7 @@ Reason: a drop means "the destination cannot receive it right now," neither "it 
 
 ## 7. mesh
 
-**mesh has no op of its own.** What passes between one instance and another is stated by `hello.instance` and by the fields of the forwarding envelope (`RequestEnvelope`) (DR-0003 / DR-0014).
+**mesh has no op of its own.** What passes between one instance and another is stated by `hello.instance` and by the fields of the forwarding envelope (`RequestEnvelope`) (DR-0003).
 
 ### 7.1 Endpoint and id
 
@@ -604,7 +604,7 @@ socket path / HTTP bind / state dir / data dir / logs. **All are derived from th
 
 `upstream.terminal_gateway` is both the rename route and the value `hello` names as where a person opens a terminal (§3.1).
 
-**config is read only once, at startup. There is no hot reload** (DR-0004). Because per-instance config is small and restart is cheap (most state is volatile; the only things persisted are the 6 kinds in §2.5), there is no reason to hold mtime watching / reload / rewiring so that "an edit takes effect on the next request." Restarting the instance is the sole way to make a config change take effect.
+**config is read only once, at startup** (why there is no hot reload is DR-0004). Because per-instance config is small and restart is cheap (most state is volatile; the only things persisted are the 6 kinds in §2.5), there is no reason to hold mtime watching / reload / rewiring so that "an edit takes effect on the next request." Restarting the instance is the sole way to make a config change take effect.
 
 **Settings are TypeScript where they are decisions and JSON where they are a list, and what is edited is not what is read.** A person edits `${XDG_CONFIG_HOME:-~/.config}/ccmsg/`:
 
@@ -649,11 +649,11 @@ A field nobody has ends the read, as does a file that throws or returns somethin
 
 ### 8.4 An instance is long-running
 
-**Lazy startup (starting when a session in that config home first calls `ccmsg`) is not adopted** (DR-0013). The instance is long-running (resident), and **keeping it that way is two levels of supervision**:
+**The instance is long-running (resident)** (why lazy startup — starting it when a session in that config home first calls `ccmsg` — is not adopted is DR-0013), and **keeping it that way is two levels of supervision**:
 
-- `ccmsg daemon supervise` — the foreground supervisor. It reads the config home's `instances/` files once at startup (DR-0004), starts each config home's instance as a child process, and starts it again when it dies. The wait before a restart grows exponentially (the reason is on the values themselves: a config that fails at startup must not spin the supervisor). On SIGTERM it stops each child with `instance.shutdown`, in the order of §8.5.
+- `ccmsg daemon supervise` — the foreground supervisor. It reads the config home's `instances/` files once at startup, starts each config home's instance as a child process, and starts it again when it dies. The wait before a restart grows exponentially (the reason is on the values themselves: a config that fails at startup must not spin the supervisor). On SIGTERM it stops each child with `instance.shutdown`, in the order of §8.5.
 
-  **The supervisor is the only route by which an instance is started.** `ccmsg daemon start / stop / restart / status` are requests to it, and the CLI has no route of its own for starting a child — an instance started another way is one nothing restarts and nothing knows about, which is not what being resident (DR-0013) says. With no supervisor these fail with `{"error":{"code":"supervisor_not_running"}}`. The requests travel as JSON lines over a control socket kept with the state (`<state root>/supervise.sock`, 0600), and its op names carry a `supervise_` prefix to keep them apart from the contract's — **this is not the contract**. It is an internal protocol about processes on this host; no web UI and no mesh peer reaches it.
+  **The supervisor is the only route by which an instance is started.** `ccmsg daemon start / stop / restart / status` are requests to it, and the CLI has no route of its own for starting a child — an instance started another way is one nothing restarts and nothing knows about, which is not what being resident says. With no supervisor these fail with `{"error":{"code":"supervisor_not_running"}}`. The requests travel as JSON lines over a control socket kept with the state (`<state root>/supervise.sock`, 0600), and its op names carry a `supervise_` prefix to keep them apart from the contract's — **this is not the contract**. It is an internal protocol about processes on this host; no web UI and no mesh peer reaches it.
 
   `ccmsg daemon add <dir>` issues an instance id, writes `instances/instance-<id>.ts` — the label is the directory's own, the harness is read off it, and the port is the next free one after what this host has already handed out — puts the id and its loopback address in `endpoints.json` and the id in `supervisor.json`, and then goes through the pass of §8.2 before telling the supervisor. A proxy in front of the instance is a deployment fact nothing here can see, so an operator who has one edits that row. `remove <name | id | dir>` takes the id out of both files and deletes the settings, and leaves the state directory — the id there is what everything the instance issued is keyed by. `remove` stops it being looked after and **does not stop the child**: editing a list is not a shutdown, and a session already talking to that instance keeps talking to it.
 
@@ -753,5 +753,5 @@ The test table from [mesh-peer-auth](./design/mesh-peer-auth.md) §10 is carried
 - A disconnected instance's full value set is not dropped, is replaced on reconnection, and is discarded once the retention window passes (§7.5)
 - Two instances handed the same `peers` each settle on their own endpoint (§7.1)
 - No match (`peers` does not name this instance) and more than one (two URLs reaching one instance) each fail startup (§7.1)
-- Startup succeeds with an unreachable peer present, and that peer stays on the dial list (§7.1, DR-0014)
+- Startup succeeds with an unreachable peer present, and that peer stays on the dial list (§7.1)
 - A hello naming an id already bound to another endpoint closes the newcomer (§7.1)

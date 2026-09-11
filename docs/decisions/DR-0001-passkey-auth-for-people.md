@@ -1,8 +1,8 @@
 # DR-0001: 人の認証は passkey、token は record に紐づく opaque 値、鍵は持たない
 
-Status: Accepted (2026-09-09。骨子は kawaz 裁定 r292 m10〜m19、細部は統括判断。fable5-high の監査所見 C1〜C3 / M1〜M8 を反映)
+Status: Accepted (2026-09-09。骨子は kawaz 裁定、細部は統括判断。監査所見を反映)
 Date: 2026-09-09
-Sponsor: kawaz r292m10 (2026-09-09)「認証は passkey を使うのを基本にしたい」「登録はリモートではなくローカルから」、r292m18「引っ越しを考えると id は固定、iss は変更可能」
+Sponsor: kawaz (2026-09-09)「認証は passkey を使うのを基本にしたい」「登録はリモートではなくローカルから」「引っ越しを考えると id は固定、iss は変更可能」
 関連: 設計 §3 (認証と入口)、§7 (mesh)、§8.2 (設定)、§8.6 (責務外)、`docs/issue/2026-09-09-mesh-tls-trust-root.md`
 
 > §2.7 の「自分の endpoint は probe で確定する」は [DR-0004](DR-0004-config-edited-and-applied.md) §2.4 に置き換わった (設定のエンドポイント一覧のうち自分の id を持つ行が自分の endpoint)。本 DR の他の判断は現役。
@@ -103,7 +103,13 @@ state ディレクトリの `entry.token` と subprotocol / `?token=` による�
 
 ### 2.11 実装は自前
 
-WebAuthn の検証は library を入れずに書く。要るのは小さな CBOR decoder (attestationObject / COSE 鍵) と WebCrypto (ES256 / RS256 / Ed25519 の verify、sha256、HMAC) だけ。
+WebAuthn の検証は library を入れずに書く (kawaz 判断)。
+
+**理由**: 要件に細かい制御が要る。attestation は `none` 固定にしたく、challenge は発行 instance と検証 instance が違う構成 (LB) で転送する。一方で検証手順そのものは短く、要るのは小さな CBOR decoder (attestationObject / COSE 鍵) と WebCrypto (ES256 / RS256 / Ed25519 の verify、sha256、HMAC) だけである。
+
+**条件**: 自前で持つ以上、**テストは既存ライブラリに劣らない水準まで徹底する**。何をどこまで固定するかは issue `webauthn-tests-library-grade` が持つ。
+
+**その後**: テストをやり切った時点で既存ライブラリ (`@simplewebauthn/server` 等) を改めて調査・比較する。ライブラリの方が良ければ書き直してよいし、自前の方が良ければ既存を超える品質に仕上げ直す。どちらでもよい。
 
 ## 3. 不採用
 
@@ -119,7 +125,7 @@ WebAuthn の検証は library を入れずに書く。要るのは小さな CBOR
 | `self` を config に持つ | probe で確定できるものを設定にすると、同じリストを全 instance に配れる性質が壊れる。proxy 越しでも probe は Host を見ないので成立する |
 | 全ルートを `self` のパス配下に固定する | alias endpoint と LB で 404 / cookie Path 不一致になる。`self` に縛る必要があるのは mesh の鍵空間だけ |
 | instance id を endpoint URL (or そのハッシュ) にする | 引っ越しで record / mid / kv の鍵が全部無効になる |
-| WebAuthn library を入れる | 細かい制御 (attestation `none` 固定、challenge の転送) が要件に合わない可能性。検証手順は短い |
+| WebAuthn library を入れる | attestation `none` 固定と challenge の転送という細かい制御が要件で、検証手順自体は短い (§2.11)。テストを既存ライブラリ並みに固めた後で、改めて比較する |
 | リモートからの登録・復旧経路 | 登録がローカルに閉じることが安全性の根 |
 
 ## 4. 影響
