@@ -29,9 +29,19 @@ import { resolvePaths } from "../src/instance/paths.ts";
 import { leasePort } from "./cluster.ts";
 import { capture, Host, json, reapOrphans, writeConfigHome } from "./harness.ts";
 
-/** Register a config home, as a test that is not about the options would. */
-function register(dir: string, options: AddOptions = {}): Promise<InstanceRow> {
-  return add(process.env, dir, options);
+/** Register a config home, as a test that is not about the options would.
+ *
+ * With an address of its own unless the test names one: what `add` picks for
+ * itself is the first free port after what *that config home* has handed out,
+ * and every test here starts from an empty one — so two tests whose children
+ * overlap would be handed the same port, and the second child would fail to
+ * bind. A lease asks the kernel for one nothing else on this machine holds,
+ * and is given up in the moment before the instance takes it. */
+async function register(dir: string, options: AddOptions = {}): Promise<InstanceRow> {
+  if (options.port !== undefined) return await add(process.env, dir, options);
+  const lease = leasePort();
+  await lease.release();
+  return await add(process.env, dir, { ...options, port: lease.port });
 }
 
 const hosts: Host[] = [];
