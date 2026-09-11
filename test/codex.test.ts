@@ -95,8 +95,11 @@ describe("config", () => {
   test("`daemon add --harness codex` writes it down, and the instance reads it back", async () => {
     const at = env();
     const home = codexHome();
-    await add(at, home, { harness: "codex" });
-    const written = readFileSync(join(resolvePaths(at).instancesDir, "codex-home.ts"), "utf8");
+    const row = await add(at, home, { harness: "codex" });
+    const written = readFileSync(
+      join(resolvePaths(at).instancesDir, `instance-${row.id}.ts`),
+      "utf8",
+    );
     expect(written).toContain(`config.harness = "codex";`);
     expect(await harnessFor(at, home)).toBe("codex");
   });
@@ -106,9 +109,9 @@ describe("config", () => {
     const home = claudeHome();
     // Nothing said which harness: the directory says it, by holding that
     // harness's own settings file.
-    await add(at, home);
+    const row = await add(at, home);
     expect(
-      readFileSync(join(resolvePaths(at).instancesDir, "claude-home.ts"), "utf8"),
+      readFileSync(join(resolvePaths(at).instancesDir, `instance-${row.id}.ts`), "utf8"),
     ).not.toContain("harness");
     expect(await harnessFor(at, home)).toBe("claude");
   });

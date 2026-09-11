@@ -9,7 +9,16 @@ import type { InstanceId } from "@ccmsg/protocol";
  * spelling is sized for. */
 const ID_BYTES = 16;
 
-const ID = /^[0-9a-f]{32}$/;
+export const ID = /^[0-9a-f]{32}$/;
+
+/** A fresh id of that width, for whatever is being named.
+ *
+ * Shared with the cluster ids rather than written again there: what an id has
+ * to be is unguessable-by-accident and the same width wherever it is read, and
+ * a second generator is a second answer to how wide that is. */
+export function newId(): string {
+  return randomBytes(ID_BYTES).toString("hex");
+}
 
 /** This instance's identity, read from the state directory and generated there
  * the first time it is asked for.
@@ -26,7 +35,7 @@ const ID = /^[0-9a-f]{32}$/;
 export function instanceIdentity(file: string): InstanceId {
   const held = read(file);
   if (held !== undefined) return held;
-  const made = randomBytes(ID_BYTES).toString("hex");
+  const made = newId();
   mkdirSync(dirname(file), { recursive: true });
   writeFileSync(file, `${made}\n`);
   return made;

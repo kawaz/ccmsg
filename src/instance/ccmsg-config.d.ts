@@ -82,6 +82,8 @@ export interface Config {
 /** instance の設定。`dir` (= config home の絶対パス) が instance を決める。 */
 export interface InstanceConfig extends Config {
   dir: string;
+  /** 人向けのラベル。書かなければ id。ファイル名は id なので、変えても何も動かない。 */
+  name?: string;
   /** peer と人がこの instance に届く URL (末尾 `/`)。reverse proxy の後ろに
    * 居る instance は、待ち受ける address と届く URL が別で、互いに導けない。
    * mesh の一覧にはこの値が載る (= probe が確定する self、handshake の

@@ -464,7 +464,7 @@ discards them.
 
 DR-0001 is the source of truth. What is here is only where it joins the other layers.
 
-**Registration can only begin locally.** `ccmsg daemon passkey add <unit> [endpoint]` issues one
+**Registration can only begin locally.** `ccmsg daemon passkey add [endpoint] [--cluster <id|name>]` issues one
 registration URL (`<endpoint>#register=<jwt>`) and **a six-digit code**. An endpoint is the
 instance's own public base URL (`https://h/personal/`) and the web UI is served there, so nothing
 has to be taken off it to build the address. The code is not in the URL and is shown only on the terminal — the two halves reach the browser by different
@@ -1222,7 +1222,7 @@ home.** A CLI within a session looks up its own instance from `CLAUDE_CONFIG_DIR
 | Item | Content |
 |---|---|
 | Own config home | The single config home this instance sees (M6) |
-| peers | Every mesh endpoint, this instance's own among them. **Derived**: the instances of this host, at the addresses their own files give them, and then what `peers.json` names. Which entry is this one is settled by the startup probe, and the reader takes itself out (§7.1). **It is the only list of URLs config carries** |
+| peers | Every mesh endpoint of the clusters this instance is in, its own among them. **Derived**: the instances each cluster lists, at the addresses their own files give them, and then the endpoints that cluster was told of. Which entry is this one is settled by the startup probe, and the reader takes itself out (§7.1). **It is the only list of URLs config carries** |
 | Entry-point permission | bind, source IP |
 | upstream | gateway's URL and webhook source, terminal gateway, launcher (roots and recipes), translation helper, sandbox origin |
 
@@ -1234,54 +1234,68 @@ persisted are the 5 kinds in §3.6), there is no reason to hold mtime watching /
 rewiring so that "an edit takes effect on the next request." Restarting the instance is the
 sole way to make a config change take effect.
 
-**Settings are TypeScript, and there are two levels of them.** Under
+**Settings are TypeScript where they are decisions and JSON where they are a list.** Under
 `${XDG_CONFIG_HOME:-~/.config}/ccmsg/`:
 
 | File | What it is |
 |---|---|
 | `config.ts` | `({ builtin, config }) => config` — what every instance of this host starts from |
-| `instances/<name>.ts` | `({ builtin, default, config }) => config` — one instance. **This file is what says there is one** |
-| `peers.json` | The mesh endpoints this host does not serve itself, as an array. `ccmsg mesh add` / `remove` edit it |
-| `ccmsg-config.d.ts` | The declarations the two TypeScript files write against, copied here by `daemon add` |
+| `clusters.json` | `{clusters: ["<cluster_id>", …]}` — which clusters this host knows of |
+| `clusters/cluster-<cluster_id>.json` | `{name, peers, instances}` — one cluster, as this host writes it down |
+| `instances/instance-<instance_id>.ts` | `({ builtin, default, config }) => config` — one instance |
+| `ccmsg-config.d.ts` | The declarations the TypeScript files write against, copied here by `daemon add` |
 
-`builtin` is the built-in defaults and `default` is what `config.ts` returned; both are handed
-over deeply frozen. `config` is a mutable copy of the level above — of `builtin` in the shared
-file, of `default` in an instance's — so a file edits what it was given and returns it. An
-instance's file states `config.dir`, the absolute config home it answers for, and that is what
-makes it an instance rather than a settings block; two files naming one config home are
-refused, because an instance *is* a config home (A2). A file may be `async`, since what it has
-to do to answer — read a secret, ask something — is its own business.
+**Three words, and what each of them is.** An **instance** is one config home (A2): the smallest
+thing privacy and permission close around. A **cluster** is one person's unit of management —
+some instances, one mesh, one scope over which the authentication records of DR-0001 §2.6 are
+replicated; the instances of another cluster on the same host are none of its business. A
+**mesh** is the wiring between the instances of one cluster, so a peer list is a cluster's
+property and not a host's.
 
-**What is an instance is a file whose name is one.** `instances/` is read one level deep and
-only `<name>.ts` where `<name>` is lower case, digits and dashes is taken. A backup beside the
-file it came from — `one.ts.bak`, `one.old.ts`, `drafts/one.ts` — is then visibly not an
-instance, which matters because this listing is the whole of how instances are found: a rule
-that took every `.ts` would start a second daemon for a config home the moment somebody kept a
-copy of its settings.
+**What is read is what is listed.** `clusters.json` names the clusters, each cluster names its
+instances, and nothing else is opened: a file nobody listed starts nothing, so a copy of a
+settings file kept beside the original is a copy and not a second daemon. The other direction
+is an error rather than a silence — an id that is listed and whose file is not there ends the
+read, because a cluster quietly short of an instance is a mesh quietly short of a member.
 
-**There is no merge rule, because nothing merges.** A file is handed the whole of what it
-builds on and returns the whole of what it runs with, so "does this list replace or add to the
-one below it?" is not a question the reader of a config file has to hold — `config.dump.presets
-= […]` replaces, `.push(…)` adds, and the file says which it meant. What every instance shares
-is stated once in `config.ts`, and an instance's own file states only what differs. A config
-home no file names, run with `ccmsg daemon run`, is what `config.ts` returns plus the built-in
-defaults.
+**An id is what a thing is, a name is what it is called.** Both ids are sixteen random bytes as
+hex, an instance's generated by `daemon add` and written into its state directory — the same
+one everything the instance issued is keyed by (§3.6), so re-adding a config home that was
+removed answers to the id it always had. The name is a label, defaults to the id, and lives
+inside the file: renaming moves no file and rewrites no record.
 
-**The mesh is derived, not written** (§7.1). It is the instances of this host — each at the
-address its own file gives it: `endpoint` where the file states one, and the address it binds
-where it does not — followed by what `peers.json` names, with a remote entry that spells a
-local one taken once. An instance with neither an endpoint nor an entry serves the unix socket
-alone and is in nobody's list.
+**One instance may be in more than one cluster**, listed by the same id in each. It is still one
+config home and one process: the supervisor starts it once, and it is told which clusters it is
+in and what each one's mesh is. What that separation is for — records kept per cluster, a
+greeting that names one, a relay that stops at its edge — is built on top of it and is not here
+yet.
+
+`config.ts` is handed `builtin`, the built-in defaults; an instance's file is handed `builtin`
+and `default`, what `config.ts` returned. Both are deeply frozen, and `config` is a mutable copy
+of the level above, so a file edits what it was given and returns it. An instance's file states
+`config.dir`, the absolute config home it answers for; two files naming one config home are
+refused, because an instance *is* a config home. A file may be `async`, since what it has to do
+to answer — read a secret, ask something — is its own business.
+
+**There is no merge rule, because nothing merges.** A file is handed the whole of what it builds
+on and returns the whole of what it runs with, so "does this list replace or add to the one
+below it?" is not a question the reader of a config file has to hold — `config.dump.presets =
+[…]` replaces, `.push(…)` adds, and the file says which it meant.
+
+**The mesh of a cluster is derived, not written** (§7.1): the instances that cluster lists, each
+at the address its own file gives it, and then the endpoints the cluster was told of. No
+TypeScript file states `peers`, and one that does is refused rather than ignored — a person
+writing it is stating a mesh, and the answer is where a mesh is stated now.
 
 **`endpoint` is stated where a proxy is in front of an instance.** What it binds and what it is
 reached at are two facts and neither follows from the other, so the one a peer can dial is
 written down: it is what the probe settles `self` to, what a handshake carries as `iss` and
-`aud`, and what a person is handed to open a page at. It belongs to the instance's own file for
-`dir`'s reason — the shared file could not state one address for every instance of the host. No config file states `peers`, and one that does is refused
-rather than ignored: a person writing it is stating a mesh, and the answer is where a mesh is
-stated now. The reason is that the local half is already written down in `instances/`, and
-writing it again is a second place to get it wrong — which is an instance silently outside the
-mesh its host thinks it is in.
+`aud`, and what a person is handed to open a page at. Absent, it is the address the instance
+binds. An instance with neither serves the unix socket alone and is in nobody's mesh.
+
+**A cluster's file is this host's account of that cluster.** A cluster spans hosts and no copy
+of it is the canonical one: each host writes down the peers it dials and the instances it runs,
+and a second host joins by naming the same cluster id.
 
 A field nobody has ends the read, as does a file that throws or returns something that is not
 settings: a misspelled field is a setting that was written and does not take, and starting with
@@ -1351,19 +1365,25 @@ levels of supervision**:
   keep them apart from the contract's — **this is not the contract**. It is an internal
   protocol about processes on this host; no web UI and no mesh peer reaches it.
 
-  `ccmsg daemon add <dir>` writes one `instances/` file — the name is the directory's own, the
-  harness is read off it, and the port is the next free one after what this host has already
-  handed out — and then tells the supervisor (with none running, it only writes). `remove`
-  deletes that file. `remove` stops it being looked after and **does not stop
-  the child**: editing a list is not a shutdown, and a session already talking to that
-  instance keeps talking to it.
+  `ccmsg daemon add <dir> [--cluster <id|name>]` issues an instance id, writes
+  `instances/instance-<id>.ts` — the label is the directory's own, the harness is read off it,
+  and the port is the next free one after what this host has already handed out — puts the id in
+  that cluster, and then tells the supervisor (with none running, it only writes). With no
+  cluster named it is the one there is, a new one where there is none, and a refusal where there
+  are several; an id this host has not met is a cluster that exists elsewhere and is written
+  down under that id, which is how a second host joins one. `remove <name | id | dir>` takes the
+  id out of every cluster and deletes the file, and leaves the state directory — the id there is
+  what everything the instance issued is keyed by. `remove` stops it being looked after and
+  **does not stop the child**: editing a list is not a shutdown, and a session already talking to
+  that instance keeps talking to it.
 
   There are two exceptions. `ccmsg daemon run [dir]` is a one-off foreground start outside
   the supervisor's care (and outside `status`). `ccmsg daemon log` reads the files directly
   — a log is read after something died, so it must not need the supervisor to be up
-- `ccmsg mesh add | list | remove <endpoint>` — the mesh endpoints this host does not serve
-  itself (`peers.json`, §8.2). Its own command rather than one under `daemon` because what it
-  edits belongs to no single instance: every instance of this host is in the same mesh (§7.1).
+- `ccmsg mesh add | list | remove <endpoint> [--cluster <id|name>]` — the mesh endpoints a
+  cluster was told of, which are the ones this host does not serve itself (§8.2). Its own
+  command rather than one under `daemon` because what it edits belongs to no single instance: a
+  mesh is a cluster's (§7.1). With one cluster on the host there is nothing to name.
   An addition takes effect when the instances next start, for the reason nothing else reloads
   either (DV-Q8); a removal is told to whatever is running as well as written down, because an
   endpoint taken off the list is one this host is not to be talking to, and leaving the link up

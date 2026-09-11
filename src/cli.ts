@@ -27,6 +27,7 @@ import {
   rowFor,
   snapshots,
   type SuperviseOp,
+  clusterFor,
   Supervisor,
   tailOf,
   type Target,
@@ -45,12 +46,13 @@ const SESSION_ENV = HARNESSES.flatMap((harness) => [...HARNESS[harness].sessionE
 import { hookEvent, type StatedMeta, statedMeta } from "./greeting/index.ts";
 import {
   isRunning,
-  loadPeers,
+  loadClusters,
   resolveConfigDir,
   resolveConfigHome,
   resolvePaths,
   resolvePathsFor,
-  savePeers,
+  saveCluster,
+  saveClusters,
   start,
 } from "./instance/index.ts";
 import {
@@ -145,7 +147,7 @@ const ROOT: Command = {
         {
           name: "run",
           summary: "この config home の instance を foreground で起動する (監督者の管理外)",
-          usage: "ccmsg daemon run [name | dir]",
+          usage: "ccmsg daemon run [name | id | dir]",
           bare: true,
           run: (args) => runInstance(args[0]),
         },
@@ -158,10 +160,13 @@ const ROOT: Command = {
         },
         {
           name: "add",
-          summary:
-            "config home を instances/<name>.ts に書き、監督者が居れば起こさせる (name は dir 名から)",
-          usage: "ccmsg daemon add <dir> [--port <番号>] [--harness <種別>]",
+          summary: "config home を cluster に足し、instances/instance-<id>.ts を書く",
+          usage: "ccmsg daemon add <dir> [--cluster <id|name>] [--port <番号>] [--harness <種別>]",
           options: [
+            [
+              "--cluster <id|name>",
+              "入れる cluster (既定: 1 つならそれ、無ければ新規。知らない id ならその id で作る)",
+            ],
             ["--port <番号>", "entry の待ち受けポート (既定は登録済みの最大 + 1 の空きポート)"],
             [
               "--harness <種別>",
@@ -170,11 +175,16 @@ const ROOT: Command = {
           ],
           notes: [
             {
-              title: "設定は TypeScript で書く。書いた物をこの instance が受け取る:",
+              title: "何がどのファイルに載るか (載っていないファイルは読まない):",
               docs: [
                 ["config.ts", "全 instance が受け取る値。`({builtin, config}) => config`"],
+                ["clusters.json", "この host が知る cluster の id 一覧"],
                 [
-                  "instances/<name>.ts",
+                  "clusters/cluster-<id>.json",
+                  "name / peers (別 host の endpoint) / instances (id)",
+                ],
+                [
+                  "instances/instance-<id>.ts",
                   "1 instance 分の差分。`({builtin, default, config}) => config`",
                 ],
                 ["ccmsg-config.d.ts", "設定ファイルが `import type` で参照する型 (ccmsg が置く)"],
@@ -185,13 +195,13 @@ const ROOT: Command = {
         },
         {
           name: "remove",
-          summary: "instances/<name>.ts を消す (監督者は以後見ないが、子は止めない)",
-          usage: "ccmsg daemon remove <name>",
+          summary: "cluster から外して instances/instance-<id>.ts を消す (子は止めない)",
+          usage: "ccmsg daemon remove <name | id | dir>",
           run: (args) => removed(args[0]),
         },
         {
           name: "list",
-          summary: "登録されている config home と、動いているかを並べる",
+          summary: "cluster ごとに instance と、動いているかを並べる",
           usage: "ccmsg daemon list",
           bare: true,
           run: () => listInstances(process.env),
@@ -217,47 +227,68 @@ const ROOT: Command = {
         {
           name: "status",
           summary: "監督者が各子に instance.ping して version・network・peers を答える",
-          usage: "ccmsg daemon status [name | dir] | --all",
+          usage: "ccmsg daemon status [name | id | dir] | --all",
           bare: true,
           run: (args) => supervised("supervise_status", args, true),
         },
         {
           name: "passkey",
-          summary: "この config home の instance に登録された passkey を扱う",
-          usage: "ccmsg daemon passkey <subcommand>",
+          summary: "cluster に登録された利用者の passkey を扱う",
+          usage: "ccmsg daemon passkey <subcommand> [--cluster <id|name>]",
+          options: [["--cluster <id|name>", "どの cluster か (既定: cluster が 1 つならそれ)"]],
+          notes: [
+            {
+              title: "passkey は cluster のもの (記録は cluster 内に複製される):",
+              docs: [
+                ["どこへ問うか", "その cluster で動いている instance のどれか (どれでも同じ答え)"],
+                ["動いていない時", "instance を起動してから (登録は動いている instance が行う)"],
+              ],
+            },
+          ],
           children: [
             {
               name: "add",
               summary: "登録用 URL と 6 桁コードを 1 組発行する (10 分で失効)",
-              usage: "ccmsg daemon passkey add <unit> [endpoint] [--name <ラベル>]",
+              usage: "ccmsg daemon passkey add [endpoint] [--cluster <id|name>] [--name <ラベル>]",
               options: [
                 [
                   "[endpoint]",
-                  "登録先の公開 base URL (末尾 /)。既定はこの instance が確定した endpoint",
+                  "登録先の公開 base URL (末尾 /)。既定は答えた instance が確定した endpoint",
                 ],
                 ["--name <ラベル>", "誰宛に発行した URL かの管理ラベル"],
               ],
+              bare: true,
               run: (args) => passkeyAdd(args),
             },
             {
               name: "list",
               summary: "登録済みの credential を、新しい順に並べる",
-              usage: "ccmsg daemon passkey list [unit]",
+              usage: "ccmsg daemon passkey list [--cluster <id|name>]",
               bare: true,
-              run: (args) => passkeyAsk(args[0], { admin: "passkey_list" }),
+              run: (args) => passkeyCommand(args, () => ({ admin: "passkey_list" })),
             },
             {
               name: "remove",
               summary: "利用者を消す (credential と token を失効させ、その WS を切る)",
-              usage: "ccmsg daemon passkey remove <sub> [unit]",
-              run: (args) => passkeyRemove(args),
+              usage: "ccmsg daemon passkey remove <sub> [--cluster <id|name>]",
+              run: (args) =>
+                passkeyCommand(args, (rest) => {
+                  const sub = rest[0];
+                  if (sub === undefined) {
+                    throw new CommandError(
+                      "invalid_args",
+                      "使い方: ccmsg daemon passkey remove <sub> [--cluster <id|name>]",
+                    );
+                  }
+                  return { admin: "passkey_remove", sub };
+                }),
             },
           ],
         },
         {
           name: "log",
           summary: "instance の daemon.log を出す (--all は行に id を足して多重化)",
-          usage: "ccmsg daemon log [name | dir] | --all [--follow]",
+          usage: "ccmsg daemon log [name | id | dir] | --all [--follow]",
           options: [["--follow", "書き足される行を待ち続ける (Ctrl-C で終わり)"]],
           bare: true,
           run: (args) => daemonLog(args),
@@ -266,13 +297,17 @@ const ROOT: Command = {
     },
     {
       name: "mesh",
-      summary: "別 host の instance を mesh の相手として出し入れする (peers.json)",
-      usage: "ccmsg mesh <subcommand> [endpoint]",
+      summary: "cluster の mesh に別 host の endpoint を出し入れする",
+      usage: "ccmsg mesh <subcommand> [endpoint] [--cluster <id|name>]",
+      options: [["--cluster <id|name>", "どの cluster の mesh か (既定: cluster が 1 つならそれ)"]],
       notes: [
         {
-          title: "この host の instance は instances/*.ts の port から自動で mesh に入る:",
+          title: "cluster 内の instance 同士は自動で mesh に入る (各 TS の endpoint / port):",
           docs: [
-            ["peers.json", "別 host の endpoint だけを並べる。instance id は handshake で伝わる"],
+            [
+              "cluster の peers",
+              "別 host の endpoint だけを並べる。instance id は handshake で伝わる",
+            ],
             ["add の反映", "次に instance が起動した時 (config は起動時に 1 回だけ読む)"],
             ["remove の反映", "即時。繋がっている相手なら切る"],
           ],
@@ -281,21 +316,21 @@ const ROOT: Command = {
       children: [
         {
           name: "add",
-          summary: "endpoint を peer に足す",
-          usage: "ccmsg mesh add <endpoint>",
+          summary: "endpoint を cluster の peer に足す (知らない cluster id ならその id で作る)",
+          usage: "ccmsg mesh add <endpoint> [--cluster <id|name>]",
           run: (args) => meshPeers("add", args),
         },
         {
           name: "list",
-          summary: "peers.json にある endpoint を並べる",
-          usage: "ccmsg mesh list",
+          summary: "cluster の peer を並べる (--cluster 無しで cluster が複数なら全部)",
+          usage: "ccmsg mesh list [--cluster <id|name>]",
           bare: true,
           run: (args) => meshPeers("list", args),
         },
         {
           name: "remove",
-          summary: "endpoint を peer から外し、繋がっていれば切る",
-          usage: "ccmsg mesh remove <endpoint>",
+          summary: "endpoint を cluster の peer から外し、繋がっていれば切る",
+          usage: "ccmsg mesh remove <endpoint> [--cluster <id|name>]",
           run: (args) => meshPeers("remove", args),
         },
       ],
@@ -659,14 +694,14 @@ async function supervise(): Promise<unknown> {
  * the supervisor reads the list once (DV-Q8) and would otherwise not know
  * until it is restarted. */
 async function added(args: readonly string[]): Promise<unknown> {
-  const { named, rest } = options(args, ["harness", "port"]);
+  const { named, rest } = options(args, ["harness", "port", "cluster"]);
   const dir = rest[0];
   const stated = named.get("harness");
   const port = named.get("port");
   if (dir === undefined) {
     throw new CommandError(
       "invalid_args",
-      "使い方: ccmsg daemon add <dir> [--port <番号>] [--harness <種別>]",
+      "使い方: ccmsg daemon add <dir> [--cluster <id|name>] [--port <番号>] [--harness <種別>]",
     );
   }
   if (stated !== undefined && !isHarness(stated)) {
@@ -676,6 +711,7 @@ async function added(args: readonly string[]): Promise<unknown> {
     throw new CommandError("invalid_args", "--port は 0 から 65535 の番号です");
   }
   const row = await addToConfig(process.env, dir, {
+    ...(named.get("cluster") === undefined ? {} : { cluster: named.get("cluster") as string }),
     ...(stated === undefined ? {} : { harness: stated }),
     ...(port === undefined ? {} : { port: Number(port) }),
   });
@@ -698,45 +734,75 @@ async function added(args: readonly string[]): Promise<unknown> {
  * not to be talking to, and leaving a live link up until the next restart would
  * be leaving exactly the connection that was just revoked. */
 async function meshPeers(what: "add" | "list" | "remove", args: readonly string[]) {
+  const parsed = options(args, ["cluster"]);
   const configDir = resolveConfigDir();
-  const listed = loadPeers(configDir);
-  if (what === "list") return { peers: listed };
-  const given = args[0];
+  const clusters = loadClusters(configDir);
+  if (what === "list" && parsed.named.get("cluster") === undefined && clusters.length !== 1) {
+    // Every cluster's own, because a list of addresses with no cluster beside
+    // them would not say which mesh each belongs to.
+    return {
+      clusters: clusters.map((one) => ({ id: one.id, name: one.name, peers: one.peers })),
+    };
+  }
+  const cluster = clusterFor(clusters, parsed.named.get("cluster"));
+  if (what === "list") {
+    return { cluster_id: cluster.id, cluster_name: cluster.name, peers: cluster.peers };
+  }
+  const given = parsed.rest[0];
   if (given === undefined) {
-    throw new CommandError("invalid_args", `使い方: ccmsg mesh ${what} <endpoint>`);
+    throw new CommandError(
+      "invalid_args",
+      `使い方: ccmsg mesh ${what} <endpoint> [--cluster <id|name>]`,
+    );
   }
   const endpoint = endpointGiven(given);
+  const known = clusters.some((one) => one.id === cluster.id);
   if (what === "add") {
-    if (listed.includes(endpoint)) {
-      throw new CommandError("file_exists", `${endpoint} は既に peer です`);
+    if (cluster.peers.includes(endpoint)) {
+      throw new CommandError("file_exists", `${endpoint} は既に ${cluster.name} の peer です`);
     }
-    savePeers(configDir, [...listed, endpoint]);
+    saveCluster(configDir, { ...cluster, peers: [...cluster.peers, endpoint] });
+    if (!known) saveClusters(configDir, [...clusters.map((one) => one.id), cluster.id]);
     // Said rather than left to be noticed: the running instances read the list
     // when they started, so the one thing a person wants to know here is that
     // this peer is not dialled yet.
-    return { endpoint, added: true, restart_needed: (await running()).length > 0 };
+    return {
+      cluster_id: cluster.id,
+      cluster_name: cluster.name,
+      endpoint,
+      added: true,
+      restart_needed: (await runningIn(cluster.id)).length > 0,
+    };
   }
-  if (!listed.includes(endpoint)) {
-    throw new CommandError("not_found", `${endpoint} は peer ではありません`);
+  if (!cluster.peers.includes(endpoint)) {
+    throw new CommandError("not_found", `${endpoint} は ${cluster.name} の peer ではありません`);
   }
-  savePeers(
-    configDir,
-    listed.filter((peer) => peer !== endpoint),
-  );
+  saveCluster(configDir, {
+    ...cluster,
+    peers: cluster.peers.filter((peer) => peer !== endpoint),
+  });
   const cut: string[] = [];
-  for (const target of await running()) {
+  for (const target of await runningIn(cluster.id)) {
     const answer = (await askInstance(target, { admin: "mesh_forget", endpoint })) as {
       dropped?: boolean;
     };
-    if (answer.dropped === true) cut.push(target.dir);
+    if (answer.dropped === true) cut.push(target.name ?? target.dir);
   }
-  return { endpoint, removed: true, disconnected: cut };
+  return {
+    cluster_id: cluster.id,
+    cluster_name: cluster.name,
+    endpoint,
+    removed: true,
+    disconnected: cut,
+  };
 }
 
-/** The registered instances that have something answering right now, which are
- * the ones a change to the mesh has to reach. */
-async function running(): Promise<Target[]> {
-  return (await registered(process.env)).filter((target) => rowFor(target).running);
+/** The instances of one cluster that have something answering right now, which
+ * are the ones a change to that cluster's mesh has to reach. */
+async function runningIn(cluster: string): Promise<Target[]> {
+  return (await registered(process.env)).filter(
+    (target) => (target.clusters ?? []).some((one) => one.id === cluster) && rowFor(target).running,
+  );
 }
 
 /** An endpoint as the contract spells it, from what a person typed: the base
@@ -832,20 +898,17 @@ async function serviceOp(
   };
 }
 
-/** The passkey commands, which are asked of the instance itself rather than of
- * the supervisor.
+/** The passkey commands, which are asked of an instance of the cluster rather
+ * than of the supervisor.
  *
- * They travel on the instance's unix socket and nowhere else: registration is
+ * They travel on an instance's unix socket and nowhere else: registration is
  * local by design (DR-0001 §2.2), and reaching that address is what says the
  * caller is on the machine. They are not ops of the contract for the same
- * reason — the contract is what reaches an instance over a network. */
-async function passkeyAsk(unit: string | undefined, request: Record<string, unknown>) {
-  return await askInstance(
-    targetFor(process.env, (await dirOf(unit)) ?? resolveConfigHome()),
-    request,
-  );
-}
-
+ * reason — the contract is what reaches an instance over a network.
+ *
+ * Which instance is asked does not matter, and that is the point of the
+ * cluster: a credential registered at one is replicated to the others, so the
+ * cluster is what a passkey belongs to and any instance of it can answer. */
 /** One administrative request, on one instance's own unix socket. */
 async function askInstance(target: Target, request: Record<string, unknown>) {
   const conn = await connect(target.paths.socket);
@@ -865,6 +928,31 @@ async function askInstance(target: Target, request: Record<string, unknown>) {
   }
 }
 
+async function passkeyCommand(
+  args: readonly string[],
+  request: (rest: readonly string[]) => Record<string, unknown>,
+): Promise<unknown> {
+  const parsed = options(args, ["cluster", "name"]);
+  const asked = request(parsed.rest);
+  const cluster = clusterFor(loadClusters(resolveConfigDir()), parsed.named.get("cluster"));
+  const reachable = await runningIn(cluster.id);
+  const target = reachable[0];
+  if (target === undefined) {
+    throw new CommandError(
+      "instance_unreachable",
+      `${cluster.name} で動いている instance がありません (ccmsg daemon start で起こしてください)`,
+    );
+  }
+  // Any one of them: what is registered is replicated across the cluster
+  // (DR-0001 §2.6), so which instance answered is not part of the answer.
+  return {
+    cluster_id: cluster.id,
+    cluster_name: cluster.name,
+    instance: target.name ?? target.dir,
+    ...((await askInstance(target, asked)) as Record<string, unknown>),
+  };
+}
+
 /** `ccmsg daemon passkey add`: one registration URL, and the code that goes
  * with it.
  *
@@ -872,28 +960,16 @@ async function askInstance(target: Target, request: Record<string, unknown>) {
  * anything the instance hands out — so that holding the URL is not enough to
  * register (DR-0001 §2.2). */
 async function passkeyAdd(args: readonly string[]): Promise<unknown> {
-  const parsed = options(args, ["name"]);
-  const [unit, endpoint] = parsed.rest;
-  if (unit === undefined) {
-    throw new CommandError(
-      "invalid_args",
-      "使い方: ccmsg daemon passkey add <unit> [endpoint] [--name <ラベル>]",
-    );
-  }
-  const name = parsed.named.get("name");
-  return await passkeyAsk(unit, {
-    admin: "passkey_add",
-    ...(endpoint === undefined ? {} : { endpoint }),
-    ...(name === undefined ? {} : { name }),
+  return await passkeyCommand(args, (rest) => {
+    const endpoint = rest[0];
+    const parsed = options(args, ["cluster", "name"]);
+    const name = parsed.named.get("name");
+    return {
+      admin: "passkey_add",
+      ...(endpoint === undefined ? {} : { endpoint }),
+      ...(name === undefined ? {} : { name }),
+    };
   });
-}
-
-async function passkeyRemove(args: readonly string[]): Promise<unknown> {
-  const [sub, unit] = args;
-  if (sub === undefined) {
-    throw new CommandError("invalid_args", "使い方: ccmsg daemon passkey remove <sub> [unit]");
-  }
-  return await passkeyAsk(unit, { admin: "passkey_remove", sub });
 }
 
 /** `ccmsg daemon log`: what one instance wrote down, or what all of them did.

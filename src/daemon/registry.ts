@@ -3,16 +3,21 @@ import { basename, isAbsolute, join, resolve } from "node:path";
 import type { Endpoint, InstanceId, InstancePingResult } from "@ccmsg/protocol";
 import { DEFAULT_HARNESS, type Harness, HARNESS, HARNESSES } from "../harness/index.ts";
 import {
+  type ClusterInfo,
+  type ClusterSetting,
   CONFIG_FILE,
+  CONFIG_NAME,
   type InstanceConfig,
-  INSTANCE_NAME,
+  instanceFileName,
   loadAll,
   loadConfig,
   loadInstances,
+  saveCluster,
+  saveClusters,
   TYPES_FILE,
   writeConfigTypes,
 } from "../instance/config.ts";
-import { instanceIdentity } from "../instance/identity.ts";
+import { ID, instanceIdentity, newId } from "../instance/identity.ts";
 import { alive, lockHolder } from "../instance/lock.ts";
 import { type Env, type InstancePaths, resolvePaths, resolvePathsFor } from "../instance/paths.ts";
 import { prepareSocketDir } from "../instance/socket.ts";
@@ -54,10 +59,17 @@ export async function harnessFor(env: Env, dir: string): Promise<Harness> {
  * for it right now. */
 export interface InstanceRow {
   readonly id: InstanceId;
-  /** What the file naming this config home is called, where a file names it.
-   * A `daemon run` on an unregistered directory has none. */
+  /** The label this instance is listed under: its own file's `name`, which
+   * defaults to its id. A `daemon run` on a config home no cluster lists has
+   * none. */
   readonly name?: string;
+  /** Which cluster this row was read through. An instance in two clusters is
+   * one instance and one process, listed once under each of them. */
+  readonly cluster_id?: string;
+  readonly cluster_name?: string;
   readonly dir: string;
+  /** Where peers reach it, as its file states or as its entry implies. */
+  readonly port?: number;
   readonly running: boolean;
   readonly pid?: number;
 }
@@ -83,29 +95,46 @@ export interface StatusRow extends InstanceRow {
 
 /** Everything one command needs to reach one config home. */
 export interface Target {
-  /** The name of the file that says this config home runs an instance, where
-   * one does. */
+  /** The label this instance is listed under, where a cluster lists it. */
   readonly name?: string;
+  /** Its id, which is what its file is called. */
+  readonly id?: string;
+  /** The clusters it belongs to, as the host writes them down. */
+  readonly clusters?: readonly ClusterInfo[];
   readonly dir: string;
   readonly paths: InstancePaths;
 }
 
-export function targetFor(env: Env, dir: string, name?: string): Target {
-  return { ...(name === undefined ? {} : { name }), dir, paths: resolvePathsFor(dir, env) };
+export function targetFor(
+  env: Env,
+  dir: string,
+  name?: string,
+  id?: string,
+  clusters?: readonly ClusterInfo[],
+): Target {
+  return {
+    ...(name === undefined ? {} : { name }),
+    ...(id === undefined ? {} : { id }),
+    ...(clusters === undefined ? {} : { clusters }),
+    dir,
+    paths: resolvePathsFor(dir, env),
+  };
 }
 
-/** The config homes the config dir names, in name order. */
+/** The config homes this host's clusters list, each once. */
 export async function registered(env: Env): Promise<Target[]> {
   const paths = resolvePaths(env);
   return (await loadInstances(paths.configDir)).map((entry) =>
-    targetFor(env, entry.dir, entry.name),
+    targetFor(env, entry.dir, entry.name, entry.id, entry.clusters),
   );
 }
 
-/** The config home one name is for, for a command given a name instead of a
- * directory: what `daemon add` took is what every command after it takes. */
-export async function targetNamed(env: Env, name: string): Promise<Target | undefined> {
-  return (await registered(env)).find((target) => target.name === name);
+/** The instance a command was given, by any of the three things a person has
+ * to hand: the label it is listed under, its id, or the directory itself. */
+export async function targetNamed(env: Env, ref: string): Promise<Target | undefined> {
+  return (await registered(env)).find(
+    (target) => target.name === ref || target.id === ref || target.dir === ref,
+  );
 }
 
 /** The selections the shared file starts with.
@@ -154,28 +183,28 @@ const STARTING_PRESETS = [
 /** What `daemon add` takes: the config home the instance answers for, and the
  * two settings a person would otherwise open the file to write. */
 export interface AddOptions {
+  /** Which cluster the instance joins, by id or by name. With none said: the
+   * one cluster there is, a new one where there is none, and a refusal where
+   * there are several — the last because which management unit an instance
+   * belongs to is not something to guess at. An id nothing answers to is a
+   * cluster this host has not met yet and is made under that id, which is how
+   * a second host joins one. */
+  readonly cluster?: string;
   readonly harness?: Harness;
   readonly port?: number;
 }
 
-/** What a config home is called as an instance: its own last segment, without
- * the dot a config home is usually hidden by.
+/** What a config home is called, for a person reading a listing: its own last
+ * segment, without the dot a config home is usually hidden by.
  *
- * Taken from the directory rather than asked for, because the two would then
- * be a pair a person has to keep straight, and the directory is the one of
- * them that already exists. `.claude-personal` is `claude-personal`; a
- * directory whose name is not one an instance may be called is refused here,
- * where the name is being chosen, rather than at the file that would carry
- * it. */
+ * A label and not an identity — the file and everything the instance issued
+ * are keyed by its id, so this may be changed in the file afterwards. Taken
+ * from the directory because that is the one of the two that already exists;
+ * a directory whose name could not be a label leaves the id as the name, which
+ * is what a name defaults to anyway. */
 export function nameFor(dir: string): string {
   const name = basename(dir).replace(/^\.+/, "");
-  if (!INSTANCE_NAME.test(name)) {
-    throw new CommandError(
-      "invalid_args",
-      `${dir} からは instance の名前が付けられません (小文字・数字・ダッシュだけの名前になりません)`,
-    );
-  }
-  return name;
+  return CONFIG_NAME.test(name) ? name : "";
 }
 
 /** Which harness a config home runs, as the directory itself says.
@@ -255,35 +284,87 @@ export async function add(env: Env, dir: string, options: AddOptions = {}): Prom
   const where = isAbsolute(dir) ? dir : resolve(dir);
   const harness = options.harness ?? harnessOf(where);
   const home = configHome(where, harness);
-  const name = nameFor(home);
   const paths = resolvePaths(env);
-  const file = join(paths.instancesDir, `${name}.ts`);
-  if (existsSync(file)) {
-    throw new CommandError("file_exists", `${name} は既に登録されています (${file})`);
-  }
-  const registered = (await loadAll(paths.configDir)).instances;
-  const taken = registered.find((one) => one.dir === home);
+  const all = await loadAll(paths.configDir);
+  const taken = all.instances.find((one) => one.dir === home);
   if (taken !== undefined) {
-    throw new CommandError("file_exists", `${home} は既に ${taken.name} が見ています`);
+    throw new CommandError("file_exists", `${home} は既に ${taken.name} として登録されています`);
   }
-  // Every instance listens, because every instance is in the mesh of this host
+  const cluster = clusterFor(all.clusters, options.cluster);
+  // The id the state directory already holds, or a new one written there now:
+  // a config home that was registered before keeps the id everything it issued
+  // is keyed by, and a fresh one gets its id here rather than at its first
+  // start (DR-0001 §2.1).
+  const target = targetFor(env, home);
+  const id = instanceIdentity(target.paths.instanceIdFile);
+  // Every instance listens, because an instance is in the mesh of its cluster
   // (§7.1) and a mesh is reached over the entry: what `--port` settles is which
   // address, not whether there is one.
   const port =
     options.port ??
     (await freePort(
-      registered.flatMap((one) => (one.config.entry === undefined ? [] : [one.config.entry.port])),
+      all.instances.flatMap((one) =>
+        one.config.entry === undefined ? [] : [one.config.entry.port],
+      ),
     ));
+  const name = nameFor(home) || id;
   writeConfigTypes(paths.configDir);
   if (!existsSync(paths.configFile)) writeFileSync(paths.configFile, defaultsTemplate());
   mkdirSync(paths.instancesDir, { recursive: true });
-  writeFileSync(file, instanceTemplate(name, home, harness, port));
-  const target = targetFor(env, home, name);
-  // The id is made here rather than at the first start, so that what `add`
-  // prints is what the instance will answer to and so that a person can write
-  // the id into a peer's config before anything has run (DR-0001 §2.1).
-  instanceIdentity(target.paths.instanceIdFile);
-  return rowFor(target);
+  writeFileSync(
+    join(paths.instancesDir, instanceFileName(id)),
+    instanceTemplate(name, home, harness, port),
+  );
+  saveCluster(paths.configDir, {
+    ...cluster,
+    instances: cluster.instances.includes(id) ? cluster.instances : [...cluster.instances, id],
+  });
+  saveClusters(
+    paths.configDir,
+    all.clusters.some((one) => one.id === cluster.id)
+      ? all.clusters.map((one) => one.id)
+      : [...all.clusters.map((one) => one.id), cluster.id],
+  );
+  return {
+    ...rowFor(targetFor(env, home, name, id)),
+    cluster_id: cluster.id,
+    cluster_name: cluster.name,
+    port,
+  };
+}
+
+/** The cluster a command is about.
+ *
+ * Named or not, the answer has to be one cluster: a command that acted on "the
+ * clusters" would be deciding for a person which management unit a thing
+ * belongs to. An id this host has not met is a cluster that exists elsewhere —
+ * a cluster spans hosts — so it is written down under that id rather than
+ * refused, which is what lets a second host join one. */
+export function clusterFor(
+  clusters: readonly ClusterSetting[],
+  named: string | undefined,
+): ClusterSetting {
+  if (named !== undefined) {
+    const found = clusters.find((one) => one.id === named || one.name === named);
+    if (found !== undefined) return found;
+    if (!ID.test(named)) {
+      throw new CommandError(
+        "not_found",
+        `${named} という cluster はありません (新しく作るなら id を渡してください)`,
+      );
+    }
+    return { id: named, name: named, peers: [], instances: [] };
+  }
+  const only = clusters[0];
+  if (clusters.length === 1 && only !== undefined) return only;
+  if (clusters.length === 0) {
+    const id = newId();
+    return { id, name: id, peers: [], instances: [] };
+  }
+  throw new CommandError(
+    "invalid_args",
+    `cluster が ${String(clusters.length)} 個あります。--cluster <id|name> で選んでください (${clusters.map((one) => one.name).join(", ")})`,
+  );
 }
 
 /** Take one instance's file away.
@@ -294,13 +375,27 @@ export async function add(env: Env, dir: string, options: AddOptions = {}): Prom
  * is stopped, and saying so is the point of keeping the two apart. */
 export async function remove(
   env: Env,
-  name: string,
-): Promise<{ name: string; dir: string; removed: boolean }> {
+  ref: string,
+): Promise<{ id: string; name: string; dir: string; removed: boolean }> {
   const paths = resolvePaths(env);
-  const target = await targetNamed(env, name);
-  if (target === undefined) throw new CommandError("not_found", `${name} は登録されていません`);
-  rmSync(join(paths.instancesDir, `${name}.ts`));
-  return { name, dir: target.dir, removed: true };
+  const all = await loadAll(paths.configDir);
+  const found = all.instances.find((one) => one.id === ref || one.name === ref || one.dir === ref);
+  if (found === undefined) throw new CommandError("not_found", `${ref} は登録されていません`);
+  // Out of every cluster that listed it: a person removing an instance is
+  // removing it from this host, and leaving it in the second cluster would
+  // leave the supervisor starting it.
+  for (const cluster of all.clusters) {
+    if (!cluster.instances.includes(found.id)) continue;
+    saveCluster(paths.configDir, {
+      ...cluster,
+      instances: cluster.instances.filter((one) => one !== found.id),
+    });
+  }
+  rmSync(join(paths.instancesDir, instanceFileName(found.id)), { force: true });
+  // The state directory stays, its id with it: what the instance issued is
+  // keyed by that id, and re-adding the same config home has to answer to the
+  // same one.
+  return { id: found.id, name: found.name, dir: found.dir, removed: true };
 }
 
 /** The file every instance's settings start from, as it is first written. */
@@ -310,8 +405,8 @@ function defaultsTemplate(): string {
 /** 全 instance に配る値。\`builtin\` は組み込みの既定値 (凍結済み)、\`config\` は
  * そのコピーなので、書き換えて返す。ここに書いた値を各 instance が受け取る。 */
 const defaults: Defaults = ({ config }) => {
-  // mesh の相手はここには書かない。この host の instance は instances/ の各
-  // ファイルから、別 host の endpoint は peers.json (ccmsg mesh add) から入る。
+  // mesh の相手はここには書かない。cluster 内の instance は各 TS の endpoint /
+  // port から、別 host の endpoint は cluster の peers (ccmsg mesh add) から入る。
 
   // dump の名前付き選択。prefix は一族を、\`@name\` は他の選択をその場に広げる。
   config.dump.presets = [
@@ -346,6 +441,7 @@ function presetLiteral(preset: (typeof STARTING_PRESETS)[number]): string {
  * `config.ts`, and nothing else. */
 function instanceTemplate(name: string, dir: string, harness: Harness, port: number): string {
   const lines = [
+    `  config.name = ${JSON.stringify(name)};`,
     `  config.dir = ${JSON.stringify(dir)};`,
     "",
     "  // reverse proxy の後ろに居るなら、peer と人が届く公開 URL (末尾 /) を書く。",
@@ -396,8 +492,28 @@ export function rowFor(target: Target): InstanceRow {
   };
 }
 
+/** What `daemon list` answers: one row per instance per cluster it is in.
+ *
+ * By cluster because that is the unit a person manages — which mesh, which
+ * authentication records — and an instance in two of them is in both listings,
+ * as the same id with the same process. */
 export async function list(env: Env): Promise<InstanceRow[]> {
-  return (await registered(env)).map((target) => rowFor(target));
+  const all = await loadAll(resolvePaths(env).configDir);
+  const rows: InstanceRow[] = [];
+  for (const cluster of all.clusters) {
+    for (const id of cluster.instances) {
+      const found = all.instances.find((one) => one.id === id);
+      if (found === undefined) continue;
+      const target = targetFor(env, found.dir, found.name, found.id, found.clusters);
+      rows.push({
+        ...rowFor(target),
+        cluster_id: cluster.id,
+        cluster_name: cluster.name,
+        ...(found.config.entry === undefined ? {} : { port: found.config.entry.port }),
+      });
+    }
+  }
+  return rows;
 }
 
 /** Ask one instance how it is. A config home with nothing behind it answers the

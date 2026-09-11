@@ -85,11 +85,13 @@ describe("which endpoint this instance is (§7.1)", () => {
     expect(instance.self).not.toBe(endpointOf(instance));
   });
 
-  test("a list that does not name this instance ends the start (§7.1)", async () => {
+  test("a mesh that does not reach this instance ends the start (§7.1)", async () => {
     // Every entry is somewhere else, so no probe comes back here and there is
-    // nothing to be. Q2 of self-identification, refused at startup.
+    // nothing to be. Q2 of self-identification, refused at startup. A mesh an
+    // instance is listed in reaches it by construction now, so the way to be
+    // in one and not in it is to be reached at an address that is not yours.
     const lease = leasePort();
-    const env = homeFor(lease, [endpoint(deadPort())]);
+    const env = homeFor(lease, [endpoint(deadPort())], endpoint(deadPort()));
     // `start` binds the address this home names, so the lease on it is given up
     // here rather than by `startAt`, which is what does it for a start expected
     // to run.
@@ -97,12 +99,14 @@ describe("which endpoint this instance is (§7.1)", () => {
     expect(await refusal(start({ env, echoLog: false }))).toBeInstanceOf(SelfEndpointError);
   });
 
-  test("a list naming only a live stranger ends the start (§7.1)", async () => {
-    // The endpoint answers the probe, but the token does not come back here:
-    // answering is not being us.
+  test("an endpoint that answers without being us ends the start (§7.1)", async () => {
+    // The address this instance says it is reached at is somebody else's: it
+    // answers the probe, but the token does not come back here, and answering
+    // is not being us. This is the shape a proxy pointed at the wrong instance
+    // arrives in, which is what a stated endpoint can now get wrong.
     const lease = leasePort();
     const stranger = leasePort();
-    const env = homeFor(lease, [endpoint(stranger.port)]);
+    const env = homeFor(lease, [], endpoint(stranger.port));
     await lease.release();
     expect(await refusal(start({ env, echoLog: false }))).toBeInstanceOf(SelfEndpointError);
   });
@@ -121,7 +125,9 @@ describe("which endpoint this instance is (§7.1)", () => {
 
   test("a refused start leaves its port bound to nobody (§7.1)", async () => {
     const lease = leasePort();
-    const env = homeFor(lease, [endpoint(deadPort())]);
+    // Reached at an address nothing answers on: the probe comes back from
+    // nowhere, so no entry of the mesh is this instance.
+    const env = homeFor(lease, [], endpoint(deadPort()));
     await lease.release();
     expect(await refusal(start({ env, echoLog: false }))).toBeInstanceOf(SelfEndpointError);
     // The entry listener is up before the endpoint list is settled, so the

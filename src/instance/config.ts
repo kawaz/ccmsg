@@ -2,7 +2,6 @@ import {
   copyFileSync,
   existsSync,
   mkdirSync,
-  readdirSync,
   readFileSync,
   statSync,
   writeFileSync,
@@ -10,6 +9,7 @@ import {
 import { isAbsolute, join } from "node:path";
 import { type DumpPreset, type Endpoint, TranscriptItemSelector } from "@ccmsg/protocol";
 import { DEFAULT_HARNESS, type Harness, HARNESSES, isHarness } from "../harness/index.ts";
+import { ID } from "./identity.ts";
 import { parseCidr } from "./client.ts";
 
 /** Where the instance accepts WebSocket connections, and from whom.
@@ -212,34 +212,80 @@ const FIELDS = ["harness", "entry", "upstream", "direct_delivery", "fork_origin"
 /** What only one instance's own file may state: which config home it answers
  * for, and the address it is reached at. Neither is a thing the shared file
  * could say once for everybody. */
-const INSTANCE_FIELDS = ["dir", "endpoint"] as const;
+const INSTANCE_FIELDS = ["dir", "name", "endpoint"] as const;
 
-/** Where the mesh endpoints this host does not serve itself are written.
+/** Which clusters this host knows of, and where each one's own file is.
  *
- * Data rather than a function, because nothing about a list of addresses needs
- * one and `ccmsg mesh add` / `remove` edit it: what a program writes back is
- * what a program can read whole. The instances on this host are not in it —
- * they are found from the files that already say which port each listens on. */
-export const PEERS_FILE = "peers.json";
+ * Data rather than a function, and a list rather than a directory listing: what
+ * is a cluster and what is an instance is stated, so a file nobody listed is
+ * not read and a file somebody listed and then deleted is an error rather than
+ * a cluster that quietly shrank. `ccmsg mesh` and `daemon add` write these,
+ * which is why they are the shape a program reads whole.
+ *
+ * A cluster's file is this host's account of that cluster. A cluster spans
+ * hosts and no copy of it is the canonical one: each host writes down the peers
+ * it dials and the instances it runs. */
+export const CLUSTERS_FILE = "clusters.json";
+export const CLUSTERS_DIR = "clusters";
+
+export function clusterFileName(id: string): string {
+  return `cluster-${id}.json`;
+}
+
+export function instanceFileName(id: string): string {
+  return `instance-${id}.ts`;
+}
 
 /** What one file under `instances/` says: which config home it is for, and
- * what that instance runs with. The name is the file's own, so what a person
- * calls an instance is where they wrote it down. */
+ * what that instance runs with.
+ *
+ * The id is what the file is called and what everything the instance issued is
+ * keyed by; the name is a label a person picks and may change, and defaults to
+ * the id. Keeping them apart is what lets a rename be a rename — the file, the
+ * state directory and every record already written stay where they are. */
 export interface InstanceSetting {
+  readonly id: string;
   readonly name: string;
   readonly dir: string;
   readonly config: InstanceConfig;
+  /** The clusters this instance belongs to, in the order the host lists them.
+   * More than one is allowed: an instance is a config home, and which
+   * management units it is part of is a separate question (A2). */
+  readonly clusters: readonly ClusterInfo[];
 }
 
-/** The name an instance file may be called.
+/** One cluster, as this host writes it down.
  *
- * Narrow on purpose: what is found under `instances/` is exactly `<name>.ts`
- * at the top of it, spelled in lower case, digits and dashes. A backup beside
- * the file it was taken from — `one.ts.bak`, `one.old.ts`, `drafts/one.ts` —
- * is then not an instance, which is the whole point: a directory listing is
- * how instances are found, so what is *not* one has to be visible from the
- * name alone. */
-export const INSTANCE_NAME = /^[a-z0-9-]+$/;
+ * A cluster is the unit a person manages: some instances, one mesh, one scope
+ * for the authentication records that are replicated across it. Which
+ * instances are in it is stated here rather than discovered, so an instance
+ * file that nobody listed runs nothing and an id listed with no file is an
+ * error. */
+export interface ClusterSetting {
+  readonly id: string;
+  readonly name: string;
+  /** The mesh endpoints of this cluster that this host does not serve itself.
+   * The ones it does serve are the instances listed below, at the address each
+   * of their files gives them. */
+  readonly peers: readonly Endpoint[];
+  readonly instances: readonly string[];
+}
+
+/** What an instance is told about one cluster it belongs to: which cluster,
+ * and every mesh endpoint of it — this instance's own among them, because that
+ * is what the startup probe settles which entry it is against (§7.1). */
+export interface ClusterInfo {
+  readonly id: string;
+  readonly name: string;
+  readonly peers: readonly Endpoint[];
+}
+
+/** A label a person may give an instance or a cluster.
+ *
+ * Narrow because it is typed at a command and printed in a listing, not
+ * because anything is found by it: files are named by id, so a name may change
+ * without moving anything. */
+export const CONFIG_NAME = /^[a-z0-9][a-z0-9._-]*$/;
 
 /** Everything the config home says, read once (DV-Q8).
  *
@@ -253,6 +299,7 @@ export const INSTANCE_NAME = /^[a-z0-9-]+$/;
  * combining itself and can see exactly what it is combining with. */
 export async function loadAll(configDir: string): Promise<{
   readonly defaults: InstanceConfig;
+  readonly clusters: readonly ClusterSetting[];
   readonly instances: readonly InstanceSetting[];
 }> {
   const file = join(configDir, CONFIG_FILE);
@@ -261,73 +308,192 @@ export async function loadAll(configDir: string): Promise<{
     if (existsSync(legacy)) {
       throw new ConfigError(
         legacy,
-        `settings are TypeScript now: write ${file} and ${join(configDir, INSTANCES_DIR, "<name>.ts")}`,
+        `settings are TypeScript now: write ${file}, ${join(configDir, CLUSTERS_FILE)} and ${join(configDir, INSTANCES_DIR, instanceFileName("<id>"))}`,
       );
     }
-    return { defaults: DEFAULT_CONFIG, instances: [] };
+    return { defaults: DEFAULT_CONFIG, clusters: [], instances: [] };
   }
   const returned = await called(file, {
     builtin: frozen(DEFAULT_CONFIG),
     config: copied(DEFAULT_CONFIG),
   });
   const defaults = settingsOf(file, returned, false).config;
-  const instances: InstanceSetting[] = [];
-  const seen = new Map<string, string>();
-  for (const name of instanceNames(join(configDir, INSTANCES_DIR))) {
-    const at = join(configDir, INSTANCES_DIR, `${name}.ts`);
-    const answer = await called(at, {
-      builtin: frozen(DEFAULT_CONFIG),
-      default: frozen(defaults),
-      config: { ...copied(defaults), dir: "" },
-    });
-    const { dir, config } = settingsOf(at, answer, true);
-    // Two instances answering for one config home would take each other's
-    // lock and state (A2), so which of the two files is wrong is asked here
-    // rather than discovered as a start that never settles.
-    const already = seen.get(dir);
-    if (already !== undefined) {
-      throw new ConfigError(at, `dir ${dir} is already what ${already} answers for`);
+  const clusters = loadClusters(configDir);
+
+  // Every instance any cluster lists, read once however many clusters list it:
+  // an instance is one config home and one process, and belonging to two
+  // clusters is not being two of anything.
+  const own = new Map<string, { name: string; dir: string; config: InstanceConfig }>();
+  const homes = new Map<string, string>();
+  for (const cluster of clusters) {
+    for (const id of cluster.instances) {
+      if (own.has(id)) continue;
+      const at = join(configDir, INSTANCES_DIR, instanceFileName(id));
+      if (!existsSync(at)) {
+        throw new ConfigError(
+          join(configDir, CLUSTERS_DIR, clusterFileName(cluster.id)),
+          `names instance ${id}, whose file ${at} is not there`,
+        );
+      }
+      const answer = await called(at, {
+        builtin: frozen(DEFAULT_CONFIG),
+        default: frozen(defaults),
+        config: { ...copied(defaults), dir: "", name: id },
+      });
+      const settings = settingsOf(at, answer, true);
+      // Two instances answering for one config home would take each other's
+      // lock and state (A2), so which of the two files is wrong is asked here
+      // rather than discovered as a start that never settles.
+      const already = homes.get(settings.dir);
+      if (already !== undefined) {
+        throw new ConfigError(at, `dir ${settings.dir} is already what ${already} answers for`);
+      }
+      homes.set(settings.dir, instanceFileName(id));
+      own.set(id, {
+        name: settings.name === "" ? id : settings.name,
+        dir: settings.dir,
+        config: settings.config,
+      });
     }
-    seen.set(dir, `${name}.ts`);
-    instances.push({ name, dir, config });
   }
-  // The mesh, assembled once and handed to every instance the same (§7.1): the
-  // instances of this host, which are the files just read, and the endpoints
-  // `peers.json` names. Each instance's own is in its own list, because that
-  // is what the startup probe settles which entry it is against.
-  const peers = meshOf(configDir, instances);
+
+  // What each cluster's mesh is: its own remote peers, and the instances of
+  // this host that are in it, each at the address its file gives it (§7.1).
+  const meshes = new Map<string, ClusterInfo>();
+  for (const cluster of clusters) {
+    const mesh: Endpoint[] = [];
+    for (const id of cluster.instances) {
+      const reached = endpointOfInstance(own.get(id)?.config);
+      if (reached !== undefined && !mesh.includes(reached)) mesh.push(reached);
+    }
+    for (const peer of cluster.peers) if (!mesh.includes(peer)) mesh.push(peer);
+    meshes.set(cluster.id, { id: cluster.id, name: cluster.name, peers: mesh });
+  }
+
+  const instances = [...own].map(([id, held]) => {
+    const mine = clusters
+      .filter((cluster) => cluster.instances.includes(id))
+      .flatMap((cluster) => {
+        const info = meshes.get(cluster.id);
+        return info === undefined ? [] : [info];
+      });
+    // The mesh this instance dials is every cluster it is in. Holding the
+    // clusters apart as well is what the isolation between them will be built
+    // on; what it does today is say which are which.
+    const peers: Endpoint[] = [];
+    for (const cluster of mine) {
+      for (const peer of cluster.peers) if (!peers.includes(peer)) peers.push(peer);
+    }
+    return {
+      id,
+      name: held.name,
+      dir: held.dir,
+      config: { ...held.config, peers },
+      clusters: mine,
+    };
+  });
+  return { defaults, clusters, instances };
+}
+
+/** Where a peer reaches one instance: what its file says it is reached at, and
+ * failing that the address it binds. Neither is an instance that serves the
+ * unix socket alone, which is in nobody's mesh. */
+function endpointOfInstance(config: InstanceConfig | undefined): Endpoint | undefined {
+  if (config === undefined) return undefined;
+  if (config.endpoint !== undefined) return config.endpoint;
+  return config.entry === undefined ? undefined : localEndpoint(config.entry);
+}
+
+/** The clusters this host knows of, in the order it lists them. */
+export function loadClusters(configDir: string): readonly ClusterSetting[] {
+  const file = join(configDir, CLUSTERS_FILE);
+  const top = readJson(file);
+  if (top === undefined) return [];
+  const listed = (top as { clusters?: unknown })["clusters"];
+  if (!Array.isArray(listed) || listed.some((id) => !ID.test(String(id)))) {
+    throw new ConfigError(file, "clusters must be an array of cluster ids");
+  }
+  const ids = listed as string[];
+  const repeated = ids.filter((id, index) => ids.indexOf(id) !== index);
+  if (repeated.length > 0) {
+    throw new ConfigError(file, `repeats ${[...new Set(repeated)].join(", ")}`);
+  }
+  return ids.map((id) => loadCluster(configDir, id));
+}
+
+/** One cluster's own file. Listed and missing is an error: a cluster whose
+ * instances could not be read is a mesh silently short of them. */
+export function loadCluster(configDir: string, id: string): ClusterSetting {
+  const file = join(configDir, CLUSTERS_DIR, clusterFileName(id));
+  const fields = readJson(file);
+  if (fields === undefined) {
+    throw new ConfigError(
+      join(configDir, CLUSTERS_FILE),
+      `names cluster ${id}, whose file ${file} is not there`,
+    );
+  }
+  const name = fields["name"];
+  if (name !== undefined && (typeof name !== "string" || !CONFIG_NAME.test(name))) {
+    throw new ConfigError(file, "name must be a label in lower case, digits, dots, dashes");
+  }
+  const peers = fields["peers"];
+  if (peers !== undefined && !Array.isArray(peers)) {
+    throw new ConfigError(file, "peers must be an array of endpoint URLs");
+  }
+  const read = ((peers ?? []) as unknown[]).map((peer, index) =>
+    endpointOf(file, `peers[${String(index)}]`, peer),
+  );
+  const twice = read.filter((peer, index) => read.indexOf(peer) !== index);
+  if (twice.length > 0)
+    throw new ConfigError(file, `peers repeats ${[...new Set(twice)].join(", ")}`);
+  const instances = fields["instances"];
+  if (
+    instances !== undefined &&
+    (!Array.isArray(instances) || instances.some((one) => !ID.test(String(one))))
+  ) {
+    throw new ConfigError(file, "instances must be an array of instance ids");
+  }
   return {
-    defaults: { ...defaults, peers },
-    instances: instances.map((one) => ({ ...one, config: { ...one.config, peers } })),
+    id,
+    name: typeof name === "string" ? name : id,
+    peers: read,
+    instances: (instances ?? []) as string[],
   };
 }
 
-/** Every mesh endpoint this host knows of, local ones first.
- *
- * Local first because they are the ones nobody wrote: the order a person reads
- * in `daemon status` then opens with what this host is, and what was added by
- * hand follows it. A remote entry that spells a local one is taken once —
- * a list that named this instance twice would end its start (§7.1), and an
- * operator who wrote the address of their own instance meant it to be in the
- * mesh, which it already is. */
-function meshOf(configDir: string, instances: readonly InstanceSetting[]): readonly Endpoint[] {
-  const listed = instances.flatMap((one) => {
-    // What the instance says it is reached at, and only failing that the
-    // address it binds: an instance behind a proxy is in the mesh under the
-    // name its peers dial, not under the loopback address that name forwards
-    // to. An instance with neither serves the unix socket alone, so there is
-    // nothing for a peer to dial and it is in nobody's list.
-    const stated = one.config.endpoint;
-    if (stated !== undefined) return [stated];
-    const entry = one.config.entry;
-    return entry === undefined ? [] : [localEndpoint(entry)];
-  });
-  const mesh = [...listed];
-  for (const peer of loadPeers(configDir)) if (!mesh.includes(peer)) mesh.push(peer);
-  return mesh;
+/** Write one cluster's file back, at the shape a person reads it in. */
+export function saveCluster(configDir: string, cluster: ClusterSetting): void {
+  mkdirSync(join(configDir, CLUSTERS_DIR), { recursive: true });
+  writeFileSync(
+    join(configDir, CLUSTERS_DIR, clusterFileName(cluster.id)),
+    `${JSON.stringify({ name: cluster.name, peers: cluster.peers, instances: cluster.instances }, null, 2)}\n`,
+  );
 }
 
-/** The address another instance on this host is dialled at.
+/** Write down which clusters there are. */
+export function saveClusters(configDir: string, ids: readonly string[]): void {
+  mkdirSync(configDir, { recursive: true });
+  writeFileSync(join(configDir, CLUSTERS_FILE), `${JSON.stringify({ clusters: ids }, null, 2)}\n`);
+}
+
+function readJson(file: string): Record<string, unknown> | undefined {
+  let text: string;
+  try {
+    text = readFileSync(file, "utf8");
+  } catch {
+    return undefined;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch (cause) {
+    throw new ConfigError(file, `not valid JSON (${String(cause)})`);
+  }
+  return objectOf(file, "the top level", parsed);
+}
+
+/** The address another instance on this host is dialled at, when its file
+ * states no public one.
  *
  * A bind of every address is not an address, so a host that listens on all of
  * them is reached at the loopback one — the peer doing the dialling is on this
@@ -338,48 +504,12 @@ function localEndpoint(entry: EntryConfig): Endpoint {
   return `http://${at}:${String(entry.port)}/` as Endpoint;
 }
 
-/** The mesh endpoints this host does not serve, as `peers.json` states them.
- *
- * Absent is not broken, for `DEFAULT_CONFIG`'s reason; present and not a list
- * of endpoints ends the read, because a mesh an instance was meant to be in
- * and silently is not is the state §8.3 refuses to start in. */
-export function loadPeers(configDir: string): readonly Endpoint[] {
-  const file = join(configDir, PEERS_FILE);
-  let text: string;
-  try {
-    text = readFileSync(file, "utf8");
-  } catch {
-    return [];
-  }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(text);
-  } catch (cause) {
-    throw new ConfigError(file, `not valid JSON (${String(cause)})`);
-  }
-  if (!Array.isArray(parsed)) {
-    throw new ConfigError(file, "must be an array of endpoint URLs");
-  }
-  const peers = parsed.map((peer, index) => endpointOf(file, `[${String(index)}]`, peer));
-  const repeated = peers.filter((peer, index) => peers.indexOf(peer) !== index);
-  if (repeated.length > 0) {
-    throw new ConfigError(file, `repeats ${[...new Set(repeated)].join(", ")}`);
-  }
-  return peers;
-}
-
-/** Write the endpoint list back, at the shape a person reads it in. */
-export function savePeers(configDir: string, peers: readonly Endpoint[]): void {
-  mkdirSync(configDir, { recursive: true });
-  writeFileSync(join(configDir, PEERS_FILE), `${JSON.stringify(peers, null, 2)}\n`);
-}
-
-/** The instances the config home names, in name order. */
+/** The instances this host runs, in the order its clusters list them. */
 export async function loadInstances(configDir: string): Promise<readonly InstanceSetting[]> {
   return (await loadAll(configDir)).instances;
 }
 
-/** What one config home's instance runs with. A config home no file names
+/** What one config home's instance runs with. A config home no cluster lists
  * still resolves — `daemon run` on an unregistered directory is what
  * `config.ts` returns, plus the built-ins. */
 export async function loadConfig(configDir: string, dir: string): Promise<InstanceConfig> {
@@ -398,21 +528,6 @@ export function writeConfigTypes(configDir: string): string {
   mkdirSync(configDir, { recursive: true });
   copyFileSync(new URL(`./${TYPES_FILE}`, import.meta.url).pathname, at);
   return at;
-}
-
-/** The instance files there are, by the name each one is called. */
-function instanceNames(dir: string): string[] {
-  let entries: string[];
-  try {
-    entries = readdirSync(dir);
-  } catch {
-    return [];
-  }
-  return entries
-    .filter((entry) => entry.endsWith(".ts") && !entry.endsWith(".d.ts"))
-    .map((entry) => entry.slice(0, -".ts".length))
-    .filter((name) => INSTANCE_NAME.test(name))
-    .sort();
 }
 
 /** Import one config file and call what it exports.
@@ -451,7 +566,7 @@ function settingsOf(
   file: string,
   returned: unknown,
   wantsDir: boolean,
-): { dir: string; config: InstanceConfig } {
+): { dir: string; name: string; config: InstanceConfig } {
   const fields = objectOf(file, "what the config function returned", returned);
   for (const name of Object.keys(fields)) {
     if ((INSTANCE_FIELDS as readonly string[]).includes(name)) {
@@ -467,7 +582,7 @@ function settingsOf(
       // mesh, and the answer is where a mesh is stated now.
       throw new ConfigError(
         file,
-        `peers are not written here: the instances of this host are found from their own files, and the rest go in ${PEERS_FILE} (ccmsg mesh add)`,
+        `peers are not written here: a mesh belongs to a cluster, so the instances of one are the ids its ${CLUSTERS_DIR}/ file lists and the rest are that file's peers (ccmsg mesh add)`,
       );
     }
     if (!(FIELDS as readonly string[]).includes(name)) {
@@ -478,7 +593,15 @@ function settingsOf(
   if (wantsDir && (typeof dir !== "string" || !isAbsolute(dir))) {
     throw new ConfigError(file, "dir must be the absolute config home this instance answers for");
   }
-  return { dir: wantsDir ? (dir as string) : "", config: parseConfig(file, fields) };
+  const name = fields["name"];
+  if (name !== undefined && (typeof name !== "string" || !CONFIG_NAME.test(name))) {
+    throw new ConfigError(file, "name must be a label in lower case, digits, dots, dashes");
+  }
+  return {
+    dir: wantsDir ? (dir as string) : "",
+    name: typeof name === "string" ? name : "",
+    config: parseConfig(file, fields),
+  };
 }
 
 /** A copy nothing can write to, for the values a config function builds on

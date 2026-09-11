@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -105,27 +106,55 @@ export async function reapOrphans(): Promise<string[]> {
   return leaked.map((one) => one.argv);
 }
 
-/** Settings written as the files a person writes: `config.ts`, and one file
- * per instance under `instances/`.
+/** Settings written as the files a person writes: `config.ts`, one cluster, and
+ * one file per instance under `instances/`.
  *
- * Each is a function assigning what the test states over what it was handed,
- * which is the plainest thing a config file can be — a test about what one
- * instance runs with says the settings and not the ceremony around them. A
- * source string is taken as the whole file, for the tests that are about what
- * a file may do rather than about what it says. */
+ * Each instance's file is a function assigning what the test states over what
+ * it was handed, which is the plainest thing a config file can be — a test
+ * about what one instance runs with says the settings and not the ceremony
+ * around them. A source string is taken as the whole file, for the tests that
+ * are about what a file may do rather than about what it says.
+ *
+ * The instances are keyed by the name they are listed under; their ids are
+ * derived from that name so a test can say what it means and still get the
+ * fixed-width id the files are named by. */
 export function writeConfigHome(
   configDir: string,
   defaults: Record<string, unknown> | string,
   instances: Readonly<Record<string, Record<string, unknown> | string>> = {},
+  peers: readonly string[] = [],
 ): string {
   mkdirSync(configDir, { recursive: true });
   writeFileSync(join(configDir, "config.ts"), configSource(defaults));
-  if (Object.keys(instances).length > 0)
+  const ids: string[] = [];
+  if (Object.keys(instances).length > 0) {
     mkdirSync(join(configDir, "instances"), { recursive: true });
-  for (const [name, settings] of Object.entries(instances)) {
-    writeFileSync(join(configDir, "instances", `${name}.ts`), configSource(settings));
   }
+  for (const [name, settings] of Object.entries(instances)) {
+    const id = idFor(name);
+    ids.push(id);
+    writeFileSync(
+      join(configDir, "instances", `instance-${id}.ts`),
+      typeof settings === "string" ? settings : configSource({ name, ...settings }),
+    );
+  }
+  const cluster = idFor(`cluster:${configDir}`);
+  mkdirSync(join(configDir, "clusters"), { recursive: true });
+  writeFileSync(
+    join(configDir, "clusters", `cluster-${cluster}.json`),
+    `${JSON.stringify({ name: "test", peers, instances: ids }, null, 2)}\n`,
+  );
+  writeFileSync(
+    join(configDir, "clusters.json"),
+    `${JSON.stringify({ clusters: [cluster] }, null, 2)}\n`,
+  );
   return join(configDir, "config.ts");
+}
+
+/** The id a test's instance is called by: fixed width, and the same every run
+ * for the same name, so a test can name a file it wrote. */
+export function idFor(name: string): string {
+  return createHash("sha256").update(name).digest("hex").slice(0, 32);
 }
 
 function configSource(settings: Record<string, unknown> | string): string {

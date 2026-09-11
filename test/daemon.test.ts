@@ -24,7 +24,13 @@ import {
   tailOf,
   targetFor,
 } from "../src/daemon/index.ts";
-import { DEFAULT_CONFIG, loadAll } from "../src/instance/index.ts";
+import {
+  DEFAULT_CONFIG,
+  loadAll,
+  loadClusters,
+  saveCluster,
+  saveClusters,
+} from "../src/instance/index.ts";
 import { resolvePaths } from "../src/instance/paths.ts";
 import { leasePort } from "./cluster.ts";
 import { capture, Host, json, reapOrphans, writeConfigHome } from "./harness.ts";
@@ -98,7 +104,11 @@ describe("which config homes there are (daemon add / remove / list)", () => {
     // Twice is refused: one file per instance, and one instance per config
     // home (A2), and the name a config home is registered under is its own.
     expect(register(home)).rejects.toThrow(CommandError);
-    expect(await remove(process.env, "one")).toEqual({ name: "one", dir: home, removed: true });
+    expect(await remove(process.env, "one")).toMatchObject({
+      name: "one",
+      dir: home,
+      removed: true,
+    });
     expect(await list(process.env)).toEqual([]);
     expect(remove(process.env, "one")).rejects.toThrow(CommandError);
   });
@@ -106,16 +116,22 @@ describe("which config homes there are (daemon add / remove / list)", () => {
   test("what add writes is the file a person edits", async () => {
     const at = host();
     const home = at.home("one");
-    await register(home);
+    const added = await register(home);
     const paths = resolvePaths(process.env);
     // The declarations the two files write against, put beside them: a
     // relative `import type` resolves with no tsconfig anywhere near it.
     expect(existsSync(join(paths.configDir, "ccmsg-config.d.ts"))).toBe(true);
-    // One file per instance, called what the instance is called, stating what
-    // differs from the shared file and nothing else.
-    const written = readFileSync(join(paths.instancesDir, "one.ts"), "utf8");
+    // One file per instance, called by its id, stating what differs from the
+    // shared file and nothing else. The name a person reads is inside it, so
+    // renaming moves nothing.
+    const written = readFileSync(join(paths.instancesDir, `instance-${added.id}.ts`), "utf8");
     expect(written).toContain(`config.dir = ${JSON.stringify(home)};`);
+    expect(written).toContain('config.name = "one";');
     expect(written).not.toContain("harness");
+    // And one cluster holding it, which is what says the instance is run at
+    // all: what is listed is read, and nothing else is.
+    const clusters = loadClusters(paths.configDir);
+    expect(clusters).toMatchObject([{ instances: [added.id] }]);
     // The dump presets go in the shared file: what a preset names is an
     // interest, which this instance has no opinion on, so they are examples in
     // a file to edit rather than a default in the code.
@@ -127,7 +143,7 @@ describe("which config homes there are (daemon add / remove / list)", () => {
       "handoff",
       "audit",
     ]);
-    expect(instances).toMatchObject([{ name: "one", dir: home }]);
+    expect(instances).toMatchObject([{ id: added.id, name: "one", dir: home }]);
     // What the instance runs with is the built-ins, those presets, and the one
     // thing `add` settled for it: the address it listens on, which is also the
     // address its peers on this host dial it at.
@@ -152,12 +168,67 @@ describe("which config homes there are (daemon add / remove / list)", () => {
     expect((await loadAll(paths.configDir)).defaults.dump.presets).toEqual([]);
   });
 
-  test("a directory that is not a name is refused before anything is written", async () => {
+  test("a directory whose name is not a label is listed under its id", async () => {
     const at = host();
-    // The name is the directory's own, so a directory whose name an instance
-    // could not be called is refused where the name is chosen.
-    expect(register(at.home("Upper.Case"))).rejects.toThrow(CommandError);
-    expect(await list(process.env)).toEqual([]);
+    // The name is a label and the id is the identity, so a directory nobody
+    // could label is registered all the same — under the id, which is what a
+    // name defaults to.
+    const row = await register(at.home("Upper.Case"));
+    expect(row.name).toBe(row.id);
+    expect((await list(process.env)).map((one) => one.name)).toEqual([row.id]);
+  });
+
+  test("an instance belongs to a cluster, and a second one is asked for by name", async () => {
+    const at = host();
+    const first = await register(at.home("one"));
+    // With one cluster there is no question which to join.
+    expect(first.cluster_id).toMatch(/^[0-9a-f]{32}$/);
+    const second = await add(process.env, at.home("two"), { cluster: "b".repeat(32) });
+    // An id this host has not met is a cluster that exists elsewhere — a
+    // cluster spans hosts — so it is written down under that id.
+    expect(second.cluster_id).toBe("b".repeat(32));
+    expect(loadClusters(resolvePaths(process.env).configDir).map((one) => one.id)).toEqual([
+      String(first.cluster_id),
+      "b".repeat(32),
+    ]);
+    // And with two of them, which one is no longer something to guess at.
+    expect(add(process.env, at.home("three"))).rejects.toThrow(/--cluster/);
+    // Listed by cluster, one row per membership.
+    const rows = await list(process.env);
+    expect(rows.map((one) => [one.cluster_id, one.name])).toEqual([
+      [first.cluster_id, "one"],
+      ["b".repeat(32), "two"],
+    ]);
+  });
+
+  test("an instance in two clusters is one instance, in the mesh of both", async () => {
+    const at = host();
+    const home = at.home("one");
+    const row = await register(home);
+    const paths = resolvePaths(process.env);
+    const second = "c".repeat(32);
+    saveCluster(paths.configDir, {
+      id: second,
+      name: "other",
+      peers: ["https://far.example/ccmsg/"],
+      instances: [row.id],
+    });
+    saveClusters(paths.configDir, [String(row.cluster_id), second]);
+    const { instances } = await loadAll(paths.configDir);
+    // One instance, one process, and one entry in each listing.
+    expect(instances).toHaveLength(1);
+    // A cluster nobody named is listed under its id, which is what a name
+    // defaults to; the one made here was given one.
+    expect(instances[0]?.clusters.map((one) => one.name)).toEqual([
+      String(row.cluster_id),
+      "other",
+    ]);
+    expect(instances[0]?.config.peers).toContain("https://far.example/ccmsg/");
+    expect((await registered(process.env)).map((one) => one.dir)).toEqual([home]);
+    expect((await list(process.env)).map((one) => one.cluster_id)).toEqual([
+      row.cluster_id,
+      second,
+    ]);
   });
 
   test("the port is the next one after what is registered, and the harness is read off the directory", async () => {

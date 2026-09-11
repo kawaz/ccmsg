@@ -10,7 +10,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type Endpoint, OP_NAMES, PROTOCOL_VERSION } from "@ccmsg/protocol";
+import { OP_NAMES, PROTOCOL_VERSION } from "@ccmsg/protocol";
 import { DUMPS } from "../src/sessions/index.ts";
 import { KV_DIR } from "../src/kv/index.ts";
 import { OpError } from "../src/dispatch/index.ts";
@@ -22,9 +22,11 @@ import {
   Instance,
   isRunning,
   loadAll,
+  loadClusters,
   loadConfig,
   loadInstances,
-  savePeers,
+  saveCluster,
+  saveClusters,
   REAL_SOCKET,
   realSocketName,
   resolvePaths,
@@ -207,18 +209,30 @@ describe("config", () => {
 
   test("the four things config carries (§8.2)", async () => {
     const { root, env, home } = disposable();
-    const dir = shared(root, {
-      entry: { host: "127.0.0.1", port: 0, source_ips: ["127.0.0.1"] },
-      upstream: { gateway_url: "https://gateway.example" },
-    });
-    savePeers(dir, ["https://elsewhere.example/ccmsg/"] as Endpoint[]);
+    const dir = join(root, "config");
+    writeConfigHome(
+      dir,
+      {},
+      {
+        mine: {
+          dir: home,
+          entry: { host: "127.0.0.1", port: 0, source_ips: ["127.0.0.1"] },
+          upstream: { gateway_url: "https://gateway.example" },
+        },
+      },
+      ["https://elsewhere.example/ccmsg/"],
+    );
     const config = await loadConfig(dir, home);
     // The config home is the fourth, and it is the environment's rather than
     // the file's: an instance is the config home it was started in (A2).
     expect(resolvePaths(env).configHome).toBe(home);
     // The only URLs config carries are the peer endpoints: no origin list, and
     // no statement of which entry is this instance (§7.1, DR-0001 §2.7).
-    expect(config.peers).toEqual(["https://elsewhere.example/ccmsg/"]);
+    // Its own address, then the one its cluster was told of.
+    expect(config.peers).toEqual([
+      `http://127.0.0.1:${String(config.entry?.port ?? 0)}/`,
+      "https://elsewhere.example/ccmsg/",
+    ]);
     expect(config.entry?.source_ips).toEqual(["127.0.0.1"]);
     expect(config.upstream.gateway_url).toBe("https://gateway.example");
   });
@@ -259,7 +273,7 @@ describe("config", () => {
     expect(loadConfig(dir, "/a/.claude")).rejects.toThrow(/endpoint belongs to an instances/);
   });
 
-  test("the mesh is the instances of this host, and then what peers.json names", async () => {
+  test("the mesh is the instances of a cluster, and then what it was told of", async () => {
     const { root } = disposable();
     const dir = join(root, "config");
     const entry = { host: "127.0.0.1", source_ips: [], trusted_proxies: [] };
@@ -273,13 +287,14 @@ describe("config", () => {
         // no address for a peer to dial and it is in nobody's list.
         three: { dir: "/c/.claude" },
       },
+      [
+        "https://far.example/ccmsg/",
+        // The address of an instance of this host, written by hand: taken once,
+        // because a list naming this instance twice would end its start (§7.1).
+        "http://127.0.0.1:8643/",
+      ],
     );
-    savePeers(dir, [
-      "https://far.example/ccmsg/",
-      // The address of an instance of this host, written by hand: taken once,
-      // because a list naming this instance twice would end its start (§7.1).
-      "http://127.0.0.1:8643/",
-    ] as Endpoint[]);
+
     const { instances } = await loadAll(dir);
     // The same list for every instance, its own address among them, local
     // first: what a person reads opens with what this host is.
@@ -296,20 +311,56 @@ describe("config", () => {
     const { root, home } = disposable();
     // Not "unknown field": a person writing this is not misspelling anything,
     // so what they are told is where the thing they meant lives now.
-    expect(loadConfig(shared(root, { peers: [] }), home)).rejects.toThrow(/peers.json/);
+    expect(loadConfig(shared(root, { peers: [] }), home)).rejects.toThrow(
+      /a mesh belongs to a cluster/,
+    );
   });
 
-  test("what peers.json holds is endpoints, and each of them once", async () => {
+  test("what a cluster holds is endpoints and ids, and each of them once", async () => {
     const { root, home } = disposable();
-    const dir = shared(root, {});
-    writeFileSync(join(dir, "peers.json"), JSON.stringify({ peers: [] }));
+    const dir = join(root, "config");
+    writeConfigHome(dir, {});
+    const id = loadClusters(dir)[0]?.id as string;
+    const file = join(dir, "clusters", `cluster-${id}.json`);
+    writeFileSync(file, JSON.stringify({ peers: {} }));
     expect(loadConfig(dir, home)).rejects.toThrow(/array of endpoint/);
-    writeFileSync(join(dir, "peers.json"), JSON.stringify(["not-a-url"]));
+    writeFileSync(file, JSON.stringify({ peers: ["not-a-url"] }));
     expect(loadConfig(dir, home)).rejects.toThrow(ConfigError);
-    writeFileSync(join(dir, "peers.json"), "{ this is not json");
+    writeFileSync(file, "{ this is not json");
     expect(loadConfig(dir, home)).rejects.toThrow(/JSON/);
-    savePeers(dir, ["https://one.example/", "https://one.example/"] as Endpoint[]);
+    writeFileSync(
+      file,
+      JSON.stringify({ peers: ["https://one.example/", "https://one.example/"] }),
+    );
     expect(loadConfig(dir, home)).rejects.toThrow(/repeats/);
+    writeFileSync(file, JSON.stringify({ instances: ["not-an-id"] }));
+    expect(loadConfig(dir, home)).rejects.toThrow(/array of instance ids/);
+  });
+
+  test("what is read is what the files list, and what they list has to be there", async () => {
+    const { root, home } = disposable();
+    const dir = join(root, "config");
+    writeConfigHome(dir, {}, { one: { dir: home } });
+    // A file nobody listed is not an instance: what runs is stated, so a copy
+    // of a settings file kept beside it starts nothing.
+    writeFileSync(
+      join(dir, "instances", "instance-" + "f".repeat(32) + ".ts"),
+      "export default ({ config }: any) => { config.dir = '/stray/.claude'; return config; };\n",
+    );
+    expect((await loadInstances(dir)).map((one) => one.dir)).toEqual([home]);
+    // And an id listed with no file is an error rather than a cluster that
+    // quietly shrank.
+    const cluster = loadClusters(dir)[0] as {
+      id: string;
+      name: string;
+      peers: never[];
+      instances: string[];
+    };
+    saveCluster(dir, { ...cluster, instances: [...cluster.instances, "a".repeat(32)] });
+    expect(loadConfig(dir, home)).rejects.toThrow(/is not there/);
+    // A cluster listed with no file of its own, likewise.
+    saveClusters(dir, [cluster.id, "b".repeat(32)]);
+    expect(loadConfig(dir, home)).rejects.toThrow(/is not there/);
   });
 
   test("an instance's own file builds on what the shared one returned", async () => {
@@ -519,21 +570,6 @@ describe("config", () => {
     expect(launcher?.templates.map((one) => one.name)).toEqual(["shell"]);
     expect(launcher?.clean_env).toEqual(["CLAUDE_*"]);
     expect(launcher?.depth).toBe(3);
-  });
-
-  test("the instances are the files there are, by the name each is called", async () => {
-    const { root, home } = disposable();
-    const dir = join(root, "config");
-    writeConfigHome(
-      dir,
-      {},
-      { two: { dir: "/b/.claude" }, one: { dir: home }, "not a name": { dir: "/c/.claude" } },
-    );
-    const found = await loadInstances(dir);
-    // In name order, so a listing is the same on every host, and only files
-    // whose name an instance could be called by.
-    expect(found.map((instance) => instance.name)).toEqual(["one", "two"]);
-    expect(found.map((instance) => instance.dir)).toEqual([home, "/b/.claude"]);
   });
 
   test("a file edited between two reads is read again", async () => {
@@ -1209,10 +1245,10 @@ type Same<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
 // the instances of this host and `peers.json`, so the declarations a person
 // writes against do not offer it.
 type Written = Exclude<keyof InstanceConfig, "peers">;
-// `endpoint` is an instance's own to state, like `dir`: the shared file could
-// not say either of them once for everybody.
+// `endpoint` and `name` are an instance's own to state, like `dir`: the shared
+// file could not say any of them once for everybody.
 export type _ConfigFields = Assert<Same<Exclude<Written, "endpoint">, keyof Draft>>;
-export type _InstanceFields = Assert<Same<Written | "dir", keyof InstanceDraft>>;
+export type _InstanceFields = Assert<Same<Written | "dir" | "name", keyof InstanceDraft>>;
 // Down through the shapes that hang below it, since a field added inside the
 // launcher or an entry is as invisible from the top level as one added beside
 // them. What the copy states differently on purpose is optionality: a file may

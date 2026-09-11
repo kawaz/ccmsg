@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { basename, isAbsolute, join } from "node:path";
 import { currentSession, HARNESS } from "../harness/index.ts";
-import { CONFIG_FILE, INSTANCES_DIR } from "./config.ts";
+import { CLUSTERS_DIR, CLUSTERS_FILE, CONFIG_FILE, INSTANCES_DIR } from "./config.ts";
 
 /** Every path one instance uses, decided in one place (daemon-v2 §8.1).
  *
@@ -23,6 +23,9 @@ export interface InstancePaths {
   readonly configFile: string;
   /** Where the file naming this config home lives, one per instance. */
   readonly instancesDir: string;
+  /** Which clusters this host knows of, and where each one's file is. */
+  readonly clustersFile: string;
+  readonly clustersDir: string;
   readonly stateDir: string;
   /** The address clients connect to. A symlink to whichever `socketReal` is
    * currently serving, so a client's path outlives the process behind it. */
@@ -124,6 +127,8 @@ export function resolvePathsFor(configHome: string, env: Env = process.env): Ins
     configDir,
     configFile: join(configDir, CONFIG_FILE),
     instancesDir: join(configDir, INSTANCES_DIR),
+    clustersFile: join(configDir, CLUSTERS_FILE),
+    clustersDir: join(configDir, CLUSTERS_DIR),
     stateDir,
     socketDir,
     socket: join(socketDir, SOCKET_NAME),

@@ -10,7 +10,7 @@ import { mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type Endpoint, type InstanceId, PROTOCOL_VERSION } from "@ccmsg/protocol";
-import { type Env, Instance, isRunning, savePeers, start } from "../src/instance/index.ts";
+import { type Env, Instance, isRunning, start } from "../src/instance/index.ts";
 import { reapOrphans, trackRoot, writeConfigHome } from "./harness.ts";
 import {
   EphemeralKey,
@@ -136,23 +136,33 @@ const leaseOf = new WeakMap<Env, PortLease>();
  * which is exactly what §8.2 says a peer list is: one file that can go to all
  * of them. Nothing here says which entry this home is: that is what the probe
  * settles at startup (§7.1). */
-export function homeFor(lease: PortLease, peers: readonly Endpoint[]): Env {
+export function homeFor(lease: PortLease, peers: readonly Endpoint[], endpoint?: Endpoint): Env {
   const port = lease.port;
   const root = mkdtempSync(join(tmpdir(), "ccmsg-mesh-"));
   trackRoot(root);
   const home = join(root, "home");
   mkdirSync(join(home, "sessions"), { recursive: true });
   const configDir = join(root, "config");
-  writeConfigHome(configDir, {
-    // The page this instance serves, so the `/auth/*` routes have an origin
-    // to compare against (DR-0001 §2.3).
-    entry: { host: "127.0.0.1", port, origins: [`http://127.0.0.1:${String(port)}`] },
-  });
-  // Each of these homes is its own config dir, so the other instances of the
-  // test cluster are peers this one is told about rather than ones it finds:
-  // what `peers.json` is for is exactly a mesh endpoint this host does not
-  // serve (§8.2). Its own address is in the list too, and is taken once.
-  savePeers(configDir, peers);
+  // Each of these homes is its own config dir holding one instance, so the
+  // other instances of the test cluster are peers this one is told about
+  // rather than ones it finds: that is what a cluster's own peer list is for
+  // (§8.2). Its own address is in the list too, and is taken once.
+  writeConfigHome(
+    configDir,
+    {},
+    {
+      self: {
+        dir: home,
+        // What this instance says peers reach it at, where a test is about an
+        // address that is not the one it binds.
+        ...(endpoint === undefined ? {} : { endpoint }),
+        // The page this instance serves, so the `/auth/*` routes have an
+        // origin to compare against (DR-0001 §2.3).
+        entry: { host: "127.0.0.1", port, origins: [`http://127.0.0.1:${String(port)}`] },
+      },
+    },
+    peers,
+  );
   const env: Env = {
     CLAUDE_CONFIG_DIR: home,
     CCMSG_STATE_DIR: join(root, "state"),
