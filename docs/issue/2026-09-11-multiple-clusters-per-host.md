@@ -66,6 +66,18 @@ DESIGN の locality `cluster` (全 instance 分の答え) はこの cluster 全�
 
 監督者に HTTP の入口を持たせる時の認証境界 (どの instance の Caddy にぶら下げるか / 監督者専用の口を設けるか)。
 
+## 決めること追記 (kawaz r303 m24、2026-09-11)
+
+複数ホストにまたがる cluster の管理責務。
+
+統括の推し: 正本は置かず、各ホストの `clusters/cluster-<id>.json` は「このホストが知る cluster の姿」(mesh の「各 instance の視点」原則の延長)。監督者の責務はローカルに閉じ、cluster 全体の管理者は居ない。
+
+同一 cluster の判定は cluster_id の一致のみで、2 台目は `daemon add --cluster <id>` で既存 id を指定して参加 (TS config 作業に含める)。
+
+将来: 1 か所の `mesh add` を全ホストに広げるなら auth.records と同じ「cluster 内で複製される記録」として足す。id の写しを pairing (URL + コード) で自動化するのは admin 経路と一緒に。
+
+既知の弱点: 片側だけ `mesh remove` した状態が作れる (相手は繋ぎに来ても拒否されるので実害は小)。
+
 ## TODO
 
 <!-- wip 時のみ -->
