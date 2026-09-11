@@ -1,6 +1,6 @@
 ---
 title: dump --since/--until が相対指定未対応、かつ不正値でも黙って items 0 になる
-status: open
+status: resolved
 category: bug
 created: 2026-09-12T06:45:43+09:00
 last_read: 2026-09-12T06:46:23+09:00
@@ -9,10 +9,10 @@ wip_entered:
 blocked_entered:
 pending_entered:
 discarded_entered:
-resolved_entered:
+resolved_entered: 2026-09-12T06:51:23+09:00
 discard_reason:
 pending_reason:
-close_reason:
+close_reason: ["done: v0.11.3 で修正 (src/cli.ts、契約は不変)。--since/--until に -10m/-2h/-1d/-30s の相対指定(負値のみ、CLI が Date.now() から epoch ms に解決)。ISO/epoch/相対/完全な record uuid のどれでもない値は invalid_args。短縮uuid(先頭8文字)は完全一致で切れず空dumpになるため拒否。見出しの範囲は解決後の絶対時刻。本番で --since -5m が効くことを確認"]
 blocked_by:
 origin: 自リポ TODO
 ---
