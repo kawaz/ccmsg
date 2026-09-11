@@ -1,17 +1,17 @@
 ---
 title: auth (passkey / token family) の claim に cluster を含める
-status: open
+status: pending-sublimation
 category: design
 created: 2026-09-11T14:05:46+09:00
 last_read:
 open_entered: 2026-09-11T14:05:46+09:00
 wip_entered:
 blocked_entered:
-pending_entered:
+pending_entered: 2026-09-12T05:36:29+09:00
 discarded_entered:
 resolved_entered:
 discard_reason:
-pending_reason:
+pending_reason: ["cluster 概念自体を一旦無しに戻した (2026-09-12 r303 m28、issue multiple-clusters-per-host 参照) ため、claim に cluster を含める作業も保留。cluster の権限構造が固まってから再開"]
 close_reason:
 blocked_by: multiple-clusters-per-host (TS config の cluster 構造の確定形)
 origin: 自リポ TODO
