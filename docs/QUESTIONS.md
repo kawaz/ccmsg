@@ -27,14 +27,6 @@
 - [ ] a: `~/.config/ccmsg/config.ts` (defaults) + `~/.config/ccmsg/instances/<name>.ts` (instance ごと 1 ファイル、自動発見。`daemon add` はテンプレを 1 ファイル生成、`remove` は削除) (推し)
 - [ ] b: `config.ts` 1 ファイルで defaults と instances 配列の両方を返す (`daemon add` は使えなくなり、人が編集)
 
-### DS-Q4 dump に worker (sidechain) の発話をどう置くか
-
-issue [dump-sidechain-rows-placement](issue/2026-09-10-dump-sidechain-rows-placement.md) の裁定。起票後にアイテム型体系が入り、統括の dump には委譲が `message.sub.out` (Agent 呼び出し)、回答が `message.sub.in` (結果) として既に並ぶ。worker の内部 (自分の thinking / tool / 親への返答) は `sid/agent-<id>` を主語にした別 dump で読める。残る問いは、統括の dump の中に worker の内部を**入れ子で inline するか**:
-
-- [ ] a: inline しない。統括の dump は「頼んだ / 返ってきた」の 2 行で足り、worker の中身は `ccmsg dump <sid>/agent-<id>` で別に読む (推し: 日記の「私」が統括に固定され、重複排除も要らない。既に実装済みなので issue は close)
-- [ ] b: `message.sub.in` の下に worker の回答本文だけを 1 段インデントで inline する (Agent 結果は要約なので、本文が要る時に別 dump を開かずに済む)
-- [ ] c: worker の thinking も含めて全部 inline する (情報量が大きく、統括の日記でなくなる)
-
 ## 確認待ち
 
 (なし)
