@@ -25,6 +25,7 @@ wire の契約は [kawaz/ccmsg-protocol](https://github.com/kawaz/ccmsg-protocol
 
 | date | category | status | slug | 概要 |
 |---|---|---|---|---|
+| 2026-09-12 | task | open | [webauthn-tests-library-grade](./2026-09-12-webauthn-tests-library-grade.md) | WebAuthn の検証を自前 (`src/auth/webauthn.ts` 401 行 + `cbor.ts` 150 行、DR-0001 §2.11) で… |
 | 2026-09-11 | bug | open | [daemon-restart-all-leaves-supervisor-on-old-build](./2026-09-11-daemon-restart-all-leaves-supervisor-on-old-build.md) | `ccmsg daemon restart --all` は子 instance だけを新コードで起動し直し、launchd 配下の監督者 (`c… |
 | 2026-09-11 | design | open | [dump-raw-jsonl-format](./2026-09-11-dump-raw-jsonl-format.md) | `dump` の出力形式を 3 つにする (kawaz 2026-09-11): (1) item JSON (現 `--json`… |
 | 2026-09-11 | design | open | [dump-timeline-shared-selection](./2026-09-11-dump-timeline-shared-selection.md) | dump と timeline (webui の TL) は「型の階層で item を選ぶ」設計を共有している (kawaz 2026-09-11)… |
