@@ -88,6 +88,44 @@ const ITEMS: Record<string, Draw> = {
     body: lines(str(item, "text")),
   }),
 
+  // The one above and the ones alongside. A name is on the heading wherever
+  // the record gave one — an answer handed back as prose names nobody, and a
+  // heading that invented a name for it would say more than the file does.
+  "message:parent:in": (item) => ({
+    head: words(field(item, "from", "from="), mid(item)),
+    body: lines(str(item, "text")),
+  }),
+
+  "message:parent:out": (item) => ({
+    head: words(field(item, "to", "to="), str(item, "summary")),
+    body: lines(str(item, "text")),
+  }),
+
+  "message:team:out": (item) => ({
+    head: words(
+      field(item, "to", "to="),
+      field(item, "agent_id", "agent="),
+      field(item, "subagent_type", "type="),
+      str(item, "description"),
+      str(item, "summary"),
+    ),
+    body: lines(str(item, "text")),
+  }),
+
+  // Both halves of a teammate's correspondence arrive under one type: a letter
+  // it wrote, which names who wrote it, and its run ending, which names how it
+  // ended. Each heading says whichever of those the item carried.
+  "message:team:in": (item) => ({
+    head: words(
+      field(item, "from", "from="),
+      mid(item),
+      field(item, "agent_id", "agent="),
+      field(item, "status", "status="),
+      elapsed(num(item, "duration_ms")),
+    ),
+    body: lines(str(item, "text")),
+  }),
+
   "message:session:out": (item) => ({
     head: words(field(item, "to", "to="), field(item, "reply_to", "reply_to="), mid(item)),
     body: lines(str(item, "text")),

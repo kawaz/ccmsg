@@ -186,6 +186,66 @@ describe("a call and what came back", () => {
   待つ`);
   });
 
+  test("a teammate's run ends under the call that started it, and its letters stand alone", () => {
+    const start = item("c8a2f371", "message:team:out", {
+      role: "use",
+      tool_use_id: "t9",
+      to: "contract-dump-items",
+      subagent_type: "opus5-worker-high",
+      text: "契約に 2 型を足して。",
+      result_item: "d4c1a0b2:0",
+    });
+    const letter = item("e5b70c93", "message:team:in", {
+      from: "contract-dump-items",
+      text: "fixtures まで通った。",
+    });
+    const done = item("d4c1a0b2", "message:team:in", {
+      role: "result",
+      parent_item: "c8a2f371:0",
+      parent_tool_use_id: "t9",
+      status: "ok",
+      duration_ms: 240_000,
+      text: "1.17.0 を切った。",
+    });
+    // The letter is its own message and stands where it arrived; only the run
+    // ending answers anything, and that is drawn under what asked for it.
+    expect(drawn(start, letter, done))
+      .toBe(`[c8a2f371:0] message:team:out  to=contract-dump-items  type=opus5-worker-high  → d4c1a0b2:0  00:01:02
+  契約に 2 型を足して。
+  [d4c1a0b2:0] message:team:in  status=ok  4m00s  00:01:02
+    1.17.0 を切った。
+
+[e5b70c93:0] message:team:in  from=contract-dump-items  00:01:02
+  fixtures まで通った。`);
+  });
+
+  test("what the one above said and what was said back to it", () => {
+    const told = item("a9f30d15", "message:parent:in", {
+      from: "team-lead",
+      text: "docs を書き直す。",
+    });
+    const sent = item("b0e41c26", "message:parent:out", {
+      role: "use",
+      tool_use_id: "t3",
+      to: "main",
+      summary: "途中報告",
+      text: "preset まで直してよいか",
+      one_way: true,
+    });
+    const answered = item("c1f52d37", "message:parent:out", { text: "整理して揃えた。" });
+    // An answer handed back as prose names nobody: no call carries it, and a
+    // heading that invented a name would say more than the file does.
+    expect(drawn(told, sent, answered))
+      .toBe(`[a9f30d15:0] message:parent:in  from=team-lead  00:01:02
+  docs を書き直す。
+
+[b0e41c26:0] message:parent:out  to=main  途中報告  (片道)  00:01:02
+  preset まで直してよいか
+
+[c1f52d37:0] message:parent:out  00:01:02
+  整理して揃えた。`);
+  });
+
   test("two calls in one record are answered each by its own", () => {
     const first = item("r1", "tool:Read", {
       role: "use",

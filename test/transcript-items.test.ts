@@ -247,7 +247,7 @@ describe("classifying a transcript", () => {
     }
   });
 
-  test("an agent is both a call and a message, and the answer arrives as a notification", () => {
+  test("a name makes an agent a teammate, and its run ending answers the call that started it", () => {
     const items = classify(
       lines(
         answered("a1", [
@@ -270,18 +270,24 @@ describe("classifying a transcript", () => {
     );
     expect(typesOf(items)).toEqual([
       "tool:Agent",
-      "message:sub:out",
+      "message:team:out",
       "tool:Agent",
-      "message:sub:in",
+      "message:team:in",
     ]);
-    const brief = only(items, "message:sub:out");
-    const reply = only(items, "message:sub:in");
+    const brief = only(items, "message:team:out");
+    const reply = only(items, "message:team:in");
+    expect(of(brief)["to"]).toBe("counter");
+    expect(of(brief)["text"]).toBe("count the lines");
     // The id is not known until the agent has started, so the message that
     // asked for it learns its own id from the answer.
     expect(of(brief)["agent_id"]).toBe("acounter-9f");
     expect(of(brief)["result_item"]).toBe(reply?.id ?? "");
     expect(of(reply)["parent_item"]).toBe(brief?.id ?? "");
     expect(of(reply)["text"]).toBe("there were three");
+    expect(of(reply)["status"]).toBe("completed");
+    for (const item of items) {
+      expect([item.type, validationErrors(TranscriptItem, item)]).toEqual([item.type, []]);
+    }
   });
 
   test("a notification with no answer in it is the harness reporting a task", () => {
@@ -303,11 +309,31 @@ describe("classifying a transcript", () => {
     const items = classify(
       lines(
         said("u1", "where is the needle"),
-        said("u2", 'a note:\n<teammate-message teammate_id="a-worker">hello</teammate-message>'),
+        said(
+          "u2",
+          'a note:\n<cross-session-message from="9f2c1ab4" mid="m-7781">hello</cross-session-message>',
+        ),
       ),
     );
     expect(typesOf(items)).toEqual(["message:user:in", "message:session:in"]);
+    expect(of(items[1])["from"]).toBe("9f2c1ab4");
+    expect(of(items[1])["msg_id"]).toBe("m-7781");
+  });
+
+  test("who wrote decides whether an envelope is the one above or one alongside", () => {
+    const items = classify(
+      lines(
+        said("u1", "start"),
+        said("u2", '<teammate-message teammate_id="a-worker">hello</teammate-message>'),
+        said("u3", '<teammate-message teammate_id="team-lead">carry on</teammate-message>'),
+      ),
+    );
+    // A teammate writes under its own name and what it sends is a message of
+    // its own; a lead is the one above wherever the subject stands.
+    expect(typesOf(items)).toEqual(["message:user:in", "message:team:in", "message:parent:in"]);
     expect(of(items[1])["from"]).toBe("a-worker");
+    expect(of(items[2])["from"]).toBe("team-lead");
+    for (const item of items) expect(validationErrors(TranscriptItem, item)).toEqual([]);
   });
 
   test("what a person did to the harness is kept apart from what the harness did on its own", () => {
@@ -474,9 +500,29 @@ describe("classifying a transcript", () => {
         answered("w2", [{ type: "text", text: "there were three" }], { parentUuid: "w1" }),
       ),
     );
-    // The same two type names a session's own dump uses, read from where this
-    // subject stands — which is what lets one preset be carried down a chain.
-    expect(typesOf(items)).toEqual(["message:user:in", "message:user:out"]);
+    // Not `message:user`: what is at the other end of an agent's file is
+    // whoever started it, and naming that `user` would have a reader take a
+    // machine for a person. The names are the same wherever the subject
+    // stands, which is what lets one preset be carried down a chain.
+    expect(typesOf(items)).toEqual(["message:parent:in", "message:parent:out"]);
+    expect(of(items[0])["from"]).toBe("team-lead");
+    // The answer is prose with no call behind it — the one message an agent is
+    // certain to send, and the reason `parent:out` is not a call alone.
+    expect(of(items[1])["role"]).toBeUndefined();
+    for (const item of items) expect(validationErrors(TranscriptItem, item)).toEqual([]);
+  });
+
+  test("an agent briefed without an envelope is still being told, not spoken to", () => {
+    // A throwaway agent's brief arrives as the bare words it was started with.
+    // Whether an envelope was around it says who wrote, not what it is.
+    const items = classify(
+      lines(
+        said("w1", "count the lines", { parentUuid: null, isSidechain: true }),
+        answered("w2", [{ type: "text", text: "there were three" }], { parentUuid: "w1" }),
+      ),
+    );
+    expect(typesOf(items)).toEqual(["message:parent:in", "message:parent:out"]);
+    expect(of(items[0])["from"]).toBeUndefined();
   });
 
   test("turns are counted from where a person spoke", () => {
@@ -504,8 +550,9 @@ describe("classifying a transcript", () => {
         ]),
       ),
     );
-    const brief = only(items, "message:sub:out");
-    expect(of(brief)["prompt"]).toBe("carry on");
+    const brief = only(items, "message:team:out");
+    expect(of(brief)["text"]).toBe("carry on");
+    expect(of(brief)["to"]).toBe("counter");
     // What the agent says back arrives under nothing that names this, so the
     // brief says it is waiting for nothing rather than looking unanswered.
     expect(of(brief)["one_way"]).toBe(true);
@@ -514,6 +561,41 @@ describe("classifying a transcript", () => {
     // names; it travels beside the fields the contract states, not instead of
     // them.
     expect(validationErrors(TranscriptItem, brief)).toEqual([]);
+  });
+
+  test("the name a message is addressed to decides which correspondence it is", () => {
+    const items = classify(
+      lines(
+        answered("a1", [
+          {
+            type: "tool_use",
+            id: "t1",
+            name: "SendMessage",
+            input: { to: "team-lead", message: "done", summary: "report" },
+          },
+          {
+            type: "tool_use",
+            id: "t2",
+            name: "SendMessage",
+            input: { to: "main", message: "also done" },
+          },
+        ]),
+      ),
+    );
+    // `main` and `team-lead` are the harness's names for the one above; every
+    // other name is somebody standing alongside.
+    expect(typesOf(items)).toEqual([
+      "tool:SendMessage",
+      "message:parent:out",
+      "tool:SendMessage",
+      "message:parent:out",
+    ]);
+    const reported = items[1];
+    expect(of(reported)["to"]).toBe("team-lead");
+    expect(of(reported)["text"]).toBe("done");
+    expect(of(reported)["summary"]).toBe("report");
+    expect(of(reported)["tool_use_id"]).toBe("t1");
+    for (const item of items) expect(validationErrors(TranscriptItem, item)).toEqual([]);
   });
 
   test("addressing a session by its id is a message to that session, not to an agent", () => {

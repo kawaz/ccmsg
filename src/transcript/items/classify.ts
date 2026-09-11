@@ -117,6 +117,17 @@ export class Classification {
   #turn = 0;
   /** The last slash command invoked, which is what its output belongs to. */
   #slash: string | undefined;
+  /** Whose file this is, which decides who is at the other end of a plain
+   * line. A session's own transcript has a person there; a file written for an
+   * agent has whoever started it, and calling that `user` would have a reader
+   * take a machine for a person.
+   *
+   * The file says so itself — every record of an agent's transcript is marked
+   * as one — so nothing has to be passed in beside it. It is remembered once
+   * seen rather than read per record: a file is one subject's throughout, and a
+   * record that omitted the mark would otherwise change who the subject is
+   * mid-read. */
+  #subject: "session" | "agent" = "session";
 
   /** The records of one chunk as the items they were read as, oldest first.
    *
@@ -147,6 +158,7 @@ export class Classification {
   read(record: Row, source: { offset: number; bytes: number }): void {
     const type = str(record["type"]);
     if (type === undefined || NOT_ITEMS.has(type)) return;
+    if (record["isSidechain"] === true) this.#subject = "agent";
     // A record the harness wrote without an id of its own still happened, and
     // an item is pointed at by the record it came from — so where the record
     // stands in the file stands in for the id it lacks. The `@` says which of
@@ -239,7 +251,12 @@ export class Classification {
       }
       if (kind === "text") {
         const said = str(fields["text"])?.trim();
-        if (said !== undefined && said !== "") make("message:user:out", { text: said });
+        // An agent's words are addressed to whoever started it — the last of
+        // them is the answer it was started for, and the ones before are what
+        // it hands back mid-flight. No call carries them, which is why
+        // `parent:out` is prose as well as a call.
+        const kind = this.#subject === "agent" ? "message:parent:out" : "message:user:out";
+        if (said !== undefined && said !== "") make(kind, { text: said });
         continue;
       }
       if (kind === "tool_use") this.#call(fields, make);
@@ -267,29 +284,51 @@ export class Classification {
     });
     let message: Draft | undefined;
     if (SPAWNS.has(name)) {
-      message = make("message:sub:out", {
-        role: "use",
-        tool_use_id: id,
-        prompt: str(input["prompt"]) ?? "",
-        ...optional("subagent_type", str(input["subagent_type"])),
-        ...optional("name", str(input["name"])),
-        ...optional("description", str(input["description"])),
-      });
+      // A name is what makes an agent a teammate: it stands under that name,
+      // can be written to again, and answers whenever it writes back. An agent
+      // started without one is an errand — it runs once, answers the call that
+      // started it, and is done.
+      const named = str(input["name"]) ?? str(input["team_name"]);
+      message =
+        named === undefined
+          ? make("message:sub:out", {
+              role: "use",
+              tool_use_id: id,
+              prompt: str(input["prompt"]) ?? "",
+              ...optional("subagent_type", str(input["subagent_type"])),
+              ...optional("description", str(input["description"])),
+            })
+          : make("message:team:out", {
+              role: "use",
+              tool_use_id: id,
+              text: str(input["prompt"]) ?? "",
+              to: named,
+              ...optional("subagent_type", str(input["subagent_type"])),
+              ...optional("description", str(input["description"])),
+            });
     } else if (name === "SendMessage") {
       const to = str(input["to"]) ?? "";
-      // A sid is the harness's own uuid; anything else is a name, and a name
-      // is how an agent below this session is addressed.
-      make(addressed(to) ? "message:session:out" : "message:sub:out", {
-        ...(addressed(to) ? {} : { role: "use", tool_use_id: id }),
-        ...(addressed(to)
-          ? { text: text(input["message"]) ?? "", to }
-          : // Writing to an agent is one direction of a correspondence, not a
-            // call that returns: what the agent says back arrives as its own
-            // message whenever it chooses to send one, under nothing that
-            // names this. So the brief says it is waiting for nothing, and a
-            // reader is not left watching for an answer that has no way in.
-            { prompt: text(input["message"]) ?? "", name: to, one_way: true }),
-      });
+      // A sid is the harness's own uuid, so a message addressed by one goes to
+      // another session. Everything else is a name: the one above answers to
+      // the names a harness gives a lead, and any other name is somebody
+      // standing alongside.
+      if (addressed(to)) {
+        make("message:session:out", { text: text(input["message"]) ?? "", to });
+      } else {
+        // Writing to an agent is one direction of a correspondence, not a call
+        // that returns: what it says back arrives as its own message whenever
+        // it chooses to send one, under nothing that names this. So the
+        // message says it is waiting for nothing, and a reader is not left
+        // watching for an answer that has no way in.
+        make(LEADS.has(to) ? "message:parent:out" : "message:team:out", {
+          role: "use",
+          tool_use_id: id,
+          text: text(input["message"]) ?? "",
+          to,
+          ...optional("summary", str(input["summary"])),
+          one_way: true,
+        });
+      }
     } else if (name === "Bash" && isCcmsgSend(str(input["command"]))) {
       make("message:session:out", { text: str(input["command"]) ?? "" });
     }
@@ -375,7 +414,7 @@ export class Classification {
     // decides is whether an answer came back, not which tool was called.
     const said = answered(result["content"]);
     if (said === undefined) return;
-    const reply = make("message:sub:in", {
+    const reply = make(answers(call.message), {
       role: "result",
       parent_item: call.message.id,
       parent_tool_use_id: id,
@@ -434,14 +473,29 @@ export class Classification {
     // stands, being told what to do is not the same as being written to.
     if (record["parentUuid"] === null) {
       this.#turn += 1;
-      make("message:user:in", { text: said });
+      make(this.#subject === "agent" ? "message:parent:in" : "message:user:in", {
+        text: said,
+        ...(this.#subject === "agent" ? envelope(said) : {}),
+      });
       return;
     }
-    if (said.includes("<cross-session-message") || said.includes("<teammate-message")) {
+    if (said.includes("<cross-session-message")) {
       make("message:session:in", {
         text: said,
-        ...optional("from", attribute(said, "from") ?? attribute(said, "teammate_id")),
+        ...optional("from", attribute(said, "from")),
         ...optional("msg_id", attribute(said, "mid")),
+      });
+      return;
+    }
+    if (said.includes("<teammate-message")) {
+      // Who wrote decides which it is. A lead is the one above, whatever the
+      // subject's own place in the team; anyone else writing under their own
+      // name is somebody standing alongside, and what they send is a message
+      // of its own rather than the answer to anything.
+      const from = attribute(said, "teammate_id");
+      make(LEADS.has(from ?? "") ? "message:parent:in" : "message:team:in", {
+        text: said,
+        ...envelope(said),
       });
       return;
     }
@@ -471,7 +525,7 @@ export class Classification {
     const call = this.#calls.get(key);
     if (answer !== undefined && call !== undefined) {
       const asked = call.message ?? call.tool;
-      const item = make("message:sub:in", {
+      const item = make(answers(asked), {
         role: "result",
         parent_item: asked.id,
         parent_tool_use_id: key,
@@ -501,6 +555,28 @@ const SID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function addressed(to: string): boolean {
   return SID.test(to);
+}
+
+/** The names a harness gives the one above. They are the harness's own words
+ * rather than a relation anyone chose, which is why they are matched here and
+ * not carried into the type: what the type says is that this is the parent,
+ * and the spelling stays on the item as the name it was addressed by. */
+const LEADS = new Set(["main", "team-lead"]);
+
+/** Who a message came from and under which id, as the envelope the harness
+ * wraps one in says it. */
+function envelope(said: string): Record<string, unknown> {
+  return {
+    ...optional("from", attribute(said, "teammate_id")),
+    ...optional("msg_id", attribute(said, "mid")),
+  };
+}
+
+/** The type an agent's answer arrives under, which is the other half of
+ * whatever asked for it: a teammate's run ending answers the call that started
+ * it, an errand's answer is the errand's result. */
+function answers(asked: Draft): string {
+  return asked.type === "message:team:out" ? "message:team:in" : "message:sub:in";
 }
 
 /** Whether a shell command is this session speaking to another one. */

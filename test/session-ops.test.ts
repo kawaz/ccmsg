@@ -837,17 +837,18 @@ describe("session_dump_write", () => {
     expect(answer?.["stdout"]).toBe("3\n");
   });
 
-  test("an agent's brief and its answer are the two halves of one message", async () => {
+  test("a teammate's brief and its answer are the two halves of one message", async () => {
     const { configHome, handlers } = ops();
     writeTranscript(configHome, SID, BUSY_TRANSCRIPT);
     const written = await run("session_dump_write", handlers.session_dump_write, {
       sid: SID,
-      types: ["message:sub"],
+      types: ["message:team"],
     });
     const items = dumpAt(written["path"] as string).items;
-    const asked = items.find((item) => item.type === "message:sub:out");
-    const answered = items.find((item) => item.type === "message:sub:in");
-    expect(asked?.["prompt"]).toBe("count the lines");
+    const asked = items.find((item) => item.type === "message:team:out");
+    const answered = items.find((item) => item.type === "message:team:in");
+    expect(asked?.["text"]).toBe("count the lines");
+    expect(asked?.["to"]).toBe("count-lines");
     expect(asked?.["agent_id"]).toBe("acounter-9f");
     expect(answered?.["parent_item"]).toBe(asked?.id);
     expect(answered?.["text"]).toBe("there were three");
@@ -873,7 +874,7 @@ describe("session_dump_write", () => {
       sid: SID,
       agent_id: "acounter-9f",
     });
-    expect(written["entries"]).toEqual({ "message:user:in": 1, "message:user:out": 1 });
+    expect(written["entries"]).toEqual({ "message:parent:in": 1, "message:parent:out": 1 });
     const document = dumpAt(written["path"] as string);
     expect(document.items[0]?.["text"]).toBe("count the lines");
     expect(document.items[1]?.["text"]).toBe("there were three");
@@ -1195,16 +1196,17 @@ describe("transcript_items_read", () => {
       AGENT_TRANSCRIPT,
     );
     const { items } = await all(handlers, { agent_id: "acounter-9f" });
-    // Every type is read from where the subject stands, so the brief its
-    // parent gave it is what a person's words are for a session.
-    expect(items.map((item) => item.type)).toEqual(["message:user:in", "message:user:out"]);
+    // Every type is read from where the subject stands, and what stands at
+    // the other end of an agent's file is whoever started it rather than a
+    // person.
+    expect(items.map((item) => item.type)).toEqual(["message:parent:in", "message:parent:out"]);
   });
 
   test("the ledger is answered when the selection asks for it, and not otherwise", async () => {
     const { configHome, handlers } = ops();
     writeTranscript(configHome, SID, BUSY_TRANSCRIPT);
     expect((await all(handlers)).ids).toBeUndefined();
-    const asked = await all(handlers, { types: ["message:sub", "ids"] });
+    const asked = await all(handlers, { types: ["message:team", "ids"] });
     expect(asked.ids).toContainEqual({
       kind: "agent",
       id: "acounter-9f",

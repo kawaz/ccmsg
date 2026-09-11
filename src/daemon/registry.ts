@@ -115,12 +115,16 @@ const STARTING_PRESETS = [
   {
     name: "howto",
     description: "調査のノウハウだけ。何を考えて何を叩いて何を読み書きしたか",
-    opts: { types: ["thinking", "message:user", "message:sub", "tool:Bash", "@file"] },
+    opts: {
+      types: ["thinking", "message:user", "message:parent", "message:sub", "tool:Bash", "@file"],
+    },
   },
   {
     name: "journal",
     description: "日記用。人との往復と worker の答え、思考は要点だけ",
-    opts: { types: ["message:user", "message:sub:in", "thinking"] },
+    opts: {
+      types: ["message:user", "message:parent", "message:sub:in", "message:team:in", "thinking"],
+    },
   },
   {
     name: "handoff",

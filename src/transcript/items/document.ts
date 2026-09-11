@@ -83,7 +83,7 @@ function heading(file: SessionDumpFile, view: DumpView): string[] {
 function draw(item: Item, child: Item | undefined, view: DumpView, parent?: string): string[] {
   const own = fragment(item);
   const answer = child === undefined ? undefined : fragment(child);
-  const nested = child !== undefined && child.type.startsWith("message:sub");
+  const nested = child !== undefined && spoken(child.type);
   const link = isResult(item)
     ? arrow("←", parent)
     : (arrow("→", fields(item)["result_item"]) ?? waiting(item));
@@ -240,7 +240,7 @@ function pair(items: readonly Item[]): {
     // A pair the reader would have to scroll between is left where each half
     // happened, unless it is an agent's: what an agent was asked and what it
     // answered are one exchange whatever fell between them.
-    if (!item.type.startsWith("message:sub") && call !== at - 1) continue;
+    if (!spoken(item.type) && call !== at - 1) continue;
     child.set(call, at);
     folded.add(at);
   }
@@ -248,10 +248,19 @@ function pair(items: readonly Item[]): {
 }
 
 /** The key an exchange is joined on. One call the harness gave a key to is two
- * items where it started an agent — the call and the brief beside it — so the
- * side of the exchange goes into the key: a tool's answer belongs to the call
- * and an agent's to the brief, and the harness's key alone would not say
- * which. */
+ * items where it also addressed somebody — the call and the message beside it
+ * — so the side of the exchange goes into the key: a tool's answer belongs to
+ * the call and an agent's to the message, and the harness's key alone would
+ * not say which. */
 function joined(item: Item, key: string): string {
-  return `${item.type.startsWith("message:sub") ? "sub" : "tool"}\n${key}`;
+  return `${item.type.startsWith("message:") ? "message" : "tool"}\n${key}`;
+}
+
+/** Whether an item is the conversation half of starting an agent, as opposed
+ * to the call's own half. What was asked and what came back is one exchange
+ * however many turns fell between them, so these are drawn together wherever
+ * they ended up — a conversation split across the page is one nobody can
+ * follow. */
+function spoken(type: string): boolean {
+  return type.startsWith("message:sub") || type.startsWith("message:team");
 }
