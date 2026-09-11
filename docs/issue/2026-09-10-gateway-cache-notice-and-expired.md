@@ -3,7 +3,7 @@ title: gateway cache リングを「見込み」でなく実態 (cache_notice/ca
 status: open
 category: request
 created: 2026-09-10T20:13:15+09:00
-last_read:
+last_read: 2026-09-11T13:00:46+09:00
 open_entered: 2026-09-10T20:13:15+09:00
 wip_entered:
 blocked_entered:
