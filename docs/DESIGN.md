@@ -1222,7 +1222,7 @@ home.** A CLI within a session looks up its own instance from `CLAUDE_CONFIG_DIR
 | Item | Content |
 |---|---|
 | Own config home | The single config home this instance sees (M6) |
-| peers | Every mesh endpoint of the clusters this instance is in, its own among them. **Derived**: the instances each cluster lists, at the addresses their own files give them, and then the endpoints that cluster was told of. Which entry is this one is settled by the startup probe, and the reader takes itself out (§7.1). **It is the only list of URLs config carries** |
+| endpoints | Every instance of the mesh, this one among them, as `endpoints.json` states them. Which entry is this instance is the row carrying its own id, and the reader takes itself out of what it dials (§7.1). **It is the only list of URLs config carries** |
 | Entry-point permission | bind, source IP |
 | upstream | gateway's URL and webhook source, terminal gateway, launcher (roots and recipes), translation helper, sandbox origin |
 

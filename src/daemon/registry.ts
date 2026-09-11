@@ -95,8 +95,8 @@ export async function reload(env: Env): Promise<{
 export interface InstanceRow {
   readonly id: InstanceId;
   /** The label this instance is listed under: its own file's `name`, which
-   * defaults to its id. A `daemon run` on a config home no cluster lists has
-   * none. */
+   * defaults to its id. A `daemon run` on a config home nothing states
+   * settings for has none. */
   readonly name?: string;
   readonly dir: string;
   /** The address it binds, and the one its peers dial (§7.1). */
@@ -130,7 +130,7 @@ export interface StatusRow extends InstanceRow {
 
 /** Everything one command needs to reach one config home. */
 export interface Target {
-  /** The label this instance is listed under, where a cluster lists it. */
+  /** The label this instance is listed under, where it is registered. */
   readonly name?: string;
   /** Its id, which is what its file is called. */
   readonly id?: string;
@@ -429,8 +429,8 @@ function defaultsTemplate(): string {
 /** 全 instance に配る値。\`builtin\` は組み込みの既定値 (凍結済み)、\`config\` は
  * そのコピーなので、書き換えて返す。ここに書いた値を各 instance が受け取る。 */
 const defaults: Defaults = ({ config }) => {
-  // mesh の相手はここには書かない。cluster 内の instance は各 TS の endpoint /
-  // port から、別 host の endpoint は cluster の peers (ccmsg mesh add) から入る。
+  // mesh はここには書かない。誰が居てどこで届くかは endpoints.json が正で、
+  // この関数は読めるが変えられない。
 
   // dump の名前付き選択。prefix は一族を、\`@name\` は他の選択をその場に広げる。
   config.dump.presets = [

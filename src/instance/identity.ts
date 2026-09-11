@@ -13,9 +13,9 @@ export const ID = /^[0-9a-f]{32}$/;
 
 /** A fresh id of that width, for whatever is being named.
  *
- * Shared with the cluster ids rather than written again there: what an id has
- * to be is unguessable-by-accident and the same width wherever it is read, and
- * a second generator is a second answer to how wide that is. */
+ * One generator rather than one per kind of id: what an id has to be is
+ * unguessable-by-accident and the same width wherever it is read, and a second
+ * generator is a second answer to how wide that is. */
 export function newId(): string {
   return randomBytes(ID_BYTES).toString("hex");
 }

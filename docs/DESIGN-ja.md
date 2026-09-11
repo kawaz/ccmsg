@@ -1056,7 +1056,7 @@ socket path / HTTP の bind / state dir / data dir / ログ。**すべて config
 | 項目 | 中身 |
 |---|---|
 | 自 config home | この instance が見る唯一の config home (M6) |
-| peers | 属する cluster の mesh endpoint 全部、自分の分も含む。**導かれる**: 各 cluster が挙げる instance (各ファイルが与えた address) と、その cluster が知らされた endpoint。どれが自分かは起動時の probe で確定し、読む側が自分を除く (§7.1)。**config に載る URL の一覧はこれだけ**である |
+| endpoints | mesh の全 instance、自分も含む。`endpoints.json` が述べる物そのもの。どれが自分かは自分の id の行で、dial する先からは読む側が自分を除く (§7.1)。**config に載る URL の一覧はこれだけ**である |
 | 入口の許可 | bind、source IP |
 | upstream | gateway の URL と webhook source、terminal gateway、launcher (root と テンプレ)、translate helper、sandbox origin |
 

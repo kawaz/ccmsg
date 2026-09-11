@@ -1,8 +1,8 @@
 /** What a mesh test needs to stand several instances up and put one endpoint
  * under its own control.
  *
- * Shared rather than repeated: the two mesh test files exercise the same
- * cluster from different sides — the handshake that makes a link, and what
+ * Shared rather than repeated: the two mesh test files exercise the same set of
+ * instances from different sides — the handshake that makes a link, and what
  * travels over it once there is one — and a second copy of "how an instance is
  * started" would let the two drift into testing different deployments. */
 import { expect } from "bun:test";
@@ -157,9 +157,9 @@ export function homeFor(lease: PortLease, peers: readonly Endpoint[], endpoint?:
   const mine = endpoint ?? endpointOfPort(port);
   const rows = [
     { id, endpoint: mine },
-    // The others of the test cluster, each at the address it will be reached
-    // at. Their ids are their addresses': a test states who is in the mesh by
-    // stating where, and what an id says is which of them is which.
+    // The other instances of the test mesh, each at the address it will be
+    // reached at. Their ids are their addresses': a test states who is in the
+    // mesh by stating where, and what an id says is which of them is which.
     ...peers.filter((peer) => peer !== mine).map((peer) => ({ id: idFor(peer), endpoint: peer })),
   ];
   writeConfigHome(

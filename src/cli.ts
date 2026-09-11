@@ -184,11 +184,8 @@ const ROOT: Command = {
               title: "何がどのファイルに載るか (載っていないファイルは読まない):",
               docs: [
                 ["config_v2.ts", "全 instance が受け取る値。`({builtin, config}) => config`"],
-                ["clusters.json", "この host が知る cluster の id 一覧"],
-                [
-                  "clusters/cluster-<id>.json",
-                  "name / peers (別 host の endpoint) / instances (id)",
-                ],
+                ["endpoints.json", "mesh の一覧 `[{id, endpoint}]`。別 host の分は人が足す"],
+                ["supervisor.json", "この host が起こす instance の id"],
                 [
                   "instances/instance-<id>.ts",
                   "1 instance 分の差分。`({builtin, default, config}) => config`",
@@ -689,14 +686,14 @@ async function supervise(): Promise<unknown> {
  * the supervisor reads the list once (DV-Q8) and would otherwise not know
  * until it is restarted. */
 async function added(args: readonly string[]): Promise<unknown> {
-  const { named, rest } = options(args, ["harness", "port", "cluster"]);
+  const { named, rest } = options(args, ["harness", "port"]);
   const dir = rest[0];
   const stated = named.get("harness");
   const port = named.get("port");
   if (dir === undefined) {
     throw new CommandError(
       "invalid_args",
-      "使い方: ccmsg daemon add <dir> [--cluster <id|name>] [--port <番号>] [--harness <種別>]",
+      "使い方: ccmsg daemon add <dir> [--port <番号>] [--harness <種別>]",
     );
   }
   if (stated !== undefined && !isHarness(stated)) {
@@ -706,7 +703,6 @@ async function added(args: readonly string[]): Promise<unknown> {
     throw new CommandError("invalid_args", "--port は 0 から 65535 の番号です");
   }
   const row = await addToConfig(process.env, dir, {
-    ...(named.get("cluster") === undefined ? {} : { cluster: named.get("cluster") as string }),
     ...(stated === undefined ? {} : { harness: stated }),
     ...(port === undefined ? {} : { port: Number(port) }),
   });
@@ -1015,17 +1011,13 @@ async function serviceOp(
   };
 }
 
-/** The passkey commands, which are asked of an instance of the cluster rather
- * than of the supervisor.
+/** The passkey commands, which are asked of the instance itself rather than of
+ * the supervisor.
  *
- * They travel on an instance's unix socket and nowhere else: registration is
+ * They travel on that instance's unix socket and nowhere else: registration is
  * local by design (DR-0001 §2.2), and reaching that address is what says the
  * caller is on the machine. They are not ops of the contract for the same
- * reason — the contract is what reaches an instance over a network.
- *
- * Which instance is asked does not matter, and that is the point of the
- * cluster: a credential registered at one is replicated to the others, so the
- * cluster is what a passkey belongs to and any instance of it can answer. */
+ * reason — the contract is what reaches an instance over a network. */
 /** One administrative request, on one instance's own unix socket. */
 async function askInstance(target: Target, request: Record<string, unknown>) {
   const conn = await connect(target.paths.socket);

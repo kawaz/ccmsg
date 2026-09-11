@@ -179,9 +179,9 @@ function portOf(settings: Record<string, unknown> | string): number | undefined 
  * an instance and is about something else needs.
  *
  * Settings belong to the instance rather than to the shared file, because the
- * shared file is what every instance starts from and what is started is what a
- * cluster of files names: a setting nobody's instance carries is a setting
- * nothing runs with. */
+ * shared file is what every instance starts from and what is started is what
+ * the files name: a setting nobody's instance carries is a setting nothing
+ * runs with. */
 export function writeInstanceHome(
   configDir: string,
   home: string,
