@@ -52,6 +52,20 @@ kawaz の用語定義:
 
 DESIGN の locality `cluster` (全 instance 分の答え) はこの cluster 全体に問う意味で整合する。ユーザ向け用語は instance / cluster / mesh で揃える。
 
+## 構造の確定 (2026-09-11 r303 m16/m17)
+
+正本は TS config 作業の `/tmp/ccmsg-config-layout.md` (実装後は DESIGN §8.2 に移す)。
+
+1 監督者で複数 cluster を持てる。レイアウトは `clusters.json` → `clusters/cluster-<id>.json` (name / peers / instances) → `instances/instance-<id>.ts`。権威はデータであり、ディレクトリ走査は使わない。id は `add` 時に `instanceIdentity` と同じ生成方式で state dir にも書く。これにより launchd unit 名の衝突は解消する (1 unit で全 cluster を賄える)。
+
+### 将来案 (r303 m18)
+
+管理用 webui と `passkey add --admin` = cluster 自体 (add / remove / mesh) を操作できる人の credential を、instance とは別の括り (admin-credentials) で instance と同じ仕組みにより管理する。
+
+### 要検討
+
+監督者に HTTP の入口を持たせる時の認証境界 (どの instance の Caddy にぶら下げるか / 監督者専用の口を設けるか)。
+
 ## TODO
 
 <!-- wip 時のみ -->
