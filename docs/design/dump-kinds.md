@@ -10,7 +10,9 @@ dump は transcript の行をそのまま並べるのではなく、**アイテ�
 
 ### message — 会話
 
-2 段目が名指すのは**相手が何者か**で、主語自身の立ち位置ではない。dump は「誰と話していたか」を読むためのもので、主語は自分の位置だけは問えない。相手の種別は 5 つ: 人 (`user`)、上 (`parent`)、使い捨ての下 (`sub`)、名前を持って居続ける仲間 (`team`)、別セッション (`session`)。
+2 段目が名指すのは**主語から見た関係**で、主語自身の立ち位置ではない: `parent` = このエージェントを起動した相手、`sub` = 使い捨てで起動した子、`team` = 名前を持って居続ける相手、`session` = ccmsg 経由の別セッション。唯一の例外が `user` で、これは関係ではなく**単独で存在する the user** (人)。agent にとっての親はセッションか別の agent なので、そこを `user` と呼ぶと読み手が機械を人と取り違える。
+
+ハーネスの実名は型に置かない。`main` は the main であって関係ではないので、`message:main` と書くと「main の入出力がどこにいても常に漏れ聞こえる」と読めてしまう — 言いたいのは「この主語が答える相手」で、それを言う語が `parent` になる。
 
 | 型 | 意味 (主語相対) | jsonl 上の抽出 | webui の単位 | csa |
 |---|---|---|---|---|
@@ -25,7 +27,7 @@ dump は transcript の行をそのまま並べるのではなく、**アイテ�
 | `message:session:out` | 主語 → 他セッション | `tool_use` `name=="Bash"` の `command` が `ccmsg post` / `ccmsg reply`、および `name=="SendMessage"` で宛先が sid のもの | `SessionReply` | (なし) |
 | `message:session:in` | 他セッション → 主語 | user 行の本文に含まれる `<cross-session-message …>` 封筒 | `IncomingMessage` (`extractIncomingMessages`) | `I` |
 
-ハーネスの実名 (`main` / `team-lead` / teammate 名) は型に畳まず、`to` / `from` に主語が書いたままの綴りで残す。型が言うのは種別で、綴りは相手の名前になる。
+実名 (`main` / `team-lead` / teammate 名) はアイテムの `harness_name` に残す。型が言うのは関係で、綴りは相手の名前になる。
 
 `message:sub` の in と out は同じ Agent 呼び出しに属する。`tool_use.id` → `tool_result.tool_use_id` → `toolUseResult.agentId` の鎖で対応が取れる (実測でこの鎖は全件つながった) ので、`tool:*` と同じくリンクで結ぶ (out 側が `result_item`、in 側が `parent_item`)。worker の答えは何 turn も後に来るため、1 アイテムには畳まない。
 
@@ -188,7 +190,7 @@ wire 上は `type:"user"` / `type:"assistant"` / `type:"attachment"` に化け�
 ```
 [a9f30d15] message:parent:in  10:15:11
   docs/design/dump-kinds.md を書き直す。範囲は csa と同じ since / until。
-[b0e41c26] message:parent:out  to=main  10:17:40
+[b0e41c26] message:parent:out  name=main  10:17:40
   型一覧は 4 群に分けた。preset の例まで直してよいか
 [c1f52d37] message:parent:out  10:19:23
   型一覧を 4 群に整理し、preset の例も揃えた。
@@ -199,9 +201,9 @@ wire 上は `type:"user"` / `type:"assistant"` / `type:"attachment"` に化け�
 起動だけが往復として対になり (`→` でリンク)、以降の受信は独立した 1 通として自分の時刻に並ぶ。
 
 ```
-[c8a2f371] message:team:out  to=contract-dump-items type=opus5-worker-high  → d4c1a0b2  10:21:02
+[c8a2f371] message:team:out  name=contract-dump-items type=opus5-worker-high  → d4c1a0b2  10:21:02
   契約に message:parent と message:team を足して。
-[e5b70c93] message:team:in  from=contract-dump-items  10:33:15
+[e5b70c93] message:team:in  name=contract-dump-items  10:33:15
   fixtures まで通ったので ci を回す。
 [d4c1a0b2] message:team:in  ← c8a2f371  status=ok 4m00s  10:41:50
   4 型を足して 1.17.0 を切った。
