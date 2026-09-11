@@ -1,6 +1,6 @@
 ---
 title: config を JSON + マージ規則から TS ローダーに移す
-status: open
+status: resolved
 category: task
 created: 2026-09-11T13:12:45+09:00
 last_read:
@@ -9,10 +9,10 @@ wip_entered:
 blocked_entered:
 pending_entered:
 discarded_entered:
-resolved_entered:
+resolved_entered: 2026-09-11T14:52:50+09:00
 discard_reason:
 pending_reason:
-close_reason:
+close_reason: ["done:v0.10.0/v0.10.1 で実装、本番移行済み(2026-09-11)","done:構造は kawaz 裁定(r303 m16/m17/m26)通り config_v2.ts -> clusters.json -> clusters/cluster-<id>.json -> instances/instance-<id>.ts、権威データでディレクトリ走査なし","done:daemon add/remove/list, ccmsg mesh add/list/remove, daemon passkey --cluster を実装","done:本番4 instance を v0.10.1 へ移行、peers --all 到達確認済み","done:MERGE_RULES と JSON config 撤去済み(config.json のみなら移行先を示す config error)","followup:multiple-clusters-per-host(cluster 跨ぎ隔離)は別 issue","followup:auth-records-per-cluster-store(claim に cluster)は別 issue"]
 blocked_by:
 origin: 自リポ TODO
 ---
