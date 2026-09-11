@@ -95,10 +95,10 @@ describe("every op in the table goes through dispatch (M1)", () => {
   });
 
   test("the reply carries the correlation id and the handler's body", async () => {
-    const result = await dispatch(frameFor("instance_ping"), as("user"), deps());
+    const result = await dispatch(frameFor("instance.ping"), as("user"), deps());
     expect(result).toEqual({
       kind: "reply",
-      response: { ok: true, request_id: "1", handled: "instance_ping" },
+      response: { ok: true, request_id: "1", handled: "instance.ping" },
     });
   });
 });
@@ -124,7 +124,7 @@ describe("each step answers on its own", () => {
 
   test("a frame without an op or a request_id is bad_request", async () => {
     expect(errorCode(await dispatch({ request_id: "1" }, as("user"), deps()))).toBe("bad_request");
-    const noId = await dispatch({ op: "instance_ping" }, as("user"), deps());
+    const noId = await dispatch({ op: "instance.ping" }, as("user"), deps());
     expect(errorCode(noId)).toBe("bad_request");
     // Nothing to correlate the failure with, so the reply names no request.
     expect(noId.kind === "error" && noId.response.request_id).toBeUndefined();
@@ -137,7 +137,7 @@ describe("each step answers on its own", () => {
 
   test("step 2: arguments outside the schema are invalid_args", async () => {
     const result = await dispatch(
-      frameFor("message_send", { to: "not-a-sid" }),
+      frameFor("message.send", { to: "not-a-sid" }),
       as("user"),
       deps(),
     );
@@ -145,7 +145,7 @@ describe("each step answers on its own", () => {
   });
 
   test("step 3: an op needing hello is refused before the identity is settled", async () => {
-    const result = await dispatch(frameFor("session_search"), anonymous(), deps());
+    const result = await dispatch(frameFor("session.search"), anonymous(), deps());
     expect(errorCode(result)).toBe("hello_required");
   });
 
@@ -159,14 +159,14 @@ describe("each step answers on its own", () => {
   });
 
   test("step 4: a role outside the op's roles is forbidden", async () => {
-    expect(errorCode(await dispatch(frameFor("session_kill"), as("session"), deps()))).toBe(
+    expect(errorCode(await dispatch(frameFor("session.kill"), as("session"), deps()))).toBe(
       "forbidden",
     );
   });
 
   test("step 5: a capability the instance lacks is capability_unavailable", async () => {
     const without = deps({ capabilities: new Set<Capability>() });
-    const result = await dispatch(frameFor("session_rename"), as("user"), without);
+    const result = await dispatch(frameFor("session.rename"), as("user"), without);
     expect(errorCode(result)).toBe("capability_unavailable");
   });
 
@@ -183,23 +183,23 @@ describe("each step answers on its own", () => {
 
   test("step 6: an instance-local op owned elsewhere is forwarded, not answered", async () => {
     const elsewhere = deps({ resolveInstance: () => OTHER_INSTANCE });
-    const result = await dispatch(frameFor("session_kill"), as("user"), elsewhere);
+    const result = await dispatch(frameFor("session.kill"), as("user"), elsewhere);
     expect(result).toEqual({
       kind: "forward",
       to: OTHER_INSTANCE,
-      frame: frameFor("session_kill"),
+      frame: frameFor("session.kill"),
     });
   });
 
   test("step 6: an instance-local op owned here is answered", async () => {
     const here = deps({ resolveInstance: () => SELF });
-    const result = await dispatch(frameFor("session_kill"), as("user"), here);
+    const result = await dispatch(frameFor("session.kill"), as("user"), here);
     expect(result.kind).toBe("reply");
   });
 
   test("step 6: a request naming another instance is forwarded", async () => {
     const result = await dispatch(
-      frameFor("session_kill", { to_instance: OTHER_INSTANCE }),
+      frameFor("session.kill", { to_instance: OTHER_INSTANCE }),
       as("user"),
       deps(),
     );
@@ -210,12 +210,12 @@ describe("each step answers on its own", () => {
     const { handlers } = recordingHandlers();
     const failing: Handlers = {
       ...handlers,
-      session_search: () => {
+      "session.search": () => {
         throw new Error("the index is on fire");
       },
     };
     const result = await dispatch(
-      frameFor("session_search"),
+      frameFor("session.search"),
       as("user"),
       deps({ handlers: failing }),
     );
@@ -228,12 +228,12 @@ describe("each step answers on its own", () => {
     const { handlers } = recordingHandlers();
     const failing: Handlers = {
       ...handlers,
-      session_search: () => {
+      "session.search": () => {
         throw new OpError("not_found", "no such record");
       },
     };
     const result = await dispatch(
-      frameFor("session_search"),
+      frameFor("session.search"),
       as("user"),
       deps({ handlers: failing }),
     );
@@ -264,6 +264,6 @@ describe("the role reaches an implementation only through scope", () => {
 
   test("the ops with a scope are the ones the contract marks", () => {
     const scoped = OP_NAMES.filter((op) => opAttributes(op).scope === "role");
-    expect(scoped).toEqual(["transcript_read", "transcript_items_read", "dir_list", "file_read"]);
+    expect(scoped).toEqual(["transcript.read", "transcript.items.read", "dir.list", "file.read"]);
   });
 });

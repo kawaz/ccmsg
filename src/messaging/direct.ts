@@ -59,7 +59,7 @@ export const DIRECT_ACK_MS = 2_000;
  * peer message at its inbound gate and reports the outcome from that same
  * decision, so a receipt for a message we have finished writing is one connect
  * and one line away on a socket of this same host. A quarter second is far
- * more than that costs and far less than a person waits for `message_send` to
+ * more than that costs and far less than a person waits for `message.send` to
  * answer. Nothing measured stands behind the number itself. */
 export const DIRECT_STATUS_MS = 250;
 
@@ -358,7 +358,7 @@ const DROPPED = HARNESSES.filter((harness) => harness !== "codex").flatMap((harn
  * belong to the interactive interface.
  *
  * The budget is here for what is not being predicted: a child that never
- * answers would hold `message_send` open for as long as it lived, and route
+ * answers would hold `message.send` open for as long as it lived, and route
  * (b) exists exactly so a route that does not come through costs a message
  * nothing (§4.1). It is generous next to a call that has been measured to
  * return at once. */

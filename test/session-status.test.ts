@@ -9,8 +9,8 @@ import { Transcripts } from "../src/transcript/index.ts";
 import { connAs, OTHER_SID, SELF, SID } from "./frames.ts";
 import { unthrottled } from "./clock.ts";
 
-const STATUS = `session_status:${SID}`;
-const ERRORS = "session_errors";
+const STATUS = `session.status:${SID}`;
+const ERRORS = "session.errors";
 const POLL_MS = 5;
 
 const roots: string[] = [];
@@ -89,8 +89,8 @@ function domain(sids: Sid[]) {
     publish: (topic, data) => published.push({ topic, data: data as Record<string, unknown> }),
   });
   const hub = new Topics(SELF, new Set(), undefined, unthrottled());
-  hub.attach("session_status", status);
-  hub.attach("session_errors", status);
+  hub.attach("session.status", status);
+  hub.attach("session.errors", status);
   return {
     files,
     published,
@@ -157,7 +157,7 @@ describe("the topics the fold's error state feeds (§3.3)", () => {
     await settled(() => status.errors().errors.length > 0);
 
     for (const topic of [STATUS, ERRORS]) {
-      const kind = topic === ERRORS ? "session_errors" : "session_status";
+      const kind = topic === ERRORS ? "session.errors" : "session.status";
       const data = status.snapshot(topic)[0]?.data;
       expect(
         validationErrors(TOPIC_SCHEMAS[kind], {

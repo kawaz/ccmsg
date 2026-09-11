@@ -416,8 +416,8 @@ describe("who may hear a topic (§11.2)", () => {
 
   test("a topic naming a capability the instance lacks is refused", () => {
     const hub = topics(new Set<Capability>());
-    expect(hub.subscribe(connAs("user"), "llm_status")).toBe("capability_unavailable");
-    expect(topics().subscribe(connAs("user"), "llm_status")).toBe("ok");
+    expect(hub.subscribe(connAs("user"), "llm.status")).toBe("capability_unavailable");
+    expect(topics().subscribe(connAs("user"), "llm.status")).toBe("ok");
   });
 
   test("a name outside the contract is unknown", () => {
@@ -450,7 +450,7 @@ describe("the ops reach the mechanism through dispatch", () => {
     const conn = connAs("user");
 
     const result = await dispatch(
-      frameFor("topic_subscribe", { topic: "instances" }),
+      frameFor("topic.subscribe", { topic: "instances" }),
       conn,
       deps(hub),
     );
@@ -469,8 +469,8 @@ describe("the ops reach the mechanism through dispatch", () => {
   test("unsubscribing through the op stops the frames", async () => {
     const hub = topics();
     const conn = connAs("user");
-    await dispatch(frameFor("topic_subscribe", { topic: "instances" }), conn, deps(hub));
-    await dispatch(frameFor("topic_unsubscribe", { topic: "instances" }), conn, deps(hub));
+    await dispatch(frameFor("topic.subscribe", { topic: "instances" }), conn, deps(hub));
+    await dispatch(frameFor("topic.unsubscribe", { topic: "instances" }), conn, deps(hub));
 
     hub.publish("instances", { count: 1 });
     conn.flush();
@@ -480,7 +480,7 @@ describe("the ops reach the mechanism through dispatch", () => {
   test("a refusal from the mechanism becomes the contract's error", async () => {
     const hub = topics();
     const result = await dispatch(
-      frameFor("topic_subscribe", { topic: "agents" }),
+      frameFor("topic.subscribe", { topic: "agents" }),
       connAs("session"),
       deps(hub),
     );
@@ -493,7 +493,7 @@ describe("the ops reach the mechanism through dispatch", () => {
     // answers a name that passes the schema and no longer exists, which is why
     // the mechanism keeps the outcome even though this route cannot show it.
     const result = await dispatch(
-      { op: "topic_subscribe", request_id: "1", topic: "no_such_topic" },
+      { op: "topic.subscribe", request_id: "1", topic: "no_such_topic" },
       connAs("user"),
       deps(topics()),
     );

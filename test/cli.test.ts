@@ -66,18 +66,19 @@ async function greet(
 ): Promise<LineClient> {
   const client = await connectUds(at.socketPath);
   clients.push(client);
+  const { role, ...named } = identity;
   client.send({
-    op: "hello",
+    op: `hello.${role}`,
     request_id: "hello",
     protocol_version: PROTOCOL_VERSION,
-    ...identity,
+    ...named,
   });
   expect((await client.next())["ok"]).toBe(true);
   return client;
 }
 
 async function subscribe(client: LineClient, topic: string): Promise<void> {
-  client.send({ op: "topic_subscribe", request_id: `sub-${topic}`, topic });
+  client.send({ op: "topic.subscribe", request_id: `sub-${topic}`, topic });
   expect((await client.next())["ok"]).toBe(true);
 }
 
@@ -223,7 +224,7 @@ describe("ccmsg peers / ccmsg agents", () => {
     // Greeted and gone: the row stays, with the classification saying which
     // of the two it is now. There is no second list to look in.
     const session = await greet(at, { role: "session", sid: OTHER_SID });
-    session.send({ op: "session_stopping", request_id: "stop" });
+    session.send({ op: "session.stopping", request_id: "stop" });
     expect((await session.next())["ok"]).toBe(true);
     await session.close();
 
@@ -378,7 +379,7 @@ describe("ccmsg dump", () => {
     // for is somebody reading it.
     expect(drawn.out).toContain(`# dump ${SID}`);
     expect(drawn.out).toContain(`- instance: \`${at.self}\``);
-    expect(drawn.out).toContain("[u1:0] message:user:in");
+    expect(drawn.out).toContain("[u1:0] message.user.in");
     expect(drawn.out).toContain("$ wc -l < f");
     expect(drawn.out).toContain("## ids");
   });
@@ -391,7 +392,7 @@ describe("ccmsg dump", () => {
     expect(asked.code).toBe(0);
     const file = json(asked.out) as { sid: string; items: { type: string }[] };
     expect(file.sid).toBe(SID);
-    expect(file.items.map((one) => one.type)).toEqual(["message:user:in", "tool:Bash"]);
+    expect(file.items.map((one) => one.type)).toEqual(["message.user.in", "tool.Bash"]);
   });
 
   test("--types is applied, and --out writes instead of printing", async () => {
@@ -400,14 +401,14 @@ describe("ccmsg dump", () => {
     transcript(home, SID, SPOKE);
     const path = join(home, "drawn.md");
 
-    const written = await capture(() => main(["dump", SID, "--types", "tool:Bash", "--out", path]));
+    const written = await capture(() => main(["dump", SID, "--types", "tool.Bash", "--out", path]));
     expect(written.code).toBe(0);
     const answer = json(written.out) as { path: string; bytes: number };
     expect(answer.path).toBe(path);
     const text = readFileSync(path, "utf8");
     expect(answer.bytes).toBe(Buffer.byteLength(text));
     expect(text).toContain("$ wc -l < f");
-    expect(text).not.toContain("message:user:in");
+    expect(text).not.toContain("message.user.in");
   });
 
   test("dump presets answers with what this instance is configured with", async () => {

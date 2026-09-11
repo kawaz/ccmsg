@@ -168,9 +168,9 @@ describe("what happened, as against what is (§6.4)", () => {
       publish: (topic, data, instance) => hub.publish(topic, data, instance),
     });
     const input = {
-      op: "notify_send" as const,
+      op: "notify.send" as const,
       conn,
-      args: { op: "notify_send", request_id: "1", sid: SID, text: "look" },
+      args: { op: "notify.send", request_id: "1", sid: SID, text: "look" },
       identity: { state: "settled" as const, role: "user" as const },
     };
 
@@ -187,8 +187,8 @@ describe("what happened, as against what is (§6.4)", () => {
     const spoke = refusal(() =>
       notify.post({
         ...input,
-        op: "say_post" as const,
-        args: { op: "say_post", request_id: "2", text: "spoke" },
+        op: "say.post" as const,
+        args: { op: "say.post", request_id: "2", text: "spoke" },
         identity: { state: "settled" as const, role: "session" as const, sid: SID },
       }),
     );

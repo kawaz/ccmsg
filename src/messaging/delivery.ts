@@ -40,7 +40,7 @@ export interface SessionLookup {
 
 /** The rest of the cluster, for a message addressed outside this instance.
  *
- * `message_send` is a `cluster` op — any instance may be asked — but a message
+ * `message.send` is a `cluster` op — any instance may be asked — but a message
  * reaches a session through the session's own connections, which are held by
  * the instance it greeted. So the op is answered here by carrying it there
  * (§3.2 step 6 is about `instance-local` ops; this is the same forwarding for
@@ -99,7 +99,7 @@ export class Delivery implements UpstreamResource {
     this.#counter = deps.inbox.lastCounter(`${deps.self}/`);
   }
 
-  /** `message_send`. The op fails only for a sid nobody knows; every other
+  /** `message.send`. The op fails only for a sid nobody knows; every other
    * outcome is a success carrying what became of the message. */
   send = async (input: HandlerInput): Promise<MessageSendResult> => {
     const args = input.args as unknown as MessageSendArgs;
@@ -161,7 +161,7 @@ export class Delivery implements UpstreamResource {
         : undefined;
     }
     // The sender, as the owning instance will run the op as: the identity the
-    // connection greeted with, which is the same thing `message_send` reads to
+    // connection greeted with, which is the same thing `message.send` reads to
     // decide who a message is from (§4.1).
     const answer = await cluster.forward(owner, input.args, callerOf(input));
     if (answer.kind === "reply") {
@@ -366,7 +366,7 @@ export class Delivery implements UpstreamResource {
 }
 
 /** Who is asking, as another instance is told it (contract, `CallerIdentity`).
- * A connection with no settled greeting names nobody, and `message_send`
+ * A connection with no settled greeting names nobody, and `message.send`
  * refuses it before this is reached. */
 function callerOf(input: HandlerInput): CallerIdentity | undefined {
   const identity = input.identity;

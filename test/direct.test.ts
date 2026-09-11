@@ -246,7 +246,7 @@ describe("route (a) over the messaging socket (§4.1)", () => {
 
     const user = (await received(harness))[1] as { message: { content: string } };
     expect(parseDirectDelivery(user.message.content)?.from).toBe("user");
-    // `message_send` addresses a sid, so there is no sending back to a person:
+    // `message.send` addresses a sid, so there is no sending back to a person:
     // the contract's wording drops the addressee rather than naming one.
     expect(user.message.content).toContain(directDeliveryReplyLine(sent.mid, sent.from));
     expect(user.message.content).not.toContain("--to");
@@ -342,7 +342,7 @@ describe("route (a) over the messaging socket (§4.1)", () => {
 });
 
 describe("delivery over route (a)", () => {
-  /** The sessions domain narrowed to what delivery asks it, so `message_send`
+  /** The sessions domain narrowed to what delivery asks it, so `message.send`
    * can run against the real route without the rest of the instance. */
   const sessions = {
     classify: () => "live" as const,
@@ -374,10 +374,10 @@ describe("delivery over route (a)", () => {
     const result = await messagingHandlers(
       target,
       new Notify({ self: SELF, label: (sid) => sid, publish: () => "ok" }),
-    ).message_send({
-      op: "message_send",
+    )["message.send"]({
+      op: "message.send",
       conn,
-      args: { op: "message_send", request_id: "1", to: OTHER_SID, text: "straight there" },
+      args: { op: "message.send", request_id: "1", to: OTHER_SID, text: "straight there" },
       identity: conn.identity.state === "settled" ? conn.identity : undefined,
     });
 

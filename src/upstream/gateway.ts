@@ -95,13 +95,13 @@ export function gatewayHandlers(setup: GatewaySetup, fetcher?: typeof fetch) {
     ...(usageUrl === undefined
       ? {}
       : {
-          llm_usage_read: (input: HandlerInput): Promise<LlmUsageReadResult> =>
+          "llm.usage.read": (input: HandlerInput): Promise<LlmUsageReadResult> =>
             readUsage({ url: usageUrl, ...call }, input.args as unknown as LlmUsageReadArgs),
         }),
     ...(statsUrl === undefined
       ? {}
       : {
-          llm_stats_read: (input: HandlerInput): Promise<LlmStatsReadResult> =>
+          "llm.stats.read": (input: HandlerInput): Promise<LlmStatsReadResult> =>
             readStats({ url: statsUrl, ...call }, input.args as unknown as LlmStatsReadArgs),
         }),
   };
@@ -165,7 +165,7 @@ export class Gateway {
           };
   }
 
-  /** The resource behind `llm_status`. A stand-in that states nothing when the
+  /** The resource behind `llm.status`. A stand-in that states nothing when the
    * gateway's address is not configured — the topic's capability is absent
    * then, so nothing reaches it, and the attachment stays unconditional. */
   get statusResource(): UpstreamResource {

@@ -121,7 +121,7 @@ function read(line: string, id: string, expected: number): TranslateResult[] {
 
 export function translateHandlers(translate: Translate) {
   return {
-    translate_run: (input: HandlerInput): Promise<TranslateRunResult> =>
+    "translate.run": (input: HandlerInput): Promise<TranslateRunResult> =>
       translate.run(input.args as unknown as TranslateRunArgs),
   };
 }

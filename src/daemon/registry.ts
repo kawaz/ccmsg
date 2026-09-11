@@ -110,31 +110,31 @@ const STARTING_PRESETS = [
   {
     name: "file",
     description: "ファイル操作。読み書きと探索をひとまとめに",
-    opts: { types: ["tool:Read", "tool:Write", "tool:Edit", "tool:Glob", "tool:Grep"] },
+    opts: { types: ["tool.Read", "tool.Write", "tool.Edit", "tool.Glob", "tool.Grep"] },
   },
   {
     name: "howto",
     description: "調査のノウハウだけ。何を考えて何を叩いて何を読み書きしたか",
     opts: {
-      types: ["thinking", "message:user", "message:parent", "message:sub", "tool:Bash", "@file"],
+      types: ["thinking", "message.user", "message.parent", "message.sub", "tool.Bash", "@file"],
     },
   },
   {
     name: "journal",
     description: "日記用。人との往復と worker の答え、思考は要点だけ",
     opts: {
-      types: ["message:user", "message:parent", "message:sub:in", "message:team:in", "thinking"],
+      types: ["message.user", "message.parent", "message.sub.in", "message.team.in", "thinking"],
     },
   },
   {
     name: "handoff",
     description: "後継セッションへの引き継ぎ。直近の会話と、走っているものの台帳",
-    opts: { types: ["message", "system:task", "ids"] },
+    opts: { types: ["message", "system.task", "ids"] },
   },
   {
     name: "audit",
     description: "何をしたかの追跡。会話は落として操作と通知だけ",
-    opts: { types: ["@file", "tool:Bash", "notice", "ids"] },
+    opts: { types: ["@file", "tool.Bash", "notice", "ids"] },
   },
 ];
 
@@ -225,7 +225,7 @@ export async function status(target: Target): Promise<StatusRow> {
     if (greeting["ok"] !== true) return row;
     const peers =
       (greeting["instances"] as { id: InstanceId; endpoint: Endpoint }[] | undefined) ?? [];
-    const answer = await conn.ask({ op: "instance_ping" });
+    const answer = await conn.ask({ op: "instance.ping" });
     if (answer["ok"] !== true) return row;
     const ping = answer as unknown as InstancePingResult;
     return {
@@ -259,7 +259,7 @@ export async function stop(target: Target): Promise<{ dir: string; stopped: bool
     if (greeting["ok"] !== true) {
       throw new CommandError("forbidden", `hello が拒否されました: ${JSON.stringify(greeting)}`);
     }
-    const answer = await conn.ask({ op: "instance_shutdown" });
+    const answer = await conn.ask({ op: "instance.shutdown" });
     if (answer["ok"] !== true) {
       throw new CommandError("internal_error", `停止を拒否されました: ${JSON.stringify(answer)}`);
     }

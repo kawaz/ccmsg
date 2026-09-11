@@ -394,7 +394,7 @@ export class Instance {
       publish: (topic, data, instance) => {
         this.#topics.publish(topic, data, instance);
       },
-      // What a peer wrote on `auth_records`, folded into the set this instance
+      // What a peer wrote on `auth.records`, folded into the set this instance
       // holds. It is not relayed onward: every instance subscribes to every
       // peer, so a record reaches all of them without anyone repeating it, and
       // what this instance writes travels as its own (DR-0001 §2.6).
@@ -552,11 +552,11 @@ export class Instance {
     this.#topics.attach("transcript", this.#transcripts);
     // One tail feeds both: the bytes as they are appended, and what those
     // bytes were read as.
-    this.#topics.attach("transcript_items", this.#transcripts);
-    this.#topics.attach("session_status", this.#status);
-    this.#topics.attach("session_errors", this.#status);
-    this.#topics.attach("llm_requests", this.#gateway.requests);
-    this.#topics.attach("llm_status", this.#gateway.statusResource);
+    this.#topics.attach("transcript.items", this.#transcripts);
+    this.#topics.attach("session.status", this.#status);
+    this.#topics.attach("session.errors", this.#status);
+    this.#topics.attach("llm.requests", this.#gateway.requests);
+    this.#topics.attach("llm.status", this.#gateway.statusResource);
 
     // The one thing here that is written down and is nobody's derived value
     // (§3.6): what a person saved through a client, which no other party holds
@@ -574,7 +574,7 @@ export class Instance {
       self: this.self,
       ...(now === undefined ? {} : { now }),
       publish: (written) => {
-        this.#topics.publish("auth_records", { records: written });
+        this.#topics.publish("auth.records", { records: written });
       },
     });
     this.#auth = new Auth({
@@ -590,7 +590,7 @@ export class Instance {
         this.log.write(msg, fields);
       },
     });
-    this.#topics.attach("auth_records", new AuthTopic(this.self, records));
+    this.#topics.attach("auth.records", new AuthTopic(this.self, records));
 
     // The upstreams that answer a question rather than hold a value. Each is
     // built only where its config named one, and dispatch has already refused
@@ -618,8 +618,10 @@ export class Instance {
     const origin = config.upstream.sandbox_origin;
 
     this.#handlers = completeHandlers({
-      hello: this.#sessions.hello,
-      session_stopping: this.#sessions.stopping,
+      "hello.session": this.#sessions.helloSession,
+      "hello.user": this.#sessions.helloUser,
+      "hello.instance": this.#sessions.helloInstance,
+      "session.stopping": this.#sessions.stopping,
       ...topicHandlers(this.#topics),
       ...messagingHandlers(this.#delivery, this.#notify),
       ...fileHandlers(files),
@@ -643,8 +645,8 @@ export class Instance {
       ...gatewayHandlers(setup),
       ...kvHandlers(kv),
       ...authHandlers(this.#auth),
-      instance_ping: (): InstancePingResult => this.ping(),
-      instance_shutdown: () => {
+      "instance.ping": (): InstancePingResult => this.ping(),
+      "instance.shutdown": () => {
         // The reply goes out when this handler's value reaches the driver, so
         // stopping is deferred past that turn of the loop rather than run
         // here — the caller is told the request was accepted, which is what
@@ -852,7 +854,7 @@ export class Instance {
       }
       // Let in as a peer rather than on the entry token, and still unproven:
       // the greeting is the one thing it was admitted to make.
-      if (this.#mesh.unproven(conn) && opOf(frame) !== "hello") {
+      if (this.#mesh.unproven(conn) && opOf(frame) !== "hello.instance") {
         conn.close();
         return failure(
           requestIdOf(frame),

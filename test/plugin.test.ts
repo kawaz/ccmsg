@@ -500,10 +500,9 @@ describe("the version ccmsg names", () => {
     const client = await connectUds(outcome.socketPath);
     clients.push(client);
     client.send({
-      op: "hello",
+      op: "hello.user",
       request_id: "hello",
       protocol_version: PROTOCOL_VERSION,
-      role: "user",
     });
     // What the daemon answers `hello` with is the same build the plugin it
     // installs is stamped with, which is what keeps a person from reading two
@@ -530,13 +529,12 @@ describe("the hooks against a running instance", () => {
     const client = await connectUds(at.socketPath);
     clients.push(client);
     client.send({
-      op: "hello",
+      op: "hello.user",
       request_id: "hello",
       protocol_version: PROTOCOL_VERSION,
-      role: "user",
     });
     expect((await client.next())["ok"]).toBe(true);
-    client.send({ op: "topic_subscribe", request_id: "sub", topic: "peers" });
+    client.send({ op: "topic.subscribe", request_id: "sub", topic: "peers" });
     expect((await client.next())["ok"]).toBe(true);
     return client;
   }

@@ -119,7 +119,7 @@ async function greet(gatewayUrl?: string): Promise<LineClient> {
   running.push(outcome);
   const client = await connectUds(outcome.socketPath);
   clients.push(client);
-  client.send({ op: "hello", request_id: "h", role: "user", protocol_version: PROTOCOL_VERSION });
+  client.send({ op: "hello.user", request_id: "h", protocol_version: PROTOCOL_VERSION });
   await client.next();
   return client;
 }
@@ -127,7 +127,7 @@ async function greet(gatewayUrl?: string): Promise<LineClient> {
 /** One op, answered and held to its own response schema (§11.1). */
 async function ask(
   client: LineClient,
-  op: "llm_usage_read" | "llm_stats_read",
+  op: "llm.usage.read" | "llm.stats.read",
   args: Record<string, unknown> = {},
 ): Promise<Record<string, unknown>> {
   client.send({ op, request_id: op, ...args });
@@ -138,11 +138,11 @@ async function ask(
   return answer;
 }
 
-describe("what quota is left (llm_usage_read)", () => {
+describe("what quota is left (llm.usage.read)", () => {
   test("the gateway's document arrives under this contract's names (§3.5)", async () => {
     const gateway = fakeGateway();
     const client = await greet(gateway.url);
-    const answer = (await ask(client, "llm_usage_read")) as unknown as LlmUsageReadResult;
+    const answer = (await ask(client, "llm.usage.read")) as unknown as LlmUsageReadResult;
     expect(answer.generated_at).toBe(NOW);
     expect(answer.credentials.length).toBe(1);
     const credential = answer.credentials[0];
@@ -170,7 +170,7 @@ describe("what quota is left (llm_usage_read)", () => {
   test("the login path becomes an address on the gateway's own origin", async () => {
     const gateway = fakeGateway();
     const client = await greet(gateway.url);
-    const answer = (await ask(client, "llm_usage_read")) as unknown as LlmUsageReadResult;
+    const answer = (await ask(client, "llm.usage.read")) as unknown as LlmUsageReadResult;
     expect(answer.credentials[0]?.auth?.login_url).toBe(
       `${gateway.url}/llm-gateway/login/personal/start`,
     );
@@ -182,8 +182,8 @@ describe("what quota is left (llm_usage_read)", () => {
   test("a probe is asked for only when the caller asked for one", async () => {
     const gateway = fakeGateway();
     const client = await greet(gateway.url);
-    await ask(client, "llm_usage_read");
-    await ask(client, "llm_usage_read", { refresh: true });
+    await ask(client, "llm.usage.read");
+    await ask(client, "llm.usage.read", { refresh: true });
     expect(gateway.asked().filter((path) => path.startsWith("/llm-gateway/usage"))).toEqual([
       "/llm-gateway/usage",
       "/llm-gateway/usage?refresh=true",
@@ -194,17 +194,17 @@ describe("what quota is left (llm_usage_read)", () => {
     // An address nothing answers on: the read fails, and answering with no
     // credentials would read as "this host has none".
     const client = await greet("http://127.0.0.1:1");
-    const answer = await ask(client, "llm_usage_read");
+    const answer = await ask(client, "llm.usage.read");
     expect(answer["ok"]).toBe(false);
     expect((answer["error"] as { code: string }).code).toBe("internal_error");
   });
 });
 
-describe("what it cost (llm_stats_read)", () => {
+describe("what it cost (llm.stats.read)", () => {
   test("the days are the gateway's own, with the counters it reported", async () => {
     const gateway = fakeGateway();
     const client = await greet(gateway.url);
-    const answer = (await ask(client, "llm_stats_read")) as unknown as LlmStatsReadResult;
+    const answer = (await ask(client, "llm.stats.read")) as unknown as LlmStatsReadResult;
     expect(Object.keys(answer.days)).toEqual(["2026-09-07"]);
     const day = answer.days["2026-09-07"];
     expect(day?.total_usd).toBe(0.25);
@@ -218,8 +218,8 @@ describe("what it cost (llm_stats_read)", () => {
   test("a window the caller named is passed on, and one it did not is not", async () => {
     const gateway = fakeGateway();
     const client = await greet(gateway.url);
-    await ask(client, "llm_stats_read");
-    await ask(client, "llm_stats_read", { days: 3 });
+    await ask(client, "llm.stats.read");
+    await ask(client, "llm.stats.read", { days: 3 });
     expect(gateway.asked().filter((path) => path.startsWith("/llm-gateway/stats"))).toEqual([
       "/llm-gateway/stats",
       "/llm-gateway/stats?days=3",
@@ -230,7 +230,7 @@ describe("what it cost (llm_stats_read)", () => {
 describe("an instance with no gateway", () => {
   test("names neither capability and refuses both ops", async () => {
     const client = await greet();
-    for (const op of ["llm_usage_read", "llm_stats_read"] as const) {
+    for (const op of ["llm.usage.read", "llm.stats.read"] as const) {
       const answer = await ask(client, op);
       expect(answer["ok"]).toBe(false);
       expect((answer["error"] as { code: string }).code).toBe("capability_unavailable");

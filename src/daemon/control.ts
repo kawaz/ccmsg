@@ -49,10 +49,10 @@ export async function connect(path: string): Promise<Conn | undefined> {
 
 /** Greet as the person running the command.
  *
- * `role: "user"` because that is what the caller is: the lifecycle ops belong
+ * `hello.user` because that is what the caller is: the lifecycle ops belong
  * to whoever operates the host, not to a session speaking from inside a turn. */
 export function greetAsUser(conn: Conn): Promise<Record<string, unknown>> {
-  return conn.ask({ op: "hello", role: "user", protocol_version: PROTOCOL_VERSION });
+  return conn.ask({ op: "hello.user", protocol_version: PROTOCOL_VERSION });
 }
 
 /** Reassemble the replies of one exchange, by arrival order. */

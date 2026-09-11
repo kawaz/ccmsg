@@ -126,10 +126,10 @@ export class Launcher {
 
 export function launcherHandlers(launcher: Launcher) {
   return {
-    launcher_config_read: (): LauncherConfigReadResult => launcher.configRead(),
-    launcher_run: (input: HandlerInput): Promise<LauncherRunResult> =>
+    "launcher.config.read": (): LauncherConfigReadResult => launcher.configRead(),
+    "launcher.run": (input: HandlerInput): Promise<LauncherRunResult> =>
       launcher.run(input.args as unknown as LauncherRunArgs),
-    dir_tree: (input: HandlerInput): DirTreeResult =>
+    "dir.tree": (input: HandlerInput): DirTreeResult =>
       launcher.tree(input.args as unknown as DirTreeArgs),
   };
 }

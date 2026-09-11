@@ -204,7 +204,7 @@ describe("route (a)", () => {
 
   test("a CLI that never answers is the route not applying, not a send held open", async () => {
     // The real one answers at once (measured), and this is what the budget is
-    // for: `message_send` must not wait on a child's whole life.
+    // for: `message.send` must not wait on a child's whole life.
     const route = new CodexQueueRoute({
       configHome: "/tmp/a-codex-home",
       run: () => Promise.resolve({ code: 124 }),

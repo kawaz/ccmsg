@@ -168,13 +168,12 @@ function writeState(dir: string, pid: number, sid: Sid, extra: Record<string, un
 /** A greeting that states one thing about itself and nothing else, for the
  * cases about what the instance does with that one field. */
 function greetWith(domain: Sessions, meta: Record<string, string>, sid: Sid = SID) {
-  void domain.hello({
-    op: "hello",
+  void domain.helloSession({
+    op: "hello.session",
     conn: greeting(),
     args: {
-      op: "hello",
+      op: "hello.session",
       request_id: "1",
-      role: "session",
       protocol_version: PROTOCOL_VERSION,
       sid,
       ...meta,
@@ -257,14 +256,14 @@ function restart(context: { root: string; stateDir: string }): Sessions {
   return domain;
 }
 
-/** `session_stopping`, spoken on a connection that has already greeted — which
+/** `session.stopping`, spoken on a connection that has already greeted — which
  * is the only way it is reachable: the op takes its subject from the identity
  * the connection settled, never from an argument. */
 function declareStopping(domain: Sessions, conn: TestConn, sid: Sid = SID) {
   return domain.stopping({
-    op: "session_stopping",
+    op: "session.stopping",
     conn,
-    args: { op: "session_stopping", request_id: "1" },
+    args: { op: "session.stopping", request_id: "1" },
     identity: { state: "settled", role: "session", sid },
   });
 }
@@ -272,13 +271,12 @@ function declareStopping(domain: Sessions, conn: TestConn, sid: Sid = SID) {
 function helloFrom(domain: Sessions, conn: TestConn, sid: Sid = SID): HelloResult {
   // A session's greeting is answered without waiting for anything; only a
   // peer's is a promise (mesh-peer-auth §5).
-  return domain.hello({
-    op: "hello",
+  return domain.helloSession({
+    op: "hello.session",
     conn,
     args: {
-      op: "hello",
+      op: "hello.session",
       request_id: "1",
-      role: "session",
       protocol_version: PROTOCOL_VERSION,
       sid,
       ...meta(),
@@ -325,7 +323,11 @@ describe("hello", () => {
     const { domain } = sessions();
     const result = helloFrom(domain, greeting());
     expect(
-      validationErrors(OP_SCHEMAS.hello.response, { ok: true, request_id: "1", ...result }),
+      validationErrors(OP_SCHEMAS["hello.session"].response, {
+        ok: true,
+        request_id: "1",
+        ...result,
+      }),
     ).toEqual([]);
     expect(result.instances.map((instance) => instance.id)).toEqual([SELF]);
     expect(result.instance).toBe(SELF);
@@ -345,38 +347,33 @@ describe("hello", () => {
 
   test("a person's greeting registers nothing", () => {
     const { domain } = sessions();
-    void domain.hello({
-      op: "hello",
+    void domain.helloUser({
+      op: "hello.user",
       conn: greeting(),
-      args: { op: "hello", request_id: "1", role: "user", protocol_version: PROTOCOL_VERSION },
+      args: { op: "hello.user", request_id: "1", protocol_version: PROTOCOL_VERSION },
     });
     expect(domain.peerRows().filter(isLive)).toEqual([]);
   });
 
-  test("each role says what its own greeting has to carry", () => {
-    // The greeting is the one frame whose shape depends on the role, and the
-    // contract's schema cannot say so: one schema covers all three roles, which
-    // is why every one of these fields is optional in it.
+  test("a peer's greeting reaching an instance with no mesh is refused", () => {
+    // What each greeting has to carry is the schema's to state — there is one
+    // op per role — and what is left here is the one judgement a shape cannot
+    // make: a claim alone proves nothing, and an instance with no mesh has no
+    // exchange by which this connection could be bound to the endpoint it
+    // names, so the greeting is answered with the capability it needs.
     const { domain } = sessions();
-    const greet = (args: Record<string, unknown>) => () =>
-      void domain.hello({
-        op: "hello",
-        conn: greeting(),
-        args: { op: "hello", request_id: "1", protocol_version: PROTOCOL_VERSION, ...args },
-      });
-    // A session without a sid is a session this instance cannot speak about.
-    expect(greet({ role: "session" })).toThrow(OpError);
-    // A sid on a person's greeting would be a person registering as the session.
-    expect(greet({ role: "user", sid: SID })).toThrow(OpError);
-    // A peer greets with its claim, and a claim alone proves nothing: the
-    // exchange that would bind this connection to it does not exist yet, so
-    // either shape of an instance greeting is refused.
-    expect(greet({ role: "instance" })).toThrow(OpError);
     expect(
-      greet({
-        role: "instance",
-        mesh: { ver: 1, iss: SELF, aud: SELF, kid: "0123456789abcdef" },
-      }),
+      () =>
+        void domain.helloInstance({
+          op: "hello.instance",
+          conn: greeting(),
+          args: {
+            op: "hello.instance",
+            request_id: "1",
+            protocol_version: PROTOCOL_VERSION,
+            mesh: { ver: 1, iss: SELF, aud: SELF, id: SELF, kid: "0123456789abcdef" },
+          },
+        } as unknown as Parameters<typeof domain.helloInstance>[0]),
     ).toThrow(OpError);
     expect(domain.peerRows().filter(isLive)).toEqual([]);
   });
@@ -404,13 +401,12 @@ describe("hello", () => {
     homes.push(elsewhere);
     mkdirSync(join(elsewhere, "projects", "a"), { recursive: true });
     writeFileSync(join(elsewhere, "projects", "a", "b.jsonl"), "");
-    void context.domain.hello({
-      op: "hello",
+    void context.domain.helloSession({
+      op: "hello.session",
       conn: greeting(),
       args: {
-        op: "hello",
+        op: "hello.session",
         request_id: "1",
-        role: "session",
         protocol_version: PROTOCOL_VERSION,
         sid: SID,
         transcript_path: join(elsewhere, "projects", "a", "b.jsonl"),
@@ -555,10 +551,10 @@ describe("hello", () => {
     const { domain } = sessions();
     expect(
       () =>
-        void domain.hello({
-          op: "hello",
+        void domain.helloSession({
+          op: "hello.session",
           conn: greeting(),
-          args: { op: "hello", request_id: "1", role: "session", protocol_version: 99, sid: SID },
+          args: { op: "hello.session", request_id: "1", protocol_version: 99, sid: SID },
         }),
     ).toThrow();
   });
@@ -590,13 +586,12 @@ describe("hello", () => {
 
   test("a session that named none of it is shown without it, never with a guess", () => {
     const { domain } = sessions();
-    void domain.hello({
-      op: "hello",
+    void domain.helloSession({
+      op: "hello.session",
       conn: greeting(),
       args: {
-        op: "hello",
+        op: "hello.session",
         request_id: "1",
-        role: "session",
         protocol_version: PROTOCOL_VERSION,
         sid: SID,
       },
@@ -1025,7 +1020,7 @@ describe("the classification on the wire", () => {
     const conn = greeting();
     helloFrom(context.domain, conn);
     // The declaration comes first and the departure second, which is the order
-    // the two are one event in (contract, `session_stopping`).
+    // the two are one event in (contract, `session.stopping`).
     const declared = declareStopping(context.domain, conn);
     conn.close();
     const entry = context.domain.peerRows().filter(isLost)[0];

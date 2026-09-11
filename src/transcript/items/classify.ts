@@ -31,7 +31,7 @@ import { genericResult, resultFields, useFields } from "./tools.ts";
  *
  * Nothing is dropped for being unrecognised. A tool nobody wrote fields for
  * arrives with what it was called with, an attachment arrives under its own
- * kind, and a record that fits nothing arrives as `system:unknown`. The one
+ * kind, and a record that fits nothing arrives as `system.unknown`. The one
  * failure a dump cannot be read around is a line that vanished quietly. */
 
 /** Record types that are the interface and the session's own bookkeeping
@@ -112,8 +112,8 @@ export function classify(records: Iterable<Located>, subject: TranscriptSubject 
 export class Classification {
   #items: Draft[] = [];
   /** The call each tool result belongs to, by the id the harness pairs them
-   * with. Holds the `tool:*` item and, for an `Agent` call, the
-   * `message:sub:out` beside it — the same exchange seen from the two sides
+   * with. Holds the `tool.*` item and, for an `Agent` call, the
+   * `message.sub.out` beside it — the same exchange seen from the two sides
    * the contract names it from. */
   readonly #calls = new Map<string, { tool: Draft; message?: Draft; name: string }>();
   #turn = 0;
@@ -198,7 +198,7 @@ export class Classification {
     if (type === "system") return this.#system(record, make);
     if (type === "assistant") return this.#assistant(record, make);
     if (type === "user") return this.#user(record, make);
-    make("system:unknown", { record });
+    make("system.unknown", { record });
   }
 
   /** An attachment is either the operator's own code speaking or the harness
@@ -210,10 +210,10 @@ export class Classification {
     if (kind === "hook_additional_context" || kind === "hook_success") {
       const name = str(attachment["hookName"]) ?? "";
       // The event alone is the type. A hook runs under `PreToolUse:Bash`,
-      // whose `:` would read as another level of the hierarchy and leave
-      // `hook:PreToolUse` selecting nothing.
+      // whose matcher is no level of a hierarchy: carrying it would make
+      // `hook.PreToolUse` select nothing, so it is a field instead.
       const event = str(attachment["hookEvent"]) ?? name.split(":")[0] ?? "";
-      make(`hook:${segment(event)}`, {
+      make(`hook.${segment(event)}`, {
         hook_name: name,
         outcome: kind === "hook_success" ? "output" : "additionalContext",
         ...optional("content", text(attachment["content"])),
@@ -225,7 +225,7 @@ export class Classification {
       });
       return;
     }
-    make(`system:attachment:${segment(kind ?? "unknown")}`, { attachment });
+    make(`system.attachment.${segment(kind ?? "unknown")}`, { attachment });
   }
 
   /** The harness files a slash command's output as a line of its own, which
@@ -235,19 +235,19 @@ export class Classification {
   #system(record: Row, make: Make): void {
     if (str(record["subtype"]) === "local_command") {
       const content = str(record["content"]) ?? "";
-      make("notice:slash", {
+      make("notice.slash", {
         command: this.#slash ?? "",
         ...optional("stdout", tagged(content, "local-command-stdout") ?? content),
       });
       return;
     }
-    make("system:unknown", { record });
+    make("system.unknown", { record });
   }
 
   #assistant(record: Row, make: Make): void {
     const message = row(record["message"]) ?? {};
     if (record["isApiErrorMessage"] === true) {
-      make("system:api-error", { text: text(message["content"]) ?? "" });
+      make("system.api.error", { text: text(message["content"]) ?? "" });
       return;
     }
     for (const block of list(message["content"])) {
@@ -265,7 +265,7 @@ export class Classification {
         // them is the answer it was started for, and the ones before are what
         // it hands back mid-flight. No call carries them, which is why
         // `parent:out` is prose as well as a call.
-        const kind = this.#subject === "main" ? "message:user:out" : "message:parent:out";
+        const kind = this.#subject === "main" ? "message.user.out" : "message.parent.out";
         if (said !== undefined && said !== "") make(kind, { text: said });
         continue;
       }
@@ -286,7 +286,7 @@ export class Classification {
     const input = row(block["input"]) ?? {};
     const fields = useFields(name, input);
     const called = typedAs(name);
-    const item = make(`tool:${segment(called)}`, {
+    const item = make(`tool.${segment(called)}`, {
       role: "use",
       tool_use_id: id,
       ...(called === name ? {} : { harness_name: name }),
@@ -301,14 +301,14 @@ export class Classification {
       const named = str(input["name"]) ?? str(input["team_name"]);
       message =
         named === undefined
-          ? make("message:sub:out", {
+          ? make("message.sub.out", {
               role: "use",
               tool_use_id: id,
               prompt: str(input["prompt"]) ?? "",
               ...optional("subagent_type", str(input["subagent_type"])),
               ...optional("description", str(input["description"])),
             })
-          : make("message:team:out", {
+          : make("message.team.out", {
               role: "use",
               tool_use_id: id,
               text: str(input["prompt"]) ?? "",
@@ -323,14 +323,14 @@ export class Classification {
       // the names a harness gives a lead, and any other name is somebody
       // standing alongside.
       if (addressed(to)) {
-        make("message:session:out", { text: text(input["message"]) ?? "", to });
+        make("message.session.out", { text: text(input["message"]) ?? "", to });
       } else {
         // Writing to an agent is one direction of a correspondence, not a call
         // that returns: what it says back arrives as its own message whenever
         // it chooses to send one, under nothing that names this. So the
         // message says it is waiting for nothing, and a reader is not left
         // watching for an answer that has no way in.
-        make(LEADS.has(to) ? "message:parent:out" : "message:team:out", {
+        make(LEADS.has(to) ? "message.parent.out" : "message.team.out", {
           role: "use",
           tool_use_id: id,
           text: text(input["message"]) ?? "",
@@ -340,7 +340,7 @@ export class Classification {
         });
       }
     } else if (name === "Bash" && isCcmsgSend(str(input["command"]))) {
-      make("message:session:out", { text: str(input["command"]) ?? "" });
+      make("message.session.out", { text: str(input["command"]) ?? "" });
     }
     if (id === "") return;
     // A call is dropped from the pairing once it has been answered, so what is
@@ -388,7 +388,7 @@ export class Classification {
       // name guessed from what came back. What ties it to the call is the key
       // the harness paired them by, which a reader joins against the calls it
       // holds.
-      make("tool:unknown", {
+      make("tool.unknown", {
         role: "result",
         parent_tool_use_id: id,
         result: genericResult(record["toolUseResult"]),
@@ -398,7 +398,7 @@ export class Classification {
     const failed = block["is_error"] === true;
     const answer = record["toolUseResult"];
     const fields = resultFields(call.name, answer, failed);
-    const item = make(`tool:${segment(call.name)}`, {
+    const item = make(`tool.${segment(call.name)}`, {
       role: "result",
       parent_item: call.tool.id,
       parent_tool_use_id: id,
@@ -446,17 +446,17 @@ export class Classification {
    * so nothing the harness injected is mistaken for someone speaking. */
   #said(record: Row, said: string, make: Make): void {
     if (record["isCompactSummary"] === true) {
-      make("system:compact", { text: said });
+      make("system.compact", { text: said });
       return;
     }
     if (said.startsWith("<local-command-caveat>")) {
-      make("system:caveat", { text: said });
+      make("system.caveat", { text: said });
       return;
     }
     const command = tagged(said, "command-name");
     if (command !== undefined) {
       this.#slash = command;
-      make("notice:slash", {
+      make("notice.slash", {
         command,
         ...optional("args", tagged(said, "command-args") ?? tagged(said, "command-message")),
         ...optional("stdout", tagged(said, "local-command-stdout")),
@@ -464,11 +464,11 @@ export class Classification {
       return;
     }
     if (said.startsWith("[Request interrupted")) {
-      make("notice:interrupt", { text: said });
+      make("notice.interrupt", { text: said });
       return;
     }
     if (said.startsWith("Resume the paused workflow by calling: Workflow({")) {
-      make("system:resume", { text: said });
+      make("system.resume", { text: said });
       return;
     }
     if (said.startsWith("<task-notification>")) {
@@ -483,14 +483,14 @@ export class Classification {
     // stands, being told what to do is not the same as being written to.
     if (record["parentUuid"] === null) {
       this.#turn += 1;
-      make(this.#subject === "main" ? "message:user:in" : "message:parent:in", {
+      make(this.#subject === "main" ? "message.user.in" : "message.parent.in", {
         text: said,
         ...(this.#subject === "main" ? {} : envelope(said)),
       });
       return;
     }
     if (said.includes("<cross-session-message")) {
-      make("message:session:in", {
+      make("message.session.in", {
         text: said,
         ...optional("from", attribute(said, "from")),
         ...optional("msg_id", attribute(said, "mid")),
@@ -503,14 +503,14 @@ export class Classification {
       // name is somebody standing alongside, and what they send is a message
       // of its own rather than the answer to anything.
       const from = attribute(said, "teammate_id");
-      make(LEADS.has(from ?? "") ? "message:parent:in" : "message:team:in", {
+      make(LEADS.has(from ?? "") ? "message.parent.in" : "message.team.in", {
         text: said,
         ...envelope(said),
       });
       return;
     }
     if (record["isMeta"] === true) {
-      make("system:unknown", { record });
+      make("system.unknown", { record });
       return;
     }
     // What is left is somebody writing to the subject in their own words, and
@@ -522,7 +522,7 @@ export class Classification {
     // A turn begins where the subject is addressed, which is the only place a
     // dump can count turns from — the harness numbers nothing.
     this.#turn += 1;
-    make(this.#subject === "sub" ? "message:parent:in" : "message:user:in", { text: said });
+    make(this.#subject === "sub" ? "message.parent.in" : "message.user.in", { text: said });
   }
 
   /** A background task reporting, or an agent handing back its answer.
@@ -554,7 +554,7 @@ export class Classification {
       this.#calls.delete(key);
       return;
     }
-    make("system:task", {
+    make("system.task", {
       text: said,
       ...optional("task_id", tagged(said, "task-id")),
       ...optional("event", tagged(said, "event") ?? tagged(said, "summary")),
@@ -594,7 +594,7 @@ function envelope(said: string): Record<string, unknown> {
  * whatever asked for it: a teammate's run ending answers the call that started
  * it, an errand's answer is the errand's result. */
 function answers(asked: Draft): string {
-  return asked.type === "message:team:out" ? "message:team:in" : "message:sub:in";
+  return asked.type === "message.team.out" ? "message.team.in" : "message.sub.in";
 }
 
 /** Whether a shell command is this session speaking to another one. */
@@ -603,12 +603,17 @@ function isCcmsgSend(command: string | undefined): boolean {
   return /\bccmsg\s+(post|reply)\b/.test(command);
 }
 
-/** One segment of a type name. The harness's own spellings pass through — they
- * are what a reader matches against what it ran — and a character the name
- * could not carry is replaced rather than the segment being refused, so a
- * newcomer still arrives under something close to its own name. */
+/** The last segment of an open family's type name (`tool.<Name>`,
+ * `system.attachment.<kind>`, `hook.<Event>`). The harness's own spellings pass
+ * through — they are what a reader matches against what it ran — and a
+ * character the name could not carry is replaced rather than the segment being
+ * refused, so a newcomer still arrives under something close to its own name.
+ *
+ * A `.` in the harness's name is written `_`: the reader splits a type on `.`
+ * to walk its hierarchy, and a name carrying one of its own would read as a
+ * level this contract never coined (contract, `TranscriptItemType`). */
 function segment(name: string): string {
-  const cleaned = name.replace(/[^A-Za-z0-9_.-]/g, "-");
+  const cleaned = name.replace(/\./g, "_").replace(/[^A-Za-z0-9_-]/g, "-");
   return cleaned === "" ? "unknown" : cleaned;
 }
 

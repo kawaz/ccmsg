@@ -131,11 +131,11 @@ const files = () => handlers();
 
 describe("contained", () => {
   test("lists the root and reads a file below it", () => {
-    const list = run("dir_list", files().dir_list, { sid: SID, kind: "contained", path: "ws" });
+    const list = run("dir.list", files()["dir.list"], { sid: SID, kind: "contained", path: "ws" });
     expect(list["path"]).toBe("ws");
     const names = (list["entries"] as { name: string }[]).map((entry) => entry.name);
     expect(names).toContain("hello.txt");
-    const read = run("file_read", files().file_read, {
+    const read = run("file.read", files()["file.read"], {
       sid: SID,
       kind: "contained",
       path: "ws/hello.txt",
@@ -145,14 +145,18 @@ describe("contained", () => {
   });
 
   test("a symlink is listed as itself and refuses to resolve", () => {
-    const list = run("dir_list", files().dir_list, { sid: SID, kind: "contained", path: "ws" });
+    const list = run("dir.list", files()["dir.list"], { sid: SID, kind: "contained", path: "ws" });
     const link = (list["entries"] as { name: string; type: string }[]).find(
       (entry) => entry.name === "escape.txt",
     );
     expect(link?.type).toBe("symlink");
     expect(
       refusalOf(() =>
-        run("file_read", files().file_read, { sid: SID, kind: "contained", path: "ws/escape.txt" }),
+        run("file.read", files()["file.read"], {
+          sid: SID,
+          kind: "contained",
+          path: "ws/escape.txt",
+        }),
       ),
     ).toBe("path_forbidden");
   });
@@ -160,7 +164,7 @@ describe("contained", () => {
   test("a path spelled out of the root is refused", () => {
     expect(
       refusalOf(() =>
-        run("file_read", files().file_read, {
+        run("file.read", files()["file.read"], {
           sid: SID,
           kind: "contained",
           path: "../outside/secret.txt",
@@ -173,7 +177,7 @@ describe("contained", () => {
     const bare = fileHandlers(new Containment({ roots: () => undefined }));
     expect(
       refusalOf(() =>
-        run("file_read", bare.file_read, { sid: SID, kind: "contained", path: "ws/hello.txt" }),
+        run("file.read", bare["file.read"], { sid: SID, kind: "contained", path: "ws/hello.txt" }),
       ),
     ).toBe("path_forbidden");
   });
@@ -194,7 +198,7 @@ describe("contained", () => {
       return;
     }
 
-    const read = run("file_read", files().file_read, {
+    const read = run("file.read", files()["file.read"], {
       sid: SID,
       kind: "contained",
       path: "ws/enormous.txt",
@@ -209,7 +213,7 @@ describe("contained", () => {
   });
 
   test("a binary file is answered without its content", () => {
-    const read = run("file_read", files().file_read, {
+    const read = run("file.read", files()["file.read"], {
       sid: SID,
       kind: "contained",
       path: "ws/binary.dat",
@@ -220,7 +224,7 @@ describe("contained", () => {
 
 describe("workspace", () => {
   test("a folder the session's editor names is reachable by absolute path", () => {
-    const read = run("file_read", files().file_read, {
+    const read = run("file.read", files()["file.read"], {
       sid: SID,
       kind: "workspace",
       path: join(base, "space/doc.md"),
@@ -232,7 +236,7 @@ describe("workspace", () => {
   test("a path in no named folder is refused", () => {
     expect(
       refusalOf(() =>
-        run("file_read", files().file_read, {
+        run("file.read", files()["file.read"], {
           sid: SID,
           kind: "workspace",
           path: join(base, "outside/secret.txt"),
@@ -244,7 +248,7 @@ describe("workspace", () => {
 
 describe("external", () => {
   test("exactly the file the transcript named is readable", () => {
-    const read = run("file_read", files().file_read, {
+    const read = run("file.read", files()["file.read"], {
       sid: SID,
       kind: "external",
       path: join(base, "outside/named.txt"),
@@ -255,7 +259,7 @@ describe("external", () => {
   test("its neighbour in the same folder is not", () => {
     expect(
       refusalOf(() =>
-        run("file_read", files().file_read, {
+        run("file.read", files()["file.read"], {
           sid: SID,
           kind: "external",
           path: join(base, "outside/secret.txt"),
@@ -271,8 +275,8 @@ describe("the visible range differs by role (scope: role)", () => {
 
   test("a session reaches its own session's files", () => {
     const read = run(
-      "file_read",
-      files().file_read,
+      "file.read",
+      files()["file.read"],
       { sid: SID, kind: "contained", path: "ws/hello.txt" },
       own,
     );
@@ -283,8 +287,8 @@ describe("the visible range differs by role (scope: role)", () => {
     expect(
       refusalOf(() =>
         run(
-          "file_read",
-          files().file_read,
+          "file.read",
+          files()["file.read"],
           { sid: SID, kind: "contained", path: "ws/hello.txt" },
           other,
         ),
@@ -292,7 +296,7 @@ describe("the visible range differs by role (scope: role)", () => {
     ).toBe("path_forbidden");
     expect(
       refusalOf(() =>
-        run("dir_list", files().dir_list, { sid: SID, kind: "contained", path: "ws" }, other),
+        run("dir.list", files()["dir.list"], { sid: SID, kind: "contained", path: "ws" }, other),
       ),
     ).toBe("path_forbidden");
   });
@@ -301,8 +305,8 @@ describe("the visible range differs by role (scope: role)", () => {
     expect(
       refusalOf(() =>
         run(
-          "file_read",
-          files().file_read,
+          "file.read",
+          files()["file.read"],
           { sid: SID, kind: "contained", path: "ws/hello.txt" },
           as("instance", SID),
         ),
@@ -312,8 +316,8 @@ describe("the visible range differs by role (scope: role)", () => {
 
   test("a person reaches any session's files", () => {
     const list = run(
-      "dir_list",
-      files().dir_list,
+      "dir.list",
+      files()["dir.list"],
       { sid: SID, kind: "contained", path: "ws" },
       as("user"),
     );
@@ -321,9 +325,9 @@ describe("the visible range differs by role (scope: role)", () => {
   });
 });
 
-describe("file_write: the inbox", () => {
+describe("file.write: the inbox", () => {
   test("writes below the working directory and makes the folder", () => {
-    const write = run("file_write", files().file_write, {
+    const write = run("file.write", files()["file.write"], {
       sid: SID,
       path: "docs/inbox/note.md",
       content: "note\n",
@@ -335,7 +339,7 @@ describe("file_write: the inbox", () => {
   test("the same name twice is refused rather than replaced", () => {
     expect(
       refusalOf(() =>
-        run("file_write", files().file_write, {
+        run("file.write", files()["file.write"], {
           sid: SID,
           path: "docs/inbox/note.md",
           content: "again\n",
@@ -347,15 +351,15 @@ describe("file_write: the inbox", () => {
   test("a name outside the inbox is not writable", () => {
     expect(
       refusalOf(() =>
-        run("file_write", files().file_write, { sid: SID, path: "elsewhere.md", content: "" }),
+        run("file.write", files()["file.write"], { sid: SID, path: "elsewhere.md", content: "" }),
       ),
     ).toBe("path_not_writable");
   });
 });
 
-describe("file_create", () => {
+describe("file.create", () => {
   test("creates a file that is not there", () => {
-    const created = run("file_create", files().file_create, {
+    const created = run("file.create", files()["file.create"], {
       sid: SID,
       kind: "contained",
       path: "ws/sub/fresh.txt",
@@ -367,7 +371,7 @@ describe("file_create", () => {
   test("never replaces one that is", () => {
     expect(
       refusalOf(() =>
-        run("file_create", files().file_create, {
+        run("file.create", files()["file.create"], {
           sid: SID,
           kind: "contained",
           path: "ws/hello.txt",
@@ -380,7 +384,7 @@ describe("file_create", () => {
   test("makes no parent folder", () => {
     expect(
       refusalOf(() =>
-        run("file_create", files().file_create, {
+        run("file.create", files()["file.create"], {
           sid: SID,
           kind: "contained",
           path: "ws/absent/new.txt",
@@ -391,14 +395,14 @@ describe("file_create", () => {
   });
 });
 
-describe("file_edit", () => {
+describe("file.edit", () => {
   test("overwrites what was read, and hands back the next token", () => {
-    const read = run("file_read", files().file_read, {
+    const read = run("file.read", files()["file.read"], {
       sid: SID,
       kind: "contained",
       path: "ws/sub/deep.txt",
     });
-    const edited = run("file_edit", files().file_edit, {
+    const edited = run("file.edit", files()["file.edit"], {
       sid: SID,
       kind: "contained",
       path: "ws/sub/deep.txt",
@@ -407,7 +411,7 @@ describe("file_edit", () => {
       expected_size: read["size"],
     });
     expect(edited["size"]).toBe(7);
-    const after = run("file_read", files().file_read, {
+    const after = run("file.read", files()["file.read"], {
       sid: SID,
       kind: "contained",
       path: "ws/sub/deep.txt",
@@ -417,7 +421,7 @@ describe("file_edit", () => {
   });
 
   test("a file that moved on since the read is refused", () => {
-    const read = run("file_read", files().file_read, {
+    const read = run("file.read", files()["file.read"], {
       sid: SID,
       kind: "contained",
       path: "ws/sub/deep.txt",
@@ -425,7 +429,7 @@ describe("file_edit", () => {
     writeFileSync(join(base, "repo/ws/sub/deep.txt"), "somebody else\n");
     expect(
       refusalOf(() =>
-        run("file_edit", files().file_edit, {
+        run("file.edit", files()["file.edit"], {
           sid: SID,
           kind: "contained",
           path: "ws/sub/deep.txt",
@@ -441,7 +445,7 @@ describe("file_edit", () => {
     const stat = statSync(join(base, "repo/ws/binary.dat"));
     expect(
       refusalOf(() =>
-        run("file_edit", files().file_edit, {
+        run("file.edit", files()["file.edit"], {
           sid: SID,
           kind: "contained",
           path: "ws/binary.dat",
@@ -454,10 +458,10 @@ describe("file_edit", () => {
   });
 });
 
-describe("file_delete", () => {
+describe("file.delete", () => {
   test("unlinks one plain file", () => {
     writeFileSync(join(base, "repo/ws/sub/doomed.txt"), "x\n");
-    const deleted = run("file_delete", files().file_delete, {
+    const deleted = run("file.delete", files()["file.delete"], {
       sid: SID,
       kind: "contained",
       path: "ws/sub/doomed.txt",
@@ -465,7 +469,7 @@ describe("file_delete", () => {
     expect(deleted["path"]).toBe("ws/sub/doomed.txt");
     expect(
       refusalOf(() =>
-        run("file_read", files().file_read, {
+        run("file.read", files()["file.read"], {
           sid: SID,
           kind: "contained",
           path: "ws/sub/doomed.txt",
@@ -477,12 +481,12 @@ describe("file_delete", () => {
   test("never a folder and never a symlink", () => {
     expect(
       refusalOf(() =>
-        run("file_delete", files().file_delete, { sid: SID, kind: "contained", path: "ws/sub" }),
+        run("file.delete", files()["file.delete"], { sid: SID, kind: "contained", path: "ws/sub" }),
       ),
     ).toBe("path_forbidden");
     expect(
       refusalOf(() =>
-        run("file_delete", files().file_delete, {
+        run("file.delete", files()["file.delete"], {
           sid: SID,
           kind: "contained",
           path: "ws/escape.txt",
@@ -500,7 +504,7 @@ describe("file_delete", () => {
     symlinkSync(target, join(base, "repo/ws/sub/pointer.txt"));
     expect(
       refusalOf(() =>
-        run("file_delete", files().file_delete, {
+        run("file.delete", files()["file.delete"], {
           sid: SID,
           kind: "contained",
           path: "ws/sub/pointer.txt",
@@ -511,16 +515,16 @@ describe("file_delete", () => {
   });
 });
 
-describe("file_find", () => {
+describe("file.find", () => {
   test("finds by the words a path holds, and excludes with a leading dash", () => {
-    const found = run("file_find", files().file_find, {
+    const found = run("file.find", files()["file.find"], {
       sid: SID,
       kind: "contained",
       query: "hello",
     });
     const hits = (found["hits"] as { path: string }[]).map((hit) => hit.path);
     expect(hits).toContain("ws/hello.txt");
-    const narrowed = run("file_find", files().file_find, {
+    const narrowed = run("file.find", files()["file.find"], {
       sid: SID,
       kind: "contained",
       query: "hello -ws",
@@ -529,13 +533,13 @@ describe("file_find", () => {
   });
 
   test("what the repository's ignore rules hide stays hidden unless asked for", () => {
-    const hidden = run("file_find", files().file_find, {
+    const hidden = run("file.find", files()["file.find"], {
       sid: SID,
       kind: "contained",
       query: "vendored",
     });
     expect(hidden["hits"]).toEqual([]);
-    const shown = run("file_find", files().file_find, {
+    const shown = run("file.find", files()["file.find"], {
       sid: SID,
       kind: "contained",
       query: "vendored",
@@ -545,7 +549,7 @@ describe("file_find", () => {
   });
 
   test("a query with nothing to include matches nothing", () => {
-    const empty = run("file_find", files().file_find, {
+    const empty = run("file.find", files()["file.find"], {
       sid: SID,
       kind: "contained",
       query: "  ",
@@ -554,9 +558,9 @@ describe("file_find", () => {
   });
 });
 
-describe("file_stat_batch", () => {
+describe("file.stat", () => {
   test("names the surface each path is served through, and misses are null", () => {
-    const body = run("file_stat_batch", files().file_stat_batch, {
+    const body = run("file.stat", files()["file.stat"], {
       sid: SID,
       paths: [
         join(base, "repo/ws/hello.txt"),
@@ -576,7 +580,7 @@ describe("file_stat_batch", () => {
   });
 
   test("a path outside every surface is the same miss as one that is not there", () => {
-    const body = run("file_stat_batch", files().file_stat_batch, {
+    const body = run("file.stat", files()["file.stat"], {
       sid: SID,
       paths: [join(base, "outside/secret.txt"), join(base, "outside/never-existed.txt")],
     });
@@ -600,7 +604,7 @@ describe("sandbox", () => {
         grants.mint({ sid: SID, kind: "external", path: join(base, "outside/secret.txt") }),
       ),
     ).toBe("path_forbidden");
-    // `sandbox_grant` is a person's op and the table gives it no `scope`, so
+    // `sandbox.grant` is a person's op and the table gives it no `scope`, so
     // there is no visible range to narrow: what a grant refuses is what the
     // matching read refuses, and nothing else.
   });
@@ -653,7 +657,7 @@ describe("the allowlists a session's own facts state", () => {
   const NAMED = "/named.txt";
   const UNNAMED = "/secret.txt";
 
-  /** The status frame for a transcript of these rows, as `session_status:<sid>`
+  /** The status frame for a transcript of these rows, as `session.status:<sid>`
    * would carry it and as containment reads it. */
   function stated(rows: object[], where: { root?: string; cwd?: string }) {
     const fold = new TranscriptFold();

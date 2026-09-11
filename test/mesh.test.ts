@@ -344,7 +344,7 @@ describe("the mesh handshake (mesh-peer-auth §10.3)", () => {
     // The key request is what the greeting waits for, so holding it back leaves
     // the handshake open while the peer speaks out of turn.
     peer.onKeyAsked = () => {
-      peer.send({ op: "instance_ping", request_id: "early" });
+      peer.send({ op: "instance.ping", request_id: "early" });
     };
     const reply = await peer.greet(endpointOf(instance));
     expect(reply["ok"]).toBe(false);

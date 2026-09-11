@@ -14,14 +14,14 @@ import { workspaceFolders } from "./workspace.ts";
 /** What the fold says stopped a session, read in one place.
  *
  * Three values rest on it: whether a live session is Waiting (§5.2), what
- * `session_errors` lists, and the `api_error` of `session_status:<sid>`. They
+ * `session.errors` lists, and the `api_error` of `session.status:<sid>`. They
  * ask this rather than each reading the fold's field, so the three cannot come
  * to different answers about the same session (§7.4, M5). */
 export function stoppedOn(facts: TranscriptFacts): SessionApiError | undefined {
   return facts.api_error;
 }
 
-/** The `session_status:<sid>` payload.
+/** The `session.status:<sid>` payload.
  *
  * Almost every field is the fold's, stated as the fold left it: one pass over
  * the transcript settles the error, the task list, the files it named and what
@@ -61,7 +61,7 @@ export function sessionStatusOf(
 }
 
 /** Where a session works, as it greeted (§5.1). The same two values the file
- * surfaces are decided against, asked for here so that what `session_status`
+ * surfaces are decided against, asked for here so that what `session.status`
  * says and what a read is admitted by come from one answer. */
 export interface SessionWhere {
   readonly root?: string;
@@ -88,7 +88,7 @@ export interface SessionStatusDeps {
 /** The two topics the fold's error state feeds, and the tails they keep
  * running (§6.3).
  *
- * `session_errors` is one list for the instance and `session_status:<sid>` is
+ * `session.errors` is one list for the instance and `session.status:<sid>` is
  * one session, so what they hold differs: the first wants every session's fold
  * and the second wants one. Both wants are the same mechanism — a subscription
  * arrives, the tails it needs are held, and the last subscription to go
@@ -170,7 +170,7 @@ export class SessionStatus implements UpstreamResource {
   /** What a topic of this owner currently says, for a snapshot and for a
    * change alike — built here and nowhere else, so the two cannot drift. */
   private value(topic: string): unknown {
-    if (topic === "session_errors") return this.errors();
+    if (topic === "session.errors") return this.errors();
     const sid = topicParam(topic);
     return sid === undefined
       ? undefined
@@ -196,11 +196,11 @@ export class SessionStatus implements UpstreamResource {
     const wanted = new Set<Sid>();
     // One list for the instance means every session's fold; the list is what
     // the subscriber asked for, and it cannot be built from a subset of it.
-    if (this.#wanted.has("session_errors")) {
+    if (this.#wanted.has("session.errors")) {
       for (const sid of this.deps.sessions()) wanted.add(sid);
     }
     for (const topic of this.#wanted) {
-      if (topic === "session_errors") continue;
+      if (topic === "session.errors") continue;
       const sid = topicParam(topic);
       if (sid !== undefined) wanted.add(sid);
     }

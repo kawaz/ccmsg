@@ -122,7 +122,7 @@ export interface MeshHost {
   publish(topic: string, data: unknown, instance: InstanceId): void;
   /** Take a frame on a topic the relay does not carry.
    *
-   * `auth_records` is the one: its granularity is `element`, so a frame states
+   * `auth.records` is the one: its granularity is `element`, so a frame states
    * the entries that moved rather than a whole value per instance, and there is
    * nothing for the relay's last-value-per-instance table to hold. What
    * receives it is the set itself, which merges by key (DR-0001 §2.6). */
@@ -469,8 +469,8 @@ export class Mesh {
 
   /** Ask another instance one op, as this instance rather than for anybody.
    *
-   * What the person's authentication needs of a peer (`auth_resolve`,
-   * `auth_rotate`) is a fact only its issuer holds, asked for by the instance
+   * What the person's authentication needs of a peer (`auth.resolve`,
+   * `auth.rotate`) is a fact only its issuer holds, asked for by the instance
    * that needs it — so the `caller` is this instance's own role, and the
    * request travels the ordinary forwarding path (§7.3, DR-0001 §2.6).
    *
@@ -537,7 +537,7 @@ export class Mesh {
    * instance asks of every peer, and the frames come back unchanged (§7.4).
    * `peers` is never given up, because it is also the routing table. */
   demand(topic: string, wanted: boolean): void {
-    // `auth_records` is never given up and never asked for on demand: every
+    // `auth.records` is never given up and never asked for on demand: every
     // instance holds the whole set whether or not anything local is watching
     // it, the way `peers` is also the routing table (§7.4, DR-0001 §2.6).
     if (topic === AUTH_TOPIC || !isClusterTopic(topic)) return;
@@ -561,7 +561,7 @@ export class Mesh {
    * the ordering is the connection's rather than a delay chosen here. */
   #ask(conn: Requester, topic: string, wanted: boolean, afterAck = false): void {
     const frame = {
-      op: wanted ? "topic_subscribe" : "topic_unsubscribe",
+      op: wanted ? "topic.subscribe" : "topic.unsubscribe",
       request_id: `mesh-sub-${randomId()}`,
       topic,
       // The instance asks on behalf of whoever subscribed to it, and what they
@@ -569,7 +569,7 @@ export class Mesh {
       // any one session: a cluster topic is the same value for all of them
       // (§6.2), so there is nothing narrower to name.
       //
-      // `auth_records` is the exception, and the one topic no person may hear:
+      // `auth.records` is the exception, and the one topic no person may hear:
       // it carries the tokens that authenticate them, so the instance asks for
       // it as itself (DR-0001 §2.6).
       caller: (topic === AUTH_TOPIC
@@ -893,9 +893,8 @@ export class Mesh {
     }
     minted.conn = conn;
     conn.send({
-      op: "hello",
+      op: "hello.instance",
       request_id: `mesh-hello-${key.kid}`,
-      role: "instance",
       protocol_version: PROTOCOL_VERSION,
       mesh: { ver: MESH_VER, iss: self, aud: peer, id: this.deps.id, kid: key.kid },
     });

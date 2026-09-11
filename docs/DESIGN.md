@@ -114,7 +114,7 @@ may come from, but **what answers "who came" is the token alone**: the `Origin` 
 it would be a second answer to a question the token has already answered — one the operator would
 have to keep in step with every URL the instance is reached through. A handshake without a token
 is refused rather than let in as an anonymous person. The access token's
-expiry is the connection's, stated by `hello`'s `auth_expires_at` and extended by `auth_refresh`
+expiry is the connection's, stated by `hello`'s `auth_expires_at` and extended by `auth.extend`
 on the connection itself. UDS presents nothing and carries no expiry, since reaching it already
 means passing the directory's permissions. mesh has the peer's TLS plus `iss` / `aud` and a proof
 (§7.2), and webhook has `Authorization: Bearer`; each of those routes carries a secret of its
@@ -144,18 +144,20 @@ endpoint. **Only the mesh's key (`/mesh/jwk/<kid>`) stays under that endpoint's 
 the boundary keeping two instances on one origin from answering for each other's keys
 (mesh-peer-auth §6.3), and a person's entry has no such key space.
 
-**A connection greets once, and the reply is what binds its identity.** The role is set once and
-fixed for the connection's life (contract, `Role`); a second `hello` on a connection whose
-identity is settled is `bad_request` whether it repeats the role or names another — it is not a
-re-identification but a request to be somebody else on a connection that already is somebody.
-The binding happens at the moment transport writes the `hello` reply (`hello` is the one op name
-transport knows; every other op is opaque to it). A `session` or `user` greeting is answered
-synchronously; **the `instance` greeting is the only one that answers with a promise**: it
+**A connection greets once, and the reply is what binds its identity.** There is one greeting op
+per role — `hello.session`, `hello.user`, `hello.instance` — so the role is read from the name the
+greeting arrived under, and what each greeting has to carry is its own schema's to state. The role
+is set once and fixed for the connection's life (contract, `Role`); a second greeting on a
+connection whose identity is settled is `bad_request` whether it repeats the role or names another
+— it is not a re-identification but a request to be somebody else on a connection that already is
+somebody. The binding happens at the moment transport writes the reply (these three are the op
+names transport knows; every other op is opaque to it). `hello.session` and `hello.user` are
+answered synchronously; **`hello.instance` is the only one that answers with a promise**: it
 cannot be answered until the mesh-peer-auth verification has run, and since nothing but a reply
 settles an identity, the connection stays anonymous until the verification is done (§7.2). An
-instance with no mesh refuses an `instance` greeting with `capability_unavailable`.
+instance with no mesh refuses `hello.instance` with `capability_unavailable`.
 
-The `hello` reply names `terminal_gateway` only on an instance configured with `upstream.terminal_gateway`. A session's terminal is named by `terminal_id` on the `agents` topic, so a person opens that terminal at `<terminal_gateway>/sessions/<terminal_id>`.
+The greeting's reply names `terminal_gateway` only on an instance configured with `upstream.terminal_gateway`. A session's terminal is named by `terminal_id` on the `agents` topic, so a person opens that terminal at `<terminal_gateway>/sessions/<terminal_id>`.
 
 We will not repeat the asymmetry in the old daemon where only the UDS listener was buried
 inside the startup function. UDS and WS are **two implementations that return the same
@@ -181,8 +183,8 @@ For a single frame, in order:
 
 **Steps 1–6 are never written per op.** They are mechanically derived from the attribute
 table, so adding an op is closed to "add one row to the attribute table and write the schema
-and the implementation" (M1). Only ops that carry `scope: "role"` (`transcript_read` /
-`dir_list` / `file_read`) change the visible range rather than the allow/deny decision, so the
+and the implementation" (M1). Only ops that carry `scope: "role"` (`transcript.read` /
+`dir.list` / `file.read`) change the visible range rather than the allow/deny decision, so the
 role is passed into the implementation. **Passing the role to the implementation is the only
 route, and it is limited to ops whose attribute table declares `scope`.**
 
@@ -225,7 +227,7 @@ Write only 6 kinds of things.
 | `last_live` (previously running sessions) | Losing it on restart makes Paused / Disappeared rows vanish from the list |
 | Logs | To read the cause after a crash. Keep a single writer that does not drop the line right before exit |
 | inbox (undelivered messages) | State that cannot be reconstructed from anywhere else (§4.3) |
-| kv (values saved through `kv_write`) | The value a person saved, itself. Not a derived value: a client's copy is a copy |
+| kv (values saved through `kv.write`) | The value a person saved, itself. Not a derived value: a client's copy is a copy |
 | auth records (`<state dir>/auth/records.json`, mode 0600) | The registered credentials, token families and tombstones (§3.7). A credential exists nowhere but the authenticator and here, and losing a family logs its person out |
 
 auth records are outside M4's scope for the same reason: a credential exists in the
@@ -235,7 +237,7 @@ them back.
 
 inbox and kv are not exceptions to M4 — they are outside M4's scope. What M4 forbids is persisting
 **derived values**, and an undelivered message is not a derived value. The sender's
-`message_send` has already returned its response and is done; the body that "has not yet
+`message.send` has already returned its response and is done; the body that "has not yet
 arrived" exists nowhere in transcript or upstream. If the daemon loses it, the body is gone
 with it. kv follows the same reasoning: a saved theme is the person's setting, and losing it
 loses what they set (the contract's kv.ts assumes instances mirror these values and settle
@@ -255,7 +257,7 @@ acknowledgement (mesh-peer-auth §7), and they exist only in memory. Putting one
 directory would create a place to keep it and a way to recover it — two things to manage,
 against §1.1.
 
-The state directory holds one more thing: `dumps/`. `session_dump_write` reads a transcript and
+The state directory holds one more thing: `dumps/`. `session.dump.write` reads a transcript and
 writes `<state dir>/dumps/<sid>[-agent-<agent id>]-<written_at>.dump.json`, answering with that
 path. This is none of the 5 kinds above, and it is not persistence in this section's sense: the
 instance never reads the file back, and nothing breaks if it is gone.
@@ -263,8 +265,8 @@ instance never reads the file back, and nothing breaks if it is gone.
 **A dump holds items, not lines.** A transcript is the harness's own file format and changes
 without asking us. What the contract holds is **the vocabulary of type names and the shape of an
 item**; the code that reads the file — the classifying — is the daemon's (`src/transcript/items/`).
-A type name is a `:`-separated hierarchy (`message:user:in` / `thinking` / `tool:Bash` /
-`notice:slash` / `system:compact` / `system:attachment:<kind>` / `hook:<Event>`), so a prefix
+A type name is a `.`-separated hierarchy (`message.user.in` / `thinking` / `tool.Bash` /
+`notice.slash` / `system.compact` / `system.attachment.<kind>` / `hook.<Event>`), so a prefix
 selects everything below it. Items are **finer than lines**: one assistant record becomes its
 thinking, its words and each call it held, and a call and its result stay the two items the file
 holds, linked through `result_item` / `parent_item` — some results arrive many turns
@@ -282,7 +284,7 @@ reason to drop a record. The `@` is there so a reader grouping by record cannot 
 for something the harness wrote.
 Each item also carries `source` (`offset` / `bytes`, where the record sits in the transcript).
 This is what answers the requirement that **classifying is fallible and the raw record must stay
-reachable**: `transcript_read` with `before = offset + bytes` and `max_bytes = bytes` answers with
+reachable**: `transcript.read` with `before = offset + bytes` and `max_bytes = bytes` answers with
 that one record. `bytes` runs to the newline that ends the record, so what comes back is the
 record and not a slice of it. Several items read out of one record share the address, which makes
 fetching a record-sized operation.
@@ -290,7 +292,7 @@ fetching a record-sized operation.
 **A result whose call was never read is stated under the key it joins on rather than under an
 invented pointer.** A reading that began part-way down a file — a topic's seed, a transcript
 resumed from another file — has no `parent_item` to name, and the record never says which tool was
-called either. **`tool:unknown` is the reserved name for exactly this**: the `unknown` says that
+called either. **`tool.unknown` is the reserved name for exactly this**: the `unknown` says that
 the result is here and the tool's name is not something this instance knows, and never a name
 guessed from what came back. `parent_tool_use_id` is always carried, so a reader restores the name
 by joining it against the `tool_use_id` of the calls it holds. The shape is the generic result
@@ -298,7 +300,7 @@ by joining it against the `tool_use_id` of the calls it holds. The shape is the 
 
 **Two of the harness's names for one thing arrive under one type.** The tool that starts an agent
 has been written as both `Agent` and `Task`, read the same way and meaning the same thing, so the
-type is normalised to `tool:Agent` — the same item under two names would stand in the vocabulary
+type is normalised to `tool.Agent` — the same item under two names would stand in the vocabulary
 twice, and a selection asking for it would have to know which spelling this transcript happened to
 use. The spelling the record used stays on the call as `harness_name`, for a reader matching what
 it sees against what it ran.
@@ -309,7 +311,7 @@ agent chooses to send one, as its own message, under nothing that names this cal
 classification marks it as having no counterpart, and the drawing reads `(片道)` rather than
 `(未着)`. **Nothing unrecognised is dropped**:
 an unknown tool arrives in the generic `{input}` / `{result}` shape, an unknown attachment under
-its own `kind`, and a record that fits nothing as `system:unknown`. Only the interface and
+its own `kind`, and a record that fits nothing as `system.unknown`. Only the interface and
 bookkeeping records are out of scope (`mode` / `queue-operation` / `progress` / `*-title` /
 `file-history-*` and the like), which measured 1,317 of one session's 3,429 lines.
 
@@ -324,23 +326,23 @@ that goes on standing, `session` another session over ccmsg. The one exception i
 a person and not a relation: an agent's parent is a session or another agent, and calling that
 `user` would have a reader take a machine for a person. The harness's own names (`main`,
 `team-lead`, a teammate's) stay on the item as `harness_name` rather than in the type — `to` and
-`from` are where `message:session` writes a sid, and not a place for a name.
+`from` are where `message.session` writes a sid, and not a place for a name.
 
 **The record says who the counterpart is.** The classification decides by:
 
 | what the record says | type |
 |---|---|
-| a user line with nothing it replies to, in a sidechain file (an agent's own) | `message:parent:in` (with `harness_name` when an envelope carried one) |
-| a later envelope-less user line, the subject a session or a teammate | `message:user:in`, a person typing straight at it |
-| the same line, the subject a throwaway agent | `message:parent:in`, whoever started it asking for more |
-| assistant text in that same file | `message:parent:out`, prose with no call behind it |
-| a `<teammate-message teammate_id=…>` envelope written by `main` / `team-lead` | `message:parent:in` |
-| the same envelope written under any other name | `message:team:in`, a message of its own rather than an answer |
-| an `Agent` call carrying `name` / `team_name` (a teammate being started) | `message:team:out`, its completion the result-shaped `message:team:in` |
-| an `Agent` call carrying neither | `message:sub:out` / `message:sub:in` |
-| `SendMessage` addressed by sid | `message:session:out` |
-| `SendMessage` addressed to `main` / `team-lead` | `message:parent:out`, the call-shaped one |
-| `SendMessage` addressed to any other name | `message:team:out` |
+| a user line with nothing it replies to, in a sidechain file (an agent's own) | `message.parent.in` (with `harness_name` when an envelope carried one) |
+| a later envelope-less user line, the subject a session or a teammate | `message.user.in`, a person typing straight at it |
+| the same line, the subject a throwaway agent | `message.parent.in`, whoever started it asking for more |
+| assistant text in that same file | `message.parent.out`, prose with no call behind it |
+| a `<teammate-message teammate_id=…>` envelope written by `main` / `team-lead` | `message.parent.in` |
+| the same envelope written under any other name | `message.team.in`, a message of its own rather than an answer |
+| an `Agent` call carrying `name` / `team_name` (a teammate being started) | `message.team.out`, its completion the result-shaped `message.team.in` |
+| an `Agent` call carrying neither | `message.sub.out` / `message.sub.in` |
+| `SendMessage` addressed by sid | `message.session.out` |
+| `SendMessage` addressed to `main` / `team-lead` | `message.parent.out`, the call-shaped one |
+| `SendMessage` addressed to any other name | `message.team.out` |
 
 **Whether a name belongs to a teammate or a throwaway agent is not a further question — having a
 name is what makes an agent a teammate.** A named agent stands and can be written to again, and
@@ -350,9 +352,9 @@ call waiting for an answer that has no way in.
 
 **Who can write in their own words follows from the standing.** A teammate goes on standing and a
 person can type straight at it, as they can at a session's own file, so **an envelope-less user
-line partway through either is `message:user:in`**. A throwaway agent is written to by nothing but
-whatever started it, so **the same line in its file is `message:parent:in`** — the brief continued
-rather than a person speaking. The opening record stays `message:parent:in` wherever the subject
+line partway through either is `message.user.in`**. A throwaway agent is written to by nothing but
+whatever started it, so **the same line in its file is `message.parent.in`** — the brief continued
+rather than a person speaking. The opening record stays `message.parent.in` wherever the subject
 stands: being told what to do is not the same as being written to.
 
 **Which standing a transcript was read from is settled by whoever opened the file, and every item
@@ -381,18 +383,18 @@ that is what the ledger carries, with `harness_name` as its `label`.
 
 **What is kept is decided by `types`, read left to right.** An element is a type name (a prefix
 will do), an exclusion beginning with `-`, or `@<preset>` expanding a configured selection in
-place (recursively). Absent keeps everything but `system:attachment`. Presets live in the config's
+place (recursively). Absent keeps everything but `system.attachment`. Presets live in the config's
 `dump.presets` rather than in the contract, because what a preset names is an interest and not a
 property of the wire. A cycle, or a preset name nobody configured, is **refused when the config is
 read** — finding it per request would be finding it far too late. `daemon add` writes five
-examples into the shared file's `defaults` as a starting point to edit, and `dump_presets_read`
+examples into the shared file's `defaults` as a starting point to edit, and `dump.presets.read`
 lists them. **The file's own shape is the contract's too** (`SessionDumpFile`): the reply names a
 path rather than carrying the items, so a successor session handed that path would otherwise be
 reading a format nothing states. It is `{sid, agent_id?, written_at, types, items, ids}`, where
 `types` is **the selection as applied** — presets expanded, exclusions in place — because a file
 outlives the request that made it and has to say on its own what it is a dump of and what was
 left out. The `ids` ledger is not a type and is never selected away. The older `no_thinking` / `no_agent` mean `["-thinking"]` and
-`["-message:sub", "-tool:Agent"]`, and are applied last. They take out the machinery of errands and
+`["-message.sub", "-tool.Agent"]`, and are applied last. They take out the machinery of errands and
 leave a teammate's correspondence standing: what passes with a teammate is talk, and dropping it
 would take conversation out of a dump that asked to keep conversation.
 
@@ -413,11 +415,11 @@ same thing an arrow points at.
 
 | Purpose | op / topic | What it carries |
 |---|---|---|
-| Read a range | `transcript_items_read` | The bounds a dump takes (`since_at` / `since_uuid` / `until_*`), plus `since_id` / `until_id` for a bound at item granularity, the `types` selection and a `limit`. It answers with `items` and, where a limit cut it short, the `next` or `prev` item |
-| Receive what is appended | `transcript_items:<sid>` topic | The opening frame is the tail of what has been read, a fixed number of items; every frame after carries what has since been classified (the `append` granularity of §6.2) |
-| Fetch a raw record | `transcript_read` / `transcript:<sid>` | Unchanged. An item's `source` is what addresses one record on it |
+| Read a range | `transcript.items.read` | The bounds a dump takes (`since_at` / `since_uuid` / `until_*`), plus `since_id` / `until_id` for a bound at item granularity, the `types` selection and a `limit`. It answers with `items` and, where a limit cut it short, the `next` or `prev` item |
+| Receive what is appended | `transcript.items:<sid>` topic | The opening frame is the tail of what has been read, a fixed number of items; every frame after carries what has since been classified (the `append` granularity of §6.2) |
+| Fetch a raw record | `transcript.read` / `transcript:<sid>` | Unchanged. An item's `source` is what addresses one record on it |
 
-`transcript_items_read` resolves a file the way `transcript_read` does (what was announced or the
+`transcript.items.read` resolves a file the way `transcript.read` does (what was announced or the
 walk, and `agent_id` for an agent's own file) and narrows by the same `scope: "role"`. The range
 is cut **after the whole file has been classified**, so a link naming something outside the range
 is the ordinary case rather than a broken pointer — the reader has the id and can ask for it. A
@@ -434,7 +436,7 @@ bound at all is the ordinary first read and answers the tail the same way, as th
 no `before` does; a client that wants the transcript from its beginning says so with
 `since_at: 0`. A client that draws the newest first
 (the web UI's Timeline) has no coordinate on an item to page back from, so paging back is the
-range's work: what `before` does for `transcript_read` on the byte side, an upper-bounded read
+range's work: what `before` does for `transcript.read` on the byte side, an upper-bounded read
 does on the item side. Either direction answers oldest first, because that is the order a
 transcript has.
 
@@ -505,12 +507,12 @@ the response body; the refresh token is an httpOnly cookie
 (`__Secure-ccmsg-<first 16 hex of sha256(instance id + newline + sub)>`,
 `HttpOnly; Secure; SameSite=Strict; Path=<the request path up to its /auth/>`). A family is
 written by the instance that minted it (`iss`) alone, so a rotation that lands elsewhere is
-forwarded there with `auth_rotate` (the route of §7.3). **A copy of a family this instance minted,
+forwarded there with `auth.rotate` (the route of §7.3). **A copy of a family this instance minted,
 arriving from a peer, is refused**: with a single writer, a copy coming back is necessarily older
 state, and taking it would revive a family that was failed. The generation before the standing one
 is answered with the previous reply as a retry's grace; presenting any other retired value fails
 the whole family — at the family's `iss`, which the instance the value was presented to reaches
-with `auth_rotate` rather than writing a family it does not own (an unreachable issuer leaves the
+with `auth.rotate` rather than writing a family it does not own (an unreachable issuer leaves the
 refusal as the whole answer). Failing writes a family tombstone kept for seven days rather than
 deleting the record, so a peer that was partitioned cannot bring its live copy back as the newer
 write. What was rotated away is kept on the family as `retired`: the sha256 of each
@@ -520,9 +522,9 @@ Entries past their own expiry are dropped at the next rotation, after which reme
 refuse nothing their expiry does not. Failing a family and receiving a
 tombstone both close the connections that person holds, a tombstone from a peer included.
 
-`hello`'s `auth_expires_at` is the connection's deadline, and `auth_refresh` moves it only with
-**that same person's** access token. The ops the table carries over HTTP (`auth_challenge`,
-`auth_register`, `auth_assert`, `auth_refresh_token`) are **not reachable as frames**: reading or
+`hello`'s `auth_expires_at` is the connection's deadline, and `auth.extend` moves it only with
+**that same person's** access token. The ops the table carries over HTTP (`auth.challenge`,
+`auth.register`, `auth.assert`, `auth.token.refresh`) are **not reachable as frames**: reading or
 setting a cookie is not something an open connection can do, so answering one there would answer
 without the half that matters, and dispatch refuses them from the table. The carrier runs
 `OP_SCHEMAS` before any handler, and refuses a POST that carries no `Origin`.
@@ -530,7 +532,7 @@ without the half that matters, and dispatch refuses them from the table. The car
 **A challenge is 32 bytes of randomness plus its issuer (an instance id), good for five minutes
 and good once.** Behind a load balancer the instance that issued it need not be the one that
 receives the answer: the receiver verifies the assertion itself and asks the issuer only to spend
-the challenge and to check a registration jwt, with `auth_resolve`. **The six digits travel to the
+the challenge and to check a registration jwt, with `auth.resolve`. **The six digits travel to the
 issuer unjudged**: a receiver that decided them would count the tries separately per instance,
 letting somebody spread guesses across the cluster. The jwt, the code and the count of attempts
 are the issuer's alone.
@@ -541,7 +543,7 @@ them as `user_handle`, and an assertion naming a handle is held to it. An authen
 handle beyond this instance's reach, so two values for one person would show up on their device as
 two accounts; a second registration of the same subject reuses the handle it already has.
 
-**Credential records, token families and tombstones are replicated on the `auth_records`
+**Credential records, token families and tombstones are replicated on the `auth.records`
 topic.** It does not ride the relay of §7.4 — its granularity is `element`, so there is no whole
 value per instance and the receiver folds entries by key. Its only role is `instance`, and unlike
 every other topic the relay carries, **it is subscribed to as the instance** rather than on a
@@ -630,7 +632,7 @@ sweep.
 about an update and about trusting the directory before anything else runs; `codex queue` meets
 neither, and answered without waiting in a config home that had never been used, in a directory
 never trusted, with standard input closed (measured, 0.154.0). The child is still given no
-standard input and a deadline: a child that never answers would hold `message_send` open for as
+standard input and a deadline: a child that never answers would hold `message.send` open for as
 long as it lived, and route (b) is there so a route that does not come through costs a message
 nothing (§4.1).
 
@@ -656,7 +658,7 @@ is **merged**, and uninstall takes out only the entries ccmsg put there.
 
 ## 4. Delivery
 
-The contract's `message_send` promises only "deliver to the destination sid," returning a
+The contract's `message.send` promises only "deliver to the destination sid," returning a
 reason if it fails to. The daemon-side implementation splits into those two things: the
 delivery means, and determining the reason for non-delivery.
 
@@ -755,7 +757,7 @@ way the meaning of clearing and retention period is unchanged).
 is written to the connection. The subscription's snapshot is "everything still undelivered for
 that sid," and **subscribing is receiving**, so the inbox is cleared of them as the snapshot is
 returned (the frame is queued on the connection right behind the subscription's reply). The same
-holds when `message_send` pushes straight to a subscribed connection: nothing goes into the
+holds when `message.send` pushes straight to a subscribed connection: nothing goes into the
 inbox. If the receiving side loses the frame along with its connection, the body is nowhere.
 A connection with no sid — a person watching — gets an empty snapshot: the topic carries what was
 said to a session, and a person is not one.
@@ -782,7 +784,7 @@ receivable again).
 
 `throttled` is a reason defined by the contract, not something the daemon adds on its own. The
 daemon only returns the contract's reasons and does not extend the set of reasons on its own
-side. What occasions a re-offer is exactly §4.3's dequeue condition (the next `message_send` to
+side. What occasions a re-offer is exactly §4.3's dequeue condition (the next `message.send` to
 the same sid got through on (a) / `inbox` got subscribed / the session became live again), not
 the passage of time. There is no periodic resend timer (M3 — no primary source states the
 recovery rate of the peer's token bucket, so an interval cannot be anything but guesswork).
@@ -830,7 +832,7 @@ nothing about that is a greeting.
 **The classification's inputs do not depend on subscription.** Reading `sessions/` and
 watching it are two different things, and what §6.3 makes subordinate to subscription is only
 the latter. Which sessions exist is a fact about the instance itself, so the directory is read
-where a judgement needs it: `message_send` deciding on an addressee, the recompute that writes
+where a judgement needs it: `message.send` deciding on an addressee, the recompute that writes
 `last_live`, and classification. The watch and its poll are the resource that pushes a change
 to subscribers, not the route by which an answer is obtained. Confusing the two makes a live
 session `session_not_found` while nobody is subscribed, and writes a session that is still
@@ -857,10 +859,10 @@ A rewrite can leave `sessions/<pid>.json` temporarily empty or incomplete. While
 **The gateway's events count only for sids we know.** The gateway stands above every config
 home and its events name nothing but a sid, so "the gateway saw it" is not by itself evidence
 about *this* instance's sessions — a sid belonging to another config home would classify as
-live here, put a row on `peers`, and make `message_send` accept an addressee that has no inbox
+live here, put a row on `peers`, and make `message.send` accept an addressee that has no inbox
 here. What counts as an input to liveness (`gateway_active_at`) is only a sid that **has
 greeted us — still connected or remembered in `last_live` — or that our own config home's
-`sessions/` names**. The events themselves are not dropped: they go out on the `llm_requests`
+`sessions/` names**. The events themselves are not dropped: they go out on the `llm.requests`
 topic, which is a view of what the gateway sees rather than of this instance's sessions.
 
 **Narrow the use of the raw status** (DV-Q5). The status in `sessions/<pid>.json` is used only
@@ -904,7 +906,7 @@ recomputes the whole sessions domain is **the window opening alone** — the one
 change section; seen again inside a window, only that sid's row is rebuilt and stated, since
 inference is observed several times a second and one attribute must not cost a re-reading of
 which sessions there are. A client that wants to watch inference as it happens has
-`llm_requests`, which is a view of the gateway rather than of the list.
+`llm.requests`, which is a view of the gateway rather than of the list.
 
 ### 5.3 The two kinds of "last activity time"
 
@@ -919,7 +921,7 @@ The file a sid names is reached by **two routes: what was announced, and the wal
 `transcript_path` a `hello` stated comes first — it is exact and costs no search. A sid that
 announced nothing (a session that never greeted this instance, or one that is over) is found
 by walking `projects/**/<sid>.jsonl`, reaching the same file through **the identity the
-filename carries**. The op that reads one (`transcript_read`) and the side that follows one
+filename carries**. The op that reads one (`transcript.read`) and the side that follows one
 (the tail behind `transcript:<sid>`) both ask the same way, so **one sid resolves to one file
 whichever way it is reached**.
 
@@ -937,7 +939,7 @@ it the operator's answer rather than the contract's.
 
 ## 6. Implementing topics
 
-The contract defines only one shape: "immediately after `topic_subscribe`, a frame with
+The contract defines only one shape: "immediately after `topic.subscribe`, a frame with
 `snapshot: true` fires once, followed by deltas of the same shape." The daemon side
 **holds this as a single mechanism, never written per topic**.
 
@@ -958,23 +960,23 @@ suppression" can never happen.
 
 | Granularity | topic |
 |---|---|
-| Full replacement per instance | `instances` / `session_errors` / `llm_requests` / `llm_status` |
-| Full replacement | `session_status:<sid>` |
+| Full replacement per instance | `instances` / `session.errors` / `llm.requests` / `llm.status` |
+| Full replacement | `session.status:<sid>` |
 | Element add / update | `peers` / `agents` / `inbox` / `kv:<ns>` |
 | Append (byte offset) | `transcript:<sid>` |
-| Append (typed items) | `transcript_items:<sid>` |
+| Append (typed items) | `transcript.items:<sid>` |
 | Event (no value held) | `notify` |
 
 The snapshot of `transcript:<sid>` is **the file's current end (`size`) and nothing else**;
 what is appended flows after it. It is stated for any file the two routes of §5.4 reach, so
 **even a past session that will never be appended to again says where to page back from**. The
-subscriber reads back from that size with `transcript_read`, and anything appended stitches
+subscriber reads back from that size with `transcript.read`, and anything appended stitches
 onto the same offsets.
 
-`transcript_items:<sid>` carries the same appending in items (§3.6). Its snapshot is **the tail of
+`transcript.items:<sid>` carries the same appending in items (§3.6). Its snapshot is **the tail of
 what has been read, a fixed number of items**: where the byte snapshot answers "where do I page
 back from", this one answers with the end a subscriber can draw immediately — an item has no
-coordinate to page back from, and paging back is `transcript_items_read`'s work: hand its first
+coordinate to page back from, and paging back is `transcript.items.read`'s work: hand its first
 item to `until_id` and what precedes it comes back, then keep handing back the `prev` it names.
 That tail is read **inside the turn the tail is started**, for the reason the byte snapshot states
 its size there: answered before the seed, the snapshot would be empty, and a client that draws
@@ -1052,7 +1054,7 @@ the same one place suppression reads it (M5).
 
 | Topic kind (granularity) | Examples | Treatment |
 |---|---|---|
-| Whole-value replacement (`whole` / `per_instance_whole`) | `instances` / `session_status:<sid>` / `llm_status` | **Folded.** Keyed by `topic × instance`, the waiting frame is replaced with the latest value |
+| Whole-value replacement (`whole` / `per_instance_whole`) | `instances` / `session.status:<sid>` / `llm.status` | **Folded.** Keyed by `topic × instance`, the waiting frame is replaced with the latest value |
 | Delta and event (`element` / `append` / `event`) | `peers` / `agents` / `inbox` / `kv:<ns>` / `transcript:<sid>` / `notify` | **Not folded.** Queued in the order raised; past the queue limit the frame is refused back to whoever raised it |
 
 Folded values and the occurrences beside them leave **on the same flush, in the order they
@@ -1071,13 +1073,13 @@ out on the spot**, so a lone change is never delayed.
 Going over the limit is **refused back to the producer rather than dropped quietly**
 (`publish` answers `rate_limited`):
 
-- `notify_send` / `say_post`: the op answers `rate_limited`. The arguments were right and
+- `notify.send` / `say.post`: the op answers `rate_limited`. The arguments were right and
   nothing failed, so there is nothing for the sender to re-read: the same call sent again once
   the reader has caught up is the one that goes through
-- `message_send` on the inbox route: treated as the existing `throttled` — held in the inbox
+- `message.send` on the inbox route: treated as the existing `throttled` — held in the inbox
   and offered again later (§4.4). No message is lost
 - `transcript:<sid>` appends: the frames carry `start` / `size`, so a subscriber sees the gap
-  and reads it back with `transcript_read`
+  and reads it back with `transcript.read`
 
 ## 7. mesh
 
@@ -1136,7 +1138,7 @@ and `reachable` alone. An instance with no mesh has no URL to be named by, so it
 
 - Every instance dials all peers symmetrically (dial responsibility is not assigned to one
   side)
-- Authentication is mesh-peer-auth. A `hello` with `role: "instance"` is the starting point; C2
+- Authentication is mesh-peer-auth. `hello.instance` is the starting point; C2
   exchanges the key and challenge, and C1 returns the proof. No message is sent until the ack
   is received
 - On glare (both sides dialed), after verifying both, the side with the lexicographically
@@ -1321,7 +1323,7 @@ levels of supervision**:
   `instances[]` once at startup (DV-Q8), starts each config home's instance as a child
   process, and starts it again when it dies. The wait before a restart grows exponentially
   (the reason is on the values themselves: a config that fails at startup must not spin the
-  supervisor). On SIGTERM it stops each child with `instance_shutdown`, in the order of §8.5.
+  supervisor). On SIGTERM it stops each child with `instance.shutdown`, in the order of §8.5.
 
   **The supervisor is the only route by which an instance is started.**
   `ccmsg daemon start / stop / restart / status` are requests to it, and the CLI has no

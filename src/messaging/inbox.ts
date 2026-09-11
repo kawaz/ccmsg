@@ -34,7 +34,7 @@ type Record_ =
 /** What was said to a session and has not reached it.
  *
  * The one thing here that nothing else can reconstruct (§3.6): the sender's
- * `message_send` has already been answered, no transcript holds a message that
+ * `message.send` has already been answered, no transcript holds a message that
  * was never handed over, and the text lives nowhere else. Losing this file
  * loses the words.
  *

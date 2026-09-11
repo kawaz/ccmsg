@@ -105,7 +105,7 @@ describe("nothing pushes a topic frame outside the topic mechanism (M5)", () => 
       "plugin/codex.ts",
       "plugin/receipt.ts",
       // The one writer whose file is not instance state: a dump is the
-      // artifact `session_dump_write` was asked for, written once and never
+      // artifact `session.dump.write` was asked for, written once and never
       // read back, so it neither survives a restart for the instance's sake
       // nor is a value compared against a previous one.
       "sessions/dump.ts",

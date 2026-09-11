@@ -54,11 +54,13 @@ function rig(): Rig {
     topics,
     notify,
     send: (from, args) => {
-      ops.notify_send(input("notify_send", from, args));
+      ops["notify.send"](input("notify.send", from, args));
     },
-    post: (from, text) => ops.say_post(input("say_post", from, { text })) as SayPostResult,
+    post: (from, text) => ops["say.post"](input("say.post", from, { text })) as SayPostResult,
     markRead: (sid) => {
-      ops.say_mark_read(input("say_mark_read", connAs("user"), sid === undefined ? {} : { sid }));
+      ops["say.unread.clear"](
+        input("say.unread.clear", connAs("user"), sid === undefined ? {} : { sid }),
+      );
     },
   };
 }
@@ -68,7 +70,7 @@ function received(conn: TestConn): Notification[] {
   return conn.topics().map((frame) => frame["data"] as Notification);
 }
 
-describe("notify_send reaches whoever is watching", () => {
+describe("notify.send reaches whoever is watching", () => {
   test("the notification names the session and the label the instance resolved", () => {
     const { topics, send } = rig();
     const watcher = connAs("user");
@@ -131,7 +133,7 @@ describe("notify_send reaches whoever is watching", () => {
   });
 });
 
-describe("say_post says who spoke", () => {
+describe("say.post says who spoke", () => {
   test("the text reaches the watchers and the session is left unread", () => {
     const { topics, notify, post } = rig();
     const watcher = connAs("user");
@@ -147,7 +149,7 @@ describe("say_post says who spoke", () => {
     expect(notify.unread()).toEqual([SID]);
   });
 
-  test("say_mark_read clears the named session, and every one when none is named", () => {
+  test("say.unread.clear clears the named session, and every one when none is named", () => {
     const { notify, post, markRead } = rig();
     post(connAs("session", SID), "こちら");
     post(connAs("session", OTHER_SID), "あちら");
@@ -184,7 +186,7 @@ describe("what goes on the wire is the contract's own shape", () => {
       expect(validationErrors(TOPIC_SCHEMAS.notify, frame)).toEqual([]);
     }
     expect(
-      validationErrors(OP_SCHEMAS.say_post.response, { ok: true, request_id: "1", ...posted }),
+      validationErrors(OP_SCHEMAS["say.post"].response, { ok: true, request_id: "1", ...posted }),
     ).toEqual([]);
   });
 });

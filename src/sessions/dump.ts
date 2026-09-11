@@ -47,7 +47,7 @@ export interface DumpDeps {
  *
  * The subject is the session, or one agent below it when the request names
  * one. Every item type is read from wherever the subject stands — an agent's
- * `message:user:in` is the brief its parent gave it — so one selection carries
+ * `message.user.in` is the brief its parent gave it — so one selection carries
  * unchanged down a chain of agents, which is what makes the ledger's agent ids
  * a way to descend rather than just a list. */
 export function dumpWrite(args: SessionDumpWriteArgs, deps: DumpDeps): SessionDumpWriteResult {

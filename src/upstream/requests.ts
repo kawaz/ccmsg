@@ -156,7 +156,7 @@ export class LlmRequests implements UpstreamResource {
   }
 
   private publish(): void {
-    this.deps.publish("llm_requests", this.entries());
+    this.deps.publish("llm.requests", this.entries());
   }
 
   /** Note the session was seen, and say what that moved.

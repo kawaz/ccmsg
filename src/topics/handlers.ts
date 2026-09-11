@@ -7,12 +7,12 @@ import type { SubscribeOutcome, Topics } from "./topics.ts";
  * it to `Topics`, and turns the outcome into the contract's own answer. */
 export function topicHandlers(topics: Topics) {
   return {
-    topic_subscribe: (input: HandlerInput): TopicSubscribeResult => {
+    "topic.subscribe": (input: HandlerInput): TopicSubscribeResult => {
       const topic = topicOf(input);
       answer(topics.subscribe(input.conn, topic), topic);
       return { topic };
     },
-    topic_unsubscribe: (input: HandlerInput): TopicSubscribeResult => {
+    "topic.unsubscribe": (input: HandlerInput): TopicSubscribeResult => {
       const topic = topicOf(input);
       answer(topics.unsubscribe(input.conn, topic), topic);
       return { topic };

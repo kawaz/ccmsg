@@ -4,7 +4,7 @@ import { fields, type Item } from "./item.ts";
  *
  * A type is drawn by one function, the way the same type is drawn by one
  * component where the destination is a screen instead of text. What the two
- * share is the classification; how a `tool:Bash` reads is the drawing's own
+ * share is the classification; how a `tool.Bash` reads is the drawing's own
  * business, and neither side carries the other's.
  *
  * A type nobody wrote a drawing for is still drawn. The generic shape says the
@@ -33,8 +33,8 @@ const EMPTY: readonly string[] = [];
 /** The drawing for one item, whatever its type. */
 export function fragment(item: Item): Fragment {
   const type = item.type;
-  if (type.startsWith("tool:")) {
-    const name = type.slice("tool:".length);
+  if (type.startsWith("tool.")) {
+    const name = type.slice("tool.".length);
     const result = isResult(item);
     const draw = (result ? RESULTS : USES)[name];
     if (draw !== undefined) return draw(item);
@@ -44,8 +44,8 @@ export function fragment(item: Item): Fragment {
   }
   const draw = ITEMS[type];
   if (draw !== undefined) return draw(item);
-  if (type.startsWith("hook:")) return hook(item);
-  if (type.startsWith("system:attachment:"))
+  if (type.startsWith("hook.")) return hook(item);
+  if (type.startsWith("system.attachment."))
     return { head: "", body: summary(fields(item)["attachment"]) };
   return { head: "", body: summary(own(item)) };
 }
@@ -60,16 +60,16 @@ function isResult(item: Item): boolean {
  * kept as they were written: a dump is read to find out what somebody actually
  * wrote, and a reader who wants less asks for less. */
 const SAID: readonly string[] = [
-  "message:user:in",
-  "message:user:out",
+  "message.user.in",
+  "message.user.out",
   "thinking",
-  "system:compact",
+  "system.compact",
 ];
 
 const ITEMS: Record<string, Draw> = {
   ...Object.fromEntries(SAID.map((type) => [type, said])),
 
-  "message:sub:out": (item) => ({
+  "message.sub.out": (item) => ({
     head: words(
       field(item, "agent_id", "agent="),
       field(item, "subagent_type", "type="),
@@ -79,7 +79,7 @@ const ITEMS: Record<string, Draw> = {
     body: lines(str(item, "prompt")),
   }),
 
-  "message:sub:in": (item) => ({
+  "message.sub.in": (item) => ({
     head: words(
       field(item, "agent_id", "agent="),
       field(item, "status", "status="),
@@ -91,17 +91,17 @@ const ITEMS: Record<string, Draw> = {
   // The one above and the ones alongside. A name is on the heading wherever
   // the record gave one — an answer handed back as prose names nobody, and a
   // heading that invented a name for it would say more than the file does.
-  "message:parent:in": (item) => ({
+  "message.parent.in": (item) => ({
     head: words(field(item, "harness_name", "from="), mid(item)),
     body: lines(str(item, "text")),
   }),
 
-  "message:parent:out": (item) => ({
+  "message.parent.out": (item) => ({
     head: words(field(item, "harness_name", "to="), str(item, "summary")),
     body: lines(str(item, "text")),
   }),
 
-  "message:team:out": (item) => ({
+  "message.team.out": (item) => ({
     head: words(
       field(item, "harness_name", "to="),
       field(item, "agent_id", "agent="),
@@ -115,7 +115,7 @@ const ITEMS: Record<string, Draw> = {
   // Both halves of a teammate's correspondence arrive under one type: a letter
   // it wrote, which names who wrote it, and its run ending, which names how it
   // ended. Each heading says whichever of those the item carried.
-  "message:team:in": (item) => ({
+  "message.team.in": (item) => ({
     head: words(
       field(item, "harness_name", "from="),
       mid(item),
@@ -126,12 +126,12 @@ const ITEMS: Record<string, Draw> = {
     body: lines(str(item, "text")),
   }),
 
-  "message:session:out": (item) => ({
+  "message.session.out": (item) => ({
     head: words(field(item, "to", "to="), field(item, "reply_to", "reply_to="), mid(item)),
     body: lines(str(item, "text")),
   }),
 
-  "message:session:in": (item) => ({
+  "message.session.in": (item) => ({
     head: words(field(item, "from", "from="), mid(item)),
     body: lines(str(item, "text")),
   }),
@@ -140,15 +140,15 @@ const ITEMS: Record<string, Draw> = {
   // voice. Both are why a conversation jumps rather than part of it, so they
   // are a line each and the line names what happened. Everything the record
   // held is in the JSON dump beside this one, addressable by the id shown.
-  "notice:slash": (item) => ({
+  "notice.slash": (item) => ({
     head: words(`/${str(item, "command") ?? ""}`, str(item, "args"), first(str(item, "stdout"))),
     body: EMPTY,
   }),
-  "notice:interrupt": (item) => ({ head: first(str(item, "text")) ?? "", body: EMPTY }),
-  "system:api-error": (item) => ({ head: first(str(item, "text")) ?? "", body: EMPTY }),
-  "system:caveat": (item) => ({ head: first(str(item, "text")) ?? "", body: EMPTY }),
-  "system:resume": (item) => ({ head: first(str(item, "text")) ?? "", body: EMPTY }),
-  "system:task": (item) => ({
+  "notice.interrupt": (item) => ({ head: first(str(item, "text")) ?? "", body: EMPTY }),
+  "system.api.error": (item) => ({ head: first(str(item, "text")) ?? "", body: EMPTY }),
+  "system.caveat": (item) => ({ head: first(str(item, "text")) ?? "", body: EMPTY }),
+  "system.resume": (item) => ({ head: first(str(item, "text")) ?? "", body: EMPTY }),
+  "system.task": (item) => ({
     head: words(
       field(item, "task_id", "task="),
       field(item, "event", "event="),
@@ -156,7 +156,7 @@ const ITEMS: Record<string, Draw> = {
     ),
     body: EMPTY,
   }),
-  "system:unknown": (item) => ({ head: "", body: summary(fields(item)["record"]) }),
+  "system.unknown": (item) => ({ head: "", body: summary(fields(item)["record"]) }),
 };
 
 function said(item: Item): Fragment {
@@ -214,7 +214,7 @@ const USES: Record<string, Draw> = {
   Glob: pattern,
   WebFetch: (item) => ({ head: words(str(item, "url"), str(item, "prompt")), body: EMPTY }),
   WebSearch: (item) => ({ head: field(item, "query", "query=") ?? "", body: EMPTY }),
-  // The brief itself is the `message:sub:out` beside this call, so the call
+  // The brief itself is the `message.sub.out` beside this call, so the call
   // says which agent was started and leaves the words to the message.
   Agent: (item) => ({
     head: words(

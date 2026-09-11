@@ -20,7 +20,7 @@ import { readRecord, type TranscriptFile, type TranscriptFiles } from "../transc
 const SCAN_BUDGET_BYTES = 64 * 1024 * 1024;
 const HITS = 50;
 /** What one hit shows of what it matched. Enough to recognise the passage;
- * the transcript itself is one `transcript_read` away. */
+ * the transcript itself is one `transcript.read` away. */
 const MATCHES_PER_HIT = 5;
 const MATCH_CHARS = 400;
 

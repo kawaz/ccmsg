@@ -346,9 +346,8 @@ export class FakePeer {
     this.claim = mesh;
     ws.send(
       `${JSON.stringify({
-        op: "hello",
+        op: "hello.instance",
         request_id: "peer-hello",
-        role: "instance",
         protocol_version: PROTOCOL_VERSION,
         mesh,
       })}\n`,

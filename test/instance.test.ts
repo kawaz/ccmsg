@@ -73,9 +73,8 @@ async function greet(instance: Instance): Promise<LineClient> {
   const client = await connectUds(instance.socketPath);
   clients.push(client);
   client.send({
-    op: "hello",
+    op: "hello.user",
     request_id: "hello",
-    role: "user",
     protocol_version: PROTOCOL_VERSION,
   });
   const reply = await client.next();
@@ -529,7 +528,7 @@ process.stdin.on("end", () => process.exit(0));
     const { env } = disposable();
     const instance = await startAt(env);
     const client = await greet(instance);
-    client.send({ op: "topic_subscribe", request_id: "sub", topic: "agents" });
+    client.send({ op: "topic.subscribe", request_id: "sub", topic: "agents" });
     expect((await client.next())["ok"]).toBe(true);
     // The snapshot that follows the acknowledgement.
     expect((await client.next())["snapshot"]).toBe(true);
@@ -546,7 +545,7 @@ process.stdin.on("end", () => process.exit(0));
     writeFileSync(join(home, "projects", "a-project", `${SID}.jsonl`), line);
     const instance = await startAt(env);
     const client = await greet(instance);
-    client.send({ op: "topic_subscribe", request_id: "sub", topic: `transcript:${SID}` });
+    client.send({ op: "topic.subscribe", request_id: "sub", topic: `transcript:${SID}` });
     expect((await client.next())["ok"]).toBe(true);
     const snapshot = await client.next();
     expect(snapshot["snapshot"]).toBe(true);
@@ -559,7 +558,7 @@ describe("the stop order (§8.5)", () => {
     const { env } = disposable();
     const instance = await startAt(env);
     const client = await greet(instance);
-    client.send({ op: "topic_subscribe", request_id: "sub", topic: "agents" });
+    client.send({ op: "topic.subscribe", request_id: "sub", topic: "agents" });
     expect((await client.next())["ok"]).toBe(true);
     expect(instance.watching).toBe(true);
     const stopped = instance.stop();
@@ -604,7 +603,7 @@ describe("the stop order (§8.5)", () => {
     // socket that is being taken down while the frame is in flight: the guard
     // is what this fixes, and racing the teardown would test the race.
     const refusal = await instance.handle(
-      { op: "instance_ping", request_id: "late" },
+      { op: "instance.ping", request_id: "late" },
       {
         identity: { state: "settled", role: "user" },
         send() {},
@@ -636,15 +635,15 @@ describe("what a run leaves behind (M4)", () => {
    * M4 is the question of which of them lands in the state directory. */
   async function writeThroughEveryOp(instance: Instance, run: string): Promise<void> {
     const client = await greet(instance);
-    client.send({ op: "kv_write", request_id: `kv-${run}`, ns: "test", key: "theme", value: run });
+    client.send({ op: "kv.write", request_id: `kv-${run}`, ns: "test", key: "theme", value: run });
     expect((await client.next())["ok"]).toBe(true);
-    client.send({ op: "session_dump_write", request_id: `dump-${run}`, sid: SID });
+    client.send({ op: "session.dump.write", request_id: `dump-${run}`, sid: SID });
     expect((await client.next())["ok"]).toBe(true);
     // Its destination is the session's working directory, which is nowhere
     // near the state directory — that it stays out of the listing below is the
     // point of running it here.
     client.send({
-      op: "file_write",
+      op: "file.write",
       request_id: `file-${run}`,
       sid: SID,
       path: `docs/inbox/${run}.md`,
@@ -722,7 +721,7 @@ describe("only this config home is read (M6)", () => {
     );
     const instance = await startAt(env);
     const client = await greet(instance);
-    client.send({ op: "topic_subscribe", request_id: "sub", topic: "agents" });
+    client.send({ op: "topic.subscribe", request_id: "sub", topic: "agents" });
     expect((await client.next())["ok"]).toBe(true);
     const snapshot = await client.next();
     // The rows are the whole of what the other config home would have shown,
@@ -787,7 +786,7 @@ describe("a session that never greeted this instance", () => {
 
   async function peersOf(instance: Instance): Promise<Record<string, unknown>[]> {
     const client = await greet(instance);
-    client.send({ op: "topic_subscribe", request_id: "sub", topic: "peers" });
+    client.send({ op: "topic.subscribe", request_id: "sub", topic: "peers" });
     expect((await client.next())["ok"]).toBe(true);
     const snapshot = await client.next();
     return (snapshot["data"] as { peers: Record<string, unknown>[] }).peers;
@@ -832,7 +831,7 @@ describe("a session that never greeted this instance", () => {
     try {
       const instance = await startAt(env);
       const client = await greet(instance);
-      client.send({ op: "message_send", request_id: "send", to: SID, text: "after a restart" });
+      client.send({ op: "message.send", request_id: "send", to: SID, text: "after a restart" });
       expect(await client.next()).toMatchObject({ ok: true, delivered: true });
 
       const until = Date.now() + 1_000;
@@ -856,7 +855,7 @@ describe("the ops the instance answers", () => {
     expect(Object.keys(handlers).sort()).toEqual([...OP_NAMES].sort());
     let refused: unknown;
     try {
-      handlers["kv_read"]({} as never);
+      handlers["kv.read"]({} as never);
     } catch (cause) {
       refused = cause;
     }
@@ -865,11 +864,11 @@ describe("the ops the instance answers", () => {
     expect((refused as OpError).message).toContain("not implemented");
   });
 
-  test("instance_shutdown is answered before the instance goes", async () => {
+  test("instance.shutdown is answered before the instance goes", async () => {
     const { env } = disposable();
     const instance = await startAt(env);
     const client = await greet(instance);
-    client.send({ op: "instance_shutdown", request_id: "bye" });
+    client.send({ op: "instance.shutdown", request_id: "bye" });
     const answer = await client.next();
     expect(answer).toEqual({ ok: true, request_id: "bye" });
     await instance.whenStopped();
@@ -905,7 +904,11 @@ describe("the stable address across a succession", () => {
       // instance, without the client knowing a different process answers.
       const client = await connectUds(paths.socket);
       clients.push(client);
-      client.send({ op: "instance_ping", request_id: "ping" });
+      // A ping is asked of a connection that has said who it is, like every
+      // other op: greeting is what makes the caller somebody to answer.
+      client.send({ op: "hello.user", request_id: "hello", protocol_version: PROTOCOL_VERSION });
+      expect((await client.next())["ok"]).toBe(true);
+      client.send({ op: "instance.ping", request_id: "ping" });
       expect((await client.next())["pid"]).toBe(second.ping().pid);
     } finally {
       first.kill();
@@ -942,19 +945,18 @@ describe("a daemon in its own process", () => {
       const client = await connectUds(paths.socket);
       clients.push(client);
       client.send({
-        op: "hello",
+        op: "hello.user",
         request_id: "hello",
-        role: "user",
         protocol_version: PROTOCOL_VERSION,
       });
       const greeting = await client.next();
       expect(greeting["ok"]).toBe(true);
       expect(greeting["protocol_version"]).toBe(PROTOCOL_VERSION);
-      client.send({ op: "topic_subscribe", request_id: "sub", topic: "peers" });
+      client.send({ op: "topic.subscribe", request_id: "sub", topic: "peers" });
       expect((await client.next())["ok"]).toBe(true);
       expect((await client.next())["snapshot"]).toBe(true);
 
-      client.send({ op: "instance_shutdown", request_id: "bye" });
+      client.send({ op: "instance.shutdown", request_id: "bye" });
       expect(await replyTo(client, "bye")).toEqual({ ok: true, request_id: "bye" });
       expect(await child.exited).toBe(0);
     } finally {
@@ -967,13 +969,12 @@ describe("a daemon in its own process", () => {
 async function stopViaSocket(address: string): Promise<void> {
   const client = await connectUds(address);
   client.send({
-    op: "hello",
+    op: "hello.user",
     request_id: "hello",
-    role: "user",
     protocol_version: PROTOCOL_VERSION,
   });
   await client.next();
-  client.send({ op: "instance_shutdown", request_id: "bye" });
+  client.send({ op: "instance.shutdown", request_id: "bye" });
   await replyTo(client, "bye");
   await client.close();
 }

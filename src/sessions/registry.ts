@@ -3,8 +3,10 @@ import { basename, dirname, isAbsolute, join } from "node:path";
 import {
   type AgentInfo,
   type Capability,
-  type HelloArgs,
+  type HelloInstanceArgs,
   type HelloResult,
+  type HelloSessionArgs,
+  type HelloUserArgs,
   type Endpoint,
   type AgentElement,
   type InstanceId,
@@ -115,7 +117,7 @@ export interface MeshSource {
 }
 
 /** The mesh claim a peer greets with, as the contract states it. */
-type MeshClaim = NonNullable<HelloArgs["mesh"]>;
+type MeshClaim = HelloInstanceArgs["mesh"];
 
 /** The fold, as the sessions domain reads it: two values about one session,
  * asked for when a payload is built rather than copied here when they change
@@ -137,7 +139,7 @@ export interface GatewaySource {
  * are the same fields under the same names — nothing is renamed on the way
  * through, and nothing is invented for a field the session left unsaid. */
 type SessionMeta = Pick<
-  HelloArgs,
+  HelloSessionArgs,
   "repo" | "ws" | "cwd" | "transcript_path" | "repo_root" | "branch" | "title" | "model" | "effort"
 >;
 
@@ -208,7 +210,7 @@ export class Sessions implements UpstreamResource {
    * Held here rather than written to `last_live`, because the declaration
    * arrives while the session is still connected and `last_live` holds what is
    * gone: the entry is written when the connection closes, and this is what
-   * stamps it then (contract, `session_stopping`). A session that declares and
+   * stamps it then (contract, `session.stopping`). A session that declares and
    * then carries on stays connected and keeps its declaration, which is spent
    * whenever it does leave. */
   readonly #stopping = new Map<Sid, Timestamp>();
@@ -252,55 +254,62 @@ export class Sessions implements UpstreamResource {
     for (const sid of live.keys()) this.#lastLive.remove(sid);
   }
 
-  /** `hello`, which is where a session becomes something this instance can
-   * speak about, and where everything this instance knows about where that
-   * session lives comes from.
+  /** `hello.session`, which is where a session becomes something this instance
+   * can speak about, and where everything this instance knows about where that
+   * session lives comes from. The greeting names its sid because the op it
+   * arrived under is the one whose schema asks for one. */
+  helloSession = (input: HandlerInput): HelloResult => {
+    const args = input.args as unknown as HelloSessionArgs;
+    this.#greetable(input, args.protocol_version);
+    this.register(args.sid, args);
+    input.conn.onClose(() => this.release(args.sid));
+    return this.#greeted(input);
+  };
+
+  /** `hello.user`. A person speaks for no session, so there is nothing to
+   * register: the greeting settles a role and answers what the instance is. */
+  helloUser = (input: HandlerInput): HelloResult => {
+    const args = input.args as unknown as HelloUserArgs;
+    this.#greetable(input, args.protocol_version);
+    return this.#greeted(input);
+  };
+
+  /** `hello.instance`. A peer's greeting is answered only once the connection
+   * has been proven to be the endpoint it names. The verification rejects when
+   * it is not, and the connection stays anonymous because nothing settles an
+   * identity but a reply (mesh-peer-auth §5, daemon-v2 §3.2 step 7). This is
+   * the one greeting that has to wait for something, which is why it is the one
+   * that answers with a promise. */
+  helloInstance = (input: HandlerInput): Promise<HelloResult> => {
+    const args = input.args as unknown as HelloInstanceArgs;
+    this.#greetable(input, args.protocol_version);
+    const mesh = this.deps.mesh;
+    if (mesh === undefined) {
+      throw new OpError(
+        "capability_unavailable",
+        "this instance has no mesh, so no peer connection can be proven",
+      );
+    }
+    return mesh.greet(input.conn, args.mesh).then(() => this.#greeted(input));
+  };
+
+  /** What each of the three greetings checks before it settles anything.
    *
-   * What registers a session is the greeting naming a sid, not the role it
-   * claims: the sid is the session it speaks for, and reading the role here
-   * would put the contract's "a session names its sid" rule in a second place
-   * (M1). */
-  hello = (input: HandlerInput): HelloResult | Promise<HelloResult> => {
-    const args = input.args as unknown as HelloArgs;
-    // A role is set once and fixed for the connection's life (contract, `Role`),
-    // so a second greeting is not a re-identification: it is a request to be
-    // somebody else on a connection that already is somebody.
+   * A role is set once and fixed for the connection's life (contract, `Role`),
+   * so a second greeting is not a re-identification: it is a request to be
+   * somebody else on a connection that already is somebody. */
+  #greetable(input: HandlerInput, protocolVersion: number): void {
     if (input.conn.identity.state === "settled") {
       throw new OpError("bad_request", "a connection greets once, and this one already has");
     }
-    if (args.protocol_version !== PROTOCOL_VERSION) {
+    if (protocolVersion !== PROTOCOL_VERSION) {
       throw new OpError("bad_request", `this instance speaks protocol ${PROTOCOL_VERSION}`);
     }
-    if (args.role === "instance") {
-      // A peer's greeting is answered only once the connection has been proven
-      // to be the endpoint it names. The verification rejects when it is not,
-      // and the connection stays anonymous because nothing settles an identity
-      // but a reply (mesh-peer-auth §5, daemon-v2 §3.2 step 7). This is the one
-      // greeting that has to wait for something, which is why it is the one
-      // that answers with a promise.
-      if (args.mesh === undefined) {
-        throw new OpError("invalid_args", "an instance greets with its mesh claim");
-      }
-      const mesh = this.deps.mesh;
-      if (mesh === undefined) {
-        throw new OpError(
-          "capability_unavailable",
-          "this instance has no mesh, so no peer connection can be proven",
-        );
-      }
-      return mesh.greet(input.conn, args.mesh).then(() => this.#greeted(args, input));
-    }
-    return this.#greeted(args, input);
-  };
+  }
 
   /** What every greeting answers, once whatever had to be settled has been. */
-  #greeted(args: HelloArgs, input: HandlerInput): HelloResult {
+  #greeted(input: HandlerInput): HelloResult {
     const expiresAt = this.deps.authExpiresAt?.(input.conn);
-    const sid = requiredSid(args);
-    if (sid !== undefined) {
-      this.register(sid, args);
-      input.conn.onClose(() => this.release(sid));
-    }
     return {
       protocol_version: PROTOCOL_VERSION,
       instance: this.deps.self,
@@ -439,7 +448,7 @@ export class Sessions implements UpstreamResource {
   }
 
   /** Drop one entry from `last_live`, which is what
-   * `session_last_live_remove` asks for. The removal touches that list alone:
+   * `session.forget` asks for. The removal touches that list alone:
    * the session stays resumable by every other route. */
   forget(sid: Sid): boolean {
     const removed = this.#lastLive.remove(sid);
@@ -453,7 +462,7 @@ export class Sessions implements UpstreamResource {
     this.changed();
   }
 
-  /** `session_stopping`: a session saying it is about to go, which is what
+  /** `session.stopping`: a session saying it is about to go, which is what
    * makes it Paused rather than Disappeared once it is gone (§5.2).
    *
    * Nothing is recorded now and nothing is published: the session is still
@@ -600,7 +609,7 @@ export class Sessions implements UpstreamResource {
    * silence for a retraction would let each of them erase what the last one
    * knew, and the session would be described by whichever process spoke most
    * recently rather than by everything it has said. */
-  private register(sid: Sid, args: HelloArgs): void {
+  private register(sid: Sid, args: HelloSessionArgs): void {
     const now = Date.now();
     const held = this.#connected.get(sid);
     const meta = {
@@ -652,7 +661,7 @@ export class Sessions implements UpstreamResource {
     for (const [sid, entry] of this.#live) {
       if (live.has(sid)) continue;
       // The declaration came first and the departure has now arrived, which is
-      // the order the two are one event in (contract, `session_stopping`).
+      // the order the two are one event in (contract, `session.stopping`).
       const stoppedAt = this.#stopping.get(sid);
       this.#stopping.delete(sid);
       this.#lastLive.record({
@@ -769,11 +778,11 @@ export class Sessions implements UpstreamResource {
    * id, so what it reports is not by itself evidence about *this* instance's
    * sessions: a session id belonging to another config home would otherwise
    * classify as live here, put a row on this instance's `peers`, and make
-   * `message_send` accept a message for a session that has no inbox here and
+   * `message.send` accept a message for a session that has no inbox here and
    * never will. So the reading is narrowed to the sids this instance knows —
    * one that has greeted us, still connected or remembered in `last_live`, or
    * one the harness's own `sessions/` names. The events themselves are not
-   * dropped: `llm_requests` carries what the gateway saw whoever it was for,
+   * dropped: `llm.requests` carries what the gateway saw whoever it was for,
    * because that topic is a view of the gateway rather than of this instance's
    * sessions. */
   #gatewayActiveAt(sid: Sid, inHarness: boolean): Timestamp | undefined {
@@ -834,7 +843,7 @@ export class Sessions implements UpstreamResource {
  * that is simply absent from what `peers` says. */
 function metaOf(
   deps: Pick<SessionsDeps, "configHome" | "harness">,
-  args: HelloArgs,
+  args: HelloSessionArgs,
   refused: (reason: string) => void,
 ): SessionMeta {
   const meta: Record<string, string> = {};
@@ -922,31 +931,5 @@ function resolveAsFarAsItGoes(path: string): string | undefined {
       unwritten.unshift(basename(at));
       at = parent;
     }
-  }
-}
-
-/** What each role must and must not say when it greets.
- *
- * The sid is what registers a session, so which role is entitled to name one is
- * decided here rather than left to whoever reads the field: a `user` naming a
- * sid would be a person registering as the session, and a `session` without one
- * is a session this instance cannot speak about. */
-function requiredSid(args: HelloArgs): Sid | undefined {
-  switch (args.role) {
-    case "session":
-      if (args.sid === undefined) throw new OpError("invalid_args", "a session names its sid");
-      return args.sid;
-    case "user":
-      if (args.sid !== undefined) {
-        throw new OpError("invalid_args", "a sid is the greeting of a session, not of a person");
-      }
-      return undefined;
-    case "instance":
-      // A peer speaks for no session: what it is has already been settled by
-      // the handshake, and a sid here would be it registering as one.
-      if (args.sid !== undefined) {
-        throw new OpError("invalid_args", "a sid is the greeting of a session, not of an instance");
-      }
-      return undefined;
   }
 }

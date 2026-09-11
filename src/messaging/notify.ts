@@ -3,8 +3,8 @@ import type {
   Notification,
   NotifySendArgs,
   NotifySendResult,
-  SayMarkReadArgs,
-  SayMarkReadResult,
+  SayUnreadClearArgs,
+  SayUnreadClearResult,
   SayPostArgs,
   SayPostResult,
   Sid,
@@ -29,8 +29,8 @@ export interface NotifyDeps {
 /** The `notify` topic and the three ops that speak on it.
  *
  * One object for all three because they are one thing seen from two sides: a
- * line reaching a person watching. `notify_send` is somebody telling a person
- * about a session; `say_post` is a session saying that it just spoke. Both end
+ * line reaching a person watching. `notify.send` is somebody telling a person
+ * about a session; `say.post` is a session saying that it just spoke. Both end
  * as the same frame, which is what keeps "a notification" from meaning two
  * shapes depending on which op raised it.
  *
@@ -44,7 +44,7 @@ export class Notify implements UpstreamResource {
 
   constructor(private readonly deps: NotifyDeps) {}
 
-  /** `notify_send`. The subject is the argument when it names one and the
+  /** `notify.send`. The subject is the argument when it names one and the
    * caller otherwise, so a session notifying about itself says only the text. */
   send = (input: HandlerInput): NotifySendResult => {
     const args = input.args as unknown as NotifySendArgs;
@@ -52,7 +52,7 @@ export class Notify implements UpstreamResource {
     return {};
   };
 
-  /** `say_post`. What was said is already in the caller's transcript, so this
+  /** `say.post`. What was said is already in the caller's transcript, so this
    * pushes the occurrence and raises the unread mark; the instance keeps no log
    * of its own. The op is open to sessions alone, so the subject is the caller
    * and there is nothing to address. */
@@ -64,9 +64,9 @@ export class Notify implements UpstreamResource {
     return { posted_at };
   };
 
-  /** `say_mark_read`. One session's mark, or every one when none is named. */
-  markRead = (input: HandlerInput): SayMarkReadResult => {
-    const { sid } = input.args as unknown as SayMarkReadArgs;
+  /** `say.unread.clear`. One session's mark, or every one when none is named. */
+  markRead = (input: HandlerInput): SayUnreadClearResult => {
+    const { sid } = input.args as unknown as SayUnreadClearArgs;
     if (sid === undefined) this.#unread.clear();
     else this.#unread.delete(sid);
     return {};
@@ -74,7 +74,7 @@ export class Notify implements UpstreamResource {
 
   /** The sessions that have spoken unheard. Nothing in this generation of the
    * contract carries the mark on the wire, so this is how the instance's own
-   * side reads what `say_mark_read` clears. */
+   * side reads what `say.unread.clear` clears. */
   unread(): readonly Sid[] {
     return [...this.#unread];
   }
@@ -113,7 +113,7 @@ export class Notify implements UpstreamResource {
   }
 
   /** The session the caller is. A person's connection names none, which is why
-   * `notify_send` takes the subject as an argument — one that omits it from a
+   * `notify.send` takes the subject as an argument — one that omits it from a
    * connection with no session has named nobody for the notification to be
    * about. */
   #caller(input: HandlerInput): Sid {

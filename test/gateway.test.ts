@@ -205,9 +205,9 @@ function wiredTo(gatewayUrl: string) {
 async function subscribe(started: Started, topic: string): Promise<LineClient> {
   const client = await connectWs(started.address, personToken(started.instance));
   clients.push(client);
-  client.send({ op: "hello", request_id: "h", role: "user", protocol_version: PROTOCOL_VERSION });
+  client.send({ op: "hello.user", request_id: "h", protocol_version: PROTOCOL_VERSION });
   await client.next();
-  client.send({ op: "topic_subscribe", request_id: "s", topic });
+  client.send({ op: "topic.subscribe", request_id: "s", topic });
   return client;
 }
 
@@ -220,16 +220,16 @@ async function nextTopic(client: LineClient, topic: string): Promise<Record<stri
 }
 
 describe("what the gateway posts (§3.5, §5.1)", () => {
-  test("a request event reaches `llm_requests` under this contract's names", async () => {
+  test("a request event reaches `llm.requests` under this contract's names", async () => {
     const gateway = fakeGateway();
     const started = await startWith(wiredTo(gateway.url));
-    const client = await subscribe(started, "llm_requests");
+    const client = await subscribe(started, "llm.requests");
     // The snapshot: nothing has been posted yet.
-    expect((await nextTopic(client, "llm_requests"))["data"]).toEqual([]);
+    expect((await nextTopic(client, "llm.requests"))["data"]).toEqual([]);
 
     expect((await started.post([requestEvent()])).status).toBe(204);
 
-    const frame = await nextTopic(client, "llm_requests");
+    const frame = await nextTopic(client, "llm.requests");
     const [info] = frame["data"] as LlmRequestInfo[];
     expect(info).toEqual({
       received_at: NOW,
@@ -254,7 +254,7 @@ describe("what the gateway posts (§3.5, §5.1)", () => {
       cache_until_at: NOW + 33_300_000,
       cache_breakeven_until_at: NOW + 69_300_000,
     });
-    expect(validationErrors(TOPIC_SCHEMAS["llm_requests"], frame)).toEqual([]);
+    expect(validationErrors(TOPIC_SCHEMAS["llm.requests"], frame)).toEqual([]);
   });
 
   test("the whole unexpired set travels, so a later subscriber sees the window", async () => {
@@ -264,8 +264,8 @@ describe("what the gateway posts (§3.5, §5.1)", () => {
     const now = Date.now();
     await started.post([requestEvent({ ts: now, cache_expires_at: now + 600_000 })]);
 
-    const client = await subscribe(started, "llm_requests");
-    const frame = await nextTopic(client, "llm_requests");
+    const client = await subscribe(started, "llm.requests");
+    const frame = await nextTopic(client, "llm.requests");
     expect(frame["snapshot"]).toBe(true);
     expect((frame["data"] as LlmRequestInfo[]).map((info) => info.received_at)).toEqual([now]);
   });
@@ -286,8 +286,8 @@ describe("what the gateway posts (§3.5, §5.1)", () => {
   test("a subagent's series does not become the session's own", async () => {
     const gateway = fakeGateway();
     const started = await startWith(wiredTo(gateway.url));
-    const client = await subscribe(started, "llm_requests");
-    await nextTopic(client, "llm_requests");
+    const client = await subscribe(started, "llm.requests");
+    await nextTopic(client, "llm.requests");
 
     // Both travel under the session's own id, with system prompts of their own.
     await started.post([
@@ -297,15 +297,15 @@ describe("what the gateway posts (§3.5, §5.1)", () => {
 
     let rows: LlmRequestInfo[] = [];
     while (rows.length < 2)
-      rows = (await nextTopic(client, "llm_requests"))["data"] as LlmRequestInfo[];
+      rows = (await nextTopic(client, "llm.requests"))["data"] as LlmRequestInfo[];
     expect(rows.filter((row) => row.main).map((row) => row.prefix)).toEqual(["own-one"]);
   });
 
   test("a delivery mixes kinds, and the ones nothing reads cost the others nothing", async () => {
     const gateway = fakeGateway();
     const started = await startWith(wiredTo(gateway.url));
-    const client = await subscribe(started, "llm_requests");
-    await nextTopic(client, "llm_requests");
+    const client = await subscribe(started, "llm.requests");
+    await nextTopic(client, "llm.requests");
 
     const answer = await started.post([
       { type: "cache_keepalive", ts: NOW, session_id: SID, prefix: "p", nonce: "n", deadline: NOW },
@@ -314,7 +314,7 @@ describe("what the gateway posts (§3.5, §5.1)", () => {
       requestEvent(),
     ]);
     expect(answer.status).toBe(204);
-    expect((await nextTopic(client, "llm_requests"))["data"]).toHaveLength(1);
+    expect((await nextTopic(client, "llm.requests"))["data"]).toHaveLength(1);
   });
 });
 
@@ -442,13 +442,13 @@ describe("the report the gateway is asked for (§6.2, whole value)", () => {
     const gateway = fakeGateway();
     const started = await startWith(wiredTo(gateway.url));
 
-    const client = await subscribe(started, "llm_status");
-    const frame = await nextTopic(client, "llm_status");
+    const client = await subscribe(started, "llm.status");
+    const frame = await nextTopic(client, "llm.status");
     const report = frame["data"] as LlmStatusReport;
     expect(report.overall.severity).toBe("critical");
     expect(report.services[0]?.official?.state).toBe("major_outage");
     expect(report.services[0]?.observed?.state).toBe("failing");
-    expect(validationErrors(TOPIC_SCHEMAS["llm_status"], frame)).toEqual([]);
+    expect(validationErrors(TOPIC_SCHEMAS["llm.status"], frame)).toEqual([]);
     expect(gateway.reads()).toBe(1);
   });
 
@@ -489,9 +489,9 @@ describe("the report the gateway is asked for (§6.2, whole value)", () => {
     // not have, so it is not carried at all.
     expect(report?.services[0]?.official).not.toHaveProperty("updatedAt");
     expect(
-      validationErrors(TOPIC_SCHEMAS["llm_status"], {
+      validationErrors(TOPIC_SCHEMAS["llm.status"], {
         ev: "topic",
-        topic: "llm_status",
+        topic: "llm.status",
         instance: SELF,
         data: report,
       }),
@@ -562,12 +562,12 @@ describe("who may post, and what an instance without a gateway has (§3.1, §5.2
     const started = await startWith();
     const client = await connectWs(started.address, personToken(started.instance));
     clients.push(client);
-    client.send({ op: "hello", request_id: "h", role: "user", protocol_version: PROTOCOL_VERSION });
+    client.send({ op: "hello.user", request_id: "h", protocol_version: PROTOCOL_VERSION });
     const hello = await client.next();
     expect(hello["capabilities"]).toEqual([]);
 
-    for (const topic of ["llm_requests", "llm_status"]) {
-      client.send({ op: "topic_subscribe", request_id: topic, topic });
+    for (const topic of ["llm.requests", "llm.status"]) {
+      client.send({ op: "topic.subscribe", request_id: topic, topic });
       const reply = await client.next();
       expect(reply["ok"]).toBe(false);
       expect((reply["error"] as { code: string }).code).toBe("capability_unavailable");
@@ -592,9 +592,8 @@ describe("who may post, and what an instance without a gateway has (§3.1, §5.2
       const client = await connectWs(started.address, personToken(started.instance));
       clients.push(client);
       client.send({
-        op: "hello",
+        op: "hello.user",
         request_id: "h",
-        role: "user",
         protocol_version: PROTOCOL_VERSION,
       });
       const hello = await client.next();

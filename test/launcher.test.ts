@@ -103,12 +103,12 @@ function paths(entries: readonly DirTreeEntry[]): string[] {
   return entries.flatMap((entry) => [entry.path, ...paths(entry.children ?? [])]);
 }
 
-describe("the form a client renders (launcher_config_read)", () => {
+describe("the form a client renders (launcher.config.read)", () => {
   test("answers the roots and the recipes, in configured order", async () => {
     const { root } = host();
     const answer = await run(
-      "launcher_config_read",
-      launcherHandlers(new Launcher(config(root))).launcher_config_read,
+      "launcher.config.read",
+      launcherHandlers(new Launcher(config(root)))["launcher.config.read"],
     );
     expect(answer["root_dirs"]).toEqual([root]);
     expect(answer["templates"]).toEqual([
@@ -127,8 +127,8 @@ describe("the form a client renders (launcher_config_read)", () => {
   test("the shell a recipe runs under is the instance's business", async () => {
     const { root } = host();
     const answer = await run(
-      "launcher_config_read",
-      launcherHandlers(new Launcher(config(root))).launcher_config_read,
+      "launcher.config.read",
+      launcherHandlers(new Launcher(config(root)))["launcher.config.read"],
     );
     for (const template of answer["templates"] as Record<string, unknown>[]) {
       expect(Object.keys(template).sort()).toEqual(["command", "name", "params"]);
@@ -136,9 +136,9 @@ describe("the form a client renders (launcher_config_read)", () => {
   });
 });
 
-describe("where a session could run (dir_tree)", () => {
+describe("where a session could run (dir.tree)", () => {
   const tree = (root: string, args: Record<string, unknown>) =>
-    run("dir_tree", launcherHandlers(new Launcher(config(root))).dir_tree, args);
+    run("dir.tree", launcherHandlers(new Launcher(config(root)))["dir.tree"], args);
 
   test("walks the configured depth, directories only", async () => {
     const { root } = host();
@@ -205,11 +205,11 @@ describe("where a session could run (dir_tree)", () => {
   });
 });
 
-describe("assembling a launch (launcher_run)", () => {
+describe("assembling a launch (launcher.run)", () => {
   test("the directory is the resolved one, and the recipe the default", async () => {
     const { root } = host();
     const { launcher, launches } = watched(config(root));
-    await run("launcher_run", launcherHandlers(launcher).launcher_run, {
+    await run("launcher.run", launcherHandlers(launcher)["launcher.run"], {
       cwd: join(root, "one"),
       params: {},
     });
@@ -224,7 +224,7 @@ describe("assembling a launch (launcher_run)", () => {
     const { root, outside } = host();
     const { launcher, launches } = watched(config(root));
     expect(
-      await refusalOf(() => launcherHandlers(launcher).launcher_run(input({ cwd: outside }))),
+      await refusalOf(() => launcherHandlers(launcher)["launcher.run"](input({ cwd: outside }))),
     ).toBe("invalid_args");
     expect(launches).toEqual([]);
   });
@@ -232,7 +232,7 @@ describe("assembling a launch (launcher_run)", () => {
   test("values reach the command as variables, defaults filling what was left out", async () => {
     const { root } = host();
     const { launcher, launches } = watched(config(root));
-    await run("launcher_run", launcherHandlers(launcher).launcher_run, {
+    await run("launcher.run", launcherHandlers(launcher)["launcher.run"], {
       cwd: root,
       params: { PROMPT: "$(rm -rf /) 'quoted'" },
     });
@@ -248,7 +248,7 @@ describe("assembling a launch (launcher_run)", () => {
     const { launcher, launches } = watched(config(root));
     expect(
       await refusalOf(() =>
-        launcherHandlers(launcher).launcher_run(
+        launcherHandlers(launcher)["launcher.run"](
           input({ cwd: root, params: { NOPE: "x" }, template: "plain" }),
         ),
       ),
@@ -261,7 +261,7 @@ describe("assembling a launch (launcher_run)", () => {
     const { launcher } = watched(config(root));
     expect(
       await refusalOf(() =>
-        launcherHandlers(launcher).launcher_run(input({ cwd: root, template: "other" })),
+        launcherHandlers(launcher)["launcher.run"](input({ cwd: root, template: "other" })),
       ),
     ).toBe("invalid_args");
   });
@@ -269,13 +269,13 @@ describe("assembling a launch (launcher_run)", () => {
   test("a named recipe and an edited command are both honoured", async () => {
     const { root } = host();
     const { launcher, launches } = watched(config(root));
-    await run("launcher_run", launcherHandlers(launcher).launcher_run, {
+    await run("launcher.run", launcherHandlers(launcher)["launcher.run"], {
       cwd: root,
       params: {},
       template: "plain",
     });
     expect(launches[0]?.argv.at(-1)).toContain("printf plain");
-    await run("launcher_run", launcherHandlers(launcher).launcher_run, {
+    await run("launcher.run", launcherHandlers(launcher)["launcher.run"], {
       cwd: root,
       params: {},
       template: "plain",
@@ -290,7 +290,10 @@ describe("assembling a launch (launcher_run)", () => {
       config(root, { clean_env: ["CLAUDE*"], keep_env: ["CLAUDE_CONFIG_DIR"] }),
       { CLAUDE_CODE_ENTRYPOINT: "cli", CLAUDE_CONFIG_DIR: "/homes/.claude", PATH: "/bin" },
     );
-    await run("launcher_run", launcherHandlers(launcher).launcher_run, { cwd: root, params: {} });
+    await run("launcher.run", launcherHandlers(launcher)["launcher.run"], {
+      cwd: root,
+      params: {},
+    });
     const env = launches[0]?.env ?? {};
     expect(env["CLAUDE_CODE_ENTRYPOINT"]).toBeUndefined();
     expect(env["CLAUDE_CONFIG_DIR"]).toBe("/homes/.claude");
@@ -309,7 +312,7 @@ describe("running the command (no terminal, a plain shell)", () => {
   test("the output, the code, and the values the command read", async () => {
     const { root } = host();
     const launcher = new Launcher(config(root));
-    const answer = (await run("launcher_run", launcherHandlers(launcher).launcher_run, {
+    const answer = (await run("launcher.run", launcherHandlers(launcher)["launcher.run"], {
       cwd: root,
       params: { PROMPT: "hi there" },
     })) as unknown as LauncherRunResult;
@@ -326,7 +329,7 @@ describe("running the command (no terminal, a plain shell)", () => {
         templates: [{ name: "slow", command: "sleep 30", shell: "bash", params: [] }],
       }),
     );
-    const answer = (await run("launcher_run", launcherHandlers(launcher).launcher_run, {
+    const answer = (await run("launcher.run", launcherHandlers(launcher)["launcher.run"], {
       cwd: root,
       params: {},
     })) as unknown as LauncherRunResult;
@@ -339,8 +342,8 @@ describe("running the command (no terminal, a plain shell)", () => {
 function input(args: Record<string, unknown>): HandlerInput {
   const identity = { state: "settled" as const, role: "user" as const };
   return {
-    op: "launcher_run",
-    args: { op: "launcher_run", request_id: "1", params: {}, ...args },
+    op: "launcher.run",
+    args: { op: "launcher.run", request_id: "1", params: {}, ...args },
     conn: new TestConn(identity),
     identity,
   };

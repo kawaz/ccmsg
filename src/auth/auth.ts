@@ -4,9 +4,9 @@ import type {
   AuthChallenge,
   AuthChallengeResult,
   AuthRecord,
-  AuthRefreshArgs,
+  AuthExtendArgs,
   AuthRefreshReason,
-  AuthRefreshResult,
+  AuthExtendResult,
   AuthRegisterArgs,
   AuthResolveArgs,
   AuthResolveResult,
@@ -339,7 +339,7 @@ export class Auth {
     return closed;
   }
 
-  /** Take what a peer wrote on `auth_records`, and act on the removals in it. */
+  /** Take what a peer wrote on `auth.records`, and act on the removals in it. */
   merge(records: readonly AuthRecord[]): void {
     const { removed } = this.deps.records.merge(records);
     for (const sub of removed) this.disconnect(sub);
@@ -372,7 +372,7 @@ export class Auth {
       this.spend(challenge.challenge);
       return;
     }
-    await this.#atIssuer(challenge.issuer, "auth_resolve", {
+    await this.#atIssuer(challenge.issuer, "auth.resolve", {
       kind: "challenge",
       challenge: challenge.challenge,
     } satisfies AuthResolveArgs);
@@ -497,7 +497,7 @@ export class Auth {
   async #claimsOf(args: AuthRegisterArgs): Promise<RegisterClaims> {
     const stated = claimsOf(args.token);
     if (stated.iss === this.deps.self) return this.resolveRegistration(args.token, args.code);
-    const answer = (await this.#atIssuer(stated.iss, "auth_resolve", {
+    const answer = (await this.#atIssuer(stated.iss, "auth.resolve", {
       kind: "register",
       token: args.token,
       code: args.code,
@@ -510,7 +510,7 @@ export class Auth {
 
   /** Check a registration URL against the secret that signed it, and spend it.
    *
-   * Only the issuer can run this, which is what `auth_resolve` is for. The code
+   * Only the issuer can run this, which is what `auth.resolve` is for. The code
    * is checked here too: it was issued with the secret and is held beside it,
    * and letting another instance check it would be putting the one defence
    * against a leaked URL somewhere the URL's holder could reach. */
@@ -690,7 +690,7 @@ export class Auth {
       // remembered as a time and nothing else. The issuer writes them
       // unchecked, as it does the ones it observes itself (contract,
       // `AuthRotateArgs`).
-      const answer = (await this.#atIssuer(held.body.iss, "auth_rotate", {
+      const answer = (await this.#atIssuer(held.body.iss, "auth.rotate", {
         refresh_token: value,
         ...(from.reason === undefined ? {} : { reason: from.reason }),
         ...(from.ip === undefined ? {} : { ip: from.ip }),
@@ -718,7 +718,7 @@ export class Auth {
       return;
     }
     try {
-      await this.#atIssuer(owner.body.iss, "auth_rotate", {
+      await this.#atIssuer(owner.body.iss, "auth.rotate", {
         refresh_token: value,
       } satisfies AuthRotateArgs);
     } catch {
@@ -729,7 +729,7 @@ export class Auth {
   }
 
   /** Rotate a family this instance minted. The one writer's own operation, and
-   * what `auth_rotate` runs on its behalf. */
+   * what `auth.rotate` runs on its behalf. */
   rotate(value: Base64Url, from: RefreshFrom = {}): AuthRotateResult {
     const held = this.deps.records.byRefresh(value);
     if (held === undefined) {
@@ -862,7 +862,7 @@ export class Auth {
   }
 
   /** Extend a live connection with a token got from `/auth/refresh` (§2.5). */
-  extend(conn: Requester, args: AuthRefreshArgs): AuthRefreshResult {
+  extend(conn: Requester, args: AuthExtendArgs): AuthExtendResult {
     const held = this.#authorized.get(conn);
     if (held === undefined) {
       throw new OpError("auth_invalid", "この接続は token で開かれたものではありません");
@@ -919,9 +919,9 @@ export class Auth {
  * answers for another instance. */
 export function authHandlers(auth: Auth) {
   return {
-    auth_refresh: (input: HandlerInput): AuthRefreshResult =>
-      auth.extend(input.conn, input.args as unknown as AuthRefreshArgs),
-    auth_resolve: (input: HandlerInput): AuthResolveResult => {
+    "auth.extend": (input: HandlerInput): AuthExtendResult =>
+      auth.extend(input.conn, input.args as unknown as AuthExtendArgs),
+    "auth.resolve": (input: HandlerInput): AuthResolveResult => {
       const args = input.args as unknown as AuthResolveArgs;
       if (args.kind === "challenge") {
         auth.spend(args.challenge);
@@ -932,7 +932,7 @@ export function authHandlers(auth: Auth) {
       // the URL and the count of tries against it (§2.2).
       return { kind: "register", claims: auth.resolveRegistration(args.token, args.code) };
     },
-    auth_rotate: (input: HandlerInput): AuthRotateResult => {
+    "auth.rotate": (input: HandlerInput): AuthRotateResult => {
       const args = input.args as unknown as AuthRotateArgs;
       // The receiving instance's account of the person, taken as stated: it is
       // the only one that saw them, and `last_refresh` is a hint nothing is

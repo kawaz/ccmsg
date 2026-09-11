@@ -41,7 +41,7 @@ async function greet(env: Env): Promise<{ client: LineClient; capabilities: stri
   running.push(outcome);
   const client = await connectUds(outcome.socketPath);
   clients.push(client);
-  client.send({ op: "hello", request_id: "h", role: "user", protocol_version: PROTOCOL_VERSION });
+  client.send({ op: "hello.user", request_id: "h", protocol_version: PROTOCOL_VERSION });
   const hello = await client.next();
   return { client, capabilities: hello["capabilities"] as string[] };
 }
@@ -97,9 +97,9 @@ describe("what an instance names, and what it refuses", () => {
     const { client, capabilities } = await greet(env);
     expect(capabilities).not.toContain("launcher");
     for (const [op, args] of [
-      ["launcher_config_read", {}],
-      ["launcher_run", { cwd: "/tmp", params: {} }],
-      ["dir_tree", { roots: ["/tmp"] }],
+      ["launcher.config.read", {}],
+      ["launcher.run", { cwd: "/tmp", params: {} }],
+      ["dir.tree", { roots: ["/tmp"] }],
     ] as const) {
       const answer = await ask(client, op, args);
       expect((answer["error"] as { code: string }).code).toBe("capability_unavailable");
@@ -110,7 +110,7 @@ describe("what an instance names, and what it refuses", () => {
     const { env, root } = disposable(launcher);
     const { client, capabilities } = await greet(env);
     expect(capabilities).toContain("launcher");
-    const answer = await ask(client, "launcher_config_read", {});
+    const answer = await ask(client, "launcher.config.read", {});
     expect(answer["ok"]).toBe(true);
     expect(answer["root_dirs"]).toEqual([join(root, "repos")]);
     // A parameter with no stated default is the ordinary "the user fills this
@@ -120,11 +120,11 @@ describe("what an instance names, and what it refuses", () => {
     ]);
   });
 
-  test("no translation helper configured: translate_run is refused", async () => {
+  test("no translation helper configured: translate.run is refused", async () => {
     const { env } = disposable();
     const { client, capabilities } = await greet(env);
     expect(capabilities).not.toContain("translate");
-    const answer = await ask(client, "translate_run", { texts: ["hello"] });
+    const answer = await ask(client, "translate.run", { texts: ["hello"] });
     expect((answer["error"] as { code: string }).code).toBe("capability_unavailable");
   });
 
@@ -141,7 +141,7 @@ describe("what an instance names, and what it refuses", () => {
       upstream: { translate_helper: helperAt(root) },
     }));
     const { client } = await greet(env);
-    const answer = await ask(client, "translate_run", { texts: ["one", "two"] });
+    const answer = await ask(client, "translate.run", { texts: ["one", "two"] });
     expect(answer["ok"]).toBe(true);
     expect(answer["results"]).toEqual([
       { ok: true, text: "ONE" },
@@ -153,7 +153,7 @@ describe("what an instance names, and what it refuses", () => {
     const { env } = disposable();
     const { client, capabilities } = await greet(env);
     expect(capabilities).toEqual([]);
-    expect((await ask(client, "kv_write", { ns: "theme", key: "d", value: 1 }))["ok"]).toBe(true);
+    expect((await ask(client, "kv.write", { ns: "theme", key: "d", value: 1 }))["ok"]).toBe(true);
   });
 });
 

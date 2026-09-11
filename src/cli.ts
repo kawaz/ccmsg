@@ -202,7 +202,7 @@ const ROOT: Command = {
         },
         {
           name: "stop",
-          summary: "監督者に、子を止めさせる (instance_shutdown、以後は上げ直さない)",
+          summary: "監督者に、子を止めさせる (instance.shutdown、以後は上げ直さない)",
           usage: "ccmsg daemon stop <dir> | --all",
           run: (args) => supervised("supervise_stop", args),
         },
@@ -214,7 +214,7 @@ const ROOT: Command = {
         },
         {
           name: "status",
-          summary: "監督者が各子に instance_ping して version・network・peers を答える",
+          summary: "監督者が各子に instance.ping して version・network・peers を答える",
           usage: "ccmsg daemon status [dir] | --all",
           bare: true,
           run: (args) => supervised("supervise_status", args, true),
@@ -395,7 +395,7 @@ const ROOT: Command = {
           summary: "この instance が持つ preset の名前と中身を並べる",
           usage: "ccmsg dump presets",
           bare: true,
-          run: () => instanceAsk({ op: "dump_presets_read" }),
+          run: () => instanceAsk({ op: "dump.presets.read" }),
         },
       ],
       run: (args) => dump(args),
@@ -585,7 +585,7 @@ async function runInstance(dir: string | undefined): Promise<unknown> {
   }
   const instance = outcome;
   // A signal is a request to leave, and leaving is the ordered shutdown of
-  // §8.5 — the same one `instance_shutdown` runs, so a client sees the same
+  // §8.5 — the same one `instance.shutdown` runs, so a client sees the same
   // departure either way. The listeners are removed once it has run, because a
   // signal listener keeps the event loop alive and the process would sit at an
   // empty loop instead of exiting.
@@ -852,8 +852,8 @@ function peers(args: readonly string[]): Promise<unknown> {
     "peers",
     parsed.flags.has("all"),
     sid === undefined || sid === ""
-      ? { op: "hello", role: "user", protocol_version: PROTOCOL_VERSION }
-      : { op: "hello", role: "session", sid, protocol_version: PROTOCOL_VERSION, ...statedMeta() },
+      ? { op: "hello.user", protocol_version: PROTOCOL_VERSION }
+      : { op: "hello.session", sid, protocol_version: PROTOCOL_VERSION, ...statedMeta() },
   );
 }
 
@@ -864,8 +864,7 @@ function peers(args: readonly string[]): Promise<unknown> {
 function agents(args: readonly string[]): Promise<unknown> {
   const parsed = options(args, [], ["all", "json"]);
   return topic("agents", parsed.flags.has("all"), {
-    op: "hello",
-    role: "user",
+    op: "hello.user",
     protocol_version: PROTOCOL_VERSION,
   });
 }
@@ -919,7 +918,7 @@ async function dump(args: readonly string[]): Promise<unknown> {
     );
   }
   const written = (await instanceAsk({
-    op: "session_dump_write",
+    op: "session.dump.write",
     ...dumpArgs(subject, parsed.named),
   })) as unknown as SessionDumpWriteResult;
   const body = readFileSync(written.path, "utf8");
@@ -1028,10 +1027,10 @@ function post(args: readonly string[]): Promise<unknown> {
  * delivered envelope as `ccmsg-from`.
  *
  * Without `--to` the answer is for a person, because that is the one message
- * whose reply line carries no addressee: `user` is not a sid and `message_send`
+ * whose reply line carries no addressee: `user` is not a sid and `message.send`
  * addresses a sid, so there is nothing to send to. The contract leaves how such
  * an answer arrives to the instance and names the route — it reaches them as a
- * notification, which is `notify_send`. The caller runs the line either way and
+ * notification, which is `notify.send`. The caller runs the line either way and
  * does not have to know which of the two it became. */
 function reply(args: readonly string[]): Promise<unknown> {
   const parsed = options(args, ["sid", "to"]);
@@ -1080,7 +1079,7 @@ export async function stopping(args: readonly string[], read?: Read): Promise<un
   // what the working directory reveals.
   return await call(
     parsed.named.get("sid") ?? event.sid,
-    { op: "session_stopping", ...(reason === undefined ? {} : { reason }) },
+    { op: "session.stopping", ...(reason === undefined ? {} : { reason }) },
     stated(parsed.named, event),
   );
 }
@@ -1113,8 +1112,7 @@ export async function hello(args: readonly string[], read?: Read): Promise<unkno
   if (conn === undefined) return { greeted: false, reason: "no_instance" };
   try {
     await conn.ask({
-      op: "hello",
-      role: "session",
+      op: "hello.session",
       sid,
       protocol_version: PROTOCOL_VERSION,
       ...meta,
@@ -1224,19 +1222,19 @@ async function plugin(
   return outcome;
 }
 
-/** One `message_send`. */
+/** One `message.send`. */
 function send(named: string | undefined, args: MessageSendArgs): Promise<unknown> {
-  return call(named, { op: "message_send", ...args });
+  return call(named, { op: "message.send", ...args });
 }
 
-/** One `notify_send`. */
+/** One `notify.send`. */
 function announce(named: string | undefined, args: NotifySendArgs): Promise<unknown> {
-  return call(named, { op: "notify_send", ...args });
+  return call(named, { op: "notify.send", ...args });
 }
 
 /** One op, spoken as the session this process runs inside.
  *
- * The greeting is `role: "session"` because that is what the caller is: the
+ * The greeting is `hello.session` because that is what the caller is: the
  * instance takes the sender and the subject from the connection rather than
  * from the arguments, so a connection that greeted as anything else has nobody
  * to answer and nothing to be about.
@@ -1259,7 +1257,7 @@ async function call(
     );
   }
   return await exchange(
-    { op: "hello", role: "session", sid, protocol_version: PROTOCOL_VERSION, ...meta },
+    { op: "hello.session", sid, protocol_version: PROTOCOL_VERSION, ...meta },
     request,
   );
 }
@@ -1269,7 +1267,7 @@ async function call(
  * Which is who is asking: reading a transcript is not something a session is a
  * party to, and the ops that do it are open to a person and to nobody else. */
 function instanceAsk(request: Record<string, unknown>): Promise<unknown> {
-  return exchange({ op: "hello", role: "user", protocol_version: PROTOCOL_VERSION }, request);
+  return exchange({ op: "hello.user", protocol_version: PROTOCOL_VERSION }, request);
 }
 
 /** Greet this config home's instance, ask it one thing, and answer with what
@@ -1354,13 +1352,12 @@ async function posted(text: string): Promise<void> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const record = async (): Promise<void> => {
     const greeting = await conn.ask({
-      op: "hello",
-      role: "session",
+      op: "hello.session",
       sid,
       protocol_version: PROTOCOL_VERSION,
       ...statedMeta(),
     });
-    if (greeting["ok"] === true) await conn.ask({ op: "say_post", text });
+    if (greeting["ok"] === true) await conn.ask({ op: "say.post", text });
   };
   const budget = new Promise<void>((resolve) => {
     timer = setTimeout(resolve, SAY_POST_MS);

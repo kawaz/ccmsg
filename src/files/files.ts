@@ -28,8 +28,8 @@ import type {
   FileFindResult,
   FileReadArgs,
   FileReadResult,
-  FileStatBatchArgs,
-  FileStatBatchResult,
+  FileStatArgs,
+  FileStatResult,
   FileStatEntry,
   FileWriteArgs,
   FileWriteResult,
@@ -38,7 +38,7 @@ import type {
 import { type HandlerInput, OpError } from "../dispatch/index.ts";
 import type { Containment, Located, Viewer } from "./containment.ts";
 
-/** How much of a file `file_read` carries. Larger files are answered with their
+/** How much of a file `file.read` carries. Larger files are answered with their
  * head and `truncated`, so one file can never cost the connection more than
  * this however big it grew (DR-0008 §5). */
 const READ_LIMIT = 512 * 1024;
@@ -65,7 +65,7 @@ export function fileHandlers(paths: Containment) {
   const viewer = (input: HandlerInput): Viewer => ({ role: input.role, sid: input.identity?.sid });
 
   return {
-    dir_list: (input: HandlerInput): DirListResult => {
+    "dir.list": (input: HandlerInput): DirListResult => {
       const args = input.args as unknown as DirListArgs;
       const at = paths.root(args, viewer(input));
       const stat = existing(at);
@@ -73,7 +73,7 @@ export function fileHandlers(paths: Containment) {
       return { sid: args.sid, path: at.path, entries: entriesOf(at.real) };
     },
 
-    file_read: (input: HandlerInput): FileReadResult => {
+    "file.read": (input: HandlerInput): FileReadResult => {
       const args = input.args as unknown as FileReadArgs;
       const at = paths.locate(args, viewer(input));
       const stat = existing(at);
@@ -95,7 +95,7 @@ export function fileHandlers(paths: Containment) {
       };
     },
 
-    file_write: (input: HandlerInput): FileWriteResult => {
+    "file.write": (input: HandlerInput): FileWriteResult => {
       const args = input.args as unknown as FileWriteArgs;
       const at = paths.inbox(args.sid, args.path, viewer(input));
       // The inbox takes new notes, so an existing name is refused rather than
@@ -106,7 +106,7 @@ export function fileHandlers(paths: Containment) {
       return { sid: args.sid, path: at.path };
     },
 
-    file_create: (input: HandlerInput): FileCreateResult => {
+    "file.create": (input: HandlerInput): FileCreateResult => {
       const args = input.args as unknown as FileCreateArgs;
       const at = paths.locate(args, viewer(input));
       const parent = dirname(at.real);
@@ -117,7 +117,7 @@ export function fileHandlers(paths: Containment) {
       return { sid: args.sid, path: at.path };
     },
 
-    file_edit: (input: HandlerInput): FileEditResult => {
+    "file.edit": (input: HandlerInput): FileEditResult => {
       const args = input.args as unknown as FileEditArgs;
       const at = paths.locate(args, viewer(input));
       const stat = existing(at);
@@ -133,7 +133,7 @@ export function fileHandlers(paths: Containment) {
       return { sid: args.sid, path: at.path, size: after.size, mtime_at: mtimeOf(after) };
     },
 
-    file_delete: (input: HandlerInput): FileDeleteResult => {
+    "file.delete": (input: HandlerInput): FileDeleteResult => {
       const args = input.args as unknown as FileDeleteArgs;
       const at = paths.locate(args, viewer(input));
       // What is unlinked is what is named, so this reads the name itself rather
@@ -150,7 +150,7 @@ export function fileHandlers(paths: Containment) {
       return { sid: args.sid, path: at.path };
     },
 
-    file_find: (input: HandlerInput): FileFindResult => {
+    "file.find": (input: HandlerInput): FileFindResult => {
       const args = input.args as unknown as FileFindArgs;
       const at = paths.root(
         { sid: args.sid, kind: args.kind, ...(args.root === undefined ? {} : { path: args.root }) },
@@ -164,8 +164,8 @@ export function fileHandlers(paths: Containment) {
       return { sid: args.sid, hits: walk.hits, truncated: walk.truncated };
     },
 
-    file_stat_batch: (input: HandlerInput): FileStatBatchResult => {
-      const args = input.args as unknown as FileStatBatchArgs;
+    "file.stat": (input: HandlerInput): FileStatResult => {
+      const args = input.args as unknown as FileStatArgs;
       const results = args.paths.map((path): FileStatEntry | null => {
         const at = paths.identify(args.sid, path, viewer(input));
         if (at === undefined || !isFile(at.real)) return null;

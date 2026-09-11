@@ -3,7 +3,7 @@ import type { Requester } from "../dispatch/index.ts";
 import type { TopicValue, UpstreamResource } from "../topics/index.ts";
 import type { AuthRecords } from "./records.ts";
 
-/** `auth_records` as the topic mechanism sees it (DR-0001 §2.6).
+/** `auth.records` as the topic mechanism sees it (DR-0001 §2.6).
  *
  * The records are here whether anyone is subscribed or not — they are what
  * authenticates a person, not a watch on something — so there is nothing to

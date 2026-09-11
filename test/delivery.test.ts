@@ -192,10 +192,10 @@ function rig(over: { direct?: DirectRoute; dir?: string } = {}): Rig {
   topics.attach("inbox", delivery);
   topics.attach("notify", notify);
   const send = async (from: TestConn, to: Sid, text = "hi") => {
-    const result = await messagingHandlers(delivery, notify).message_send({
-      op: "message_send",
+    const result = await messagingHandlers(delivery, notify)["message.send"]({
+      op: "message.send",
       conn: from,
-      args: { op: "message_send", request_id: "1", to, text },
+      args: { op: "message.send", request_id: "1", to, text },
       identity: from.identity.state === "settled" ? from.identity : undefined,
     });
     return result as MessageSendResult;
@@ -227,7 +227,7 @@ function messagesOf(frame: Record<string, unknown> | undefined): InboxMessage[] 
 }
 
 function problems(result: MessageSendResult): string[] {
-  return validationErrors(OP_SCHEMAS.message_send.response, {
+  return validationErrors(OP_SCHEMAS["message.send"].response, {
     ok: true,
     request_id: "1",
     ...result,
@@ -463,10 +463,10 @@ describe("the sessions a message can be addressed to", () => {
     const result = await messagingHandlers(
       delivery,
       new Notify({ self: SELF, label: (sid) => sid, publish: () => "ok" }),
-    ).message_send({
-      op: "message_send",
+    )["message.send"]({
+      op: "message.send",
       conn,
-      args: { op: "message_send", request_id: "1", to: OTHER_SID, text: "are you there" },
+      args: { op: "message.send", request_id: "1", to: OTHER_SID, text: "are you there" },
       identity: conn.identity.state === "settled" ? conn.identity : undefined,
     });
 
@@ -514,10 +514,10 @@ describe("the sessions a message can be addressed to", () => {
       messagingHandlers(
         delivery,
         new Notify({ self: SELF, label: (sid) => sid, publish: () => "ok" }),
-      ).message_send({
-        op: "message_send",
+      )["message.send"]({
+        op: "message.send",
         conn,
-        args: { op: "message_send", request_id: "1", to: OTHER_SID, text: "are you there" },
+        args: { op: "message.send", request_id: "1", to: OTHER_SID, text: "are you there" },
         identity: conn.identity.state === "settled" ? conn.identity : undefined,
       }),
     ).rejects.toThrow("no session");

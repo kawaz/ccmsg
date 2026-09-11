@@ -4,7 +4,7 @@ import { NO_FACTS, type TranscriptFacts, TranscriptFold } from "./fold.ts";
 import { Classification, type Item, positioned } from "./items/index.ts";
 import { type Appended, TranscriptTail } from "./tail.ts";
 
-/** How many items a subscription to `transcript_items:<sid>` opens with.
+/** How many items a subscription to `transcript.items:<sid>` opens with.
  *
  * The tail of the same megabyte the fold is seeded from, bounded by a count
  * because that read is bounded by bytes: a file of many small records would
@@ -17,7 +17,7 @@ export const ITEMS_SNAPSHOT = 200;
 /** Which of the two topics a name is. Both are fed by one tail, so the
  * resource is entered by either name and answers each in its own vocabulary. */
 function isItems(topic: string): boolean {
-  return topic.startsWith("transcript_items:");
+  return topic.startsWith("transcript.items:");
 }
 
 export interface TranscriptsDeps {
@@ -183,7 +183,7 @@ export class Transcripts implements UpstreamResource {
     // A record still being written was not read, so there is nothing to say
     // about it yet; a chunk whose records were all the interface's own
     // bookkeeping says nothing either.
-    if (items.length > 0) this.deps.publish(`transcript_items:${sid}`, { sid, items });
+    if (items.length > 0) this.deps.publish(`transcript.items:${sid}`, { sid, items });
     if (changed) this.deps.onFacts(sid);
   }
 

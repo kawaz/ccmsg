@@ -16,7 +16,7 @@ export interface SessionRoots {
    * session greeted with, or its working directory. Absent when the session
    * greeted with neither, which admits no contained path at all. */
   readonly root?: string;
-  /** Where `file_write` puts a file. Kept apart from `root`, which may be the
+  /** Where `file.write` puts a file. Kept apart from `root`, which may be the
    * container above the working copy. */
   readonly cwd?: string;
   /** Absolute folder paths, each admitting its whole subtree. */
@@ -40,7 +40,7 @@ export interface Located {
   readonly path: string;
   /** The same path with its own last segment unresolved: what was named, not
    * what it points at. An op that acts on the name rather than on the file —
-   * `file_delete`, which unlinks a name — asks what kind of thing was named,
+   * `file.delete`, which unlinks a name — asks what kind of thing was named,
    * and only this distinguishes a file from a symlink to one. */
   readonly named: string;
 }
@@ -101,7 +101,7 @@ export class Containment {
     return undefined;
   }
 
-  /** Where `file_write` writes, which is the one destination no kind names: the
+  /** Where `file.write` writes, which is the one destination no kind names: the
    * session's working directory, and within it the inbox the destination is
    * fixed to (DR-0019). A name that leaves the inbox is refused as unwritable
    * rather than as forbidden — the path is reachable, and only writing there
@@ -195,7 +195,7 @@ export class Containment {
  * about rather than one it guesses a range for. An op with no `scope` states
  * no role, and has none to narrow by: dispatch already settled who may call it.
  *
- * The visible range is one function rather than one per op: `transcript_read`
+ * The visible range is one function rather than one per op: `transcript.read`
  * and the file ops narrow by the same rule, and two spellings of it could come
  * apart while both still passing their own tests. */
 export function sees(sid: Sid, viewer: Viewer): boolean {
@@ -223,7 +223,7 @@ export interface DirArgs {
   readonly path?: string;
 }
 
-/** The directory `file_write` writes into, relative to the working directory. */
+/** The directory `file.write` writes into, relative to the working directory. */
 const INBOX = join("docs", "inbox");
 
 const KINDS = ["contained", "workspace", "external"] as const;

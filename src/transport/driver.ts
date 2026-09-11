@@ -1,4 +1,4 @@
-import { MAX_FRAME_BYTES, type OpName, type Role, type Sid } from "@ccmsg/protocol";
+import { helloRole, isHelloOp, MAX_FRAME_BYTES, type Sid } from "@ccmsg/protocol";
 import { type DispatchResult, failure, type Requester } from "../dispatch/index.ts";
 import type { Conn } from "./conn.ts";
 
@@ -8,10 +8,9 @@ export interface FrameHandler {
   (frame: unknown, conn: Requester): Promise<DispatchResult>;
 }
 
-/** The op whose reply settles the connection's identity. Transport knows this
- * one op name because binding the identity is its job (daemon-v2 §3.1); every
- * other op is opaque to it. */
-const HELLO = "hello" satisfies OpName;
+/** The ops whose reply settles the connection's identity. Transport knows these
+ * three op names because binding the identity is its job (daemon-v2 §3.1);
+ * every other op is opaque to it. */
 
 /** Drive one connection: a line in, a frame answered on the same connection.
  *
@@ -67,19 +66,22 @@ export function createDriver(conn: Conn, handle: FrameHandler) {
   };
 }
 
-/** Bind role and sid at the moment the `hello` reply goes out.
+/** Bind role and sid at the moment a greeting's reply goes out.
  *
- * The frame is safe to read because dispatch only answers `reply` after the
- * op's own schema accepted it, so `role` is a role and `sid` — required of a
- * session and absent otherwise — is a sid. */
+ * The role is read from the op that carried the greeting rather than from a
+ * field of it: there is one op per role, so the name is the only place the
+ * role is said. The frame is safe to read because dispatch only answers
+ * `reply` after the op's own schema accepted it, so `sid` — asked for by
+ * `hello.session` and by neither of the others — is a sid. */
 function settleIfHello(conn: Conn, frame: unknown, result: DispatchResult): void {
   if (result.kind !== "reply") return;
   const fields = frame as Record<string, unknown>;
-  if (fields["op"] !== HELLO) return;
+  const op = fields["op"];
+  if (typeof op !== "string" || !isHelloOp(op)) return;
   const sid = fields["sid"];
   conn.settle({
     state: "settled",
-    role: fields["role"] as Role,
+    role: helloRole(op),
     ...(typeof sid === "string" ? { sid: sid as Sid } : {}),
   });
 }

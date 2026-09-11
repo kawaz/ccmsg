@@ -141,7 +141,7 @@ export class LlmStatus implements UpstreamResource {
       return;
     }
     this.#report = report;
-    this.deps.publish("llm_status", report);
+    this.deps.publish("llm.status", report);
   }
 }
 

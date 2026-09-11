@@ -186,10 +186,11 @@ function forget(entries: Map<string, Held>, now: Timestamp): Map<string, Held> {
 
 export function kvHandlers(store: KvStore) {
   return {
-    kv_read: (input: HandlerInput): KvReadResult => store.read(input.args as unknown as KvReadArgs),
-    kv_write: (input: HandlerInput): KvWriteResult =>
+    "kv.read": (input: HandlerInput): KvReadResult =>
+      store.read(input.args as unknown as KvReadArgs),
+    "kv.write": (input: HandlerInput): KvWriteResult =>
       store.write(input.args as unknown as KvWriteArgs),
-    kv_delete: (input: HandlerInput): KvDeleteResult =>
+    "kv.delete": (input: HandlerInput): KvDeleteResult =>
       store.delete(input.args as unknown as KvDeleteArgs),
   };
 }

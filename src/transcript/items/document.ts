@@ -253,7 +253,7 @@ function pair(items: readonly Item[]): {
  * the call and an agent's to the message, and the harness's key alone would
  * not say which. */
 function joined(item: Item, key: string): string {
-  return `${item.type.startsWith("message:") ? "message" : "tool"}\n${key}`;
+  return `${item.type.startsWith("message.") ? "message" : "tool"}\n${key}`;
 }
 
 /** Whether an item is the conversation half of starting an agent, as opposed
@@ -262,5 +262,5 @@ function joined(item: Item, key: string): string {
  * they ended up — a conversation split across the page is one nobody can
  * follow. */
 function spoken(type: string): boolean {
-  return type.startsWith("message:sub") || type.startsWith("message:team");
+  return type.startsWith("message.sub") || type.startsWith("message.team");
 }

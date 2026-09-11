@@ -54,7 +54,7 @@ const NEEDS_HELLO_OP = OP_NAMES.find((op) => {
 function handlers(): Handlers {
   const entries = OP_NAMES.map((op) => [
     op,
-    () => (op === "hello" ? HELLO_RESULT : { handled: op }),
+    () => (op === "hello.user" ? HELLO_RESULT : { handled: op }),
   ]);
   return Object.fromEntries(entries) as Handlers;
 }
@@ -93,7 +93,7 @@ describe("the driver answers what the handler could not", () => {
     const { conn, sent } = collecting();
     const rejected = Promise.reject(new Error("the handler gave up"));
     const driver = createDriver(conn, () => rejected);
-    driver.line(JSON.stringify(frameFor("instance_ping")));
+    driver.line(JSON.stringify(frameFor("instance.ping")));
     await rejected.catch(() => {});
     await Promise.resolve();
     expect(sent[0]).toMatchObject({
@@ -137,7 +137,7 @@ describe("the fixture", () => {
 
   test("the hello result passes the contract", () => {
     expect(
-      validationErrors(OP_SCHEMAS.hello.response, {
+      validationErrors(OP_SCHEMAS["hello.user"].response, {
         ok: true,
         request_id: "1",
         ...HELLO_RESULT,
@@ -151,7 +151,7 @@ for (const [kind, bind] of TRANSPORTS) {
     test("hello is answered on the same connection", async () => {
       const bound = bind();
       const client = await bound.connect();
-      client.send(frameFor("hello"));
+      client.send(frameFor("hello.user"));
       expect(await client.next()).toMatchObject({
         ok: true,
         request_id: "1",
@@ -163,7 +163,7 @@ for (const [kind, bind] of TRANSPORTS) {
     test("hello binds the identity, and the next op reaches its handler", async () => {
       const bound = bind();
       const client = await bound.connect();
-      client.send(frameFor("hello"));
+      client.send(frameFor("hello.user"));
       await client.next();
       // The op is refused before hello and answered after it, which is the
       // whole of what the binding does at this layer.
@@ -204,14 +204,14 @@ for (const [kind, bind] of TRANSPORTS) {
         ok: false,
         error: { code: "bad_request" },
       });
-      client.send(frameFor("hello"));
+      client.send(frameFor("hello.user"));
       expect(await client.next()).toMatchObject({ ok: true, request_id: "1" });
     });
 
     test("closing the connection drops what the connection held", async () => {
       const bound = bind();
       const client = await bound.connect();
-      client.send(frameFor("hello"));
+      client.send(frameFor("hello.user"));
       await client.next();
       const conn = bound.seen[0]!;
       // The close listener is the transport's own signal that the connection

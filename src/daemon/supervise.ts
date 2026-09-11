@@ -273,7 +273,7 @@ export class Supervisor {
    *
    * Asked over its own socket rather than signalled, so what runs is the
    * ordered shutdown of §8.5 — the same departure a client sees from an
-   * `instance_shutdown`. */
+   * `instance.shutdown`. */
   async stopOne(dir: string): Promise<{ dir: string; stopped: boolean }> {
     const unit = this.#units.get(dir);
     if (unit === undefined) throw new CommandError("not_found", `${dir} は登録されていません`);

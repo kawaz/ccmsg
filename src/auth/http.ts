@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import {
   type AuthAssertArgs,
-  type AuthRefreshTokenArgs,
+  type AuthTokenRefreshArgs,
   type AuthRegisterArgs,
   type ErrorCode,
   type InstanceId,
@@ -24,10 +24,10 @@ type Route = (typeof ROUTES)[number];
 /** Which op each route carries. The route is a name a proxy can see; the op is
  * what the attribute table and the schemas are keyed by. */
 const OP_OF: Record<Route, OpName> = {
-  challenge: "auth_challenge",
-  register: "auth_register",
-  assert: "auth_assert",
-  refresh: "auth_refresh_token",
+  challenge: "auth.challenge",
+  register: "auth.register",
+  assert: "auth.assert",
+  refresh: "auth.token.refresh",
 };
 
 /** Cap on an `/auth/*` body. Everything these take is a handful of base64url
@@ -197,7 +197,7 @@ export async function handleAuth(
         if (held === undefined) {
           return refusal("auth_invalid", "この要求には refresh token がありません", cors);
         }
-        const { reason } = args as unknown as AuthRefreshTokenArgs;
+        const { reason } = args as unknown as AuthTokenRefreshArgs;
         const minted = await deps.auth.refreshToken(held, {
           ...(reason === undefined ? {} : { reason }),
           ...(seen.ip === undefined ? {} : { ip: seen.ip }),

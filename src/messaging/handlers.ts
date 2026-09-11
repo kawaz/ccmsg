@@ -6,9 +6,9 @@ import type { Notify } from "./notify.ts";
  * own entry point under the contract's name. */
 export function messagingHandlers(delivery: Delivery, notify: Notify) {
   return {
-    message_send: delivery.send,
-    notify_send: notify.send,
-    say_post: notify.post,
-    say_mark_read: notify.markRead,
+    "message.send": delivery.send,
+    "notify.send": notify.send,
+    "say.post": notify.post,
+    "say.unread.clear": notify.markRead,
   };
 }

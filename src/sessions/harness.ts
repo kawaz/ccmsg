@@ -164,7 +164,7 @@ export class HarnessSessions implements OwnSessions {
    *
    * Every answer comes from here rather than from anything the watch left
    * behind. Which sessions exist is an input to the classification (§5.1), and
-   * classifying happens inside `message_send`'s decision and inside the
+   * classifying happens inside `message.send`'s decision and inside the
    * recompute that writes `last_live` — neither of which can hand back a
    * promise without changing what it means, and neither of which may depend on
    * somebody being subscribed. The ops that signal a session's process read it

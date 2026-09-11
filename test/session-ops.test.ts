@@ -369,18 +369,18 @@ import { isLive } from "../src/sessions/index.ts";
 /** The other half of the same list: the rows the instance has lost. */
 const isLost = (row: { readonly state?: string }): boolean => !isLive(row as { state?: never });
 
-describe("transcript_read (scope: role)", () => {
+describe("transcript.read (scope: role)", () => {
   test("a person reads a session that is not theirs, a session reads only its own", async () => {
     const { configHome, handlers } = ops();
     writeTranscript(configHome, SID);
     writeTranscript(configHome, OTHER_SID);
 
-    const person = await run("transcript_read", handlers.transcript_read, { sid: OTHER_SID });
+    const person = await run("transcript.read", handlers["transcript.read"], { sid: OTHER_SID });
     expect((person["lines"] as string[]).length).toBe(3);
 
     const own = await run(
-      "transcript_read",
-      handlers.transcript_read,
+      "transcript.read",
+      handlers["transcript.read"],
       { sid: SID },
       as("session", SID),
     );
@@ -392,7 +392,7 @@ describe("transcript_read (scope: role)", () => {
     // answer a question the caller was not entitled to ask.
     expect(
       await refusalOf(() =>
-        run("transcript_read", handlers.transcript_read, { sid: OTHER_SID }, as("session", SID)),
+        run("transcript.read", handlers["transcript.read"], { sid: OTHER_SID }, as("session", SID)),
       ),
     ).toBe("not_found");
   });
@@ -405,7 +405,7 @@ describe("transcript_read (scope: role)", () => {
     writeTranscript(configHome, SID);
     expect(
       await refusalOf(() =>
-        run("transcript_read", handlers.transcript_read, { sid: SID }, as("instance", SID)),
+        run("transcript.read", handlers["transcript.read"], { sid: SID }, as("instance", SID)),
       ),
     ).toBe("not_found");
   });
@@ -415,7 +415,7 @@ describe("transcript_read (scope: role)", () => {
     writeTranscript(configHome, SID);
     const size = Buffer.byteLength(TRANSCRIPT);
 
-    const tail = await run("transcript_read", handlers.transcript_read, {
+    const tail = await run("transcript.read", handlers["transcript.read"], {
       sid: SID,
       max_bytes: Buffer.byteLength(RENAMED),
     });
@@ -423,7 +423,7 @@ describe("transcript_read (scope: role)", () => {
     expect(tail["end"]).toBe(size);
     expect(tail["size"]).toBe(size);
 
-    const earlier = await run("transcript_read", handlers.transcript_read, {
+    const earlier = await run("transcript.read", handlers["transcript.read"], {
       sid: SID,
       before: tail["start"] as number,
     });
@@ -435,12 +435,12 @@ describe("transcript_read (scope: role)", () => {
   test("a session with no transcript anywhere under this config home", async () => {
     const { handlers } = ops();
     expect(
-      await refusalOf(() => run("transcript_read", handlers.transcript_read, { sid: SID })),
+      await refusalOf(() => run("transcript.read", handlers["transcript.read"], { sid: SID })),
     ).toBe("not_found");
   });
 });
 
-describe("session_kill", () => {
+describe("session.kill", () => {
   test("only the pid this config home's own sessions/ names is signalled (M6)", async () => {
     const ours = child();
     const theirs = child();
@@ -451,12 +451,12 @@ describe("session_kill", () => {
     const elsewhere = home();
     writeState(elsewhere, theirs, OTHER_SID);
 
-    const killed = await run("session_kill", handlers.session_kill, { sid: SID });
+    const killed = await run("session.kill", handlers["session.kill"], { sid: SID });
     expect(killed["terminated"]).toBe(true);
     expect(signalled).toEqual([{ pid: ours, signal: "SIGTERM" }]);
     // The other home's session is not found here, and its process is untouched.
     expect(
-      await refusalOf(() => run("session_kill", handlers.session_kill, { sid: OTHER_SID })),
+      await refusalOf(() => run("session.kill", handlers["session.kill"], { sid: OTHER_SID })),
     ).toBe("session_not_found");
     expect(signalled).toEqual([{ pid: ours, signal: "SIGTERM" }]);
     expect(alive(theirs)).toBe(true);
@@ -466,7 +466,7 @@ describe("session_kill", () => {
     const pid = child();
     const { configHome, handlers, signalled } = ops();
     writeState(configHome, pid, SID);
-    const killed = await run("session_kill", handlers.session_kill, { sid: SID, force: true });
+    const killed = await run("session.kill", handlers["session.kill"], { sid: SID, force: true });
     expect(killed["terminated"]).toBe(true);
     expect(signalled).toEqual([{ pid, signal: "SIGKILL" }]);
   });
@@ -480,7 +480,7 @@ describe("session_kill", () => {
     // recycled pid would be running if it were another session of the same
     // harness — so the start times are what separate them.
     writeState(configHome, pid, SID, Date.now() - 3 * 60 * 60 * 1000);
-    expect(await refusalOf(() => run("session_kill", handlers.session_kill, { sid: SID }))).toBe(
+    expect(await refusalOf(() => run("session.kill", handlers["session.kill"], { sid: SID }))).toBe(
       "session_not_found",
     );
     expect(signalled).toEqual([]);
@@ -494,7 +494,7 @@ describe("session_kill", () => {
     // near but not equal — the tolerance is what that gap is for, and the real
     // start time is read from the host rather than stated by the test.
     writeState(configHome, pid, SID, Date.now() + 400);
-    expect((await run("session_kill", handlers.session_kill, { sid: SID }))["terminated"]).toBe(
+    expect((await run("session.kill", handlers["session.kill"], { sid: SID }))["terminated"]).toBe(
       true,
     );
     expect(signalled).toEqual([{ pid, signal: "SIGTERM" }]);
@@ -506,7 +506,7 @@ describe("session_kill", () => {
       command: () => Promise.resolve("/bin/sleep 30"),
     });
     writeState(configHome, pid, SID);
-    expect(await refusalOf(() => run("session_kill", handlers.session_kill, { sid: SID }))).toBe(
+    expect(await refusalOf(() => run("session.kill", handlers["session.kill"], { sid: SID }))).toBe(
       "session_not_found",
     );
     expect(signalled).toEqual([]);
@@ -514,7 +514,7 @@ describe("session_kill", () => {
   });
 });
 
-describe("session_env_read", () => {
+describe("session.env.read", () => {
   test("the environment comes from the session's own process", async () => {
     const pid = child();
     const { configHome, handlers } = ops({
@@ -522,7 +522,7 @@ describe("session_env_read", () => {
       environment: () => Promise.resolve("HOME=/Users/someone\0HYOUI_SESSION_ID=t-1\0"),
     });
     writeState(configHome, pid, SID);
-    const read = await run("session_env_read", handlers.session_env_read, { sid: SID });
+    const read = await run("session.env.read", handlers["session.env.read"], { sid: SID });
     expect(read["pid"]).toBe(pid);
     expect(read["env"]).toEqual({ HOME: "/Users/someone", HYOUI_SESSION_ID: "t-1" });
   });
@@ -534,12 +534,12 @@ describe("session_env_read", () => {
     });
     writeState(configHome, pid, SID);
     expect(
-      await refusalOf(() => run("session_env_read", handlers.session_env_read, { sid: SID })),
+      await refusalOf(() => run("session.env.read", handlers["session.env.read"], { sid: SID })),
     ).toBe("not_found");
   });
 });
 
-describe("session_rename", () => {
+describe("session.rename", () => {
   test("the title is typed into the terminal the session's own process names", async () => {
     const pid = child();
     const typed: string[][] = [];
@@ -549,7 +549,7 @@ describe("session_rename", () => {
       environment: () => Promise.resolve("HYOUI_SESSION_ID=t-1\0HYOUI_NAMESPACE=work\0"),
     });
     writeState(configHome, pid, SID);
-    const renamed = await run("session_rename", handlers.session_rename, {
+    const renamed = await run("session.rename", handlers["session.rename"], {
       sid: SID,
       title: "  a new title  ",
     });
@@ -569,7 +569,7 @@ describe("session_rename", () => {
     writeState(configHome, pid, SID);
     expect(
       await refusalOf(() =>
-        run("session_rename", handlers.session_rename, { sid: SID, title: "x" }),
+        run("session.rename", handlers["session.rename"], { sid: SID, title: "x" }),
       ),
     ).toBe("not_found");
   });
@@ -583,13 +583,13 @@ describe("session_rename", () => {
     writeState(configHome, pid, SID);
     expect(
       await refusalOf(() =>
-        run("session_rename", handlers.session_rename, { sid: SID, title: "one\ntwo" }),
+        run("session.rename", handlers["session.rename"], { sid: SID, title: "one\ntwo" }),
       ),
     ).toBe("invalid_args");
   });
 });
 
-describe("session_last_live_remove", () => {
+describe("session.forget", () => {
   test("the entry goes, the `peers` list says so, and asking twice is not an error", async () => {
     const { handlers, domain, published } = ops({ lastLive: [SID] });
     expect(
@@ -604,7 +604,7 @@ describe("session_last_live_remove", () => {
     // the opening frame stated.
     domain.snapshot("peers");
     published.length = 0;
-    const removed = await run("session_last_live_remove", handlers.session_last_live_remove, {
+    const removed = await run("session.forget", handlers["session.forget"], {
       sid: SID,
     });
     expect(removed["removed"]).toBe(true);
@@ -621,7 +621,7 @@ describe("session_last_live_remove", () => {
 
     // Two clients pressing the same button is the ordinary case, and the
     // caller's goal holds either way.
-    const again = await run("session_last_live_remove", handlers.session_last_live_remove, {
+    const again = await run("session.forget", handlers["session.forget"], {
       sid: SID,
     });
     expect(again["removed"]).toBe(false);
@@ -630,22 +630,22 @@ describe("session_last_live_remove", () => {
   test("the removal touches that list alone", async () => {
     const { configHome, handlers, domain } = ops({ lastLive: [SID] });
     const file = writeTranscript(configHome, SID);
-    await run("session_last_live_remove", handlers.session_last_live_remove, { sid: SID });
+    await run("session.forget", handlers["session.forget"], { sid: SID });
     expect(domain.peerRows().filter(isLost)).toEqual([]);
     // The session stays reachable by every other route: its transcript is
     // still there and still readable.
-    const read = await run("transcript_read", handlers.transcript_read, { sid: SID });
+    const read = await run("transcript.read", handlers["transcript.read"], { sid: SID });
     expect(read["size"]).toBe(Buffer.byteLength(readFileSync(file)));
   });
 });
 
-describe("session_search", () => {
+describe("session.search", () => {
   test("what a clause matches, and which side of the conversation is searched", async () => {
     const { configHome, handlers } = ops();
     writeTranscript(configHome, SID);
     writeTranscript(configHome, OTHER_SID, SAID_BY_PERSON);
 
-    const both = await run("session_search", handlers.session_search, { query: "needle" });
+    const both = await run("session.search", handlers["session.search"], { query: "needle" });
     const hits = both["hits"] as { sid: Sid; matches: { role: string }[] }[];
     expect(hits.map((hit) => hit.sid).sort()).toEqual([SID, OTHER_SID].sort());
     expect(hits.find((hit) => hit.sid === SID)?.matches.map((match) => match.role)).toEqual([
@@ -654,7 +654,7 @@ describe("session_search", () => {
     ]);
     expect(both["truncated"]).toBe(false);
 
-    const agentOnly = await run("session_search", handlers.session_search, {
+    const agentOnly = await run("session.search", handlers["session.search"], {
       query: "needle",
       target_user: false,
     });
@@ -663,7 +663,7 @@ describe("session_search", () => {
 
     // Terms within a clause are ANDed, so a clause naming two things that never
     // appear together matches nothing.
-    const both2 = await run("session_search", handlers.session_search, {
+    const both2 = await run("session.search", handlers["session.search"], {
       query: "needle haystack",
     });
     expect(both2["hits"]).toEqual([]);
@@ -672,7 +672,7 @@ describe("session_search", () => {
   test("a hit states where it came from and what the session was", async () => {
     const { configHome, handlers } = ops();
     const file = writeTranscript(configHome, SID);
-    const found = await run("session_search", handlers.session_search, { sid: SID.slice(0, 8) });
+    const found = await run("session.search", handlers["session.search"], { sid: SID.slice(0, 8) });
     const hit = (found["hits"] as Record<string, unknown>[])[0];
     expect(hit?.["file"]).toBe(file);
     expect(hit?.["config_dir"]).toBe(configHome);
@@ -687,7 +687,7 @@ describe("session_search", () => {
   test("a config home this instance does not know is ignored, leaving nothing", async () => {
     const { configHome, handlers } = ops();
     writeTranscript(configHome, SID);
-    const none = await run("session_search", handlers.session_search, {
+    const none = await run("session.search", handlers["session.search"], {
       query: "needle",
       config_dirs: ["/somewhere/else"],
     });
@@ -695,11 +695,11 @@ describe("session_search", () => {
   });
 });
 
-describe("session_dump_write", () => {
+describe("session.dump.write", () => {
   test("the dump lands in this instance's own data directory, not a caller's path", async () => {
     const { configHome, stateDir, handlers } = ops();
     writeTranscript(configHome, SID);
-    const written = await run("session_dump_write", handlers.session_dump_write, { sid: SID });
+    const written = await run("session.dump.write", handlers["session.dump.write"], { sid: SID });
     const path = written["path"] as string;
     expect(path.startsWith(join(stateDir, "dumps"))).toBe(true);
     expect(readdirSync(join(stateDir, "dumps")).length).toBe(1);
@@ -710,19 +710,19 @@ describe("session_dump_write", () => {
   test("what was written is counted by type, and one turn is more than one item", async () => {
     const { configHome, handlers } = ops();
     writeTranscript(configHome, SID);
-    const written = await run("session_dump_write", handlers.session_dump_write, { sid: SID });
+    const written = await run("session.dump.write", handlers["session.dump.write"], { sid: SID });
     // The assistant's one record is the thinking it did and the words it said,
     // which are two items and two things a selection can ask for apart.
     expect(written["entries"]).toEqual({
-      "message:user:in": 1,
+      "message.user.in": 1,
       thinking: 1,
-      "message:user:out": 1,
+      "message.user.out": 1,
     });
     const document = dumpAt(written["path"] as string);
     expect(document.items.map((item) => item.type)).toEqual([
-      "message:user:in",
+      "message.user.in",
       "thinking",
-      "message:user:out",
+      "message.user.out",
     ]);
     // Every item a record became carries that record's id, which is what makes
     // a bound by record keep a turn whole.
@@ -732,13 +732,13 @@ describe("session_dump_write", () => {
 
   test("the file is the shape the contract states, and says what it left out", async () => {
     const { configHome, handlers } = ops({
-      presets: [{ name: "file", opts: { types: ["tool:Read", "tool:Bash"] } }],
+      presets: [{ name: "file", opts: { types: ["tool.Read", "tool.Bash"] } }],
     });
     writeTranscript(configHome, SID, BUSY_TRANSCRIPT);
-    const written = await run("session_dump_write", handlers.session_dump_write, {
+    const written = await run("session.dump.write", handlers["session.dump.write"], {
       sid: SID,
       preset: "file",
-      types: ["-tool:Read"],
+      types: ["-tool.Read"],
     });
     const path = written["path"] as string;
     // Two extensions: JSON, and JSON of a shape the contract states. The file
@@ -751,14 +751,14 @@ describe("session_dump_write", () => {
     expect(document["written_at"]).toBeNumber();
     // The selection as applied, so the file states what it holds without the
     // instance's config having to be read beside it.
-    expect(document.types).toEqual(["tool:Read", "tool:Bash", "-tool:Read"]);
-    expect(document.items.map((item) => item.type)).toEqual(["tool:Bash", "tool:Bash"]);
+    expect(document.types).toEqual(["tool.Read", "tool.Bash", "-tool.Read"]);
+    expect(document.items.map((item) => item.type)).toEqual(["tool.Bash", "tool.Bash"]);
   });
 
   test("a dump of nothing is still a file that says what it is a dump of", async () => {
     const { configHome, handlers } = ops();
     writeTranscript(configHome, SID, BUSY_TRANSCRIPT);
-    const written = await run("session_dump_write", handlers.session_dump_write, {
+    const written = await run("session.dump.write", handlers["session.dump.write"], {
       sid: SID,
       types: ["ids"],
     });
@@ -779,7 +779,7 @@ describe("session_dump_write", () => {
       join(dirname(file), SID, "subagents", "agent-acounter-9f.jsonl"),
       AGENT_TRANSCRIPT,
     );
-    const written = await run("session_dump_write", handlers.session_dump_write, {
+    const written = await run("session.dump.write", handlers["session.dump.write"], {
       sid: SID,
       agent_id: "acounter-9f",
     });
@@ -802,7 +802,7 @@ describe("session_dump_write", () => {
       join(under, "agent-acounter-9f.meta.json"),
       JSON.stringify({ name: "counter", taskKind: "in_process_teammate" }),
     );
-    const written = await run("session_dump_write", handlers.session_dump_write, {
+    const written = await run("session.dump.write", handlers["session.dump.write"], {
       sid: SID,
       agent_id: "acounter-9f",
     });
@@ -813,7 +813,9 @@ describe("session_dump_write", () => {
   test("the session's own items are read from the session", async () => {
     const { configHome, handlers } = ops();
     writeTranscript(configHome, SID, BUSY_TRANSCRIPT);
-    const read = await run("transcript_items_read", handlers.transcript_items_read, { sid: SID });
+    const read = await run("transcript.items.read", handlers["transcript.items.read"], {
+      sid: SID,
+    });
     const items = read["items"] as DumpedItem[];
     expect(items.length).toBeGreaterThan(0);
     expect(new Set(items.map((item) => item["subject"]))).toEqual(new Set(["main"]));
@@ -822,7 +824,7 @@ describe("session_dump_write", () => {
   test("every item written passes the contract's own shape", async () => {
     const { configHome, handlers } = ops();
     writeTranscript(configHome, SID, BUSY_TRANSCRIPT);
-    const written = await run("session_dump_write", handlers.session_dump_write, { sid: SID });
+    const written = await run("session.dump.write", handlers["session.dump.write"], { sid: SID });
     const document = dumpAt(written["path"] as string);
     expect(document.items.length).toBeGreaterThan(5);
     for (const item of document.items) {
@@ -833,30 +835,30 @@ describe("session_dump_write", () => {
   test("a selection reads left to right, so a prefix comes in and one member goes back out", async () => {
     const { configHome, handlers } = ops();
     writeTranscript(configHome, SID, BUSY_TRANSCRIPT);
-    const written = await run("session_dump_write", handlers.session_dump_write, {
+    const written = await run("session.dump.write", handlers["session.dump.write"], {
       sid: SID,
-      types: ["tool", "-tool:Read"],
+      types: ["tool", "-tool.Read"],
     });
     const kinds = Object.keys(written["entries"] as Record<string, number>).sort();
-    expect(kinds).toEqual(["tool:Agent", "tool:Bash"]);
+    expect(kinds).toEqual(["tool.Agent", "tool.Bash"]);
   });
 
   test("a preset is the ground the types are applied over", async () => {
     const { configHome, handlers } = ops({
       presets: [
-        { name: "file", opts: { types: ["tool:Read"] } },
+        { name: "file", opts: { types: ["tool.Read"] } },
         { name: "howto", opts: { types: ["thinking", "@file"] } },
       ],
     });
     writeTranscript(configHome, SID, BUSY_TRANSCRIPT);
-    const written = await run("session_dump_write", handlers.session_dump_write, {
+    const written = await run("session.dump.write", handlers["session.dump.write"], {
       sid: SID,
       preset: "howto",
-      types: ["-thinking", "tool:Bash"],
+      types: ["-thinking", "tool.Bash"],
     });
     expect(Object.keys(written["entries"] as Record<string, number>).sort()).toEqual([
-      "tool:Bash",
-      "tool:Read",
+      "tool.Bash",
+      "tool.Read",
     ]);
   });
 
@@ -865,7 +867,7 @@ describe("session_dump_write", () => {
     writeTranscript(configHome, SID);
     expect(
       await refusalOf(() =>
-        run("session_dump_write", handlers.session_dump_write, { sid: SID, preset: "journal" }),
+        run("session.dump.write", handlers["session.dump.write"], { sid: SID, preset: "journal" }),
       ),
     ).toBe("invalid_args");
   });
@@ -873,9 +875,9 @@ describe("session_dump_write", () => {
   test("a call and its result point at each other, however far apart they were written", async () => {
     const { configHome, handlers } = ops();
     writeTranscript(configHome, SID, BUSY_TRANSCRIPT);
-    const written = await run("session_dump_write", handlers.session_dump_write, {
+    const written = await run("session.dump.write", handlers["session.dump.write"], {
       sid: SID,
-      types: ["tool:Bash"],
+      types: ["tool.Bash"],
     });
     const items = dumpAt(written["path"] as string).items;
     const call = items.find((item) => item["role"] === "use");
@@ -888,13 +890,13 @@ describe("session_dump_write", () => {
   test("a teammate's brief and its answer are the two halves of one message", async () => {
     const { configHome, handlers } = ops();
     writeTranscript(configHome, SID, BUSY_TRANSCRIPT);
-    const written = await run("session_dump_write", handlers.session_dump_write, {
+    const written = await run("session.dump.write", handlers["session.dump.write"], {
       sid: SID,
-      types: ["message:team"],
+      types: ["message.team"],
     });
     const items = dumpAt(written["path"] as string).items;
-    const asked = items.find((item) => item.type === "message:team:out");
-    const answered = items.find((item) => item.type === "message:team:in");
+    const asked = items.find((item) => item.type === "message.team.out");
+    const answered = items.find((item) => item.type === "message.team.in");
     expect(asked?.["text"]).toBe("count the lines");
     expect(asked?.["harness_name"]).toBe("count-lines");
     expect(asked?.["agent_id"]).toBe("acounter-9f");
@@ -918,11 +920,11 @@ describe("session_dump_write", () => {
       join(dirname(file), SID, "subagents", "agent-acounter-9f.jsonl"),
       AGENT_TRANSCRIPT,
     );
-    const written = await run("session_dump_write", handlers.session_dump_write, {
+    const written = await run("session.dump.write", handlers["session.dump.write"], {
       sid: SID,
       agent_id: "acounter-9f",
     });
-    expect(written["entries"]).toEqual({ "message:parent:in": 1, "message:parent:out": 1 });
+    expect(written["entries"]).toEqual({ "message.parent.in": 1, "message.parent.out": 1 });
     const document = dumpAt(written["path"] as string);
     expect(document.items[0]?.["text"]).toBe("count the lines");
     expect(document.items[1]?.["text"]).toBe("there were three");
@@ -932,13 +934,13 @@ describe("session_dump_write", () => {
   test("a bound by record cuts at that record, and thinking can be left out", async () => {
     const { configHome, handlers } = ops();
     writeTranscript(configHome, SID);
-    const written = await run("session_dump_write", handlers.session_dump_write, {
+    const written = await run("session.dump.write", handlers["session.dump.write"], {
       sid: SID,
       since_uuid: "a1",
       until_uuid: "a1",
       no_thinking: true,
     });
-    expect(written["entries"]).toEqual({ "message:user:out": 1 });
+    expect(written["entries"]).toEqual({ "message.user.out": 1 });
     const document = dumpAt(written["path"] as string);
     expect(document.items[0]?.uuid).toBe("a1");
   });
@@ -946,28 +948,32 @@ describe("session_dump_write", () => {
   test("a session with no transcript has nothing to dump", async () => {
     const { handlers } = ops();
     expect(
-      await refusalOf(() => run("session_dump_write", handlers.session_dump_write, { sid: SID })),
+      await refusalOf(() =>
+        run("session.dump.write", handlers["session.dump.write"], { sid: SID }),
+      ),
     ).toBe("not_found");
   });
 });
 
-describe("dump_presets_read", () => {
+describe("dump.presets.read", () => {
   test("the selections a dump may be asked for by name are the configured ones, in order", async () => {
     const presets: DumpPreset[] = [
-      { name: "file", description: "reads and writes", opts: { types: ["tool:Read"] } },
+      { name: "file", description: "reads and writes", opts: { types: ["tool.Read"] } },
       { name: "howto", opts: { types: ["thinking", "@file"] } },
     ];
     const { handlers } = ops({ presets });
-    expect(await run("dump_presets_read", handlers.dump_presets_read, {})).toEqual({ presets });
+    expect(await run("dump.presets.read", handlers["dump.presets.read"], {})).toEqual({ presets });
   });
 
   test("an instance configured with none says so rather than inventing any", async () => {
     const { handlers } = ops();
-    expect(await run("dump_presets_read", handlers.dump_presets_read, {})).toEqual({ presets: [] });
+    expect(await run("dump.presets.read", handlers["dump.presets.read"], {})).toEqual({
+      presets: [],
+    });
   });
 });
 
-describe("session_fork_origin", () => {
+describe("session.fork.origin.read", () => {
   test("the seam is where the copied records stop", async () => {
     const { configHome, handlers } = ops();
     // The ancestor holds a record the fork did not copy — a subagent's turn
@@ -990,7 +996,9 @@ describe("session_fork_origin", () => {
     });
     writeTranscript(configHome, SID, SAID_BY_PERSON + SAID_BY_AGENT + own);
 
-    const answer = await run("session_fork_origin", handlers.session_fork_origin, { sid: SID });
+    const answer = await run("session.fork.origin.read", handlers["session.fork.origin.read"], {
+      sid: SID,
+    });
     expect(answer["origin"]).toEqual({ sid: OTHER_SID, boundary_uuid: "a1", copied: 2 });
   });
 
@@ -1021,17 +1029,17 @@ describe("session_fork_origin", () => {
           message: { role: "user", content: "carrying on" },
         }),
     );
-    expect(await run("session_fork_origin", handlers.session_fork_origin, { sid: SID })).toEqual(
-      {},
-    );
+    expect(
+      await run("session.fork.origin.read", handlers["session.fork.origin.read"], { sid: SID }),
+    ).toEqual({});
   });
 
   test("a session that is no fork has no seam to place", async () => {
     const { configHome, handlers } = ops();
     writeTranscript(configHome, SID);
-    expect(await run("session_fork_origin", handlers.session_fork_origin, { sid: SID })).toEqual(
-      {},
-    );
+    expect(
+      await run("session.fork.origin.read", handlers["session.fork.origin.read"], { sid: SID }),
+    ).toEqual({});
   });
 });
 
@@ -1054,7 +1062,7 @@ describe("the capabilities the session ops rest on", () => {
     writeState(configHome, pid, SID);
     expect(
       await refusalOf(() =>
-        run("session_rename", handlers.session_rename, { sid: SID, title: "x" }),
+        run("session.rename", handlers["session.rename"], { sid: SID, title: "x" }),
       ),
     ).toBe("capability_unavailable");
   });
@@ -1082,13 +1090,13 @@ describe("how long a process has been running, as `ps` states it", () => {
   });
 });
 
-describe("transcript_items_read", () => {
+describe("transcript.items.read", () => {
   /** The whole range, so a case can say what a page is a page of. */
   async function all(
     handlers: ReturnType<typeof ops>["handlers"],
     over: Record<string, unknown> = {},
   ) {
-    const answer = await run("transcript_items_read", handlers.transcript_items_read, {
+    const answer = await run("transcript.items.read", handlers["transcript.items.read"], {
       sid: SID,
       ...over,
     });
@@ -1105,7 +1113,7 @@ describe("transcript_items_read", () => {
     writeTranscript(configHome, SID, BUSY_TRANSCRIPT);
     const { items, next } = await all(handlers);
     expect(next).toBeUndefined();
-    expect(items.map((item) => item.type)).toContain("tool:Bash");
+    expect(items.map((item) => item.type)).toContain("tool.Bash");
     // Items are finer than records: one assistant line became the thinking and
     // each call it held, and the ids say which of them is which.
     expect(items.filter((item) => item.uuid === "a1").map((item) => item.id)).toEqual([
@@ -1200,17 +1208,17 @@ describe("transcript_items_read", () => {
   test("a selection is applied to the whole file before the page is cut", async () => {
     const { configHome, handlers } = ops();
     writeTranscript(configHome, SID, BUSY_TRANSCRIPT);
-    const { items } = await all(handlers, { types: ["tool", "-tool:Read"] });
+    const { items } = await all(handlers, { types: ["tool", "-tool.Read"] });
     expect([...new Set(items.map((item) => item.type))].sort()).toEqual([
-      "tool:Agent",
-      "tool:Bash",
+      "tool.Agent",
+      "tool.Bash",
     ]);
   });
 
   test("a link may name an item the range left out, which is not a broken pointer", async () => {
     const { configHome, handlers } = ops();
     writeTranscript(configHome, SID, BUSY_TRANSCRIPT);
-    const { items } = await all(handlers, { types: ["tool:Bash"], since_uuid: "r1" });
+    const { items } = await all(handlers, { types: ["tool.Bash"], since_uuid: "r1" });
     const answer = items[0];
     expect(answer?.["role"]).toBe("result");
     // The call fell before the range; the reader knows its id and can ask.
@@ -1223,7 +1231,7 @@ describe("transcript_items_read", () => {
     const { items } = await all(handlers);
     for (const item of items) {
       const source = item["source"] as { offset: number; bytes: number };
-      const read = await run("transcript_read", handlers.transcript_read, {
+      const read = await run("transcript.read", handlers["transcript.read"], {
         sid: SID,
         before: source.offset + source.bytes,
         max_bytes: source.bytes,
@@ -1247,14 +1255,14 @@ describe("transcript_items_read", () => {
     // Every type is read from where the subject stands, and what stands at
     // the other end of an agent's file is whoever started it rather than a
     // person.
-    expect(items.map((item) => item.type)).toEqual(["message:parent:in", "message:parent:out"]);
+    expect(items.map((item) => item.type)).toEqual(["message.parent.in", "message.parent.out"]);
   });
 
   test("the ledger is answered when the selection asks for it, and not otherwise", async () => {
     const { configHome, handlers } = ops();
     writeTranscript(configHome, SID, BUSY_TRANSCRIPT);
     expect((await all(handlers)).ids).toBeUndefined();
-    const asked = await all(handlers, { types: ["message:team", "ids"] });
+    const asked = await all(handlers, { types: ["message.team", "ids"] });
     expect(asked.ids).toContainEqual({
       kind: "agent",
       id: "acounter-9f",
@@ -1268,7 +1276,7 @@ describe("transcript_items_read", () => {
     writeTranscript(configHome, SID, BUSY_TRANSCRIPT);
     expect(
       await refusalOf(() =>
-        run("transcript_items_read", handlers.transcript_items_read, {
+        run("transcript.items.read", handlers["transcript.items.read"], {
           sid: SID,
           since_uuid: "a1",
           since_id: "a1:0",
@@ -1282,7 +1290,7 @@ describe("transcript_items_read", () => {
     writeTranscript(configHome, SID, BUSY_TRANSCRIPT);
     expect(
       await refusalOf(() =>
-        run("transcript_items_read", handlers.transcript_items_read, {
+        run("transcript.items.read", handlers["transcript.items.read"], {
           sid: SID,
           until_uuid: "a1",
           until_id: "a1:0",
@@ -1295,8 +1303,8 @@ describe("transcript_items_read", () => {
     const { configHome, handlers } = ops();
     writeTranscript(configHome, SID, BUSY_TRANSCRIPT);
     const own = await run(
-      "transcript_items_read",
-      handlers.transcript_items_read,
+      "transcript.items.read",
+      handlers["transcript.items.read"],
       { sid: SID },
       as("session", SID),
     );
@@ -1304,8 +1312,8 @@ describe("transcript_items_read", () => {
     expect(
       await refusalOf(() =>
         run(
-          "transcript_items_read",
-          handlers.transcript_items_read,
+          "transcript.items.read",
+          handlers["transcript.items.read"],
           { sid: SID },
           as("session", OTHER_SID),
         ),

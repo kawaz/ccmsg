@@ -475,15 +475,14 @@ describe("what the fold settles reaches the sessions domain (§5.1)", () => {
     writeFileSync(join(root, "projects", "t.jsonl"), "");
     const transcript = realpathSync(join(root, "projects", "t.jsonl"));
     const conn = greeting();
-    void sessions.hello({
+    void sessions.helloSession({
       conn,
       args: {
         protocol_version: PROTOCOL_VERSION,
-        role: "session",
         sid: SID,
         transcript_path: transcript,
       },
-    } as unknown as Parameters<typeof sessions.hello>[0]);
+    } as unknown as Parameters<typeof sessions.helloSession>[0]);
 
     expect(sessions.inputs(SID).api_error_stopped).toBe(true);
     expect(sessions.classify(SID)).toBe("waiting");
@@ -889,9 +888,9 @@ describe("what else the fold settles", () => {
     expect(data.agent_tree.agents.length).toBeGreaterThan(0);
     expect(data.agent_tree.teammates.length).toBeGreaterThan(0);
     expect(
-      validationErrors(TOPIC_SCHEMAS["session_status"], {
+      validationErrors(TOPIC_SCHEMAS["session.status"], {
         ev: "topic",
-        topic: `session_status:${SID}`,
+        topic: `session.status:${SID}`,
         snapshot: true,
         instance: SELF,
         data,
@@ -1104,8 +1103,8 @@ describe("which standing a transcript was written from (§3.6)", () => {
   });
 });
 
-describe("the transcript_items topic (§3.6)", () => {
-  const ITEMS_TOPIC = `transcript_items:${SID}`;
+describe("the transcript.items topic (§3.6)", () => {
+  const ITEMS_TOPIC = `transcript.items:${SID}`;
 
   /** One assistant record holding a turn's thinking, its words and a call —
    * three items out of one line, which is what makes an item's own id
@@ -1147,8 +1146,8 @@ describe("the transcript_items topic (§3.6)", () => {
     const items = itemsOf(published);
     expect(items.map((item) => item["type"])).toEqual([
       "thinking",
-      "message:user:out",
-      "tool:Bash",
+      "message.user.out",
+      "tool.Bash",
     ]);
     // One record, three items: the record's id is what they share and the
     // place in it is what tells them apart.
@@ -1210,10 +1209,10 @@ describe("the transcript_items topic (§3.6)", () => {
         | undefined;
     await settled(() => (opened()?.items.length ?? 0) > 0);
     expect(opened()?.items.map((item) => item["type"])).toEqual([
-      "message:user:in",
+      "message.user.in",
       "thinking",
-      "message:user:out",
-      "tool:Bash",
+      "message.user.out",
+      "tool.Bash",
     ]);
   });
 
@@ -1246,7 +1245,7 @@ describe("the transcript_items topic (§3.6)", () => {
     file.append(turn("a1", 1));
     await settled(() => itemsOf(published).length >= 3);
 
-    const schema = TOPIC_SCHEMAS.transcript_items;
+    const schema = TOPIC_SCHEMAS["transcript.items"];
     const frame = published.find((one) => one.topic === ITEMS_TOPIC)?.data;
     for (const data of [snapshot, frame]) {
       expect(

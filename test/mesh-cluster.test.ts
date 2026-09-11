@@ -61,14 +61,19 @@ async function client(instance: Instance): Promise<HoldingClient> {
   };
 }
 
-/** Greet, and answer with the reply. */
-async function greet(conn: HoldingClient, as: object): Promise<Record<string, unknown>> {
+/** Greet, and answer with the reply. The role is the op's now, so a caller
+ * naming one greets under that op and a caller naming none greets as a
+ * person. */
+async function greet(
+  conn: HoldingClient,
+  as: { role?: "session" | "user"; sid?: string },
+): Promise<Record<string, unknown>> {
+  const { role, ...named } = as;
   conn.send({
-    op: "hello",
+    op: `hello.${role ?? "user"}`,
     request_id: "hello",
-    role: "user",
     protocol_version: PROTOCOL_VERSION,
-    ...as,
+    ...named,
   });
   return await reply(conn, "hello");
 }
@@ -158,7 +163,7 @@ describe("forwarding an op (§7.3)", () => {
     // is in B's config home, and an instance looks in its own and no other
     // (M6) — so this answer could only have been decided there.
     await eventually(async () => {
-      const answer = await ask(user, { op: "transcript_read", request_id: "read", sid: SID_ON_B });
+      const answer = await ask(user, { op: "transcript.read", request_id: "read", sid: SID_ON_B });
       return (
         answer["ok"] === true &&
         (answer["lines"] as string[] | undefined)?.includes(TRANSCRIPT_LINE) === true
@@ -174,7 +179,7 @@ describe("forwarding an op (§7.3)", () => {
     // The shape a cycle in the routing produces: a request arriving at an
     // instance its own `hops` already names.
     const answer = await ask(user, {
-      op: "transcript_read",
+      op: "transcript.read",
       request_id: "loop",
       sid: SID_ON_B,
       hops: [a.self],
@@ -188,13 +193,13 @@ describe("forwarding an op (§7.3)", () => {
     const user = await client(a);
     await greet(user, {});
     await eventually(async () => {
-      const first = await ask(user, { op: "transcript_read", request_id: "warm", sid: SID_ON_B });
+      const first = await ask(user, { op: "transcript.read", request_id: "warm", sid: SID_ON_B });
       return first["ok"] === true;
     });
 
     await b.stop();
     await eventually(() => a.mesh?.reachable(endpointOf(b)) === false);
-    const gone = await ask(user, { op: "transcript_read", request_id: "gone", sid: SID_ON_B });
+    const gone = await ask(user, { op: "transcript.read", request_id: "gone", sid: SID_ON_B });
     expect(gone["ok"]).toBe(false);
     expect(errorOf(gone)).toBe("instance_unreachable");
 
@@ -205,7 +210,7 @@ describe("forwarding an op (§7.3)", () => {
     const back = await client(returned);
     await greet(back, { role: "session", sid: SID_ON_B });
     await eventually(async () => {
-      const answer = await ask(user, { op: "transcript_read", request_id: "back", sid: SID_ON_B });
+      const answer = await ask(user, { op: "transcript.read", request_id: "back", sid: SID_ON_B });
       return answer["ok"] === true;
     });
   });
@@ -216,7 +221,7 @@ describe("forwarding an op (§7.3)", () => {
     await greet(user, {});
     // Everything is reachable, so nobody holding the sid means nobody has it.
     const missing = await ask(user, {
-      op: "session_env_read",
+      op: "session.env.read",
       request_id: "missing",
       sid: UNKNOWN_SID,
     });
@@ -227,7 +232,7 @@ describe("forwarding an op (§7.3)", () => {
     // The same sid, and now an instance that might hold it cannot be asked. The
     // answer is about the instance rather than about the session (§4.2).
     const unsure = await ask(user, {
-      op: "session_env_read",
+      op: "session.env.read",
       request_id: "unsure",
       sid: UNKNOWN_SID,
     });
@@ -254,7 +259,7 @@ describe("who a forwarded request runs as (§7.3)", () => {
     // what the connection is — an instance — and no instance-local op is open
     // to one.
     peer.send({
-      op: "session_last_live_remove",
+      op: "session.forget",
       request_id: "nameless",
       sid: UNKNOWN_SID,
       from_instance: peer.id,
@@ -274,7 +279,7 @@ describe("who a forwarded request runs as (§7.3)", () => {
     // what it says about who called is taken as said. What is not taken is the
     // outcome: the role below is read against this instance's own table.
     peer.send({
-      op: "session_last_live_remove",
+      op: "session.forget",
       request_id: "named",
       sid: UNKNOWN_SID,
       caller: { role: "user" },
@@ -282,10 +287,10 @@ describe("who a forwarded request runs as (§7.3)", () => {
     expect((await peer.answer("named"))["ok"]).toBe(true);
 
     // And a role that table refuses is refused, however it fared where it
-    // started: `session_last_live_remove` is open to a person and not to a
+    // started: `session.forget` is open to a person and not to a
     // session.
     peer.send({
-      op: "session_last_live_remove",
+      op: "session.forget",
       request_id: "as-session",
       sid: UNKNOWN_SID,
       caller: { role: "session", sid: SID_ON_B },
@@ -299,14 +304,14 @@ describe("who a forwarded request runs as (§7.3)", () => {
     // leaves a violation to the instance. Two callers are described here and
     // neither is chosen (contract, `CallerIdentity`).
     peer.send({
-      op: "session_last_live_remove",
+      op: "session.forget",
       request_id: "both",
       sid: UNKNOWN_SID,
       caller: { role: "user", sid: SID_ON_B },
     });
     expect(errorOf(await peer.answer("both"))).toBe("bad_request");
     peer.send({
-      op: "session_last_live_remove",
+      op: "session.forget",
       request_id: "neither",
       sid: UNKNOWN_SID,
       caller: { role: "session" },
@@ -322,7 +327,7 @@ describe("who a forwarded request runs as (§7.3)", () => {
     const other = await client(a);
     await greet(other, { role: "session", sid: OTHER_SID });
     const refused = await ask(other, {
-      op: "transcript_read",
+      op: "transcript.read",
       request_id: "someone-else",
       sid: SID_ON_B,
     });
@@ -335,7 +340,7 @@ describe("who a forwarded request runs as (§7.3)", () => {
     await greet(person, {});
     await eventually(async () => {
       const answer = await ask(person, {
-        op: "transcript_read",
+        op: "transcript.read",
         request_id: "as-a-person",
         sid: SID_ON_B,
       });
@@ -352,7 +357,7 @@ describe("relaying events (§7.4)", () => {
     const { a, b } = await pair();
     const user = await client(a);
     await greet(user, {});
-    await ask(user, { op: "topic_subscribe", request_id: "sub", topic: "peers" });
+    await ask(user, { op: "topic.subscribe", request_id: "sub", topic: "peers" });
     // The session greeted B, so the row naming it is B's to state. A passes the
     // frame on without recomputing it, which is what `instance` still saying B
     // means here.
@@ -376,7 +381,7 @@ describe("what the instances topic says (§7.5)", () => {
     const { a, b } = await pair();
     const user = await client(a);
     await greet(user, {});
-    await ask(user, { op: "topic_subscribe", request_id: "sub", topic: "instances" });
+    await ask(user, { op: "topic.subscribe", request_id: "sub", topic: "instances" });
 
     // Two frames on one topic, and each says what its own sender can reach —
     // which is why the field travels per instance rather than being folded
@@ -403,7 +408,7 @@ describe("what the instances topic says (§7.5)", () => {
     const { a, b } = await pair();
     const user = await client(a);
     await greet(user, {});
-    await ask(user, { op: "topic_subscribe", request_id: "sub", topic: "instances" });
+    await ask(user, { op: "topic.subscribe", request_id: "sub", topic: "instances" });
     await b.stop();
     // No second greeting: the subscriber is already on the topic the view
     // rides on, which is what carrying it here is for (§7.5).
@@ -417,18 +422,18 @@ describe("what the instances topic says (§7.5)", () => {
 });
 
 describe("what the instance says about the host link", () => {
-  test("the peers that answer are what `instance_ping` reads the link off", async () => {
+  test("the peers that answer are what `instance.ping` reads the link off", async () => {
     const { a, b } = await pair();
     const user = await client(a);
     await greet(user, {});
-    const up = await ask(user, { op: "instance_ping", request_id: "up" });
+    const up = await ask(user, { op: "instance.ping", request_id: "up" });
     expect(up["network"]).toBe("online");
 
     await b.stop();
     // Every configured peer silent at once is the link gone, which is a
     // different answer from the same instance having no mesh to read.
     await eventually(() => a.mesh?.reachable(endpointOf(b)) === false);
-    const down = await ask(user, { op: "instance_ping", request_id: "down" });
+    const down = await ask(user, { op: "instance.ping", request_id: "down" });
     expect(down["network"]).toBe("offline");
   });
 
@@ -455,11 +460,11 @@ describe("a message to a session on another instance (§4)", () => {
     const { a, session } = await pair();
     const user = await client(a);
     await greet(user, {});
-    await ask(session, { op: "topic_subscribe", request_id: "inbox", topic: "inbox" });
+    await ask(session, { op: "topic.subscribe", request_id: "inbox", topic: "inbox" });
 
     await eventually(async () => {
       const sent = await ask(user, {
-        op: "message_send",
+        op: "message.send",
         request_id: `send-${Date.now()}`,
         to: SID_ON_B,
         text: "over here",
@@ -482,7 +487,7 @@ describe("a message to a session on another instance (§4)", () => {
     await b.stop();
     await eventually(() => a.mesh?.reachable(endpointOf(b)) === false);
     const sent = await ask(user, {
-      op: "message_send",
+      op: "message.send",
       request_id: "held",
       to: SID_ON_B,
       text: "nobody home",
@@ -517,7 +522,7 @@ describe("what a disconnected instance leaves behind (§7.5, DV-Q12)", () => {
       // arrives after it is the notice itself.
       const watcher = await client(staying);
       await greet(watcher, {});
-      await ask(watcher, { op: "topic_subscribe", request_id: "sub", topic: "instances" });
+      await ask(watcher, { op: "topic.subscribe", request_id: "sub", topic: "instances" });
 
       await going.stop();
       // Told by the link ending, not by a heartbeat: the silence a heartbeat is
@@ -548,7 +553,7 @@ describe("what a disconnected instance leaves behind (§7.5, DV-Q12)", () => {
     // rather than an empty cluster (§7.5).
     expect(a.mesh?.relay.snapshot("peers").length).toBe(1);
     expect(a.mesh?.relay.unreachable(b.self)).toBe(true);
-    await ask(user, { op: "topic_subscribe", request_id: "sub", topic: "peers" });
+    await ask(user, { op: "topic.subscribe", request_id: "sub", topic: "peers" });
     await eventually(async () => {
       const frame = await user.next();
       return frame["topic"] === "peers" && frame["instance"] === b.self;
@@ -692,7 +697,7 @@ describe("the credentials and tokens the cluster shares (DR-0001 §2.6)", () => 
     // handshake, which is the whole point of replicating it: the instance a
     // person registered at may be down.
     const client = await connectWs(addressOf(b), minted.session.access.value);
-    client.send({ op: "hello", request_id: "1", role: "user", protocol_version: PROTOCOL_VERSION });
+    client.send({ op: "hello.user", request_id: "1", protocol_version: PROTOCOL_VERSION });
     expect(await client.next()).toMatchObject({ ok: true });
     await client.close();
   });

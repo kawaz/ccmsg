@@ -11,8 +11,8 @@ import type { Item } from "./item.ts";
  * shape a person actually reaches for — every tool but the reads, the whole
  * conversation but not the thinking.
  *
- * A prefix matches at segment boundaries, so `tool` reaches `tool:Bash` and
- * `message:user` reaches both directions, while `notice` never reaches a type
+ * A prefix matches at segment boundaries, so `tool` reaches `tool.Bash` and
+ * `message.user` reaches both directions, while `notice` never reaches a type
  * that merely starts with those letters. */
 
 /** What a dump keeps when nobody said: every family there is, less the
@@ -29,7 +29,7 @@ const DEFAULT_TYPES = [
   "notice",
   "system",
   "hook",
-  "-system:attachment",
+  "-system.attachment",
 ];
 
 export interface Selection {
@@ -55,7 +55,7 @@ export interface Ask {
 }
 
 const NO_THINKING = ["-thinking"];
-const NO_AGENT = ["-message:sub", "-tool:Agent"];
+const NO_AGENT = ["-message.sub", "-tool.Agent"];
 
 export function selection(ask: Ask, presets: readonly DumpPreset[]): Selection {
   const asked = [...(ask.preset?.opts.types ?? []), ...(ask.types ?? [])];
@@ -94,7 +94,7 @@ function decide(type: string, elements: readonly string[]): boolean {
 }
 
 function reaches(name: string, type: string): boolean {
-  return type === name || type.startsWith(`${name}:`);
+  return type === name || type.startsWith(`${name}.`);
 }
 
 /** A preset named in a selection, put where it was named.

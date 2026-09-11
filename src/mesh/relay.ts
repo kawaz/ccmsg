@@ -35,7 +35,7 @@ export const CLUSTER_TOPICS: readonly string[] = [
  * It is `element`-granular and its elements are the instances' own, so it is
  * asked for as the instance rather than on a person's behalf, and folded into
  * the set this instance holds rather than held here (DR-0001 §2.6). */
-export const AUTH_TOPIC = "auth_records";
+export const AUTH_TOPIC = "auth.records";
 
 export function isClusterTopic(topic: string): boolean {
   return CLUSTER_TOPICS.includes(topic);

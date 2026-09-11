@@ -6,12 +6,12 @@ import {
   type SessionDumpWriteArgs,
   type SessionEnvReadArgs,
   type SessionEnvReadResult,
-  type SessionForkOriginArgs,
-  type SessionForkOriginResult,
+  type SessionForkOriginReadArgs,
+  type SessionForkOriginReadResult,
   type SessionKillArgs,
   type SessionKillResult,
-  type SessionLastLiveRemoveArgs,
-  type SessionLastLiveRemoveResult,
+  type SessionForgetArgs,
+  type SessionForgetResult,
   type SessionRenameArgs,
   type SessionRenameResult,
   type SessionSearchArgs,
@@ -69,7 +69,7 @@ export interface SessionOpsDeps {
 /** The ops that observe and operate on sessions.
  *
  * None of them decides who may call it: dispatch has settled that from the
- * attribute table. The one that narrows by role is `transcript_read`, and it
+ * attribute table. The one that narrows by role is `transcript.read`, and it
  * narrows through the same `sees` the file ops narrow through — the visible
  * range of a `scope: "role"` op is one rule, in one place, whatever it is
  * a range over. */
@@ -77,12 +77,12 @@ export function sessionHandlers(deps: SessionOpsDeps) {
   const viewer = (input: HandlerInput): Viewer => ({ role: input.role, sid: input.identity?.sid });
 
   return {
-    session_kill: async (input: HandlerInput): Promise<SessionKillResult> => {
+    "session.kill": async (input: HandlerInput): Promise<SessionKillResult> => {
       const args = input.args as unknown as SessionKillArgs;
       return await deps.processes.kill(args.sid, args.force === true);
     },
 
-    session_rename: async (input: HandlerInput): Promise<SessionRenameResult> => {
+    "session.rename": async (input: HandlerInput): Promise<SessionRenameResult> => {
       const args = input.args as unknown as SessionRenameArgs;
       const title = validTitle(args.title);
       const terminal = await deps.processes.terminal(args.sid);
@@ -93,20 +93,20 @@ export function sessionHandlers(deps: SessionOpsDeps) {
       return { terminal_id: terminal.id, instance: deps.self, title };
     },
 
-    session_env_read: async (input: HandlerInput): Promise<SessionEnvReadResult> => {
+    "session.env.read": async (input: HandlerInput): Promise<SessionEnvReadResult> => {
       const args = input.args as unknown as SessionEnvReadArgs;
       const { pid, env } = await deps.processes.environment(args.sid);
       return { pid, instance: deps.self, env };
     },
 
-    session_search: (input: HandlerInput) =>
+    "session.search": (input: HandlerInput) =>
       search(input.args as unknown as SessionSearchArgs, {
         self: deps.self,
         configHome: deps.configHome,
         files: deps.files,
       }),
 
-    session_dump_write: (input: HandlerInput) =>
+    "session.dump.write": (input: HandlerInput) =>
       dumpWrite(input.args as unknown as SessionDumpWriteArgs, {
         self: deps.self,
         stateDir: deps.stateDir,
@@ -120,22 +120,22 @@ export function sessionHandlers(deps: SessionOpsDeps) {
      * free-text field and let the instance refuse. A preset that references
      * another is answered as written: the expansion, and the refusal of a
      * cycle, happen where the config is read. */
-    dump_presets_read: (): DumpPresetsReadResult => ({ presets: [...deps.presets] }),
+    "dump.presets.read": (): DumpPresetsReadResult => ({ presets: [...deps.presets] }),
 
-    session_fork_origin: (input: HandlerInput): SessionForkOriginResult => {
-      const args = input.args as unknown as SessionForkOriginArgs;
+    "session.fork.origin.read": (input: HandlerInput): SessionForkOriginReadResult => {
+      const args = input.args as unknown as SessionForkOriginReadArgs;
       const origin = forkOrigin(args.sid, deps.files);
       return origin === undefined ? {} : { origin };
     },
 
-    session_last_live_remove: (input: HandlerInput): SessionLastLiveRemoveResult => {
-      const args = input.args as unknown as SessionLastLiveRemoveArgs;
+    "session.forget": (input: HandlerInput): SessionForgetResult => {
+      const args = input.args as unknown as SessionForgetArgs;
       // An unknown session is not an error: two clients pressing the same
       // button is the ordinary case, and the caller's goal holds either way.
       return { removed: deps.forget(args.sid) };
     },
 
-    transcript_read: (input: HandlerInput): TranscriptReadResult => {
+    "transcript.read": (input: HandlerInput): TranscriptReadResult => {
       const args = input.args as unknown as TranscriptReadArgs;
       if (!sees(args.sid, viewer(input))) {
         // The role sets the visible range, not the permission (§3.2): outside
@@ -153,7 +153,7 @@ export function sessionHandlers(deps: SessionOpsDeps) {
      * The role narrows it the way it narrows the raw read: what a role may see
      * is one rule whatever is being read, and a caller that cannot see a
      * session cannot see it in either vocabulary. */
-    transcript_items_read: (input: HandlerInput): TranscriptItemsReadResult => {
+    "transcript.items.read": (input: HandlerInput): TranscriptItemsReadResult => {
       const args = input.args as unknown as TranscriptItemsReadArgs;
       if (!sees(args.sid, viewer(input))) {
         throw new OpError("not_found", `no transcript is known for ${args.sid}`);

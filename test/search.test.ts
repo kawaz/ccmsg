@@ -51,7 +51,7 @@ function home(transcripts: Record<string, readonly string[]>) {
 }
 
 function ask(args: Partial<SessionSearchArgs>, deps: ReturnType<typeof home>["deps"]) {
-  return search({ op: "session_search", request_id: "1", ...args } as SessionSearchArgs, deps);
+  return search({ op: "session.search", request_id: "1", ...args } as SessionSearchArgs, deps);
 }
 
 describe("what a regular-expression query may cost (§5)", () => {

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { TranscriptItem, validationErrors } from "@ccmsg/protocol";
+import { TranscriptItem, TranscriptItemSelector, validationErrors } from "@ccmsg/protocol";
 import { ConfigError, MERGE_RULES, parseConfig, settingsFor } from "../src/instance/config.ts";
 import {
   classify,
@@ -54,8 +54,9 @@ function answered(uuid: string, blocks: unknown[], over: Record<string, unknown>
   };
 }
 
-/** One element of a selection, as the contract spells it. */
-const SELECTOR = /^-?(?:@[A-Za-z0-9][A-Za-z0-9_-]*|[a-z]+(?::[A-Za-z0-9_.-]+)*)$/;
+/** One element of a selection, held to the contract's own schema rather than to
+ * a second spelling of it here. */
+const SELECTOR = new RegExp(TranscriptItemSelector.pattern ?? "(?!)");
 
 function typesOf(items: readonly Item[]): string[] {
   return items.map((item) => item.type);
@@ -76,7 +77,7 @@ describe("classifying a transcript", () => {
         ]),
       ),
     );
-    expect(typesOf(items)).toEqual(["thinking", "message:user:out", "tool:Bash"]);
+    expect(typesOf(items)).toEqual(["thinking", "message.user.out", "tool.Bash"]);
     // Every item the record became carries the record's id, so a bound by
     // record keeps a turn whole rather than cutting inside it.
     expect(items.every((item) => item.uuid === "a1")).toBe(true);
@@ -91,7 +92,7 @@ describe("classifying a transcript", () => {
         ]),
       ),
     );
-    expect(typesOf(items)).toEqual(["message:user:out"]);
+    expect(typesOf(items)).toEqual(["message.user.out"]);
   });
 
   test("a call and its result are two items that point at each other", () => {
@@ -155,13 +156,13 @@ describe("classifying a transcript", () => {
       ),
     );
     expect(typesOf(items)).toEqual([
-      "tool:Agent",
-      "message:sub:out",
-      "tool:Agent",
-      "message:sub:in",
+      "tool.Agent",
+      "message.sub.out",
+      "tool.Agent",
+      "message.sub.in",
     ]);
-    const brief = only(items, "message:sub:out");
-    const reply = only(items, "message:sub:in");
+    const brief = only(items, "message.sub.out");
+    const reply = only(items, "message.sub.in");
     expect(of(reply)["text"]).toBe("there were three");
     expect(of(reply)["duration_ms"]).toBe(4000);
     expect(of(reply)["parent_item"]).toBe(brief?.id ?? "");
@@ -189,8 +190,8 @@ describe("classifying a transcript", () => {
       }),
     ];
     const waiting = classify(lines(...launch));
-    expect(typesOf(waiting)).toEqual(["tool:Agent", "message:sub:out", "tool:Agent"]);
-    expect(of(only(waiting, "message:sub:out"))["result_item"]).toBeUndefined();
+    expect(typesOf(waiting)).toEqual(["tool.Agent", "message.sub.out", "tool.Agent"]);
+    expect(of(only(waiting, "message.sub.out"))["result_item"]).toBeUndefined();
 
     const items = classify(
       lines(
@@ -203,8 +204,8 @@ describe("classifying a transcript", () => {
         ),
       ),
     );
-    const brief = only(items, "message:sub:out");
-    const reply = only(items, "message:sub:in");
+    const brief = only(items, "message.sub.out");
+    const reply = only(items, "message.sub.in");
     // Turns fell between them, and the brief still names what came back.
     expect(of(brief)["result_item"]).toBe(reply?.id ?? "");
     expect(of(reply)["parent_item"]).toBe(brief?.id ?? "");
@@ -232,16 +233,16 @@ describe("classifying a transcript", () => {
     // asking for the tool that starts an agent would have to know which
     // spelling this transcript happened to use.
     expect(typesOf(items)).toEqual([
-      "tool:Agent",
-      "message:sub:out",
-      "tool:Agent",
-      "message:sub:in",
+      "tool.Agent",
+      "message.sub.out",
+      "tool.Agent",
+      "message.sub.in",
     ]);
     // The spelling the record used stays on the call, for a reader matching
     // what it sees against what it ran.
     expect(of(items[0])["harness_name"]).toBe("Task");
-    expect(of(only(items, "message:sub:out"))["prompt"]).toBe("count the lines");
-    expect(of(only(items, "message:sub:in"))["text"]).toBe("there were three");
+    expect(of(only(items, "message.sub.out"))["prompt"]).toBe("count the lines");
+    expect(of(only(items, "message.sub.in"))["text"]).toBe("there were three");
     for (const item of items) {
       expect([item.type, validationErrors(TranscriptItem, item)]).toEqual([item.type, []]);
     }
@@ -269,13 +270,13 @@ describe("classifying a transcript", () => {
       ),
     );
     expect(typesOf(items)).toEqual([
-      "tool:Agent",
-      "message:team:out",
-      "tool:Agent",
-      "message:team:in",
+      "tool.Agent",
+      "message.team.out",
+      "tool.Agent",
+      "message.team.in",
     ]);
-    const brief = only(items, "message:team:out");
-    const reply = only(items, "message:team:in");
+    const brief = only(items, "message.team.out");
+    const reply = only(items, "message.team.in");
     expect(of(brief)["harness_name"]).toBe("counter");
     expect(of(brief)["text"]).toBe("count the lines");
     // The id is not known until the agent has started, so the message that
@@ -300,7 +301,7 @@ describe("classifying a transcript", () => {
         ),
       ),
     );
-    expect(typesOf(items)).toEqual(["system:task"]);
+    expect(typesOf(items)).toEqual(["system.task"]);
     expect(of(items[0])["task_id"]).toBe("b6mm");
     expect(of(items[0])["event"]).toBe("a line appeared");
   });
@@ -315,7 +316,7 @@ describe("classifying a transcript", () => {
         ),
       ),
     );
-    expect(typesOf(items)).toEqual(["message:user:in", "message:session:in"]);
+    expect(typesOf(items)).toEqual(["message.user.in", "message.session.in"]);
     expect(of(items[1])["from"]).toBe("9f2c1ab4");
     expect(of(items[1])["msg_id"]).toBe("m-7781");
   });
@@ -330,7 +331,7 @@ describe("classifying a transcript", () => {
     );
     // A teammate writes under its own name and what it sends is a message of
     // its own; a lead is the one above wherever the subject stands.
-    expect(typesOf(items)).toEqual(["message:user:in", "message:team:in", "message:parent:in"]);
+    expect(typesOf(items)).toEqual(["message.user.in", "message.team.in", "message.parent.in"]);
     expect(of(items[1])["harness_name"]).toBe("a-worker");
     expect(of(items[2])["harness_name"]).toBe("team-lead");
     for (const item of items) expect(validationErrors(TranscriptItem, item)).toEqual([]);
@@ -357,12 +358,12 @@ describe("classifying a transcript", () => {
       ),
     );
     expect(typesOf(items)).toEqual([
-      "notice:slash",
-      "notice:slash",
-      "notice:interrupt",
-      "system:caveat",
-      "system:compact",
-      "system:api-error",
+      "notice.slash",
+      "notice.slash",
+      "notice.interrupt",
+      "system.caveat",
+      "system.compact",
+      "system.api.error",
     ]);
     expect(of(items[0])["args"]).toBe("and continue");
     // The output of a slash command is filed on its own line, which says what
@@ -385,9 +386,9 @@ describe("classifying a transcript", () => {
         },
       }),
     );
-    // `hook:PreToolUse:Bash` would read as three levels of hierarchy and leave
-    // `hook:PreToolUse` selecting nothing.
-    expect(items[0]?.type).toBe("hook:PreToolUse");
+    // The matcher is no level of the hierarchy, and a type carrying it would
+    // leave `hook.PreToolUse` selecting nothing.
+    expect(items[0]?.type).toBe("hook.PreToolUse");
     expect(of(items[0])["hook_name"]).toBe("PreToolUse:Bash");
     expect(of(items[0])["outcome"]).toBe("additionalContext");
     expect(of(items[0])["tool_use_id"]).toBe("t1");
@@ -411,7 +412,7 @@ describe("classifying a transcript", () => {
         },
       }),
     );
-    expect(items[0]?.type).toBe("hook:SessionStart");
+    expect(items[0]?.type).toBe("hook.SessionStart");
     expect(of(items[0])["outcome"]).toBe("output");
     expect(of(items[0])["exit_code"]).toBe(0);
     expect(of(items[0])["duration_ms"]).toBe(12);
@@ -426,7 +427,7 @@ describe("classifying a transcript", () => {
         attachment: { type: "something_new", detail: "whatever it holds" },
       }),
     );
-    expect(items[0]?.type).toBe("system:attachment:something_new");
+    expect(items[0]?.type).toBe("system.attachment.something_new");
     expect(of(items[0])["attachment"]).toEqual({
       type: "something_new",
       detail: "whatever it holds",
@@ -440,7 +441,7 @@ describe("classifying a transcript", () => {
         said("u1", [{ type: "tool_result", tool_use_id: "t1" }], { toolUseResult: "it turned" }),
       ),
     );
-    expect(typesOf(items)).toEqual(["tool:Whatsit", "tool:Whatsit"]);
+    expect(typesOf(items)).toEqual(["tool.Whatsit", "tool.Whatsit"]);
     expect(of(items[0])["input"]).toEqual({ dial: 3 });
     expect(of(items[1])["result"]).toEqual({ text: "it turned" });
   });
@@ -449,7 +450,7 @@ describe("classifying a transcript", () => {
     const items = classify(
       lines({ type: "who-knows", uuid: "z1", timestamp: "2026-09-01T00:00:00.000Z" }),
     );
-    expect(items[0]?.type).toBe("system:unknown");
+    expect(items[0]?.type).toBe("system.unknown");
   });
 
   test("a record the harness left without an id is read from where it stands", () => {
@@ -462,7 +463,7 @@ describe("classifying a transcript", () => {
     // A line that vanished quietly is the one failure a dump cannot be read
     // around, so the missing id is stood in for rather than being a reason to
     // drop the record.
-    expect(typesOf(items)).toEqual(["system:unknown", "message:user:in"]);
+    expect(typesOf(items)).toEqual(["system.unknown", "message.user.in"]);
     expect(items[0]?.uuid).toBe("@0");
     expect(items[0]?.id).toBe("@0:0");
     // Stood in for by the address, which is the item's own too, so the two
@@ -500,11 +501,11 @@ describe("classifying a transcript", () => {
         answered("w2", [{ type: "text", text: "there were three" }], { parentUuid: "w1" }),
       ),
     );
-    // Not `message:user`: what is at the other end of an agent's file is
+    // Not `message.user`: what is at the other end of an agent's file is
     // whoever started it, and naming that `user` would have a reader take a
     // machine for a person. The names are the same wherever the subject
     // stands, which is what lets one preset be carried down a chain.
-    expect(typesOf(items)).toEqual(["message:parent:in", "message:parent:out"]);
+    expect(typesOf(items)).toEqual(["message.parent.in", "message.parent.out"]);
     expect(of(items[0])["harness_name"]).toBe("team-lead");
     // The answer is prose with no call behind it — the one message an agent is
     // certain to send, and the reason `parent:out` is not a call alone.
@@ -521,7 +522,7 @@ describe("classifying a transcript", () => {
         answered("w2", [{ type: "text", text: "there were three" }], { parentUuid: "w1" }),
       ),
     );
-    expect(typesOf(items)).toEqual(["message:parent:in", "message:parent:out"]);
+    expect(typesOf(items)).toEqual(["message.parent.in", "message.parent.out"]);
     expect(of(items[0])["harness_name"]).toBeUndefined();
   });
 
@@ -541,7 +542,7 @@ describe("classifying a transcript", () => {
     }
     const own = classify(lines(said("u1", "count the lines"), answered("a1", [])), "main");
     expect(own.map((item) => item.subject)).toEqual(["main"]);
-    expect(typesOf(own)).toEqual(["message:user:in"]);
+    expect(typesOf(own)).toEqual(["message.user.in"]);
   });
 
   test("who writes in their own words partway through follows from the standing", () => {
@@ -554,13 +555,13 @@ describe("classifying a transcript", () => {
         answered("w2", [{ type: "text", text: "there were three" }], { parentUuid: "w1" }),
         said("w3", "and the words too", { parentUuid: "w2", isSidechain: true }),
       );
-    expect(typesOf(classify(records(), "team"))[2]).toBe("message:user:in");
-    expect(typesOf(classify(records(), "sub"))[2]).toBe("message:parent:in");
+    expect(typesOf(classify(records(), "team"))[2]).toBe("message.user.in");
+    expect(typesOf(classify(records(), "sub"))[2]).toBe("message.parent.in");
     const own = classify(
       lines(said("u1", "count the lines"), said("u2", "and the words too", { parentUuid: "u1" })),
       "main",
     );
-    expect(typesOf(own)).toEqual(["message:user:in", "message:user:in"]);
+    expect(typesOf(own)).toEqual(["message.user.in", "message.user.in"]);
   });
 
   test("a session's file holding a sidechain record is an agent's after all", () => {
@@ -571,7 +572,7 @@ describe("classifying a transcript", () => {
       lines(said("w1", "count the lines", { parentUuid: null, isSidechain: true })),
     );
     expect(items.map((item) => item.subject)).toEqual(["sub"]);
-    expect(typesOf(items)).toEqual(["message:parent:in"]);
+    expect(typesOf(items)).toEqual(["message.parent.in"]);
   });
 
   test("turns are counted from where a person spoke", () => {
@@ -599,7 +600,7 @@ describe("classifying a transcript", () => {
         ]),
       ),
     );
-    const brief = only(items, "message:team:out");
+    const brief = only(items, "message.team.out");
     expect(of(brief)["text"]).toBe("carry on");
     expect(of(brief)["harness_name"]).toBe("counter");
     // What the agent says back arrives under nothing that names this, so the
@@ -634,10 +635,10 @@ describe("classifying a transcript", () => {
     // `main` and `team-lead` are the harness's names for the one above; every
     // other name is somebody standing alongside.
     expect(typesOf(items)).toEqual([
-      "tool:SendMessage",
-      "message:parent:out",
-      "tool:SendMessage",
-      "message:parent:out",
+      "tool.SendMessage",
+      "message.parent.out",
+      "tool.SendMessage",
+      "message.parent.out",
     ]);
     const reported = items[1];
     // The name is the harness's own spelling for the one above, kept beside a
@@ -662,8 +663,8 @@ describe("classifying a transcript", () => {
         ]),
       ),
     );
-    expect(typesOf(items)).toEqual(["tool:SendMessage", "message:session:out"]);
-    expect(of(only(items, "message:session:out"))["one_way"]).toBeUndefined();
+    expect(typesOf(items)).toEqual(["tool.SendMessage", "message.session.out"]);
+    expect(of(only(items, "message.session.out"))["one_way"]).toBeUndefined();
   });
 
   test("an answer to a call this reading never saw keeps the key it is joined by", () => {
@@ -680,7 +681,7 @@ describe("classifying a transcript", () => {
     // The record never says which tool was called, so the type is the reserved
     // name rather than a guess, and what came back is stated as a result and
     // not as a record nobody could read.
-    expect(typesOf(items)).toEqual(["tool:unknown"]);
+    expect(typesOf(items)).toEqual(["tool.unknown"]);
     expect(of(items[0])["role"]).toBe("result");
     expect(of(items[0])["parent_tool_use_id"]).toBe("t-elsewhere");
     expect(of(items[0])["result"]).toEqual({ stdout: "3\n" });
@@ -752,13 +753,13 @@ describe("classifying a transcript", () => {
 
 describe("selecting which items a dump keeps", () => {
   const ITEMS: Item[] = [
-    stub({ uuid: "1", type: "message:user:in", at: 1 }),
-    stub({ uuid: "2", type: "message:user:out", at: 2 }),
+    stub({ uuid: "1", type: "message.user.in", at: 1 }),
+    stub({ uuid: "2", type: "message.user.out", at: 2 }),
     stub({ uuid: "3", type: "thinking", at: 3 }),
-    stub({ uuid: "4", type: "tool:Bash", at: 4 }),
-    stub({ uuid: "5", type: "tool:Read", at: 5 }),
-    stub({ uuid: "6", type: "system:attachment:date", at: 6 }),
-    stub({ uuid: "7", type: "hook:PreToolUse", at: 7 }),
+    stub({ uuid: "4", type: "tool.Bash", at: 4 }),
+    stub({ uuid: "5", type: "tool.Read", at: 5 }),
+    stub({ uuid: "6", type: "system.attachment.date", at: 6 }),
+    stub({ uuid: "7", type: "hook.PreToolUse", at: 7 }),
   ];
 
   function kept(types: string[] | undefined, presets: Parameters<typeof selection>[1] = []) {
@@ -767,43 +768,43 @@ describe("selecting which items a dump keeps", () => {
 
   test("nobody saying keeps everything but the attachments", () => {
     expect(kept(undefined)).toEqual([
-      "message:user:in",
-      "message:user:out",
+      "message.user.in",
+      "message.user.out",
       "thinking",
-      "tool:Bash",
-      "tool:Read",
-      "hook:PreToolUse",
+      "tool.Bash",
+      "tool.Read",
+      "hook.PreToolUse",
     ]);
   });
 
   test("a prefix reaches everything below it and stops at a segment", () => {
-    expect(kept(["tool"])).toEqual(["tool:Bash", "tool:Read"]);
-    expect(kept(["message:user"])).toEqual(["message:user:in", "message:user:out"]);
+    expect(kept(["tool"])).toEqual(["tool.Bash", "tool.Read"]);
+    expect(kept(["message.user"])).toEqual(["message.user.in", "message.user.out"]);
     // `thin` is not a level of `thinking`, so it reaches nothing.
     expect(kept(["thin"])).toEqual([]);
   });
 
   test("an exclusion reaches what a prefix before it brought in", () => {
-    expect(kept(["tool", "-tool:Read"])).toEqual(["tool:Bash"]);
+    expect(kept(["tool", "-tool.Read"])).toEqual(["tool.Bash"]);
   });
 
   test("order decides, so the same two elements read the other way say the opposite", () => {
-    expect(kept(["-tool:Read", "tool"])).toEqual(["tool:Bash", "tool:Read"]);
+    expect(kept(["-tool.Read", "tool"])).toEqual(["tool.Bash", "tool.Read"]);
   });
 
   test("a preset is put where it was named, so what follows it still reaches inside", () => {
     const presets = [
-      { name: "file", opts: { types: ["tool:Read", "tool:Bash"] } },
+      { name: "file", opts: { types: ["tool.Read", "tool.Bash"] } },
       { name: "howto", opts: { types: ["thinking", "@file"] } },
     ];
-    expect(kept(["@howto"], presets)).toEqual(["thinking", "tool:Bash", "tool:Read"]);
-    expect(kept(["@howto", "-tool:Read"], presets)).toEqual(["thinking", "tool:Bash"]);
+    expect(kept(["@howto"], presets)).toEqual(["thinking", "tool.Bash", "tool.Read"]);
+    expect(kept(["@howto", "-tool.Read"], presets)).toEqual(["thinking", "tool.Bash"]);
   });
 
   test("a preset is the ground a selection is applied over", () => {
-    const presets = [{ name: "file", opts: { types: ["tool:Read"] } }];
+    const presets = [{ name: "file", opts: { types: ["tool.Read"] } }];
     const keep = selection({ preset: presets[0], types: ["thinking"] }, presets);
-    expect(typesOf(select(ITEMS, keep).items)).toEqual(["thinking", "tool:Read"]);
+    expect(typesOf(select(ITEMS, keep).items)).toEqual(["thinking", "tool.Read"]);
   });
 
   test("the two older flags say in one word what the selection says in its own", () => {
@@ -811,18 +812,18 @@ describe("selecting which items a dump keeps", () => {
       "thinking",
     );
     const machinery: Item[] = [
-      stub({ uuid: "1", type: "message:sub:out", at: 1 }),
-      stub({ uuid: "2", type: "tool:Agent", at: 2 }),
-      stub({ uuid: "3", type: "tool:Bash", at: 3 }),
+      stub({ uuid: "1", type: "message.sub.out", at: 1 }),
+      stub({ uuid: "2", type: "tool.Agent", at: 2 }),
+      stub({ uuid: "3", type: "tool.Bash", at: 3 }),
     ];
     expect(typesOf(select(machinery, selection({ no_agent: true }, [])).items)).toEqual([
-      "tool:Bash",
+      "tool.Bash",
     ]);
   });
 
   test("what was kept is counted by type", () => {
     const { entries } = select(ITEMS, selection({ types: ["tool"] }, []));
-    expect(entries).toEqual({ "tool:Bash": 1, "tool:Read": 1 });
+    expect(entries).toEqual({ "tool.Bash": 1, "tool.Read": 1 });
   });
 
   test("the default is stated in the vocabulary a person writes in, not a wildcard", () => {
@@ -835,16 +836,16 @@ describe("selecting which items a dump keeps", () => {
 
   test("what the selection came to is what the file will say it was", () => {
     const presets = [
-      { name: "file", opts: { types: ["tool:Read", "tool:Bash"] } },
+      { name: "file", opts: { types: ["tool.Read", "tool.Bash"] } },
       { name: "howto", opts: { types: ["thinking", "@file"] } },
     ];
     // Presets expanded and exclusions left where they stood, so the file states
     // what it holds without the instance's config having to be read beside it.
-    expect(selection({ types: ["@howto", "-tool:Read"] }, presets).elements).toEqual([
+    expect(selection({ types: ["@howto", "-tool.Read"] }, presets).elements).toEqual([
       "thinking",
-      "tool:Read",
-      "tool:Bash",
-      "-tool:Read",
+      "tool.Read",
+      "tool.Bash",
+      "-tool.Read",
     ]);
   });
 });
@@ -852,11 +853,11 @@ describe("selecting which items a dump keeps", () => {
 describe("the ledger of ids", () => {
   test("a later sighting of the same id is a later state of it", () => {
     const found = ledger([
-      stub({ uuid: "1", type: "message:sub:out", at: 1, agent_id: "a9", name: "counter" }),
-      stub({ uuid: "2", type: "tool:Agent", at: 2, agent_id: "a9", status: "running" }),
+      stub({ uuid: "1", type: "message.sub.out", at: 1, agent_id: "a9", name: "counter" }),
+      stub({ uuid: "2", type: "tool.Agent", at: 2, agent_id: "a9", status: "running" }),
       stub({
         uuid: "3",
-        type: "message:sub:in",
+        type: "message.sub.in",
         at: 3,
         agent_id: "a9",
         status: "done",
@@ -872,14 +873,14 @@ describe("the ledger of ids", () => {
     const found = ledger([
       stub({
         uuid: "1",
-        type: "tool:Monitor",
+        type: "tool.Monitor",
         at: 1,
         tool_use_id: "t1",
         task_id: "b6",
         description: "watch ci",
       }),
-      stub({ uuid: "2", type: "message:session:in", at: 2, from: "9f2c1ab4", msg_id: "m-7781" }),
-      stub({ uuid: "3", type: "tool:CronCreate", at: 3, tool_use_id: "t2", cron_id: "c1" }),
+      stub({ uuid: "2", type: "message.session.in", at: 2, from: "9f2c1ab4", msg_id: "m-7781" }),
+      stub({ uuid: "3", type: "tool.CronCreate", at: 3, tool_use_id: "t2", cron_id: "c1" }),
     ]);
     expect(found.map((entry) => entry.kind)).toEqual([
       "task",
@@ -899,14 +900,14 @@ describe("presets in the config", () => {
     const config = parseConfig(FILE, {
       dump: {
         presets: [
-          { name: "file", description: "reads and writes", opts: { types: ["tool:Read"] } },
-          { name: "howto", opts: { types: ["thinking", "@file", "-tool:Grep"] } },
+          { name: "file", description: "reads and writes", opts: { types: ["tool.Read"] } },
+          { name: "howto", opts: { types: ["thinking", "@file", "-tool.Grep"] } },
         ],
       },
     });
     expect(config.dump.presets).toEqual([
-      { name: "file", description: "reads and writes", opts: { types: ["tool:Read"] } },
-      { name: "howto", opts: { types: ["thinking", "@file", "-tool:Grep"] } },
+      { name: "file", description: "reads and writes", opts: { types: ["tool.Read"] } },
+      { name: "howto", opts: { types: ["thinking", "@file", "-tool.Grep"] } },
     ]);
   });
 

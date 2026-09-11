@@ -63,7 +63,7 @@ export interface RecordsDeps {
    * from a peer refusable on sight: a family this instance minted is written by
    * this instance alone (DR-0001 §2.4). */
   readonly self: InstanceId;
-  /** Hand what this instance wrote to the peers, on the `auth_records` topic. */
+  /** Hand what this instance wrote to the peers, on the `auth.records` topic. */
   readonly publish: (records: readonly AuthRecord[]) => void;
   readonly now?: () => Timestamp;
 }

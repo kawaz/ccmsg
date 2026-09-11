@@ -34,7 +34,7 @@ function helper(answer: (batch: { id: string; texts: string[] }) => string | und
 async function translated(translate: Translate, texts: string[]): Promise<TranslateRunResult> {
   const body = await translate.run({ texts });
   expect(
-    validationErrors(OP_SCHEMAS["translate_run"].response, {
+    validationErrors(OP_SCHEMAS["translate.run"].response, {
       ok: true,
       request_id: "1",
       ...body,

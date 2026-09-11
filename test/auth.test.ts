@@ -236,7 +236,7 @@ describe("authenticating and the tokens that follow (§2.4, §2.5)", () => {
 
     const client = await connectWs(at.instance.http[0] ?? "", session.access.value);
     clients.push(client);
-    client.send({ op: "hello", request_id: "1", role: "user", protocol_version: PROTOCOL_VERSION });
+    client.send({ op: "hello.user", request_id: "1", protocol_version: PROTOCOL_VERSION });
     const greeting = (await client.next()) as { ok: boolean; auth_expires_at?: number };
     expect(greeting.ok).toBe(true);
     expect(typeof greeting.auth_expires_at).toBe("number");
@@ -426,7 +426,7 @@ describe("removing a person (§2.6)", () => {
       })
     ).json()) as { access: { value: string } };
     const client = await connectWs(at.instance.http[0] ?? "", session.access.value);
-    client.send({ op: "hello", request_id: "1", role: "user", protocol_version: PROTOCOL_VERSION });
+    client.send({ op: "hello.user", request_id: "1", protocol_version: PROTOCOL_VERSION });
     await client.next();
 
     const gone = Promise.withResolvers<void>();
@@ -802,10 +802,10 @@ describe("extending a connection (§2.5)", () => {
     const theirs = at.instance.auth.mint("them");
     const client = await connectWs(at.instance.http[0] ?? "", mine.session.access.value);
     clients.push(client);
-    client.send({ op: "hello", request_id: "1", role: "user", protocol_version: PROTOCOL_VERSION });
+    client.send({ op: "hello.user", request_id: "1", protocol_version: PROTOCOL_VERSION });
     const greeting = (await client.next()) as { auth_expires_at: number };
 
-    client.send({ op: "auth_refresh", request_id: "2", access_token: theirs.session.access.value });
+    client.send({ op: "auth.extend", request_id: "2", access_token: theirs.session.access.value });
     expect(await client.next()).toMatchObject({
       ok: false,
       request_id: "2",
@@ -814,7 +814,7 @@ describe("extending a connection (§2.5)", () => {
 
     const next = await at.instance.auth.refreshToken(mine.refresh.value);
     client.send({
-      op: "auth_refresh",
+      op: "auth.extend",
       request_id: "3",
       access_token: next.session.access.value,
     });
@@ -835,7 +835,7 @@ describe("extending a connection (§2.5)", () => {
     now = minted.session.access.expires_at - 60;
 
     const client = await connectWs(at.instance.http[0] ?? "", minted.session.access.value);
-    client.send({ op: "hello", request_id: "1", role: "user", protocol_version: PROTOCOL_VERSION });
+    client.send({ op: "hello.user", request_id: "1", protocol_version: PROTOCOL_VERSION });
     const greeting = (await client.next()) as { auth_expires_at: number };
     expect(greeting.auth_expires_at).toBe(minted.session.access.expires_at);
 

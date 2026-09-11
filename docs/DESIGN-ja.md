@@ -104,7 +104,7 @@ persistence 落ちて上がっても失われては困るものだけを書く
 token だけ**である。`Origin` は見ない: token が既に答えている問いに対する 2 つ目の答えになり、
 instance に届く URL が増えるたびに operator が同期させ続ける対象が増えるだけになる。token を
 持たない handshake は匿名の人として通すのではなく断る。access token の `exp` が接続の期限で、`hello` の応答の
-`auth_expires_at` がそれを名乗り、同じ接続上の `auth_refresh` で延ばす。UDS は到達すること
+`auth_expires_at` がそれを名乗り、同じ接続上の `auth.extend` で延ばす。UDS は到達すること
 自体がディレクトリの権限を通ることなので何も提示せず、期限も付かない。mesh は相手の TLS と
 `iss` / `aud` + proof (§7.2)、webhook は `Authorization: Bearer` で、どちらも経路自身が
 秘密を持つ。
@@ -131,17 +131,18 @@ instance に届く URL が増えるたびに operator が同期させ続ける�
 答えないための境界がこの対応関係そのものだからで (mesh-peer-auth §6.3)、人の入口には
 そのような鍵空間が無い。
 
-**`hello` は接続につき 1 回で、その応答が identity を束縛する。** role は接続の生存期間で
-固定され (契約 `Role`)、identity が確定した接続からの 2 回目の `hello` は、同じ role を名乗っても
-別の role を名乗っても `bad_request` になる — 再識別ではなく「既に誰かである接続が別の誰かに
-なろうとする要求」だからである。束縛は transport が `hello` の応答を書く瞬間に行う (transport が
-名前を知っている op は `hello` の 1 つだけで、他の op は透過する)。`session` / `user` の greeting は
-同期で答え、**`instance` の greeting だけが promise を返す**: mesh-peer-auth の検証を待ってからで
-ないと答えられず、応答以外に identity を確定させるものは無いので、検証が終わるまで接続は
-匿名のままになる (§7.2)。mesh を持たない instance は `instance` の greeting を
-`capability_unavailable` で断る。
+**greeting は接続につき 1 回で、その応答が identity を束縛する。** greeting の op は role ごとに
+1 つずつあり (`hello.session` / `hello.user` / `hello.instance`)、role は greeting が届いた op 名から
+読む。各 greeting が何を持つべきかはそれぞれの schema が述べる。role は接続の生存期間で固定され
+(契約 `Role`)、identity が確定した接続からの 2 回目の greeting は、同じ role を名乗っても別の role を
+名乗っても `bad_request` になる — 再識別ではなく「既に誰かである接続が別の誰かになろうとする要求」
+だからである。束縛は transport が応答を書く瞬間に行う (transport が名前を知っている op はこの 3 つ
+だけで、他の op は透過する)。`hello.session` / `hello.user` は同期で答え、**`hello.instance` だけが
+promise を返す**: mesh-peer-auth の検証を待ってからでないと答えられず、応答以外に identity を
+確定させるものは無いので、検証が終わるまで接続は匿名のままになる (§7.2)。mesh を持たない
+instance は `hello.instance` を `capability_unavailable` で断る。
 
-`hello` の応答は `upstream.terminal_gateway` が設定されている instance に限り `terminal_gateway` を名乗る。セッションの terminal 自体は `agents` topic の `terminal_id` が指すので、人がその terminal を開く先は `<terminal_gateway>/sessions/<terminal_id>` になる。
+greeting の応答は `upstream.terminal_gateway` が設定されている instance に限り `terminal_gateway` を名乗る。セッションの terminal 自体は `agents` topic の `terminal_id` が指すので、人がその terminal を開く先は `<terminal_gateway>/sessions/<terminal_id>` になる。
 
 旧 daemon で UDS listener だけが起動関数の内部に埋まっていた非対称を作らない。UDS と WS は
 **同じ `Conn` を返す 2 実装**であり、上の層はどちらか区別しない。backpressure の扱い
@@ -165,7 +166,7 @@ frame 1 個に対して、順に:
 
 **1〜6 は op ごとに書かない。** 属性表から機械的に導かれるので、op を足すことは
 「属性表に 1 行足して schema と実装を書く」ことに閉じる (M1)。`scope: "role"` が付いた op
-(`transcript_read` / `dir_list` / `file_read`) だけは、可否ではなく可視範囲が変わるので、
+(`transcript.read` / `dir.list` / `file.read`) だけは、可否ではなく可視範囲が変わるので、
 実装に role を渡す。**渡すのは属性表が `scope` を宣言している op に限る**、というのが
 role を実装に露出させる唯一の経路である。
 
@@ -205,7 +206,7 @@ domain に入る境界で ccmsg の型に変換する** (単位を Unix ms に�
 | `last_live` (前回稼働中のセッション) | 再起動で失うと、一覧から Paused / Disappeared の行が消える |
 | ログ | 落ちた原因を後から読むため。exit 直前の行を落とさない writer を 1 つ持つ |
 | inbox (未配送メッセージ) | 他のどこからも再構成できない状態 (§4.3) |
-| kv (`kv_write` で保存された値) | 人が保存した値そのもの。派生値ではなく、client 側の複製は写しでしかない |
+| kv (`kv.write` で保存された値) | 人が保存した値そのもの。派生値ではなく、client 側の複製は写しでしかない |
 | auth records (`<state dir>/auth/records.json`、mode 0600) | 登録された credential・token family・tombstone (§3.7)。credential は authenticator とここにしか無く、family を失うことは人をログアウトさせること |
 
 auth records も同じ理屈で M4 の対象外である: credential は authenticator の中とここにしか
@@ -213,7 +214,7 @@ auth records も同じ理屈で M4 の対象外である: credential は authent
 導出ではない (全 instance が同時に失えば戻らない)。
 
 inbox と kv は M4 の例外ではなく、M4 の対象外である。M4 が禁じるのは**派生値**の永続化であり、
-未配送メッセージは派生値ではない。送信側の `message_send` は既に応答を返して終わっており、
+未配送メッセージは派生値ではない。送信側の `message.send` は既に応答を返して終わっており、
 transcript にも upstream にも「まだ届いていない本文」はどこにも無い。daemon が失えば
 本文ごと消える。kv も同じ理屈で、テーマ等の保存値は daemon が失えばユーザの設定ごと消える
 (契約 kv.ts が instance 間ミラーと `updated_at` による決着を前提にしているのも、値が
@@ -230,15 +231,15 @@ id が state と一緒に動くことがそれらを無効にしない唯一の�
 (mesh-peer-auth §7)、メモリ上にしか存在しない。state dir に置くと保存場所と復旧手順という
 管理対象が生まれ、§1.1 に反する。
 
-state dir にはもう 1 つ、`dumps/` がある。`session_dump_write` が transcript を読んで
+state dir にはもう 1 つ、`dumps/` がある。`session.dump.write` が transcript を読んで
 `<state dir>/dumps/<sid>[-agent-<agent id>]-<written_at>.dump.json` に書き、応答としてその path を返す。これは上の
 5 種のどれでもなく、本節の意味での永続化でもない: instance はこの file を読み返さず、消えても
 何も壊れない。
 
 **dump が書くのは行ではなくアイテムである。** transcript はハーネス自身の file 形式で、こちらの合意なく変わる。
 契約が持つのは**型の語彙とアイテムの形だけ**で、file を読むコード (= 分類) は daemon にある
-(`src/transcript/items/`)。型名は `:` 区切りの階層 (`message:user:in` / `thinking` / `tool:Bash` /
-`notice:slash` / `system:compact` / `system:attachment:<kind>` / `hook:<Event>`) で、prefix でその配下を
+(`src/transcript/items/`)。型名は `.` 区切りの階層 (`message.user.in` / `thinking` / `tool.Bash` /
+`notice.slash` / `system.compact` / `system.attachment.<kind>` / `hook.<Event>`) で、prefix でその配下を
 まとめて選べる。アイテムは**行より細かい**: assistant 1 行は thinking と本文と各 tool 呼び出しに分かれ、
 呼び出しと結果は行の実体どおり 2 アイテムのまま `result_item` / `parent_item` で結ぶ
 (結果が何 turn も後に来るものがあるので、畳むかどうかは表示側の判断にする)。両側はハーネスが対にした
@@ -252,20 +253,20 @@ state dir にはもう 1 つ、`dumps/` がある。`session_dump_write` が tra
 (**静かに消える行を作らない**方が優先で、id が無いことは record を落とす理由にならない。`@` 付きなのは、
 record 単位で束ねる読み手がこれをハーネスの uuid と取り違えないため)。
 併せて各アイテムは `source` (`offset` / `bytes` = transcript 内での元 record の位置) を持つ。
-**分類は誤りうるので、生 record を見る道を必ず残す**という要求がこれで、`transcript_read` に
+**分類は誤りうるので、生 record を見る道を必ず残す**という要求がこれで、`transcript.read` に
 `before = offset + bytes` / `max_bytes = bytes` を渡せば元 record が 1 行返る。`bytes` は行末の改行までを含むので、
 返るのは record の切れ端ではなく record そのものになる。1 record が複数アイテムになる場合、
 その全部が同じ `source` を共有する (= 取り寄せは record 単位)。
 
 **呼び出しを見ていない結果は、指し先を捏造せず結び直しのキーで出す。** 呼び出しを見ていない読み方
 (= topic の seed のように file の途中から読み始めた場合) には名指す `parent_item` が無く、record は
-どのツールが呼ばれたかも言わない。**`tool:unknown` はこの場合の予約名である**: 型名の `unknown` は
+どのツールが呼ばれたかも言わない。**`tool.unknown` はこの場合の予約名である**: 型名の `unknown` は
 「結果の本体はあるが、ツール名を daemon が知らない」を表す語彙で、名前を結果の形から推測したものではない。
 `parent_tool_use_id` は必ず載るので、読み手は手元の use アイテムの `tool_use_id` と突き合わせて
 名前を復元できる。形は generic な結果 (`{result}` + `parent_tool_use_id`) である。
 
 **ハーネスが同じ 1 つのものに 2 つの名前を使う場合は、1 つの型に寄せる。** agent を起こすツールは
-`Agent` と `Task` の 2 綴りで書かれてきたが、読み方も意味も同じなので型は `tool:Agent` に正規化する
+`Agent` と `Task` の 2 綴りで書かれてきたが、読み方も意味も同じなので型は `tool.Agent` に正規化する
 (同じものが語彙に 2 名で並ぶと、選択する側が「この transcript がどちらの綴りだったか」を知らないと
 選べなくなる)。record が使った綴りは呼び出し側に `harness_name` として残るので、自分が動かしたものと
 突き合わせる読み手はそれを見る。
@@ -274,7 +275,7 @@ record 単位で束ねる読み手がこれをハーネスの uuid と取り違�
 往復の片道であって、返事は agent 側の都合で別の message として届き、この呼び出しを名指すものは何も無い。
 分類はこれに「対を持たない」印を付け、表示は `(未着)` ではなく `(片道)` と描く。**知らない形も必ず出る**:
 未知のツールは `{input}` / `{result}` の汎用形、未知の添付はその `kind` のまま、どれでもない行は
-`system:unknown` になる。UI と状態の記録 (`mode` / `queue-operation` / `progress` / `*-title` /
+`system.unknown` になる。UI と状態の記録 (`mode` / `queue-operation` / `progress` / `*-title` /
 `file-history-*` 等) だけが対象外で、実測では 1 セッション 3,429 行のうち 1,317 行がこれである。
 
 **主語はセッション、または配下の agent 1 体である** (`agent_id` を指定すると
@@ -287,23 +288,23 @@ record 単位で束ねる読み手がこれをハーネスの uuid と取り違�
 `session` は ccmsg 経由の別セッション。唯一の例外が `user` で、これは関係ではなく **人** を指す。
 agent にとっての親はセッションか別の agent なので、そこを `user` と呼ぶと読み手が機械を人と取り違える。
 ハーネスの実名 (`main` / `team-lead` / teammate 名) は型でなく item の `harness_name` に残る
-(`to` / `from` は `message:session` が sid を書く場所であって、名前の置き場ではない)。
+(`to` / `from` は `message.session` が sid を書く場所であって、名前の置き場ではない)。
 
 **相手が誰かは record が言う。** 分類は次で決める:
 
 | 判定 | 型 |
 |---|---|
-| record が sidechain (= agent 自身の file) の、返信元を持たない user 行 | `message:parent:in` (封筒があれば `harness_name` も載る) |
-| 以降の封筒なし user 行で、主語がセッション本体か teammate | `message:user:in` (人が直接打った 1 通) |
-| 同上で主語が使い捨ての agent | `message:parent:in` (起動した側が続けて指示している) |
-| 同じ file の assistant text | `message:parent:out` (呼び出しを伴わない散文) |
-| `<teammate-message teammate_id=…>` 封筒で送り手が `main` / `team-lead` | `message:parent:in` |
-| 同上で送り手がそれ以外の名前 | `message:team:in` (呼び出しの答えではない独立した 1 通) |
-| `Agent` 呼び出しで `name` / `team_name` 引数を持つ (= teammate の起動) | `message:team:out`、その完了通知が `message:team:in` (結果形) |
-| 同上で持たない | `message:sub:out` / `message:sub:in` |
-| `SendMessage` の宛先が sid | `message:session:out` |
-| 同上が `main` / `team-lead` | `message:parent:out` (呼び出し形) |
-| 同上がそれ以外の名前 | `message:team:out` |
+| record が sidechain (= agent 自身の file) の、返信元を持たない user 行 | `message.parent.in` (封筒があれば `harness_name` も載る) |
+| 以降の封筒なし user 行で、主語がセッション本体か teammate | `message.user.in` (人が直接打った 1 通) |
+| 同上で主語が使い捨ての agent | `message.parent.in` (起動した側が続けて指示している) |
+| 同じ file の assistant text | `message.parent.out` (呼び出しを伴わない散文) |
+| `<teammate-message teammate_id=…>` 封筒で送り手が `main` / `team-lead` | `message.parent.in` |
+| 同上で送り手がそれ以外の名前 | `message.team.in` (呼び出しの答えではない独立した 1 通) |
+| `Agent` 呼び出しで `name` / `team_name` 引数を持つ (= teammate の起動) | `message.team.out`、その完了通知が `message.team.in` (結果形) |
+| 同上で持たない | `message.sub.out` / `message.sub.in` |
+| `SendMessage` の宛先が sid | `message.session.out` |
+| 同上が `main` / `team-lead` | `message.parent.out` (呼び出し形) |
+| 同上がそれ以外の名前 | `message.team.out` |
 
 **名前で宛てた相手が teammate か使い捨て worker かは、名前だけでは決まらない — 名前を持つこと自体が
 teammate の定義である。** 名前を持つ agent は以降も書き足せて、返事は呼び出しの答えではなく独立した
@@ -311,9 +312,9 @@ message として届く。使い捨ての agent は 1 度答えて終わるの�
 名前を `team` に倒すのはこのためで、`sub` に倒すと「来ない答えを待っている呼び出し」として描かれる。
 
 **自分の言葉で書いてくる相手が誰かは、立場から決まる。** teammate は以降も立ち続ける相手で人が直接
-打てるし、セッション本体の file も同じなので、**その途中に現れる封筒なし user 行は `message:user:in`**
-とする。使い捨ての agent に書けるのは起動した側だけなので、**同じ行はその file では `message:parent:in`**
-になる (人の発話ではなく、brief の続き)。開始行はどの立場でも `message:parent:in` のまま —
+打てるし、セッション本体の file も同じなので、**その途中に現れる封筒なし user 行は `message.user.in`**
+とする。使い捨ての agent に書けるのは起動した側だけなので、**同じ行はその file では `message.parent.in`**
+になる (人の発話ではなく、brief の続き)。開始行はどの立場でも `message.parent.in` のまま —
 指示されることは書き掛けられることとは違う。
 
 **どの立場の transcript から読んだかは、file を開いた側が決めてアイテムに載せる (`subject`)。**
@@ -337,14 +338,14 @@ teammate を名前で引く経路が既に同じ note を読んでおり (§5.4)
 teammate の `agent_id` は起動の答えで判るので、そちらが `agent` として載り、`harness_name` が `label` になる。
 
 **何を残すかは `types` で左から順に決める。** 要素は型 (prefix 可)・`-` 始まりの除外・
-`@<preset 名>` (config の preset をその位置に展開、再帰可) で、無指定は `system:attachment` を除く全部。
+`@<preset 名>` (config の preset をその位置に展開、再帰可) で、無指定は `system.attachment` を除く全部。
 preset は契約に焼かず config の `dump.presets` に置く (名前が指すのは「関心の切り方」であって wire の性質ではない)。
 循環参照と未定義の preset 名は **config 読み込み時に拒否**する (dump のたびに落ちるのでは遅い)。
-`daemon add` は編集の出発点として 5 つの例を shared file の `defaults` に書く。一覧は `dump_presets_read` で引く。
+`daemon add` は編集の出発点として 5 つの例を shared file の `defaults` に書く。一覧は `dump.presets.read` で引く。
 **file の形も契約が持つ** (`SessionDumpFile`)。path だけを返して本文は file にあるので、path を渡された後継セッションが読む形は契約の側で決まっていないと読めない。file は
 `{sid, agent_id?, written_at, types, items, ids}` で、`types` は **展開・除外適用後の選択そのもの**である
 (file は要求より長生きするので、何の dump で何を落としたかを file 自身が言えなければならない)。`ids` 台帳は型ではないので選択で落ちない。
-既存の `no_thinking` / `no_agent` は `["-thinking"]` / `["-message:sub", "-tool:Agent"]` と同義で、最後に適用される。
+既存の `no_thinking` / `no_agent` は `["-thinking"]` / `["-message.sub", "-tool.Agent"]` と同義で、最後に適用される。
 落ちるのは使い捨ての往復の機械仕掛けだけで、teammate との往復は残る (teammate とのやり取りは会話であり、
 会話を残せと言った dump から会話が消えることになるため)。
 
@@ -361,11 +362,11 @@ worker の答えだけは何 turn 離れていても指示書の下に付ける)
 
 | 用途 | op / topic | 中身 |
 |---|---|---|
-| 範囲を指定して読む | `transcript_items_read` | dump と同じ範囲指定 (`since_at` / `since_uuid` / `until_*`) + `since_id` / `until_id` (アイテム単位の下限・上限) + `types` 選択 + `limit`。返りは `items` と、切れた時の続き位置 `next` / `prev` |
-| 追記を受け取る | `transcript_items:<sid>` topic | snapshot は末尾側のアイテム一定数、以降の frame は新しく分類されたアイテムの配列 (§6.2 の `append`) |
-| 生 record の取り寄せ | `transcript_read` / `transcript:<sid>` | 変更なし。アイテムの `source` で 1 record を引く経路になる |
+| 範囲を指定して読む | `transcript.items.read` | dump と同じ範囲指定 (`since_at` / `since_uuid` / `until_*`) + `since_id` / `until_id` (アイテム単位の下限・上限) + `types` 選択 + `limit`。返りは `items` と、切れた時の続き位置 `next` / `prev` |
+| 追記を受け取る | `transcript.items:<sid>` topic | snapshot は末尾側のアイテム一定数、以降の frame は新しく分類されたアイテムの配列 (§6.2 の `append`) |
+| 生 record の取り寄せ | `transcript.read` / `transcript:<sid>` | 変更なし。アイテムの `source` で 1 record を引く経路になる |
 
-`transcript_items_read` の解決は `transcript_read` と同じ (announce か walk、`agent_id` で worker の file)、
+`transcript.items.read` の解決は `transcript.read` と同じ (announce か walk、`agent_id` で worker の file)、
 可視範囲も同じ `scope: "role"` である。範囲は **file 全体を分類してから**切るので、範囲外を指すリンクが残るのは
 正常な状態であって壊れたポインタではない (読み手はその id で取りに行ける)。1 ページの上限は件数と bytes の両方で、
 先に達した方で切る: 件数だけではアイテム 1 個の大きさが桁で違うため 1 接続あたりの payload を抑えられず、
@@ -377,7 +378,7 @@ bytes だけでは同じ要求が中身次第で違う件数を返すことに�
 (次は `until_id` に渡す。`until_id` は排他で、既に手元にあるアイテムを二度返さない)。境界を何も置かない
 読みは最初の 1 回であり、`before` を置かない生読みと同じく**末尾**を返す (先頭から読みたい側は `since_at: 0` と言う)。
 末尾から描く client (webui の Timeline) はアイテム側に「そこから遡る」
-座標を持たないので、遡りは範囲指定の側が担う — byte 側で `transcript_read` が `before` で遡るのと同じ役割を、
+座標を持たないので、遡りは範囲指定の側が担う — byte 側で `transcript.read` が `before` で遡るのと同じ役割を、
 アイテム側では上限指定の読みが果たす。返りの並びはどちら向きでも古い順である (transcript の並びがそれであるため)。
 
 **client は生 jsonl を読まない。** 契約が語彙だけを持ち daemon が分類を持つのは、jsonl がハーネスの内部形式で
@@ -437,11 +438,11 @@ endpoint のパス**である。`https://h/` と `https://h/personal/` は別 en
 refresh は httpOnly cookie (`__Secure-ccmsg-<sha256(instance id + 改行 + sub) の先頭 16 hex>`、
 `HttpOnly; Secure; SameSite=Strict; Path=<request のパスの /auth/ までの prefix>`)。
 family を書けるのは mint した instance (`iss`) だけで、別の instance に届いた rotate は
-`auth_rotate` で `iss` へ転送する (§7.3 の経路)。**peer から届いた「自分が mint した family」の
+`auth.rotate` で `iss` へ転送する (§7.3 の経路)。**peer から届いた「自分が mint した family」の
 写しは受理しない** — 単一 writer なのだから、戻ってくる写しは必ず古い状態であり、
 失効させた family を復活させてしまう。直前 1 世代は再送の猶予として「前回の答え」を返し、
 それ以外の**退役済みの値の提示は世代を問わず family ごと失効させる** (提示された instance が
-その family の `iss` でなければ `auth_rotate` で `iss` に投げ、`iss` 側で失効させる。単一 writer は
+その family の `iss` でなければ `auth.rotate` で `iss` に投げ、`iss` 側で失効させる。単一 writer は
 崩さない。`iss` が不達なら断るだけ)。失効は record の削除ではなく **family tombstone (7 日)** で、
 分断中の peer が持っていた生きた写しが復帰時に新しい書き込みとして戻ってこないようにする。
 退役の記録は退役した refresh の
@@ -451,15 +452,15 @@ exp を過ぎたものは次の rotate で落とす (その時点以降は、値
 失効と tombstone はどちらも、その sub の認証済み WS を閉じる — peer から届いた tombstone
 でも同じく閉じる。
 
-`hello` の `auth_expires_at` は接続の期限で、`auth_refresh` は **同じ利用者の** access token
-でしか延ばせない。carrier が http の op (`auth_challenge` / `auth_register` / `auth_assert` /
-`auth_refresh_token`) は **frame としては受けない**: cookie の読み書きは開いた接続の上では
+`hello` の `auth_expires_at` は接続の期限で、`auth.extend` は **同じ利用者の** access token
+でしか延ばせない。carrier が http の op (`auth.challenge` / `auth.register` / `auth.assert` /
+`auth.token.refresh`) は **frame としては受けない**: cookie の読み書きは開いた接続の上では
 できず、答えの片方が欠けたまま返すことになるので、dispatch が属性表を見て断る。carrier 側は
 handler に渡す前に `OP_SCHEMAS` を通し、`Origin` の無い POST も断る。
 
 **challenge は 32 byte の乱数 + 発行者 (instance id)、寿命 5 分、使い切り。** LB で発行と
 応答の instance が違ってよく、応答を受けた側が assertion を検証し、challenge の消費と
-登録 jwt の検証だけを `auth_resolve` で発行者に頼む。**6 桁のコードは判定せずそのまま
+登録 jwt の検証だけを `auth.resolve` で発行者に頼む。**6 桁のコードは判定せずそのまま
 発行者へ運ぶ**: 受けた側が判定すると、試行回数が instance ごとに別々に数えられ、cluster 全体に
 推測をばら撒けてしまう。jwt・コード・試行回数は発行者だけが持つ。
 
@@ -469,7 +470,7 @@ handle を名乗る assertion をそれに照合する。authenticator は handl
 場所に保存するので、同じ人に 2 つの値を配ると端末上で 2 つのアカウントに見えてしまう。
 同じ sub への追加登録は既にある handle を使い回す。
 
-**credential record / token family / tombstone は `auth_records` topic で複製する。**
+**credential record / token family / tombstone は `auth.records` topic で複製する。**
 §7.4 の relay には乗らない — element 粒度なので「instance ごとの全体値」が無く、受け取る側が
 key で畳む。roles は `instance` だけで、relay が `caller` を付ける他の topic と違い
 **instance のまま購読する**: 人が読める場所に置けば token がそのまま漏れる。
@@ -550,7 +551,7 @@ flock を試せば stale 判定は可能だが、Node 標準に flock が無い�
 **配送は対話の選択に当たらない**。対話で起動した Codex は更新案内とディレクトリの信頼確認を
 起動時に求めることがあるが、`codex queue` はそのどちらにも当たらず、新規 config home・未信頼の
 ディレクトリ・標準入力を閉じた状態でも待たずに答えた (0.154.0 実測)。それでも子プロセスには
-標準入力を渡さず時間制限を掛ける — 答えない子は `message_send` をその寿命だけ止めてしまい、
+標準入力を渡さず時間制限を掛ける — 答えない子は `message.send` をその寿命だけ止めてしまい、
 経路 (b) は「来なかった経路が message に何も損させない」ためにある (§4.1)。
 
 **Codex の入力待ちは検出しない。** 承認や質問で止まっている thread は、`CODEX_HOME` の下に
@@ -574,7 +575,7 @@ ccmsg が置いた entry だけを外す。
 
 ## 4. 配送
 
-契約の `message_send` は「宛先 sid に届ける」だけを約束し、届かなかった場合は理由を返す。
+契約の `message.send` は「宛先 sid に届ける」だけを約束し、届かなかった場合は理由を返す。
 daemon 側の実装はその 2 つ (配送手段と、届かない理由の判定) に分かれる。
 
 ### 4.1 配送手段の 2 経路
@@ -661,7 +662,7 @@ sid 単位のファイルにするか 1 本にするかは実装の裁量に残�
 **経路 (b) の配送は at-most-once である。** frame を接続に書いた時点を「配送した」とみなす。
 購読の snapshot は「その sid 宛に未配送のもの全部」で、**購読すること自体が受信**なので、
 snapshot を返す時点で inbox から消し込む (frame は購読の応答に続けて接続に積まれる)。
-`message_send` が購読中の接続へ直接 push する場合も同じで、inbox には積まない。受信側が
+`message.send` が購読中の接続へ直接 push する場合も同じで、inbox には積まない。受信側が
 接続ごと frame を取り落とせば、その本文はどこにも残らない。sid を持たない接続 (人が見ている
 接続) の snapshot は空である — この topic が運ぶのはセッションに言われたことで、人はセッション
 ではない。
@@ -683,7 +684,7 @@ snapshot を返す時点で inbox から消し込む (frame は購読の応答�
 
 `throttled` は契約が定める理由であって、daemon が独自に足すものではない。daemon は契約の理由を返すだけで、
 理由の集合を daemon 側で拡張しない。再提示の契機は §4.3 の「出す条件」そのもの (同じ sid への次の
-`message_send` が (a) で通った / `inbox` を購読した / セッションが live に戻った) であって、時間ではない。
+`message.send` が (a) で通った / `inbox` を購読した / セッションが live に戻った) であって、時間ではない。
 周期タイマーで再送しない (M3 — 相手の token bucket の回復速度は一次資料に無く、間隔を勘で決められない)。
 古い順に 1 通ずつ出し、最初に通らなかったところで止める。通らなかった残りは inbox に順序のまま残る。
 
@@ -723,7 +724,7 @@ instance が再起動すると**既に動いているセッションは二度と
 
 **分類の入力は購読に依存しない**。`sessions/` を「読むこと」と「監視すること」は別物で、
 §6.3 が購読に従属させるのは後者だけ。どのセッションが存在するかは instance 自身の事実
-なので、判定が要る瞬間 (message_send の宛先判定 / last_live の記録 / classify) には
+なので、判定が要る瞬間 (message.send の宛先判定 / last_live の記録 / classify) には
 その場でディレクトリを読む。監視と poll は「変化を購読者へ push する」ための資源であって、
 答えの取得経路ではない。混同すると、誰も購読していない間は生きているセッションが
 `session_not_found` になり、生きたままのセッションが last_live へ「消えた」と書かれる。
@@ -746,10 +747,10 @@ transcript tail で実測を根拠に採った形と同じで、間隔の根拠�
 **gateway のイベントは自分が知っている sid にだけ効かせる**。gateway は全 config home の
 上に立っていて、イベントは sid しか名乗らない。よって「gateway が見た」だけでは
 **この instance のセッションについての証拠にならない** — 別 config home の sid を live と
-分類し、`peers` に行を出し、`message_send` がこの instance に inbox を持たない宛先を
+分類し、`peers` に行を出し、`message.send` がこの instance に inbox を持たない宛先を
 受け付けてしまう。生存 (`gateway_active_at`) の入力として効かせるのは、**hello 済み
 (接続中または `last_live` に残っている) か、自 config home の `sessions/` が名乗っている
-sid だけ**。イベント自体は捨てず `llm_requests` topic には流す — あれは「この instance の
+sid だけ**。イベント自体は捨てず `llm.requests` topic には流す — あれは「この instance の
 セッション」ではなく「gateway が見ているもの」の写しだからである。
 
 **生 status の使い道を絞る** (DV-Q5)。`sessions/<pid>.json` の status は
@@ -789,7 +790,7 @@ frame は変化した行を運ぶので (§6.2)、時計が進んだことはそ
 (= 行がセクションを移り得る唯一の契機)、窓の中で再び見られた時は該当 sid の行を組み直して
 出すに留める — 推論は毎秒何度も観測されるので、1 属性のために「どのセッションが居るか」を
 読み直す仕事まで毎回払わない。推論をそのまま見たい client には gateway 自身の view である
-`llm_requests` がある。
+`llm.requests` がある。
 
 ### 5.3 「最終活動時刻」の 2 種
 
@@ -802,7 +803,7 @@ frame は変化した行を運ぶので (§6.2)、時計が進んだことはそ
 sid が指すファイルは **announce と walk の 2 経路**で引く。hello が名乗った `transcript_path`
 が第一で、正確かつ探索コストが無い。名乗りが無い sid (この instance に hello していない、
 既に終わったセッション) は `projects/**/<sid>.jsonl` を歩いて、**ファイル名が持つ identity**
-から同じファイルに辿り着く。読む op (`transcript_read`) も追う側 (tail、`transcript:<sid>`)
+から同じファイルに辿り着く。読む op (`transcript.read`) も追う側 (tail、`transcript:<sid>`)
 も同じ経路を使うので、**同じ sid はどちらから来ても同じファイルに解決する**。
 
 2 経路とも境界は 1 つで、**自 config home の `projects/` ツリーの中しか見ない** (M6)。
@@ -816,7 +817,7 @@ hello は `ok` のまま (契約は変えない) — **理由は daemon の log 
 
 ## 6. topic の実装
 
-契約は「`topic_subscribe` の直後に `snapshot: true` の frame が 1 回、以後は同型の delta」
+契約は「`topic.subscribe` の直後に `snapshot: true` の frame が 1 回、以後は同型の delta」
 という 1 形だけを定める。daemon 側はこれを **topic ごとに書かず、1 つの仕組みとして持つ**。
 
 ### 6.1 topic 1 つが持つもの
@@ -835,21 +836,21 @@ topic の仕組みに内蔵するので「この topic には抑制がない」�
 
 | 粒度 | topic |
 |---|---|
-| instance ごとの全量置換 | `instances` / `session_errors` / `llm_requests` / `llm_status` |
-| 全量置換 | `session_status:<sid>` |
+| instance ごとの全量置換 | `instances` / `session.errors` / `llm.requests` / `llm.status` |
+| 全量置換 | `session.status:<sid>` |
 | 要素の追加・更新 | `peers` / `agents` / `inbox` / `kv:<ns>` |
 | 追記 (byte offset) | `transcript:<sid>` |
-| 追記 (型付きアイテム) | `transcript_items:<sid>` |
+| 追記 (型付きアイテム) | `transcript.items:<sid>` |
 | event (値を保持しない) | `notify` |
 
 `transcript:<sid>` の snapshot は **ファイルの現在の末尾 (`size`) だけ**で、追記はその後から
 流れる。§5.4 の 2 経路で引けるファイルには常に返るので、**追記が二度と起きない過去セッション
-でも「どこから遡るか」は snapshot から分かる**。購読者は size を起点に `transcript_read` で
+でも「どこから遡るか」は snapshot から分かる**。購読者は size を起点に `transcript.read` で
 遡り、追記が来ればそのまま繋がる。
 
-`transcript_items:<sid>` は同じ追記をアイテムで運ぶ (§3.6)。snapshot は**末尾側のアイテム一定数**で、
+`transcript.items:<sid>` は同じ追記をアイテムで運ぶ (§3.6)。snapshot は**末尾側のアイテム一定数**で、
 byte 側の snapshot が「どこから遡るか」を答えるのに対し、こちらは購読者が即描ける末尾そのものを答える
-(アイテムには「そこから遡る」ための座標が無く、遡るのは範囲指定の `transcript_items_read` の仕事である。
+(アイテムには「そこから遡る」ための座標が無く、遡るのは範囲指定の `transcript.items.read` の仕事である。
 snapshot の先頭アイテムを `until_id` に渡せばその手前が返り、以降は `prev` を渡し続けて遡れる)。
 この末尾は **tail を起動したターンの内側で読む** (byte 側の snapshot が size をそうしているのと同じ理由)。
 seed を待たずに答えると snapshot が空になり、末尾から描く client は「アイテムがまだ無い」と「これが末尾だ」を
@@ -912,7 +913,7 @@ frame 自体が出ないので、これが heartbeat になることはない。
 
 | topic 種別 (粒度) | 例 | 扱い |
 |---|---|---|
-| 全量置換 (`whole` / `per_instance_whole`) | `instances` / `session_status:<sid>` / `llm_status` | **畳む**。`topic × instance` を key に、待っている frame を最新の値で置き換える |
+| 全量置換 (`whole` / `per_instance_whole`) | `instances` / `session.status:<sid>` / `llm.status` | **畳む**。`topic × instance` を key に、待っている frame を最新の値で置き換える |
 | delta・event (`element` / `append` / `event`) | `peers` / `agents` / `inbox` / `kv:<ns>` / `transcript:<sid>` / `notify` | **畳まない**。発生順に並べ、queue の上限を超えたら投入側に返す |
 
 畳んだ値と並んだ出来事は **同じ flush で、queue に入った順に** 出る。畳んだ値は最初に入った位置を
@@ -929,12 +930,12 @@ frame 自体が出ないので、これが heartbeat になることはない。
 
 上限超過は **黙って捨てずに投入側へ返す** (`publish` が `rate_limited` を返す):
 
-- `notify_send` / `say_post`: op が `rate_limited` を返す。引数は正しく失敗も起きていないので、
+- `notify.send` / `say.post`: op が `rate_limited` を返す。引数は正しく失敗も起きていないので、
   送り手が読み直すべきものは無く、読み手が追いついてから同じ呼び出しを送れば通る
-- `message_send` の inbox 経路: 既存の `throttled` と同じ扱い = inbox に保持して後で offer し直す
+- `message.send` の inbox 経路: 既存の `throttled` と同じ扱い = inbox に保持して後で offer し直す
   (§4.4)。メッセージは落ちない
 - `transcript:<sid>` の追記: frame は `start` / `size` を持つので、購読側は欠けを検出して
-  `transcript_read` で読み直せる
+  `transcript.read` で読み直せる
 
 ## 7. mesh
 
@@ -985,7 +986,7 @@ endpoint を持たない (行そのものは出る)。
 ### 7.2 dial と glare
 
 - 各 instance は全 peer に対等に dial する (dial 責務を片側に割り当てない)
-- 認証は mesh-peer-auth。`role: "instance"` の `hello` が起点で、C2 で鍵と challenge を交換し、
+- 認証は mesh-peer-auth。`hello.instance` が起点で、C2 で鍵と challenge を交換し、
   C1 で proof を返す。ack を受けるまでメッセージを送らない
 - glare (2 本張られた) は両方を検証したうえで、`iss` 文字列の小さい側が dial した接続を残す。
   比べるのは **endpoint URL** である (`iss` は endpoint であって id ではない)。両端が同じ 2 本の
@@ -1142,7 +1143,7 @@ field が実際に出てきたときに、その field に `set` 規則と明示
 - `ccmsg daemon supervise` — foreground の監督者。共通 config の `instances[]` を起動時に
   1 回読み (DV-Q8)、各 config home の instance を子プロセスとして起動し、落ちたら上げ直す。
   再起動の待ちは指数的に伸びる (根拠は実装のコメント: 起動直後に落ちる config 不備を
-  spin させないため)。SIGTERM を受けたら各子を `instance_shutdown` で §8.5 の順に止める。
+  spin させないため)。SIGTERM を受けたら各子を `instance.shutdown` で §8.5 の順に止める。
 
   **instance を起こす経路は監督者だけである。** `ccmsg daemon start / stop / restart /
   status` は監督者への要求であり、CLI が自分で子を起こす経路は持たない — 別経路で起きた

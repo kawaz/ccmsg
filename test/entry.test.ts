@@ -77,7 +77,7 @@ describe("the handshake (§3.1)", () => {
     expect(accepted.headers.get("sec-websocket-protocol")).toBe(`ccmsg.token.${token}`);
     const client = await connectWs(instance.http[0] ?? "", personToken(instance));
     clients.push(client);
-    client.send({ op: "hello", request_id: "1", role: "user", protocol_version: PROTOCOL_VERSION });
+    client.send({ op: "hello.user", request_id: "1", protocol_version: PROTOCOL_VERSION });
     expect(await client.next()).toMatchObject({ ok: true, request_id: "1" });
   });
 
@@ -85,7 +85,7 @@ describe("the handshake (§3.1)", () => {
     const instance = await serving();
     const client = await connectWs(instance.http[0] ?? "", personToken(instance));
     clients.push(client);
-    client.send({ op: "hello", request_id: "1", role: "user", protocol_version: PROTOCOL_VERSION });
+    client.send({ op: "hello.user", request_id: "1", protocol_version: PROTOCOL_VERSION });
     const reply = (await client.next()) as { auth_expires_at?: number };
     expect(typeof reply.auth_expires_at).toBe("number");
   });

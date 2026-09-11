@@ -419,7 +419,7 @@ describe("the supervisor", () => {
     add(process.env, home);
 
     // The shape the wedge takes in the field: the instance answers `hello` and
-    // `instance_shutdown`, writes `stopping`, and never exits. The graceful
+    // `instance.shutdown`, writes `stopping`, and never exits. The graceful
     // stage succeeds and settles nothing, so it is the deadline after it that
     // has to move the shutdown along.
     const signals: string[] = [];
@@ -465,7 +465,7 @@ describe("the supervisor", () => {
     answering?.stop(true);
     // The graceful stage got its answer, so what followed was the deadline on a
     // child that had agreed to leave and had not.
-    expect(asked).toEqual(["hello", "instance_shutdown"]);
+    expect(asked).toEqual(["hello.user", "instance.shutdown"]);
     expect(signals).toEqual(["SIGTERM", "SIGKILL"]);
     expect(stages).toEqual(["asked", "sigterm", "sigkill", "exited"]);
   }, 15_000);

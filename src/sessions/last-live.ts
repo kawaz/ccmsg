@@ -106,7 +106,7 @@ export class LastLiveStore {
     this.#save();
   }
 
-  /** Drop one entry: `session_last_live_remove`, and a session registering
+  /** Drop one entry: `session.forget`, and a session registering
    * again, which is what moves it back to the connected list. */
   remove(sid: Sid): boolean {
     if (!this.#entries.delete(sid)) return false;

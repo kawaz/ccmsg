@@ -1,11 +1,14 @@
 import { basename, dirname } from "node:path";
-import type { HelloArgs } from "@ccmsg/protocol";
+import type { HelloSessionArgs } from "@ccmsg/protocol";
 
 /** What a session can say about itself when it greets: the contract's shared
  * fields, each of them optional because a greeting states what it knows and
  * the instance leaves the rest unknown (contract, `SessionMetaFields`). */
 export type StatedMeta = Partial<
-  Pick<HelloArgs, "repo" | "ws" | "cwd" | "repo_root" | "branch" | "transcript_path" | "title">
+  Pick<
+    HelloSessionArgs,
+    "repo" | "ws" | "cwd" | "repo_root" | "branch" | "transcript_path" | "title"
+  >
 >;
 
 /** How a question is put to the version control the session works under. The
