@@ -286,13 +286,14 @@ record 単位で束ねる読み手がこれをハーネスの uuid と取り違�
 `parent` は主語を起こした相手、`sub` は使い捨てで起こした子、`team` は名前を持って居続ける相手、
 `session` は ccmsg 経由の別セッション。唯一の例外が `user` で、これは関係ではなく **人** を指す。
 agent にとっての親はセッションか別の agent なので、そこを `user` と呼ぶと読み手が機械を人と取り違える。
-ハーネスの実名 (`main` / `team-lead` / teammate 名) は型でなく item の `to` / `from` に残る。
+ハーネスの実名 (`main` / `team-lead` / teammate 名) は型でなく item の `harness_name` に残る
+(`to` / `from` は `message:session` が sid を書く場所であって、名前の置き場ではない)。
 
 **相手が誰かは record が言う。** 分類は次で決める:
 
 | 判定 | 型 |
 |---|---|
-| record が sidechain (= agent 自身の file) の、返信元を持たない user 行 | `message:parent:in` (封筒があれば `from` も載る) |
+| record が sidechain (= agent 自身の file) の、返信元を持たない user 行 | `message:parent:in` (封筒があれば `harness_name` も載る) |
 | 同じ file の assistant text | `message:parent:out` (呼び出しを伴わない散文) |
 | `<teammate-message teammate_id=…>` 封筒で送り手が `main` / `team-lead` | `message:parent:in` |
 | 同上で送り手がそれ以外の名前 | `message:team:in` (呼び出しの答えではない独立した 1 通) |
@@ -315,7 +316,7 @@ message として届く。使い捨ての agent は 1 度答えて終わるの�
 
 **teammate 名は `ids` 台帳に載せない。** 台帳は「読み手が次に掘る対象」の一覧で、載る id は dump の
 主語にできるものに限る。teammate 名は `DumpIdKind` のどれでもなく、名前では dump を引けない。
-teammate の `agent_id` は起動の答えで判るので、そちらが `agent` として載り、名前は `label` になる。
+teammate の `agent_id` は起動の答えで判るので、そちらが `agent` として載り、`harness_name` が `label` になる。
 
 **何を残すかは `types` で左から順に決める。** 要素は型 (prefix 可)・`-` 始まりの除外・
 `@<preset 名>` (config の preset をその位置に展開、再帰可) で、無指定は `system:attachment` を除く全部。

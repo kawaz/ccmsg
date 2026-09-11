@@ -302,7 +302,7 @@ export class Classification {
               role: "use",
               tool_use_id: id,
               text: str(input["prompt"]) ?? "",
-              to: named,
+              harness_name: named,
               ...optional("subagent_type", str(input["subagent_type"])),
               ...optional("description", str(input["description"])),
             });
@@ -324,7 +324,7 @@ export class Classification {
           role: "use",
           tool_use_id: id,
           text: text(input["message"]) ?? "",
-          to,
+          harness_name: to,
           ...optional("summary", str(input["summary"])),
           one_way: true,
         });
@@ -564,10 +564,12 @@ function addressed(to: string): boolean {
 const LEADS = new Set(["main", "team-lead"]);
 
 /** Who a message came from and under which id, as the envelope the harness
- * wraps one in says it. */
+ * wraps one in says it. The name is the harness's own spelling and not a sid,
+ * which is why it travels as `harness_name`: what the type already said is
+ * which party this was, and the name is only what that party was called. */
 function envelope(said: string): Record<string, unknown> {
   return {
-    ...optional("from", attribute(said, "teammate_id")),
+    ...optional("harness_name", attribute(said, "teammate_id")),
     ...optional("msg_id", attribute(said, "mid")),
   };
 }

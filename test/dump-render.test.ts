@@ -190,13 +190,13 @@ describe("a call and what came back", () => {
     const start = item("c8a2f371", "message:team:out", {
       role: "use",
       tool_use_id: "t9",
-      to: "contract-dump-items",
+      harness_name: "contract-dump-items",
       subagent_type: "opus5-worker-high",
       text: "契約に 2 型を足して。",
       result_item: "d4c1a0b2:0",
     });
     const letter = item("e5b70c93", "message:team:in", {
-      from: "contract-dump-items",
+      harness_name: "contract-dump-items",
       text: "fixtures まで通った。",
     });
     const done = item("d4c1a0b2", "message:team:in", {
@@ -221,13 +221,13 @@ describe("a call and what came back", () => {
 
   test("what the one above said and what was said back to it", () => {
     const told = item("a9f30d15", "message:parent:in", {
-      from: "team-lead",
+      harness_name: "team-lead",
       text: "docs を書き直す。",
     });
     const sent = item("b0e41c26", "message:parent:out", {
       role: "use",
       tool_use_id: "t3",
-      to: "main",
+      harness_name: "main",
       summary: "途中報告",
       text: "preset まで直してよいか",
       one_way: true,

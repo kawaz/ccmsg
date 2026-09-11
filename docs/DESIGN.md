@@ -323,13 +323,14 @@ stands** — `parent` is whoever started it, `sub` the throwaway agents below, `
 that goes on standing, `session` another session over ccmsg. The one exception is `user`, which is
 a person and not a relation: an agent's parent is a session or another agent, and calling that
 `user` would have a reader take a machine for a person. The harness's own names (`main`,
-`team-lead`, a teammate's) stay on the item as `to` / `from` rather than in the type.
+`team-lead`, a teammate's) stay on the item as `harness_name` rather than in the type — `to` and
+`from` are where `message:session` writes a sid, and not a place for a name.
 
 **The record says who the counterpart is.** The classification decides by:
 
 | what the record says | type |
 |---|---|
-| a user line with nothing it replies to, in a sidechain file (an agent's own) | `message:parent:in` (with `from` when an envelope carried one) |
+| a user line with nothing it replies to, in a sidechain file (an agent's own) | `message:parent:in` (with `harness_name` when an envelope carried one) |
 | assistant text in that same file | `message:parent:out`, prose with no call behind it |
 | a `<teammate-message teammate_id=…>` envelope written by `main` / `team-lead` | `message:parent:in` |
 | the same envelope written under any other name | `message:team:in`, a message of its own rather than an answer |
@@ -356,7 +357,7 @@ claiming a person wrote it — a teammate's instructions do come from above.
 **A teammate's name is not in the `ids` ledger.** The ledger is what a reader descends by, so what
 it lists is what can be the subject of a dump. A name is none of the `DumpIdKind`s and nothing can
 be dumped by one. A teammate's `agent_id` is known from the answer to the call that started it, so
-that is what the ledger carries, with the name as its `label`.
+that is what the ledger carries, with `harness_name` as its `label`.
 
 **What is kept is decided by `types`, read left to right.** An element is a type name (a prefix
 will do), an exclusion beginning with `-`, or `@<preset>` expanding a configured selection in

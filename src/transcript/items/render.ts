@@ -92,18 +92,18 @@ const ITEMS: Record<string, Draw> = {
   // the record gave one — an answer handed back as prose names nobody, and a
   // heading that invented a name for it would say more than the file does.
   "message:parent:in": (item) => ({
-    head: words(field(item, "from", "from="), mid(item)),
+    head: words(field(item, "harness_name", "from="), mid(item)),
     body: lines(str(item, "text")),
   }),
 
   "message:parent:out": (item) => ({
-    head: words(field(item, "to", "to="), str(item, "summary")),
+    head: words(field(item, "harness_name", "to="), str(item, "summary")),
     body: lines(str(item, "text")),
   }),
 
   "message:team:out": (item) => ({
     head: words(
-      field(item, "to", "to="),
+      field(item, "harness_name", "to="),
       field(item, "agent_id", "agent="),
       field(item, "subagent_type", "type="),
       str(item, "description"),
@@ -117,7 +117,7 @@ const ITEMS: Record<string, Draw> = {
   // ended. Each heading says whichever of those the item carried.
   "message:team:in": (item) => ({
     head: words(
-      field(item, "from", "from="),
+      field(item, "harness_name", "from="),
       mid(item),
       field(item, "agent_id", "agent="),
       field(item, "status", "status="),

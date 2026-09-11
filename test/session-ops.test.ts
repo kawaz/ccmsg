@@ -848,7 +848,7 @@ describe("session_dump_write", () => {
     const asked = items.find((item) => item.type === "message:team:out");
     const answered = items.find((item) => item.type === "message:team:in");
     expect(asked?.["text"]).toBe("count the lines");
-    expect(asked?.["to"]).toBe("count-lines");
+    expect(asked?.["harness_name"]).toBe("count-lines");
     expect(asked?.["agent_id"]).toBe("acounter-9f");
     expect(answered?.["parent_item"]).toBe(asked?.id);
     expect(answered?.["text"]).toBe("there were three");

@@ -276,7 +276,7 @@ describe("classifying a transcript", () => {
     ]);
     const brief = only(items, "message:team:out");
     const reply = only(items, "message:team:in");
-    expect(of(brief)["to"]).toBe("counter");
+    expect(of(brief)["harness_name"]).toBe("counter");
     expect(of(brief)["text"]).toBe("count the lines");
     // The id is not known until the agent has started, so the message that
     // asked for it learns its own id from the answer.
@@ -331,8 +331,8 @@ describe("classifying a transcript", () => {
     // A teammate writes under its own name and what it sends is a message of
     // its own; a lead is the one above wherever the subject stands.
     expect(typesOf(items)).toEqual(["message:user:in", "message:team:in", "message:parent:in"]);
-    expect(of(items[1])["from"]).toBe("a-worker");
-    expect(of(items[2])["from"]).toBe("team-lead");
+    expect(of(items[1])["harness_name"]).toBe("a-worker");
+    expect(of(items[2])["harness_name"]).toBe("team-lead");
     for (const item of items) expect(validationErrors(TranscriptItem, item)).toEqual([]);
   });
 
@@ -505,7 +505,7 @@ describe("classifying a transcript", () => {
     // machine for a person. The names are the same wherever the subject
     // stands, which is what lets one preset be carried down a chain.
     expect(typesOf(items)).toEqual(["message:parent:in", "message:parent:out"]);
-    expect(of(items[0])["from"]).toBe("team-lead");
+    expect(of(items[0])["harness_name"]).toBe("team-lead");
     // The answer is prose with no call behind it — the one message an agent is
     // certain to send, and the reason `parent:out` is not a call alone.
     expect(of(items[1])["role"]).toBeUndefined();
@@ -522,7 +522,7 @@ describe("classifying a transcript", () => {
       ),
     );
     expect(typesOf(items)).toEqual(["message:parent:in", "message:parent:out"]);
-    expect(of(items[0])["from"]).toBeUndefined();
+    expect(of(items[0])["harness_name"]).toBeUndefined();
   });
 
   test("turns are counted from where a person spoke", () => {
@@ -552,7 +552,7 @@ describe("classifying a transcript", () => {
     );
     const brief = only(items, "message:team:out");
     expect(of(brief)["text"]).toBe("carry on");
-    expect(of(brief)["to"]).toBe("counter");
+    expect(of(brief)["harness_name"]).toBe("counter");
     // What the agent says back arrives under nothing that names this, so the
     // brief says it is waiting for nothing rather than looking unanswered.
     expect(of(brief)["one_way"]).toBe(true);
@@ -591,7 +591,9 @@ describe("classifying a transcript", () => {
       "message:parent:out",
     ]);
     const reported = items[1];
-    expect(of(reported)["to"]).toBe("team-lead");
+    // The name is the harness's own spelling for the one above, kept beside a
+    // type that already said which party this was. A sid is what `to` means.
+    expect(of(reported)["harness_name"]).toBe("team-lead");
     expect(of(reported)["text"]).toBe("done");
     expect(of(reported)["summary"]).toBe("report");
     expect(of(reported)["tool_use_id"]).toBe("t1");
