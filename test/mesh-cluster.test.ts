@@ -119,6 +119,8 @@ function transcriptIn(env: Env, sid: Sid): void {
 }
 
 const SID_ON_B = "11111111-1111-4111-8111-111111111111" as Sid;
+/** A second session id, for a case telling one row from another. */
+const SID = "22222222-2222-4222-8222-222222222222" as Sid;
 const UNKNOWN_SID = "22222222-2222-4222-8222-222222222222" as Sid;
 const OTHER_SID = "33333333-3333-4333-8333-333333333333" as Sid;
 
@@ -599,7 +601,7 @@ describe("what a disconnected instance leaves behind (§7.5, DV-Q12)", () => {
     // instance holding it already reports it on `agents`.
     const relay = new Relay({ publish: () => undefined });
     const peer = "ws://127.0.0.1:9" as InstanceId;
-    relay.accept(peer, "peers", { peers: [], last_live: [] });
+    relay.accept(peer, "peers", { peers: [] });
     relay.accept(peer, "agents", {
       agents: [
         { sid: SID_ON_B, instance: peer, pid: 1, cwd: "/", kind: "interactive", started_at: 0 },
@@ -622,6 +624,49 @@ describe("what a disconnected instance leaves behind (§7.5, DV-Q12)", () => {
     const peer = "ws://127.0.0.1:9" as InstanceId;
     relay.accept(peer, "peers", { peers: [{ sid: SID_ON_B, instance: peer, state: "live" }] });
     relay.accept(peer, "peers", { peers: [{ sid: SID_ON_B, instance: peer, removed: true }] });
+    expect(relay.owner(SID_ON_B)).toBeUndefined();
+  });
+
+  test("what travels on is the part of a frame that said something", () => {
+    const passed: { topic: string; data: unknown }[] = [];
+    const relay = new Relay({ publish: (topic, data) => passed.push({ topic, data }) });
+    const peer = "ws://127.0.0.1:9" as InstanceId;
+    const row = { sid: SID_ON_B, instance: peer, state: "live" };
+
+    relay.accept(peer, "peers", { peers: [row] });
+    // The peer restating a row it has already stated tells this instance
+    // nothing, so nothing reaches its subscribers either (M5, per element).
+    relay.accept(peer, "peers", { peers: [row] });
+    // And a frame that moves one of two rows carries that one.
+    const other = { sid: SID, instance: peer, state: "live" };
+    relay.accept(peer, "peers", { peers: [other] });
+    relay.accept(peer, "peers", { peers: [{ ...row, state: "waiting" }] });
+
+    expect(passed.map((frame) => (frame.data as { peers: { sid: string }[] }).peers)).toEqual([
+      [row],
+      [other],
+      [{ ...row, state: "waiting" }],
+    ]);
+  });
+
+  test("an opening frame from a peer is its list restated, not changes folded in", () => {
+    const passed: unknown[] = [];
+    const relay = new Relay({ publish: (_topic, data) => passed.push(data) });
+    const peer = "ws://127.0.0.1:9" as InstanceId;
+    relay.accept(peer, "peers", {
+      peers: [
+        { sid: SID_ON_B, instance: peer, state: "live" },
+        { sid: SID, instance: peer, state: "live" },
+      ],
+    });
+
+    // The peer came back and opens with what it holds now, which is one of the
+    // two. The other is gone from its list and from nothing else, so the
+    // removal is this instance's to state onward.
+    passed.length = 0;
+    relay.accept(peer, "peers", { peers: [{ sid: SID, instance: peer, state: "live" }] }, true);
+
+    expect(passed).toEqual([{ peers: [{ sid: SID_ON_B, instance: peer, removed: true }] }]);
     expect(relay.owner(SID_ON_B)).toBeUndefined();
   });
 

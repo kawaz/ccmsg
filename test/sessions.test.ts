@@ -860,6 +860,109 @@ describe("the harness's sessions directory", () => {
   });
 });
 
+describe("a frame carries the rows that changed", () => {
+  /** The rows of the most recent `peers` frame, which is what a subscriber is
+   * told to change about the list it holds. */
+  function stated(published: Published[]): (PeerInfo & { removed?: true })[] {
+    const frame = peersOf(published).at(-1);
+    return (frame?.data as { peers: (PeerInfo & { removed?: true })[] } | undefined)?.peers ?? [];
+  }
+
+  test("a session whose inference just ran is one row, not the list restated", () => {
+    let seen = NOW;
+    const { domain, published } = sessions({
+      gateway: { activeAt: (sid) => (sid === OTHER_SID ? seen : undefined) },
+    });
+    // Two sessions, so a frame naming one of them is telling the two apart
+    // rather than having only one to name.
+    helloFrom(domain, greeting(), SID);
+    helloFrom(domain, greeting(), OTHER_SID);
+    domain.snapshot("peers");
+
+    published.length = 0;
+    for (let n = 1; n <= 10; n += 1) {
+      seen = NOW + n * 100;
+      domain.refresh();
+    }
+
+    const frames = peersOf(published);
+    expect(frames).toHaveLength(10);
+    for (const frame of frames) {
+      const rows = (frame.data as { peers: PeerInfo[] }).peers;
+      expect(rows.map((row) => row.sid)).toEqual([OTHER_SID]);
+    }
+    expect(stated(published)[0]?.gateway_active_at).toBe(NOW + 1_000);
+  });
+
+  test("a recompute that found nothing different says nothing", () => {
+    const { domain, published } = sessions();
+    helloFrom(domain, greeting());
+    domain.snapshot("peers");
+
+    published.length = 0;
+    domain.refresh();
+
+    expect(peersOf(published)).toEqual([]);
+  });
+
+  test("a session that goes stays as the same row, and a forgotten one leaves as a removal", () => {
+    const context = sessions();
+    const conn = greeting();
+    helloFrom(context.domain, conn, SID);
+    context.domain.snapshot("peers");
+
+    // Gone from the connections is an update of the row it already had: the
+    // classification moves and the sid stays.
+    context.published.length = 0;
+    declareStopping(context.domain, conn);
+    conn.close();
+    expect(stated(context.published)).toHaveLength(1);
+    expect(stated(context.published)[0]).toMatchObject({ sid: SID, state: "paused" });
+
+    // Forgetting it is the row leaving, which an absence could not say.
+    context.published.length = 0;
+    expect(context.domain.forget(SID)).toBe(true);
+    expect(stated(context.published)).toEqual([
+      { sid: SID, instance: SELF, removed: true } as unknown as PeerInfo,
+    ]);
+  });
+
+  test("the opening frame carries every row, connected and lost alike", () => {
+    const context = sessions();
+    const conn = greeting();
+    helloFrom(context.domain, conn, SID);
+    declareStopping(context.domain, conn);
+    conn.close();
+    helloFrom(context.domain, greeting(), OTHER_SID);
+
+    const snapshot = context.domain.snapshot("peers")[0];
+    const rows = (snapshot?.data as { peers: PeerInfo[] } | undefined)?.peers ?? [];
+    expect(rows.map((row) => row.sid).sort()).toEqual([SID, OTHER_SID].sort());
+    expect(rows.find((row) => row.sid === SID)?.state).toBe("paused");
+  });
+
+  test("what the opening frame stated is what the next difference is taken against", () => {
+    const context = sessions();
+    const conn = greeting();
+    helloFrom(context.domain, conn, SID);
+    declareStopping(context.domain, conn);
+    conn.close();
+
+    // The row has travelled one way only: a subscriber arriving now is handed
+    // it by the opening frame, and nothing has been published since.
+    context.domain.snapshot("peers");
+    context.published.length = 0;
+
+    // So its removal has to go out, against what that frame stated — a
+    // difference taken against nothing would leave the subscriber holding a
+    // session the instance has forgotten.
+    expect(context.domain.forget(SID)).toBe(true);
+    expect(stated(context.published)).toEqual([
+      { sid: SID, instance: SELF, removed: true } as unknown as PeerInfo,
+    ]);
+  });
+});
+
 describe("the classification on the wire", () => {
   test("every row of both lists states its state and whether it is pinned", async () => {
     const context = sessions();

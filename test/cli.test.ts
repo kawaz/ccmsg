@@ -218,6 +218,20 @@ describe("ccmsg peers / ccmsg agents", () => {
     expect(found).toContain(SID);
   });
 
+  test("a session the instance has lost is a row of the same list", async () => {
+    const at = await instance();
+    // Greeted and gone: the row stays, with the classification saying which
+    // of the two it is now. There is no second list to look in.
+    const session = await greet(at, { role: "session", sid: OTHER_SID });
+    session.send({ op: "session_stopping", request_id: "stop" });
+    expect((await session.next())["ok"]).toBe(true);
+    await session.close();
+
+    const answer = await answered(["peers"]);
+    const rows = (answer[0]?.data["peers"] ?? []) as { sid: string; state?: string }[];
+    expect(rows.find((row) => row.sid === OTHER_SID)?.state).toBe("paused");
+  });
+
   test("agents is the harness's own view, which covers a session that never connected", async () => {
     const at = await instance();
     // A state file the harness would have written, naming a live process: a
