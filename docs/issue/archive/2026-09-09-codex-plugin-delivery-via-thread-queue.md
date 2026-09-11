@@ -1,6 +1,6 @@
 ---
 title: codex plugin: 配送は `codex queue --thread <sid>`、hello でハーネス種別を名乗る
-status: open
+status: resolved
 category: design
 created: 2026-09-09T16:52:57+09:00
 last_read:
@@ -9,10 +9,10 @@ wip_entered:
 blocked_entered:
 pending_entered:
 discarded_entered:
-resolved_entered:
+resolved_entered: 2026-09-11T11:51:56+09:00
 discard_reason:
 pending_reason:
-close_reason:
+close_reason: ["done:ハーネス種別は契約に載せず instance の属性 (src/harness/index.ts, config `harness: codex`)","done:配送は src/messaging/direct.ts の route (a) が socket 書き込みと `codex queue --thread <sid>` の2実装に分岐 (§4.1)","done:`ccmsg plugin install codex` は src/plugin/codex.ts で SessionStart/SessionEnd hooks + features.hooks 検出"]
 blocked_by:
 origin: 自リポ TODO
 ---
