@@ -1,17 +1,17 @@
 ---
 title: 1 ホスト複数クラスタの設計 (クラスタ間リンク種別、launchd/webui 配線)
-status: open
+status: pending-sublimation
 category: design
 created: 2026-09-11T13:37:44+09:00
 last_read:
 open_entered: 2026-09-11T13:37:44+09:00
 wip_entered:
 blocked_entered:
-pending_entered:
+pending_entered: 2026-09-12T05:37:06+09:00
 discarded_entered:
 resolved_entered:
 discard_reason:
-pending_reason:
+pending_reason: ["kawaz 裁定 (2026-09-12 r303 m28): cluster 議論はまとまっていない (権限構造が未解決) ので一旦全部無しに戻す。v0.10.x で入れた cluster 構造 (clusters.json / clusters/ / ccmsg mesh / --cluster) は撤去し、endpoints.json + supervisor.json + satisfied.json の形 (正本は daemon DESIGN §8.2) に置き換える。本 issue は cluster / 権限構造をちゃんと考える時に再開。用語定義 (instance / cluster / mesh) と論点 (多重所属、複数ホスト、admin) は本文に残す"]
 close_reason:
 blocked_by:
 origin: 自リポ TODO
