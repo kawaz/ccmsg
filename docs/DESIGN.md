@@ -802,12 +802,17 @@ drifts per instance.
 | `last_live` + `stopped_at` | Previously running / intentionally stopped | a file we wrote ourselves |
 | transcript's fold | Whether it's stopped on an API error, the last human input | tail |
 
-**The two lists of `peers` are split by "alive" and "not alive"**, never by whether there is a
-connection. The one thing that greets is the `SessionStart` hook, so when an instance restarts
-**the sessions already running never greet it again** — putting only what holds a connection on
-`peers[]` makes a host full of running sessions read as "nothing alive". A session `sessions/`
-names is a row of `peers[]` whether or not it ever greeted, and which of the two it is is what
-the row's `state` says (§5.2).
+**`peers` is not split by whether there is a connection.** The one thing that greets is the
+`SessionStart` hook, so when an instance restarts **the sessions already running never greet it
+again** — carrying only what holds a connection makes a host full of running sessions read as
+"nothing alive". A session `sessions/` names is a row whether or not it ever greeted, and what
+it is now is what the row's `state` says (§5.2).
+
+**Connected and lost sessions travel as one kind of row**, not as two lists. A session
+registering or going quiet is an update of `state` on a row that kept its identity, rather than
+an entry moving between lists. The fields only a lost row has (`last_seen_at`, `stopped_at`,
+and what a resume must resume as — `model` and `effort`) sit on that same row, beside the
+connection fields it no longer has.
 
 A row with no connection carries none of the fields that are about one (`connected_at`,
 `last_activity_at`, `client_version`, `protocol_version`): no client ever announced itself, so
@@ -889,14 +894,11 @@ liveness, and the next time a payload is built it is gone from the row's `gatewa
 well. The window is judged at the moment of reading; no timer announces that it has closed
 (§1.3).
 
-Because the attribute is not the classification, **the gateway seeing a session again does not
-put a frame on `peers`**. What the sessions domain is told about is the window opening, which
-is a row moving between sections; being seen again inside a window it is already in moves a
-clock, and a clock is not news a subscriber asked for (§6.1). Inference is observed several
-times a second, so publishing on each would restate the whole list at that rate for rows that
-differ in one attribute. The value is not lost: the next payload — whatever raised it — carries
-the newest reading, and a client that wants to watch inference as it happens has
-`llm_requests`, which is a view of the gateway rather than of the list.
+Because the attribute is not the classification, **the gateway seeing a session again puts
+that one row on `peers` and nothing else**. A frame carries the rows that changed (§6.2), so a
+clock moving on one row is that row's update and no other row is restated. A client that wants
+to watch inference as it happens has `llm_requests`, which is a view of the gateway rather than
+of the list.
 
 ### 5.3 The two kinds of "last activity time"
 
@@ -950,9 +952,9 @@ suppression" can never happen.
 
 | Granularity | topic |
 |---|---|
-| Full replacement per instance | `peers` / `agents` / `session_errors` / `llm_requests` / `llm_status` |
+| Full replacement per instance | `instances` / `session_errors` / `llm_requests` / `llm_status` |
 | Full replacement | `session_status:<sid>` |
-| Element add / update | `inbox` / `kv:<ns>` |
+| Element add / update | `peers` / `agents` / `inbox` / `kv:<ns>` |
 | Append (byte offset) | `transcript:<sid>` |
 | Append (typed items) | `transcript_items:<sid>` |
 | Event (no value held) | `notify` |
@@ -990,11 +992,19 @@ holds is bounded — the calls still outstanding, and the items of the opening f
 `per_instance_whole`). Sending the same full value again leaves the subscriber holding what it
 already holds, so there is nothing in it to send.
 
-Suppression compares against the last wire sent, so **a payload never states when it was
-read**. The `agents` contract has a `polled_at`, and this instance leaves it out: a value that
-changes on every confirmation poll (§5.1) would make each poll a value the list did not have
-before, even for a directory that had not changed, and the one suppression every topic shares
-(M5) would let it through as a five-second heartbeat.
+**`peers` and `agents` ask "is this new" of each row.** Both are element-granular, so
+suppression per frame cannot apply; instead **only the rows that differ from the rows last
+sent** go into a frame. The comparison is the same one (against the form last sent) with its
+unit changed from the value to the element, so it lives in the topic mechanism as one
+implementation (M5). Nothing different means no frame at all. A row that is gone cannot be said
+by absence, so it leaves as an element marked `{sid, instance, removed: true}`.
+
+The difference is taken against **what subscribers were sent**, so the opening `snapshot` frame
+(every row) sets that baseline too. Without it, the departure of a row that has only ever
+travelled in a snapshot would be a departure of a row nothing had sent, and would reach nobody.
+
+`agents` states its `polled_at`. It changes on every confirmation poll (§5.1), but an empty row
+difference publishes no frame at all, so it can never become a heartbeat.
 
 **The delta granularities (`element` / `append`) and `event` pass straight through.** Two
 frames with the same content are two things happening, not a duplicate — offering an inbox
@@ -1036,8 +1046,8 @@ the same one place suppression reads it (M5).
 
 | Topic kind (granularity) | Examples | Treatment |
 |---|---|---|
-| Whole-value replacement (`whole` / `per_instance_whole`) | `peers` / `agents` / `session_status:<sid>` / `llm_status` | **Folded.** Keyed by `topic × instance`, the waiting frame is replaced with the latest value |
-| Delta and event (`element` / `append` / `event`) | `inbox` / `kv:<ns>` / `transcript:<sid>` / `notify` | **Not folded.** Queued in the order raised; past the queue limit the frame is refused back to whoever raised it |
+| Whole-value replacement (`whole` / `per_instance_whole`) | `instances` / `session_status:<sid>` / `llm_status` | **Folded.** Keyed by `topic × instance`, the waiting frame is replaced with the latest value |
+| Delta and event (`element` / `append` / `event`) | `peers` / `agents` / `inbox` / `kv:<ns>` / `transcript:<sid>` / `notify` | **Not folded.** Queued in the order raised; past the queue limit the frame is refused back to whoever raised it |
 
 Folded values and the occurrences beside them leave **on the same flush, in the order they
 entered the queue**. A folded value keeps the position its first statement took and only its
@@ -1152,9 +1162,9 @@ webui ──▶ instance A ──(envelope: to_instance=B, from_instance=A, hops
   named, rather than the forwarding instance's outcome
 
 How "the owning instance of the target" is decided: the sid-to-owning-instance mapping is
-looked for, in order, in the `peers` topic's `peers[]` (alive), then the `agents` topic's
-`agents[]` (every session the harness knows of), then the `peers` topic's `last_live[]` (not
-alive, but still within the retention window). An unknown sid means "nowhere in the cluster" = `session_not_found`. However, while an
+looked for, in order, in the rows of the `peers` topic (alive, and lost but still within the
+retention window), then in the rows of the `agents` topic (every session the harness knows of).
+An unknown sid means "nowhere in the cluster" = `session_not_found`. However, while an
 unreachable instance exists, the judgment is deferred (§4.2).
 
 ### 7.4 Event relay
@@ -1164,15 +1174,25 @@ topic on each peer, and streams the received frames through to its own subscribe
 keeping the `instance` field intact. A does not recompute the content (recomputing would
 create the same judgment in two places — the origin and A).
 
+What is relayed is **the whole-value-per-instance topics, plus `peers` and `agents`**. The
+latter two are element-granular, but their rows name the instance they belong to, so several
+instances' rows stand under one topic name (an `inbox` element says only which session it is
+for, so it is not relayed). For the row topics A holds the elements too, and **a row a peer
+merely restated does not reach A's subscribers** — the suppression of §6.1 applied per element.
+A peer's snapshot frame (that instance's whole set of rows) is a restatement of the list rather
+than of one row, so a row the peer no longer has is passed on by A as `removed`.
+
 ### 7.5 Instance disconnection
 
 - That instance's sessions are treated **as a kind of Disappeared** (issue multi-host-cluster
   7). They return on reconnection
 - An `instance-local` op during a disconnection is `instance_unreachable`
 - Disconnection appears in the `reachable` field of the `instances[]` returned in `hello`'s
-  response, and in the `peers` topic
-- The `peers` frame carries that same list in `instances`, so a subscriber learns of a link
-  going down without greeting again
+  response, and on the `instances` topic
+- The `instances` topic carries that same list, so a subscriber learns of a link going down
+  without greeting again. It is apart from the rows of `peers` because a mesh view is one
+  instance's reading of all its links taken together rather than a set of rows (§6.2, on how a
+  granularity is chosen)
 - **A disconnected instance's full value set is never dropped.** Dropping it would leave things
   empty until the full set comes back on reconnection. It is kept with an "unreachable" marker,
   **replaced on reconnection, and discarded after 7 days** (DV-Q12). 7 days matches the

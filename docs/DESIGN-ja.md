@@ -698,11 +698,15 @@ webui が生の値を組み合わせて分類すると、instance ごとに解�
 | `last_live` + `stopped_at` | 前回稼働中・意図して止めた | 自分が書いたファイル |
 | transcript の fold | API error で止まっているか、最後の人間入力 | tail |
 
-**`peers` の 2 つの list は「生存」と「生存していない」で分かれる**。接続の有無ではない。
-hello するのは `SessionStart` hook ひとつなので、instance が再起動すると**既に動いている
-セッションは二度と hello して来ない** — 接続を持つものだけを `peers[]` に出すと、走っている
-セッションで埋まったホストが「稼働 0」に見える。`sessions/` が名乗るセッションは hello の
-有無に関わらず `peers[]` の行であり、どちらなのかは行の `state` (§5.2) が言う。
+**`peers` は接続の有無で分かれない**。hello するのは `SessionStart` hook ひとつなので、
+instance が再起動すると**既に動いているセッションは二度と hello して来ない** — 接続を持つ
+ものだけを出すと、走っているセッションで埋まったホストが「稼働 0」に見える。`sessions/` が
+名乗るセッションは hello の有無に関わらず行であり、どちらなのかは行の `state` (§5.2) が言う。
+
+**生存中と失われたセッションも 1 種類の行で運ぶ** (2 つの list ではない)。セッションの登録・
+消失は同一性を保ったままの `state` の更新であって、行が list を移ることではない。失われた行
+だけが持つ field (`last_seen_at` / `stopped_at` と、再開が何として再開すべきかの
+`model` / `effort`) は、接続由来の field が欠けた同じ行の上に載る。
 
 接続が無い行には、接続についての field (`connected_at` / `last_activity_at` /
 `client_version` / `protocol_version`) が無い。名乗った client が居ないので、世代は
@@ -775,13 +779,10 @@ Codex の thread queue に載せるので、管理外の行にも message は届
 `gateway_active_at` からも消える。窓の判定は読む瞬間に行い、窓が閉じたことを知らせる
 タイマーは無い (§1.3)。
 
-属性は分類ではないので、**gateway が同じ session を再び見ても `peers` に frame は出ない**。
-sessions ドメインに伝わるのは窓が開いた瞬間 (= 行がセクションを移る) だけで、既に入っている
-窓の中で再び見られたことは時計を進めるだけであり、時計は購読者が求めた知らせではない (§6.1)。
-推論は毎秒何度も観測されるので、そのたびに publish すれば 1 属性しか違わない行のために
-リスト全体をその頻度で出し直すことになる。値が失われるわけではない: 次に (何が契機であれ)
-組まれる payload が最新の読みを載せるし、推論をそのまま見たい client には gateway 自身の
-view である `llm_requests` がある。
+属性は分類ではないので、**gateway が同じ session を再び見ても出るのはその 1 行だけ**である。
+frame は変化した行を運ぶので (§6.2)、時計が進んだ行の更新はその行 1 つで済み、他の行は
+送り直さない。推論をそのまま見たい client には gateway 自身の view である `llm_requests` が
+ある。
 
 ### 5.3 「最終活動時刻」の 2 種
 
@@ -827,9 +828,9 @@ topic の仕組みに内蔵するので「この topic には抑制がない」�
 
 | 粒度 | topic |
 |---|---|
-| instance ごとの全量置換 | `peers` / `agents` / `session_errors` / `llm_requests` / `llm_status` |
+| instance ごとの全量置換 | `instances` / `session_errors` / `llm_requests` / `llm_status` |
 | 全量置換 | `session_status:<sid>` |
-| 要素の追加・更新 | `inbox` / `kv:<ns>` |
+| 要素の追加・更新 | `peers` / `agents` / `inbox` / `kv:<ns>` |
 | 追記 (byte offset) | `transcript:<sid>` |
 | 追記 (型付きアイテム) | `transcript_items:<sid>` |
 | event (値を保持しない) | `notify` |
@@ -859,10 +860,18 @@ seed を待たずに答えると snapshot が空になり、末尾から描く c
 **抑制がかかるのは全量置換の 2 粒度だけ** (`whole` / `per_instance_whole`)。同じ全量を
 もう一度送っても購読側は既に持っている値を持ち続けるので、送る意味が無い。
 
-抑制は直前に送った wire と比べるので、**payload に「いつ読んだか」を入れない**。`agents` の
-契約には `polled_at` があるが、この instance は省略する: 確認 poll (§5.1) のたびに変わる値を
-載せると、ディレクトリが変わっていなくても毎回「前に無かった値」になり、全 topic 共通の
-1 実装である抑制 (M5) がそれを 5 秒ごとの heartbeat として通してしまう。
+**`peers` / `agents` は「新しいか」を行ごとに問う**。両者は要素粒度なので frame 単位の抑制は
+効かず、代わりに**直前に送った行と比べて違う行だけ**を frame にする。比べ方は同じで (直前に
+送った wire と比べる)、単位が値から要素に変わるだけなので、実装は topic の仕組みの側に 1 つ
+だけ置く (M5)。何も違わなければ frame は出ない。行が消えたことは不在では言えないので、
+`{sid, instance, removed: true}` という印を付けた要素として出す。
+
+差分を取る相手は**購読者に送った内容**なので、購読開始時の snapshot frame (= 全行) もその
+基準を更新する。これをしないと、snapshot でしか渡していない行の消失が「前に送っていない行の
+消失」になり、誰にも届かない。
+
+`agents` の `polled_at` は載せる。確認 poll (§5.1) のたびに変わる値だが、行の差分が空なら
+frame 自体が出ないので、これが heartbeat になることはない。
 
 **delta の粒度 (`element` / `append`) と `event` は素通しする**。同じ内容の frame が 2 回
 出るのは「同じことが 2 回起きた」であって重複ではない — inbox の再提示は 1 回目を聞いて
@@ -896,8 +905,8 @@ seed を待たずに答えると snapshot が空になり、末尾から描く c
 
 | topic 種別 (粒度) | 例 | 扱い |
 |---|---|---|
-| 全量置換 (`whole` / `per_instance_whole`) | `peers` / `agents` / `session_status:<sid>` / `llm_status` | **畳む**。`topic × instance` を key に、待っている frame を最新の値で置き換える |
-| delta・event (`element` / `append` / `event`) | `inbox` / `kv:<ns>` / `transcript:<sid>` / `notify` | **畳まない**。発生順に並べ、queue の上限を超えたら投入側に返す |
+| 全量置換 (`whole` / `per_instance_whole`) | `instances` / `session_status:<sid>` / `llm_status` | **畳む**。`topic × instance` を key に、待っている frame を最新の値で置き換える |
+| delta・event (`element` / `append` / `event`) | `peers` / `agents` / `inbox` / `kv:<ns>` / `transcript:<sid>` / `notify` | **畳まない**。発生順に並べ、queue の上限を超えたら投入側に返す |
 
 畳んだ値と並んだ出来事は **同じ flush で、queue に入った順に** 出る。畳んだ値は最初に入った位置を
 保ったまま中身だけが最新になるので、出来事との前後関係が入れ替わらない。
@@ -993,9 +1002,9 @@ webui ──▶ instance A ──(封筒: to_instance=B, from_instance=A, hops=[
   しない。A が侵害された場合に B の認可が消えるため
 - やり直す相手は封筒の `caller` (認証済み link が名乗った呼び出し元) であって、転送元の判断ではない
 
-「対象の担当 instance」の決め方: sid → 担当 instance の対応は `peers` topic の `peers[]`
-（生存中）→ `agents` topic の `agents[]`（ハーネスが把握している全セッション）→ `peers`
-topic の `last_live[]`（生存していないが保持期間内）の順で探す。知らない sid は「cluster のどこにもない」= `session_not_found`。ただし到達不能な
+「対象の担当 instance」の決め方: sid → 担当 instance の対応は `peers` topic の行 (生存中と、
+生存していないが保持期間内のもの) → `agents` topic の行 (ハーネスが把握している全セッション)
+の順で探す。知らない sid は「cluster のどこにもない」= `session_not_found`。ただし到達不能な
 instance がある間は判定を保留する (§4.2)。
 
 ### 7.4 event の relay
@@ -1004,13 +1013,22 @@ instance A に繋いだ購読者が cluster 全体を見るために、A は各 
 受けた frame の `instance` を保ったまま自分の購読者へ流す。A は中身を再計算しない
 (再計算すると発生元と A の 2 箇所に同じ判定が生まれる)。
 
+relay するのは **instance ごとの全量置換の topic と、`peers` / `agents`** である。後者は要素
+粒度だが、行が自分の instance を名乗るので他 instance の行と同じ topic 名で並べられる
+(`inbox` の要素は「どのセッションのものか」しか言わないので relay しない)。行の topic では
+A も要素ごとに保持し、**peer が言い直しただけの行は自分の購読者へ流さない** (§6.1 の抑制を
+要素単位で適用する)。peer の snapshot frame (= その instance の全行) は「言い直し」ではなく
+全量の言い直しとして扱い、peer が持たなくなった行は A が `removed` として下流に伝える。
+
 ### 7.5 instance の断絶
 
 - その instance のセッションは **Disappeared の一種**として扱う (issue multi-host-cluster 7)。
   復帰時に戻る
 - 断絶中の `instance-local` op は `instance_unreachable`
-- 断絶は `hello` の応答に含まれる `instances[]` の `reachable` と、`peers` topic に現れる
-- `peers` frame の `instances` が同じ一覧を運ぶので、購読者は挨拶し直さずに link の切断を知る
+- 断絶は `hello` の応答に含まれる `instances[]` の `reachable` と、`instances` topic に現れる
+- `instances` topic が同じ一覧を運ぶので、購読者は挨拶し直さずに link の切断を知る。
+  `peers` の行と分けてあるのは、mesh の見え方が「その instance が全 link をまとめて読んだ
+  1 つの値」であって行の集まりではないため (§6.2 の粒度の選び方)
 - **断絶した instance の分の全量を消さない**。消すと復帰時に全量が返ってくるまで空になる。
   「到達不能」という印を付けて保持し、**再接続で置き換える。7 日で破棄する** (DV-Q12)。
   7 日は inbox / last_live の保持窓と同じ値で、揃えているのは「その instance が 7 日戻って
