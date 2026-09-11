@@ -30,16 +30,13 @@ import {
   randomId,
   verifyProof,
 } from "./keys.ts";
-import { PeerProbe } from "./probe.ts";
 import {
-  isProbePath,
   jwkEndpoint,
   type JwkRequest,
   type JwkResponse,
   kidOfPath,
   MESH_PROTOCOL,
   meshFrameOf,
-  type ProbeBody,
   wsEndpoint,
 } from "./wire.ts";
 
@@ -260,7 +257,6 @@ export class Mesh {
   readonly #minted = new Map<string, Minted>();
   readonly #retries = new Map<Endpoint, ReturnType<typeof setTimeout>>();
   readonly #backoff = new Map<Endpoint, number>();
-  readonly #probe = new PeerProbe();
   /** Which of the configured endpoints is this instance, as the data said
    * before anything is dialled and fixed from then on (§5.5). */
   readonly #self: Endpoint;
@@ -372,12 +368,9 @@ export class Mesh {
     return true;
   }
 
-  /** Where peers reach this instance, as the probe settled it (§7.1).
-   *
-   * Asked only after `identify`: everything that reads it — the handshake's
-   * `aud`, the mesh's own routes, what `hello` reports — happens on an instance
-   * that has already started, and a start where the probe did not settle ends
-   * instead. */
+  /** Where peers reach this instance: the row of the mesh carrying its own id
+   * (§7.1). Everything that reads it — the handshake's `aud`, the mesh's own
+   * routes, what `hello` reports — is the one address the data states. */
   get self(): Endpoint {
     return this.#self;
   }
@@ -789,43 +782,19 @@ export class Mesh {
     return this.#pending.has(conn);
   }
 
-  // --- the HTTP surface: the key of §6 and the probe of self-identification ---
+  // --- the HTTP surface: the key of §6 ---
 
-  /** Answer the two requests that are served before anything is proven, or
-   * nothing when the request is not one of them. */
+  /** Answer the one request that is served before anything is proven, or
+   * nothing when the request is not it. */
   async route(request: Request): Promise<Response | undefined> {
     const pathname = new URL(request.url).pathname;
-    // The probe is matched by the end of the path, because it is what settles
-    // which endpoint this instance is: while one is arriving there is no
-    // endpoint to hang it under.
-    if (isProbePath(pathname)) return await this.#answerProbe(request);
     // The key is below this instance's own endpoint and nowhere else, which is
     // what keeps two instances on one origin from answering for each other's
     // keys (mesh-peer-auth §6.3); the person's entry is matched by the end of
-    // the path instead (DR-0001 §2.7). The probe has settled that endpoint by
-    // the time any key is asked for: a request arriving before then belongs to
-    // no handshake, since nothing has been dialled yet.
-    if (this.#self === undefined) return undefined;
+    // the path instead (DR-0001 §2.7).
     const kid = kidOfPath(pathname, this.#self);
     if (kid !== undefined) return await this.#serveKey(kid, request);
     return undefined;
-  }
-
-  async #answerProbe(request: Request): Promise<Response> {
-    let body: unknown;
-    try {
-      body = await request.json();
-    } catch {
-      return new Response("a probe is a JSON object", { status: 400 });
-    }
-    const probe = body as Partial<ProbeBody>;
-    // An unknown generation is ignored rather than refused: the comparison is
-    // the sender's, so a receiver that cannot read the probe costs the sender
-    // nothing it could not already have (§5.1).
-    if (probe.ver === MESH_VER && typeof probe.token === "string") {
-      this.#probe.accept(probe.token);
-    }
-    return Response.json({});
   }
 
   async #serveKey(kid: string, request: Request): Promise<Response> {

@@ -90,6 +90,7 @@ import {
 } from "../auth/index.ts";
 import { type Cidr, clientAddress, parseCidr } from "./client.ts";
 import {
+  applied,
   configOf,
   DEFAULT_CONFIG,
   type EntryConfig,
@@ -118,6 +119,15 @@ export interface StartOptions {
   readonly configHome?: string;
   /** Mirror the log to stderr. A foreground run wants it; a test does not. */
   readonly echoLog?: boolean;
+  /** Whether this start is the one that reads the edited files and writes down
+   * what checked out (§8.2).
+   *
+   * A supervisor does that for the instances it starts, so its children read
+   * what it applied and write nothing: one writer means no two processes
+   * racing over the same file, and it means `config diff --satisfied` compares
+   * against a value exactly one thing produced. A foreground start with no
+   * supervisor above it is the writer, because there is nobody else to be. */
+  readonly settle?: boolean;
   /** Overrides the confirmation poll of the sessions watch, for tests. */
   readonly pollMs?: number;
   /** Overrides the mesh's own intervals, for a test that cannot wait out a
@@ -182,7 +192,7 @@ export async function start(options: StartOptions = {}): Promise<StartOutcome> {
   try {
     // 3. the config. A broken one ends the start rather than turning the
     // setting it carried silently off (DV-Q9).
-    const config = await configFor(paths, log);
+    const config = await configFor(paths, log, options.settle ?? true);
     // What the config says of the gateway, resolved before anything is built
     // from it: a webhook source whose secret cannot be read ends the start
     // here, for the same reason a broken config does (DV-Q9).
@@ -231,17 +241,26 @@ export async function start(options: StartOptions = {}): Promise<StartOutcome> {
 
 /** What this config home runs with: the settings that were read and checked.
  *
- * Read and checked here rather than taken on trust, because a start is one of
- * the two moments a config is applied (the other is a reload) and both go the
- * same way: everything is read, and if it holds it becomes what is applied. A
- * config that does not hold leaves the applied one standing and is written to
- * the log — an instance that was serving a session is not something a typo
- * should take down (§8.3).
+ * Either read from what was applied, or — on the start that has nobody above
+ * it — read from the edited files and written down if it holds. Both end at
+ * the same place: what this instance runs with is a value that checked out.
+ * A config that does not hold leaves the applied one standing and is written
+ * to the log, because an instance that was serving a session is not something
+ * a typo should take down (§8.3).
  *
  * A config home nothing states settings for runs the built-in ones, which is
  * the unix socket and no mesh: `daemon run` on a directory nobody registered
  * is a thing a person may do. */
-async function configFor(paths: InstancePaths, log: Log): Promise<InstanceConfig> {
+async function configFor(paths: InstancePaths, log: Log, check: boolean): Promise<InstanceConfig> {
+  if (!check) {
+    // Read, and nothing else: whoever started this instance has already read
+    // the files and written down what held.
+    const standing = applied(paths.stateRoot);
+    return (
+      (standing === undefined ? undefined : configOf(standing, paths.configHome)?.config) ??
+      DEFAULT_CONFIG
+    );
+  }
   const settled = await settle(paths.configDir, paths.stateRoot);
   for (const problem of settled.problems) {
     log.write("config refused", { file: problem.file, problem: problem.msg });

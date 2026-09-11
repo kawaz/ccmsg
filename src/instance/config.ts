@@ -126,20 +126,15 @@ export interface InstanceConfig {
    * entry is this instance is the row carrying its own id, which is what
    * settles `endpoint` below. */
   readonly endpoints: readonly EndpointRow[];
-  /** Where peers and people reach this instance, when that is not the address
-   * it binds.
+  /** Where peers and people reach this instance: its own row of the mesh
+   * (§7.1).
    *
-   * An instance behind a reverse proxy is dialled at the proxy's name and
-   * listens on loopback, and the two cannot be derived from each other. It is
-   * what the mesh puts in its list for this instance — so it is what the probe
-   * settles `self` to, what a handshake carries as `iss` and `aud`, and what
-   * a person is handed to open a page at (§7.1). Absent leaves the address
-   * this instance binds, which is what a host with no proxy in front of it
-   * has.
-   *
-   * Stated per instance, in the file that already states which port: what a
-   * proxy is set up to forward where is one fact, and writing it twice is a
-   * second place for it to be wrong. */
+   * Not something a settings file states — the row is, and two places to write
+   * one address is one place for it to be wrong. An instance behind a reverse
+   * proxy is dialled at the proxy's name and listens on loopback, and the two
+   * cannot be derived from each other, so what a peer dials is written down
+   * beside who it belongs to. Absent on an instance the mesh does not name,
+   * which is one that serves the unix socket alone. */
   readonly endpoint?: Endpoint;
   /** Absent when this instance serves the unix socket only. */
   readonly entry?: EntryConfig;
@@ -213,7 +208,7 @@ const FIELDS = ["harness", "entry", "upstream", "direct_delivery", "fork_origin"
 /** What only one instance's own file may state: which config home it answers
  * for, and the address it is reached at. Neither is a thing the shared file
  * could say once for everybody. */
-const INSTANCE_FIELDS = ["dir", "name", "endpoint"] as const;
+const INSTANCE_FIELDS = ["dir", "name"] as const;
 
 /** The mesh, as data: who is in it and where each one is reached.
  *

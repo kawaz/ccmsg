@@ -1146,10 +1146,14 @@ type Same<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
 // function is handed it to read, and the declarations a person writes against
 // offer it the same way.
 type Written = keyof InstanceConfig;
-// `endpoint` and `name` are an instance's own to state, like `dir`: the shared
-// file could not say any of them once for everybody.
+// `endpoint` is nobody's to state: it is the row of the mesh carrying this
+// instance's id, so the declarations a person writes against do not offer it.
+// `name` is an instance's own, like `dir`: the shared file could not say
+// either of them once for everybody.
 export type _ConfigFields = Assert<Same<Exclude<Written, "endpoint">, keyof Draft>>;
-export type _InstanceFields = Assert<Same<Written | "dir" | "name", keyof InstanceDraft>>;
+export type _InstanceFields = Assert<
+  Same<Exclude<Written, "endpoint"> | "dir" | "name", keyof InstanceDraft>
+>;
 // Down through the shapes that hang below it, since a field added inside the
 // launcher or an entry is as invisible from the top level as one added beside
 // them. What the copy states differently on purpose is optionality: a file may

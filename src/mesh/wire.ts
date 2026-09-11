@@ -9,15 +9,9 @@ import type { MeshJwk } from "./keys.ts";
  * sharing one origin apart: the key of `https://h/a/` is only ever fetched from
  * below `/a/`, so `https://h/b/` cannot answer for it and a proof made with b's
  * key cannot pass as a's (mesh-peer-auth §6.3). The separation is the shape of
- * the URLs rather than a rule written somewhere.
- *
- * The probe is the exception, and has to be: it is what tells an instance which
- * endpoint it is, so while one is arriving there is nothing yet to hang it
- * under. */
+ * the URLs rather than a rule written somewhere. */
 const WS_ROUTE = "ws";
 const JWK_ROUTE = "mesh/jwk/";
-const PROBE_ROUTE = "mesh/probe";
-const PROBE_PATH = `/${PROBE_ROUTE}`;
 
 /** Where a peer's mesh link is dialled.
  *
@@ -36,28 +30,12 @@ export function jwkEndpoint(endpoint: Endpoint, kid: string): string {
   return `${endpoint}${JWK_ROUTE}${encodeURIComponent(kid)}`;
 }
 
-export function probeEndpoint(endpoint: Endpoint): string {
-  return `${endpoint}${PROBE_ROUTE}`;
-}
-
 /** The `kid` a request names, or nothing when the path is not a key request. */
 export function kidOfPath(pathname: string, self: Endpoint): string | undefined {
   const prefix = `${new URL(self).pathname}${JWK_ROUTE}`;
   if (!pathname.startsWith(prefix)) return undefined;
   const kid = decodeURIComponent(pathname.slice(prefix.length));
   return kid === "" ? undefined : kid;
-}
-
-/** Whether this request is a probe.
- *
- * Matched by the end of the path and not below an endpoint, because a probe is
- * what settles which endpoint this instance is: at the moment one arrives there
- * is no endpoint to hang it under, and the prefix it came in on is whatever the
- * sender's list or a proxy in front of it says. Nothing is decided here anyway
- * — the receiver only echoes acceptance, and the comparison belongs to whoever
- * minted the token (§5.1). */
-export function isProbePath(pathname: string): boolean {
-  return pathname.endsWith(PROBE_PATH);
 }
 
 /** The subprotocol a dialling instance offers.
@@ -96,10 +74,4 @@ export interface JwkRequest {
 
 export interface JwkResponse {
   readonly jwk: MeshJwk;
-}
-
-/** What a self-identification probe carries (mesh-self-identification §5.1). */
-export interface ProbeBody {
-  readonly ver: number;
-  readonly token: string;
 }

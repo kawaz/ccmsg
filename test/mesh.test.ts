@@ -3,14 +3,7 @@ import { type Endpoint, type InstanceId, type InstanceInfo } from "@ccmsg/protoc
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { ConfigError, type Env, start } from "../src/instance/index.ts";
-import {
-  EphemeralKey,
-  glareKeepsNew,
-  MESH_VER,
-  type ProofClaim,
-  PeerProbe,
-  SelfEndpointError,
-} from "../src/mesh/index.ts";
+import { EphemeralKey, glareKeepsNew, MESH_VER, type ProofClaim } from "../src/mesh/index.ts";
 import {
   deadPort,
   endpoint,
@@ -144,26 +137,6 @@ describe("which endpoint this instance is (§7.1)", () => {
     });
     expect(after.port).toBe(lease.port);
     await after.stop(true);
-  });
-
-  test("a token meant for another endpoint does not match (§7.2)", async () => {
-    const probe = new PeerProbe();
-    // Nothing was sent, so no token in existence is one of ours — which is what
-    // a probe arriving from elsewhere is.
-    probe.accept("00".repeat(16));
-    const dead = endpoint(deadPort());
-    expect(await refusal(probe.identify([dead]))).toBeInstanceOf(SelfEndpointError);
-  });
-
-  test("the table is gone once the run is over (§7.3)", async () => {
-    const probe = new PeerProbe();
-    const lease = leasePort();
-    await startAt(homeFor(lease, [endpoint(lease.port)]));
-    // A token accepted after the run cannot match anything, because the table
-    // it would have been matched against no longer exists.
-    probe.accept("11".repeat(16));
-    const dead = endpoint(deadPort());
-    expect(await refusal(probe.identify([dead]))).toBeInstanceOf(SelfEndpointError);
   });
 });
 

@@ -946,23 +946,19 @@ frame 自体が出ないので、これが heartbeat になることはない。
 `<endpoint>ws` (https のまま HTTP upgrade する)・`<endpoint>mesh/*`・`<endpoint>auth/*`・
 `<endpoint>webhook/*` はその下の route であって endpoint の一部ではない (契約 `Endpoint`)。
 
-**config が持つのは `peers` (自分の分を含む全 endpoint の一覧) だけで、そのどれが自分かは
-起動時の probe で確定する** (mesh-self-identification、§8.2、DR-0001 §2.7)。proxy や別名の
-裏に居る instance の URL は、プロセスが自分の socket から読み取れる値ではないが、probe は
-どの URL 経由で来たかを読まず「自分に届いたか」だけで決まるので、proxy / alias 越しでも
-成立する。
+**config が持つのは mesh (全 instance の id と、それぞれどこで届くか) だけで、そのどれが
+自分かは自分の id の行である** (§8.2、DR-0001 §2.7)。proxy や別名の裏に居る instance の URL は、
+プロセスが自分の socket から読み取れる値ではなく、ネットワークに尋ねて分かる物でもない —
+deployment の事実なので、deployment の他の事柄と同じ場所に書く。
 
-**手順**: `peers` の各 endpoint に宛先ごとに違う token を付けた probe を送り、自分の listener
-に届いた token を対応表と照合する。一致した 1 つの URL が自分の endpoint である。自分宛を
-送信対象から外してはならない — 自分宛の 1 通は必ず自分に届くので、token を盗んだ peer が
-それを送り返しても一致が 2 つになって失敗に落ちる (mesh-self-identification §4.2)。
+**mesh が名乗っていない instance は起動失敗**で、壊れた config と同じ扱いである (§8.3)。
+行が無い = address が無いということで、誰も dial できず handshake で何と名乗るかも決まらない。
+同じ address の行が 2 つあるのも同じ理由で拒否する — その address に dial した相手には
+どちらにも届いてしまい、どちらを正式な名前とするか決められない。どちらもファイルを読む
+時点で検査する (§8.2)、何かを bind するより前である。
 
-**一致 0 / 2 以上は起動失敗**。0 は `peers` に自分が居ないか誰も居ない URL を書いた場合、
-2 以上は同じ instance に届く URL が 2 つ (別名・LB) 書かれた場合で、どちらを正式な名前と
-するか決められない以上、壊れた config と同じ扱いで起動を止める (§8.3)。答えなかった peer は
-一致数の計算から外し、記録するだけで起動を止めない (片方の PC が電源断・スリープ中で
-あることは、この mesh では常態である。DV-Q11)。§7.2 の dial 対象としては残る。確定した
-自分の endpoint は dial しない (§8.2)。
+答えなかった peer は拒否しない (片方の PC が電源断・スリープ中であることは、この mesh では
+常態である。DV-Q11)。§7.2 の dial 対象としては残る。自分の行は dial しない (§8.2)。
 
 **instance id は endpoint と別のものである。** id は state に持つ固定値 (§3.6)、endpoint は
 設定で変わりうる URL で、両者の対応は handshake が作る: `MeshHello` が id を名乗り、proof が
@@ -1110,12 +1106,12 @@ instance と監督者が読むのは `$CCMSG_STATE_DIR/config/` の方である:
    id が無いうちに作ってよいものが 1 つも無い。`instances/` のどのファイルも名乗っていない
    config home を `ccmsg daemon run` で起こした場合も、初回の id はここで持つ
    (DR-0001 §2.1)
-5. **自分の endpoint の確定** (§7.1)。mesh を持つ構成では **WS を先に bind してから**行う:
-   確定の中身は自分が送った probe が自分の listener に届くことなので、listen の前には
-   置けない。この間 listener が答えるのは probe と mesh-peer-auth §6 の鍵の 2 経路だけで、
-   それ以外の要求は instance ができるまで断る (窓は probe 1 往復分)。一致 0 / 2 以上なら
-   起動失敗、答えなかった peer は記録して dial 対象に残す。mesh を持たない構成は dial
-   される側にならないので endpoint を持たず、`hello` でも名乗らない
+5. **自分の endpoint** (§7.1)。設定を読んだ時点で分かっている (自分の id の行) ので、
+   ここで決めることは無い。mesh を持つ構成では WS をこの時点で bind する: instance が
+   できるより先に peer が dial してくる可能性があり、その間 listener が答えるのは
+   mesh-peer-auth §6 の鍵の経路だけで、それ以外の要求は instance ができるまで断る。
+   mesh を持たない構成は dial される側にならないので endpoint を持たず、`hello` でも
+   名乗らない
 6. `last_live` と inbox の読み込み。4 の後に置くのは、どちらの entry も `instance` として
    instance id を持つから — id から導かれるものは id より前に存在しない
 7. listen。pid の記録 → socket dir の用意と、実 path のうち pid が既に死んでいるものの掃除

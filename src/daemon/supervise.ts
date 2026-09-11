@@ -8,8 +8,8 @@ import {
   type Child,
   configHome,
   harnessFor,
+  reload,
   prepareFor,
-  registered,
   rowFor,
   type SpawnInstance,
   spawnInstance,
@@ -120,14 +120,26 @@ export class Supervisor {
     this.#log = options.log ?? ((line) => process.stderr.write(`${JSON.stringify(line)}\n`));
   }
 
-  /** Read which config homes there are.
+  /** Read the edited files, check them, write down what held, and look after
+   * what it names (§8.2).
+   *
+   * This is the one thing that writes the applied settings: the children read
+   * them and write nothing, so nothing races over the file and there is one
+   * answer to "what is running". A config that does not check out leaves the
+   * applied one standing and is written to this supervisor's log — the
+   * children of a host are not something a typo in one file should take down.
    *
    * In `run` rather than in the constructor because the files are TypeScript
    * and reading one is an import: a caller holding a supervisor that has not
-   * run yet is holding one that has not read the list yet, which is the same
+   * run yet is holding one that has not read the files yet, which is the same
    * moment it was already true that nothing had been started. */
   async #adopt(): Promise<void> {
-    for (const target of await registered(this.#env)) {
+    const settled = await reload(this.#env);
+    for (const problem of settled.problems) {
+      this.#log({ event: "config refused", file: problem.file, problem: problem.msg });
+    }
+    for (const one of settled.satisfied.instances) {
+      const target = targetFor(this.#env, one.dir, one.name, one.id);
       this.#units.set(target.dir, new Supervised(target));
     }
   }

@@ -1092,26 +1092,21 @@ Going over the limit is **refused back to the producer rather than dropped quiet
 `<endpoint>auth/*` and `<endpoint>webhook/*` are routes below it rather than part of the address
 (contract, `Endpoint`).
 
-**All config carries is `peers` — every mesh endpoint, this instance's own among them — and
-which of them is this instance is settled at startup by the probe** (mesh-self-identification,
-§8.2, DR-0001 §2.7). The URL of an instance sitting behind a proxy or an alias is not a value
-the process can read off its own socket, but the probe never reads the URL a request came in
-on: it turns only on whether the probe arrived here, so it holds through a proxy or an alias
-alike.
+**All config carries is the mesh — every instance of it, this one among them, each with its id
+and where it is reached — and which entry is this instance is the row carrying its own id**
+(§8.2, DR-0001 §2.7). The URL of an instance sitting behind a proxy or an alias is not a value
+the process can read off its own socket, and it is not one the network can be asked for either:
+it is a deployment fact, so it is written down where the rest of the deployment is.
 
-**The procedure**: a probe carrying a token minted per destination goes to every endpoint in
-`peers`, and the token that arrives at this instance's own listener is matched against the
-table. The one URL it matches is this instance's endpoint. The probe to ourselves must not be
-left out of the send — it is the one that always arrives, so a peer echoing a stolen token back
-makes two matches and fails rather than being believed (mesh-self-identification §4.2).
+**An instance the mesh does not name is refused at startup**, the same way a broken config is
+(§8.3): no row is no address, which is an instance nobody could dial and one that could not
+settle what a handshake calls it. Two rows at one address are refused for the matching reason —
+whoever dialled that address would have reached both, and neither can be preferred as the proper
+name. Both are checked where the files are read (§8.2), before anything is bound.
 
-**No match, or more than one, fails startup**. None means `peers` does not name this instance,
-or names a URL nobody answers at; more than one means two URLs reaching one instance (an alias,
-a load balancer), and since neither can be preferred as the proper name, startup is failed the
-same way a broken config is (§8.3). A peer that did not answer is left out of the count and
-recorded rather than refused — one machine being powered off or asleep is the normal state of
-this mesh (DV-Q11) — and remains a dial target under §7.2. The settled endpoint is not dialled
-(§8.2).
+A peer that does not answer is not refused — one machine being powered off or asleep is the
+normal state of this mesh (DV-Q11) — and remains a dial target under §7.2. This instance's own
+entry is not dialled (§8.2).
 
 **The instance id is a separate thing from the endpoint.** The id is a fixed value held in the
 state directory (§3.6) and the endpoint is a URL that configuration can change; the
@@ -1321,14 +1316,12 @@ it silently absent is the state §8.3 refuses to run in.
    keyed by that id, so there is nothing that may be built while it does not exist. A config
    home no `instances/` file names, started with `ccmsg daemon run`, gets
    its first id here too (DR-0001 §2.1)
-5. **Settle this instance's endpoint** (§7.1). On a configuration with mesh, **the WebSocket is
-   bound first**: what settles it is the probe this instance sent arriving at its own listener,
-   so it cannot come before listen. In that window the listener answers only the two
-   pre-authentication routes — the probe and the key of mesh-peer-auth §6 — and refuses
-   everything else until the instance exists (a window of one round of probes). No match, or
-   more than one, fails startup; a peer that did not answer is recorded and left as a dial
-   target. A configuration without mesh is never dialled, so it has no endpoint and states none
-   in `hello`
+5. **This instance's endpoint** (§7.1). It is known as soon as the settings are read — the row
+   of the mesh carrying this id — so there is nothing to settle here. On a configuration with
+   mesh the WebSocket is bound at this point, because a peer may dial before the instance
+   exists: in that window the listener answers only the key of mesh-peer-auth §6 and refuses
+   everything else until the instance exists. A configuration without mesh is never dialled, so
+   it has no endpoint and states none in `hello`
 6. Load `last_live` and the inbox. These come after step 4 because every entry of both carries
    the instance id as its `instance` — nothing derived from the id exists before the id does
 7. listen. Record the pid → prepare the socket dir and sweep the real paths whose pid is

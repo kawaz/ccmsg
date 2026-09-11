@@ -642,7 +642,10 @@ async function runInstance(given: string | undefined): Promise<unknown> {
   // instance would otherwise read it back through the question "which session
   // is this process inside", and a `daemon run` issued from a session of
   // another harness would answer for that session's config home (§3.8).
-  const outcome = await start({ configHome: home });
+  // With a supervisor up, it is the one that reads the files and writes down
+  // what held (§8.2); this start reads what it applied. With none, this
+  // process is the only one there is, so it does both.
+  const outcome = await start({ configHome: home, settle: !(await reachable()) });
   if (!isRunning(outcome)) {
     throw new CommandError(
       "file_exists",
