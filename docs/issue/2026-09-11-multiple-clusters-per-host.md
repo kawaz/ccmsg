@@ -38,9 +38,19 @@ kawaz の想定 (2026-09-11 r303m11): 1 ホストに複数クラスタ (本人 /
 - [ ] クラスタ = dir で確定するか裁定する (1 監督者で複数クラスタは認証境界が 1 プロセス内で混ざるので不採用が統括の推し)
 - [ ] クラスタ間リンクで許す op の集合を決める
 - [ ] 相手クラスタの instance をどう名乗らせるか (`hello.instance` の `mesh` claim との関係) を決める
-- [ ] 用語を確定する (ユーザ向けは mesh = 配線、cluster / group = 所属)
+- [x] 用語を確定する (ユーザ向けは mesh = 配線、cluster / group = 所属)
 - [ ] launchd unit 名の config dir 由来の接尾辞方式を決める
 - [ ] Caddy / webui のクラスタ別入口配線方式を決める
+
+## 用語定義 (確定, 2026-09-11 r303m12)
+
+kawaz の用語定義:
+
+- **instance** = `CLAUDE_CONFIG_DIR` 1 つ。プライバシーと権限が閉じた最小単位
+- **cluster** = ユーザ 1 人の管理単位 = `CCMSG_CONFIG_DIR` 1 つ (複数 instance、監督者 1 つ、mesh 1 つ、認証記録の複製範囲 1 つ)。ユーザは複数 instance を 1 cluster として管理できるが、同ホスト上の別 cluster に属する instance の `CLAUDE_CONFIG_DIR` には関与しない (同ホストのディスク権限管理はスコープ外)
+- **mesh** = cluster 内の instance 同士の配線
+
+DESIGN の locality `cluster` (全 instance 分の答え) はこの cluster 全体に問う意味で整合する。ユーザ向け用語は instance / cluster / mesh で揃える。
 
 ## TODO
 
