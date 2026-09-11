@@ -233,15 +233,19 @@ describe("which config homes there are (daemon add / remove / list)", () => {
 
   test("the port is the next one after what is registered, and the harness is read off the directory", async () => {
     const at = host();
-    const first = await register(at.home("one"));
-    const second = await register(at.home("two"));
+    // The one test here that lets `add` pick: everywhere else a port is handed
+    // in so that two tests' children cannot be given the same one, and picking
+    // is exactly what this is about. Nothing is started from these two, so the
+    // ports they take are held by nobody afterwards.
+    const first = await add(process.env, at.home("one"));
+    const second = await add(process.env, at.home("two"));
     const paths = resolvePaths(process.env);
     const ports = (await loadAll(paths.configDir)).instances.map((one) => one.config.entry?.port);
     // The range starts at 8643 and each instance after the first takes the next
-    // free one: a person adding a second config home states nothing. Which port
-    // it lands on depends on what else this machine is running, so what is
-    // fixed here is that it is in the range and that the second follows the
-    // first.
+    // free one: a person adding a second config home states nothing. Where the
+    // first one lands depends on what else this machine is running — the search
+    // walks past whatever is taken — so what is fixed here is that it is in the
+    // range and that the second follows the first.
     const [one, two] = ports as [number, number];
     expect(one).toBeGreaterThanOrEqual(FIRST_PORT);
     expect(two).toBe(one + 1);
