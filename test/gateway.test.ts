@@ -10,7 +10,14 @@ import {
   validationErrors,
 } from "@ccmsg/protocol";
 import { type Env, type Instance, isRunning, start } from "../src/instance/index.ts";
-import { Gateway, parseGatewayItem, reportOf } from "../src/upstream/index.ts";
+import { GATEWAY_LIVE_WINDOW_MS } from "../src/sessions/index.ts";
+import {
+  Gateway,
+  LlmRequests,
+  type LlmRequestObservation,
+  parseGatewayItem,
+  reportOf,
+} from "../src/upstream/index.ts";
 import { connectWs, type LineClient } from "./client.ts";
 import { SELF, SID } from "./frames.ts";
 
@@ -43,6 +50,13 @@ function requestEvent(extra: Record<string, unknown> = {}): Record<string, unkno
     cache_breakeven_count: 20,
     ...extra,
   };
+}
+
+/** The same notice, read into what the topic holds. */
+function observation(ts: number): LlmRequestObservation {
+  const item = parseGatewayItem(requestEvent({ ts, cache_expires_at: ts + 3_600_000 }));
+  if (item?.kind !== "request") throw new Error("the request event no longer reads as one");
+  return item.info;
 }
 
 /** The answer's own notice, which names its kind. */
@@ -123,6 +137,8 @@ function fakeGateway(report: unknown = REPORT): { url: string; reads: () => numb
 interface Started {
   instance: Instance;
   address: string;
+  /** The config home, for a test that puts a harness session in it. */
+  home: string;
   post(body: unknown, init?: { token?: string; path?: string }): Promise<Response>;
 }
 
@@ -154,6 +170,7 @@ async function startWith(
   return {
     instance: outcome,
     address,
+    home,
     post: (body, init = {}) =>
       fetch(`http://${address}${init.path ?? `/webhook/${SOURCE}`}`, {
         method: "POST",
@@ -298,6 +315,122 @@ describe("what the gateway posts (§3.5, §5.1)", () => {
     ]);
     expect(answer.status).toBe(204);
     expect((await nextTopic(client, "llm_requests"))["data"]).toHaveLength(1);
+  });
+});
+
+describe("what the sessions domain is told about inference (§5.1, §5.2)", () => {
+  /** A `LlmRequests` on its own, with what it publishes and what it wakes
+   * counted separately. */
+  function requests(): {
+    subject: LlmRequests;
+    frames: () => number;
+    woken: () => number;
+  } {
+    let frames = 0;
+    let woken = 0;
+    const subject = new LlmRequests({
+      self: SELF,
+      publish: () => {
+        frames += 1;
+      },
+      onActivity: () => {
+        woken += 1;
+      },
+    });
+    return { subject, frames: () => frames, woken: () => woken };
+  }
+
+  test("a session seen again inside its window wakes nothing", () => {
+    const { subject, frames, woken } = requests();
+    const now = Date.now();
+    for (let index = 0; index < 10; index += 1) {
+      subject.record(observation(now + index * 100));
+      subject.note(SID, now + index * 100 + 50);
+    }
+    // The window opened once, and the twenty events after it moved a clock.
+    expect(woken()).toBe(1);
+    // The countdown is still the topic's own value, so each request states it.
+    expect(frames()).toBe(10);
+  });
+
+  test("a session the window had closed on wakes it again", () => {
+    const { subject, woken } = requests();
+    const now = Date.now();
+    subject.record(observation(now - 2 * GATEWAY_LIVE_WINDOW_MS));
+    subject.record(observation(now));
+
+    expect(woken()).toBe(2);
+  });
+
+  /** One row without the attribute that moves on its own. */
+  function shape(row: Record<string, unknown> | undefined): string {
+    const { gateway_active_at: _clock, last_activity_at: _seen, ...rest } = row ?? {};
+    return JSON.stringify(rest);
+  }
+
+  test("a run of events leaves `peers` where it was", async () => {
+    const gateway = fakeGateway();
+    const started = await startWith(wiredTo(gateway.url));
+    // A session the harness names, so the gateway's word about it lands on a
+    // row this instance publishes.
+    writeFileSync(
+      join(started.home, "sessions", `${process.pid}.json`),
+      JSON.stringify({
+        pid: process.pid,
+        sessionId: SID,
+        cwd: started.home,
+        kind: "interactive",
+        startedAt: NOW,
+      }),
+    );
+    // The window is opened before anyone is listening, so what the subscriber
+    // then sees is only what the events after it did.
+    const now = Date.now();
+    await started.post([requestEvent({ ts: now, cache_expires_at: now + 3_600_000 })]);
+
+    const client = await subscribe(started, "peers");
+    let row: Record<string, unknown> | undefined;
+    while (row?.["gateway_active_at"] === undefined) {
+      const frame = await nextTopic(client, "peers");
+      row = (frame["data"] as { peers: Record<string, unknown>[] }).peers[0];
+    }
+    // The session appearing in the harness is a change of its own, and the
+    // watch behind it reports the write in its own time. Counting starts once
+    // that has gone quiet, so what is counted is what the events did.
+    let last = shape(row);
+    let repeats = 0;
+    let counting = false;
+    let quiet: (() => void) | undefined;
+    void (async () => {
+      for (;;) {
+        const frame = await client.next();
+        if (frame["ev"] !== "topic" || frame["topic"] !== "peers") continue;
+        const seen = shape((frame["data"] as { peers: Record<string, unknown>[] }).peers[0]);
+        // Frames whose only difference is the clock are the ones a run of
+        // events must not produce. One carrying a structural change is another
+        // matter, and the instance may send that whenever it has one.
+        if (counting && seen === last) repeats += 1;
+        last = seen;
+        quiet?.();
+      }
+    })().catch(() => {});
+    for (;;) {
+      const heard = await new Promise<boolean>((settle) => {
+        quiet = () => settle(true);
+        setTimeout(() => settle(false), 200);
+      });
+      quiet = undefined;
+      if (!heard) break;
+    }
+    counting = true;
+
+    for (let index = 1; index <= 10; index += 1) {
+      await started.post([requestEvent({ ts: now + index, cache_expires_at: now + 3_600_000 })]);
+    }
+    await Bun.sleep(150);
+
+    // Each of them moved the row's clock and nothing else.
+    expect(repeats).toBe(0);
   });
 });
 

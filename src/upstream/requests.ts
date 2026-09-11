@@ -18,6 +18,14 @@ export interface LlmRequestsDeps {
   readonly onActivity?: () => void;
 }
 
+/** Which of a session's gateway facts moved.
+ *
+ * `live` is the only one the sessions domain has to hear: it is the moment the
+ * classification of §5.1 can change, because the window either opened or
+ * closed. `clock` is the same session seen again inside a window that was
+ * already open — the value of an attribute, not a section anything is in. */
+type GatewayMove = "live" | "clock" | "none";
+
 /** Series remembered at once. The prune below already holds this near the
  * number active in the last cache window; the cap is what bounds a gateway
  * whose clock runs ahead, whose events would otherwise never expire. */
@@ -69,7 +77,7 @@ export class LlmRequests implements UpstreamResource {
    * near-ordered in practice, but a redelivery can put an older one after a
    * newer, and a countdown must not walk backwards. */
   record(info: LlmRequestObservation): void {
-    this.active(info.sid, info.received_at);
+    if (this.active(info.sid, info.received_at) === "live") this.deps.onActivity?.();
     const key = seriesKey(info.sid, info.prefix);
     const held = this.#series.get(key);
     if (held !== undefined && held.info.received_at >= info.received_at) return;
@@ -91,7 +99,7 @@ export class LlmRequests implements UpstreamResource {
    * the window belongs to the request that opened it — and only says the
    * session was still running inference at that instant. */
   note(sid: Sid, at: Timestamp): void {
-    if (this.active(sid, at)) this.deps.onActivity?.();
+    if (this.active(sid, at) === "live") this.deps.onActivity?.();
   }
 
   /** When the gateway last saw inference for a session (§5.1). Undefined once
@@ -136,21 +144,32 @@ export class LlmRequests implements UpstreamResource {
 
   private publish(): void {
     this.deps.publish("llm_requests", this.entries());
-    this.deps.onActivity?.();
   }
 
-  /** Note the session was seen, and say whether that moved it forward. */
-  private active(sid: Sid, at: Timestamp): boolean {
+  /** Note the session was seen, and say what that moved.
+   *
+   * A session already inside its window moves its clock and nothing else. The
+   * sessions domain is told about `live` alone, because telling it about every
+   * event would restate the whole of `peers` once per call a session makes:
+   * inference is observed several times a second and the row it lands on
+   * differs only in an attribute (§5.2). */
+  private active(sid: Sid, at: Timestamp): GatewayMove {
     const held = this.#activeAt.get(sid);
-    if (held !== undefined && held >= at) return false;
+    if (held !== undefined && held >= at) return "none";
+    const wasLive = held !== undefined && at - held <= GATEWAY_LIVE_WINDOW_MS;
     this.#activeAt.set(sid, at);
     // Sessions the gateway has not seen for longer than the window go: what is
     // left is what any of this can still say something about.
-    const floor = at - GATEWAY_LIVE_WINDOW_MS;
+    this.prune(at);
+    return wasLive ? "clock" : "live";
+  }
+
+  /** Drop the sessions whose window has closed. */
+  private prune(now: Timestamp): void {
+    const floor = now - GATEWAY_LIVE_WINDOW_MS;
     for (const [seen, when] of this.#activeAt) {
       if (when < floor) this.#activeAt.delete(seen);
     }
-    return true;
   }
 
   private notePrefix(info: LlmRequestObservation): void {
