@@ -16,6 +16,7 @@ import { KV_DIR } from "../src/kv/index.ts";
 import { OpError } from "../src/dispatch/index.ts";
 import {
   completeHandlers,
+  CONFIG_FILE,
   ConfigError,
   DEFAULT_CONFIG,
   type Env,
@@ -142,7 +143,7 @@ describe("paths", () => {
   });
 });
 describe("config", () => {
-  /** A config home whose `config.ts` states one flat block of settings. Every
+  /** A config home whose shared file states one flat block of settings. Every
    * instance starts from what that file returns, which is what makes this the
    * short way to write "an instance configured like so". */
   function shared(root: string, defaults: Record<string, unknown> | string): string {
@@ -204,7 +205,7 @@ describe("config", () => {
     const dir = join(root, "config");
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, "config.json"), JSON.stringify({ defaults: {}, instances: [] }));
-    expect(loadConfig(dir, home)).rejects.toThrow(/config\.ts/);
+    expect(loadConfig(dir, home)).rejects.toThrow(CONFIG_FILE);
   });
 
   test("the four things config carries (§8.2)", async () => {

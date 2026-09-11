@@ -273,10 +273,10 @@ async function bindable(port: number): Promise<boolean> {
  * A template rather than an empty file, because what the file has to say —
  * which config home, and how a setting is written at all — is exactly what a
  * person adding their second instance does not yet know. It states only what
- * differs from `config.ts`, which is what makes the shared half worth having:
+ * differs from the shared file, which is what makes that file worth having:
  * everything left out is whatever that file returns.
  *
- * `config.ts` is written the first time, with the dump presets in it, and never
+ * The shared file is written the first time, with the dump presets in it, and never
  * again: what a preset names is an interest this instance has no opinion on, so
  * they are examples in a file to edit rather than a default in the code that
  * would come back after being deleted. */
@@ -438,7 +438,7 @@ function presetLiteral(preset: (typeof STARTING_PRESETS)[number]): string {
 }
 
 /** One instance's file, as `add` first writes it: what differs from
- * `config.ts`, and nothing else. */
+ * the shared file, and nothing else. */
 function instanceTemplate(name: string, dir: string, harness: Harness, port: number): string {
   const lines = [
     `  config.name = ${JSON.stringify(name)};`,

@@ -190,13 +190,15 @@ export const DEFAULT_CONFIG: InstanceConfig = {
 
 /** The file every instance's settings start from, and the directory holding
  * one file per instance. Both are read from the config home a person edits
- * (§8.2). */
-export const CONFIG_FILE = "config.ts";
+ * (§8.2). The names are held here alone, so what the files are called is one
+ * edit rather than a search. */
+export const CONFIG_FILE = "config_v2.ts";
 export const INSTANCES_DIR = "instances";
 
 /** The declarations a config file writes against, as they are called where
- * they are copied to. */
-export const TYPES_FILE = "ccmsg-config.d.ts";
+ * they are copied to, and as this build keeps them. */
+export const TYPES_FILE = "ccmsg-config_v2.d.ts";
+const TYPES_SOURCE = "ccmsg-config.d.ts";
 
 /** What the settings used to be written in. Named so a config home that still
  * holds one is told where its settings have moved to, rather than starting
@@ -526,7 +528,7 @@ export async function loadConfig(configDir: string, dir: string): Promise<Instan
 export function writeConfigTypes(configDir: string): string {
   const at = join(configDir, TYPES_FILE);
   mkdirSync(configDir, { recursive: true });
-  copyFileSync(new URL(`./${TYPES_FILE}`, import.meta.url).pathname, at);
+  copyFileSync(new URL(`./${TYPES_SOURCE}`, import.meta.url).pathname, at);
   return at;
 }
 

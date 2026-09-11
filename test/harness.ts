@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { CONFIG_FILE } from "../src/instance/config.ts";
 
 /** What one command wrote, so a test reads the CLI's answer rather than its
  * return value: the answer is the JSON document, and the number beside it is
@@ -106,7 +107,7 @@ export async function reapOrphans(): Promise<string[]> {
   return leaked.map((one) => one.argv);
 }
 
-/** Settings written as the files a person writes: `config.ts`, one cluster, and
+/** Settings written as the files a person writes: the shared one, one cluster, and
  * one file per instance under `instances/`.
  *
  * Each instance's file is a function assigning what the test states over what
@@ -125,7 +126,7 @@ export function writeConfigHome(
   peers: readonly string[] = [],
 ): string {
   mkdirSync(configDir, { recursive: true });
-  writeFileSync(join(configDir, "config.ts"), configSource(defaults));
+  writeFileSync(join(configDir, CONFIG_FILE), configSource(defaults));
   const ids: string[] = [];
   if (Object.keys(instances).length > 0) {
     mkdirSync(join(configDir, "instances"), { recursive: true });
@@ -148,7 +149,7 @@ export function writeConfigHome(
     join(configDir, "clusters.json"),
     `${JSON.stringify({ clusters: [cluster] }, null, 2)}\n`,
   );
-  return join(configDir, "config.ts");
+  return join(configDir, CONFIG_FILE);
 }
 
 /** The id a test's instance is called by: fixed width, and the same every run

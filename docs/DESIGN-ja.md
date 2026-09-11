@@ -341,7 +341,7 @@ teammate の `agent_id` は起動の答えで判るので、そちらが `agent`
 `@<preset 名>` (config の preset をその位置に展開、再帰可) で、無指定は `system.attachment` を除く全部。
 preset は契約に焼かず config の `dump.presets` に置く (名前が指すのは「関心の切り方」であって wire の性質ではない)。
 循環参照と未定義の preset 名は **config 読み込み時に拒否**する (dump のたびに落ちるのでは遅い)。
-`daemon add` は編集の出発点として 5 つの例を `config.ts` に書く。一覧は `dump.presets.read` で引く。
+`daemon add` は編集の出発点として 5 つの例を `config_v2.ts` に書く。一覧は `dump.presets.read` で引く。
 **file の形も契約が持つ** (`SessionDumpFile`)。path だけを返して本文は file にあるので、path を渡された後継セッションが読む形は契約の側で決まっていないと読めない。file は
 `{sid, agent_id?, written_at, types, items, ids}` で、`types` は **展開・除外適用後の選択そのもの**である
 (file は要求より長生きするので、何の dump で何を落としたかを file 自身が言えなければならない)。`ids` 台帳は型ではないので選択で落ちない。
@@ -1071,11 +1071,11 @@ config を変えたら instance を再起動する、が唯一の反映手順に
 
 | ファイル | 中身 |
 |---|---|
-| `config.ts` | `({ builtin, config }) => config` — この host の全 instance の出発点 |
+| `config_v2.ts` | `({ builtin, config }) => config` — この host の全 instance の出発点 |
 | `clusters.json` | `{clusters: ["<cluster_id>", …]}` — この host が知る cluster |
 | `clusters/cluster-<cluster_id>.json` | `{name, peers, instances}` — cluster 1 つ、この host が書き留めた姿 |
 | `instances/instance-<instance_id>.ts` | `({ builtin, default, config }) => config` — instance 1 つ分 |
-| `ccmsg-config.d.ts` | TypeScript が書く型の宣言。`daemon add` がここに置く |
+| `ccmsg-config_v2.d.ts` | TypeScript が書く型の宣言。`daemon add` がここに置く |
 
 **3 つの語と、それぞれが何か**。**instance** は config home 1 つ (A2) で、プライバシーと権限が閉じる最小の単位。**cluster** はユーザ 1 人の管理単位 — 複数 instance、mesh 1 つ、DR-0001 §2.6 の認証記録が複製される範囲 1 つ。同じ host に居る別 cluster の instance には関与しない。**mesh** は 1 つの cluster の instance 同士の配線なので、peer の一覧は host ではなく cluster に属する。
 
@@ -1085,7 +1085,7 @@ config を変えたら instance を再起動する、が唯一の反映手順に
 
 **1 つの instance は複数の cluster に属してよい**。各 cluster が同じ id を挙げる。それでも config home 1 つ、プロセス 1 つで、監督者は 1 回だけ起動し、どの cluster に属していて各 cluster の mesh が何かを instance に伝える。その分離が何のためか (記録を cluster ごとに持つ、hello で cluster を名乗る、relay がその境界で止まる) はこの上に作るもので、まだここには無い。
 
-`config.ts` には `builtin` (組み込み既定) が、instance のファイルには `builtin` と `default` (`config.ts` が返した値) が渡る。どちらも深く凍結してあり、`config` は 1 段上のコピーなので、渡された物を書き換えて返す。instance のファイルは自分が答える config home の絶対パスを `config.dir` に書く。同じ config home を 2 つのファイルが名乗ったら拒否する — instance とは config home そのものだから。ファイルは `async` でもよい。答えを作るのに何が要るか (秘密を読む、何かに尋ねる) はそのファイルの都合である。
+`config_v2.ts` には `builtin` (組み込み既定) が、instance のファイルには `builtin` と `default` (`config_v2.ts` が返した値) が渡る。どちらも深く凍結してあり、`config` は 1 段上のコピーなので、渡された物を書き換えて返す。instance のファイルは自分が答える config home の絶対パスを `config.dir` に書く。同じ config home を 2 つのファイルが名乗ったら拒否する — instance とは config home そのものだから。ファイルは `async` でもよい。答えを作るのに何が要るか (秘密を読む、何かに尋ねる) はそのファイルの都合である。
 
 **マージ規則は無い。何もマージしないから**である。ファイルは土台の全体を受け取り、動かす値の全体を返す。「この一覧は下の段を置換するのか、足すのか」を読み手が覚えておく必要が無い — `config.dump.presets = […]` なら置換、`.push(…)` なら追加で、どちらのつもりかはファイルが言う。
 

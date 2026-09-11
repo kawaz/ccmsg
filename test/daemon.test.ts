@@ -27,6 +27,7 @@ import {
 import {
   DEFAULT_CONFIG,
   loadAll,
+  TYPES_FILE,
   loadClusters,
   saveCluster,
   saveClusters,
@@ -120,7 +121,7 @@ describe("which config homes there are (daemon add / remove / list)", () => {
     const paths = resolvePaths(process.env);
     // The declarations the two files write against, put beside them: a
     // relative `import type` resolves with no tsconfig anywhere near it.
-    expect(existsSync(join(paths.configDir, "ccmsg-config.d.ts"))).toBe(true);
+    expect(existsSync(join(paths.configDir, TYPES_FILE))).toBe(true);
     // One file per instance, called by its id, stating what differs from the
     // shared file and nothing else. The name a person reads is inside it, so
     // renaming moves nothing.

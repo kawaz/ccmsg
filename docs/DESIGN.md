@@ -387,7 +387,7 @@ place (recursively). Absent keeps everything but `system.attachment`. Presets li
 `dump.presets` rather than in the contract, because what a preset names is an interest and not a
 property of the wire. A cycle, or a preset name nobody configured, is **refused when the config is
 read** — finding it per request would be finding it far too late. `daemon add` writes five
-examples into `config.ts` as a starting point to edit, and `dump.presets.read`
+examples into `config_v2.ts` as a starting point to edit, and `dump.presets.read`
 lists them. **The file's own shape is the contract's too** (`SessionDumpFile`): the reply names a
 path rather than carrying the items, so a successor session handed that path would otherwise be
 reading a format nothing states. It is `{sid, agent_id?, written_at, types, items, ids}`, where
@@ -1239,11 +1239,11 @@ sole way to make a config change take effect.
 
 | File | What it is |
 |---|---|
-| `config.ts` | `({ builtin, config }) => config` — what every instance of this host starts from |
+| `config_v2.ts` | `({ builtin, config }) => config` — what every instance of this host starts from |
 | `clusters.json` | `{clusters: ["<cluster_id>", …]}` — which clusters this host knows of |
 | `clusters/cluster-<cluster_id>.json` | `{name, peers, instances}` — one cluster, as this host writes it down |
 | `instances/instance-<instance_id>.ts` | `({ builtin, default, config }) => config` — one instance |
-| `ccmsg-config.d.ts` | The declarations the TypeScript files write against, copied here by `daemon add` |
+| `ccmsg-config_v2.d.ts` | The declarations the TypeScript files write against, copied here by `daemon add` |
 
 **Three words, and what each of them is.** An **instance** is one config home (A2): the smallest
 thing privacy and permission close around. A **cluster** is one person's unit of management —
@@ -1270,8 +1270,8 @@ in and what each one's mesh is. What that separation is for — records kept per
 greeting that names one, a relay that stops at its edge — is built on top of it and is not here
 yet.
 
-`config.ts` is handed `builtin`, the built-in defaults; an instance's file is handed `builtin`
-and `default`, what `config.ts` returned. Both are deeply frozen, and `config` is a mutable copy
+`config_v2.ts` is handed `builtin`, the built-in defaults; an instance's file is handed `builtin`
+and `default`, what `config_v2.ts` returned. Both are deeply frozen, and `config` is a mutable copy
 of the level above, so a file edits what it was given and returns it. An instance's file states
 `config.dir`, the absolute config home it answers for; two files naming one config home are
 refused, because an instance *is* a config home. A file may be `async`, since what it has to do

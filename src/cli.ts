@@ -177,7 +177,7 @@ const ROOT: Command = {
             {
               title: "何がどのファイルに載るか (載っていないファイルは読まない):",
               docs: [
-                ["config.ts", "全 instance が受け取る値。`({builtin, config}) => config`"],
+                ["config_v2.ts", "全 instance が受け取る値。`({builtin, config}) => config`"],
                 ["clusters.json", "この host が知る cluster の id 一覧"],
                 [
                   "clusters/cluster-<id>.json",
@@ -187,7 +187,10 @@ const ROOT: Command = {
                   "instances/instance-<id>.ts",
                   "1 instance 分の差分。`({builtin, default, config}) => config`",
                 ],
-                ["ccmsg-config.d.ts", "設定ファイルが `import type` で参照する型 (ccmsg が置く)"],
+                [
+                  "ccmsg-config_v2.d.ts",
+                  "設定ファイルが `import type` で参照する型 (ccmsg が置く)",
+                ],
               ],
             },
           ],

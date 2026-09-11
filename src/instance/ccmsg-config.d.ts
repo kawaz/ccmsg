@@ -1,8 +1,8 @@
-/** 設定ファイル (`config.ts` / `instances/<name>.ts`) が書ける値の型。
+/** 設定ファイル (`config_v2.ts` / `instances/instance-<id>.ts`) が書ける値の型。
  *
- * ccmsg がこのファイルを config home に写すので、設定ファイルからは
- * `import type { Instance } from "../ccmsg-config"` の形で参照できる。
- * 型だけを持ち、他の何も import しないので、tsconfig の無い場所でも解決する。 */
+ * ccmsg がこのファイルを config home に `ccmsg-config_v2.d.ts` として写すので、
+ * 設定ファイルからは `import type { Instance } from "../ccmsg-config_v2"` の形で
+ * 参照できる。型だけを持ち、他の何も import しないので、tsconfig の無い場所でも解決する。 */
 
 /** ある config home が動かすもの。 */
 export type Harness = "claude" | "codex";
@@ -64,7 +64,7 @@ export interface Dump {
   presets: DumpPreset[];
 }
 
-/** 1 instance 分の設定。`config.ts` が返すのも、`instances/<name>.ts` が
+/** 1 instance 分の設定。`config_v2.ts` が返すのも、`instances/instance-<id>.ts` が
  * `dir` を足して返すのも、これ。
  *
  * mesh の相手はここに書かない。この host の instance は `instances/*.ts` の
@@ -91,7 +91,7 @@ export interface InstanceConfig extends Config {
   endpoint?: string;
 }
 
-/** `config.ts` が default export する関数。
+/** `config_v2.ts` が default export する関数。
  *
  * `builtin` は組み込みの既定値で、凍らせてあるので書き換えられない。
  * `config` はそのコピーなので、好きに書き換えて返す。 */
@@ -100,9 +100,9 @@ export type Defaults = (ctx: {
   config: Config;
 }) => Config | Promise<Config>;
 
-/** `instances/<name>.ts` が default export する関数。
+/** `instances/instance-<id>.ts` が default export する関数。
  *
- * `default` は `config.ts` が返した値 (凍結済み)、`config` はそのコピーに
+ * `default` は `config_v2.ts` が返した値 (凍結済み)、`config` はそのコピーに
  * `dir` の場所を空で足した物。 */
 export type Instance = (ctx: {
   readonly builtin: Readonly<Config>;
