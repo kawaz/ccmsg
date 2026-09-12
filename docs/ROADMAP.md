@@ -14,12 +14,12 @@
 
 ## 束 0 — v1 パリティ (kawaz が v2 に移るために要るもの)
 
-kawaz が v1 の webui を使い続けている理由を潰す束。**契約と daemon は揃っていて、webui だけの作業**。これが他の束より先。
+kawaz が v1 の webui を使い続けている理由を潰す束。**契約と daemon は揃っていて、webui だけの作業**。これが他の束より先。画面は全部を移植するのではなく候補で、v1 の形は踏襲しない。試作して意見を聞きながら直し、最後にデザインシステム (束 1 のカラーシステムを色 + 型 + 部品の語彙に広げる) で揃える。
 
 - webui `2026-09-12-first-connect-flow.md` — スマホ初回アクセスの接続・認証導線
 - webui `2026-09-12-timeline-width-and-bubble-gutter.md` — TL の幅崩れとバブル左余白
 - webui `2026-09-12-composer-enter-newline.md` — Composer の Enter を改行にする
-- webui `2026-09-12-v1-parity-for-migration.md` — 画面 9 件 (Usage / クォータ、cache リング + LLM status、翻訳タブ、Status タブの中身、Session Search、Session Launcher、LLM stats、dump ボタン、kill / rename / pinned)
+- webui `2026-09-12-v1-parity-for-migration.md` — 候補 9 件 (Usage / クォータ、cache リング + LLM status、翻訳タブ、Status タブの中身、Session Search、Session Launcher、LLM stats、dump ボタン、kill / rename / pinned)
 
 契約 / daemon 側から要る 3 件 (sandbox の配信、Composer の添付、`.code-workspace`) は束 2 に寄せる。
 
