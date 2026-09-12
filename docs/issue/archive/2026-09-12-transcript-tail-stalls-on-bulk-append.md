@@ -1,6 +1,6 @@
 ---
 title: transcript tail が bulk append に追いつかない (Linux)
-status: open
+status: resolved
 category: bug
 created: 2026-09-12T09:38:52+09:00
 last_read:
@@ -9,10 +9,10 @@ wip_entered:
 blocked_entered:
 pending_entered:
 discarded_entered:
-resolved_entered:
+resolved_entered: 2026-09-12T09:49:27+09:00
 discard_reason:
 pending_reason:
-close_reason:
+close_reason: ["done: Linux/macOS 実機で 500 行一括 append の全件到達を確認、daemon 欠陥は再現せず、CI の visual test 側が追従途中を観測していた回帰を修正、回帰テストで契約を固定"]
 blocked_by:
 origin: webui visual test (CI run 34661324095)
 ---
