@@ -15,7 +15,6 @@ Status は各 DR ファイルの `Status:` 行が正本。
 | [DR-0002](DR-0002-contract-holds-the-vocabulary.md) | 契約が語彙と属性表を持ち、daemon が分類と導出を持つ。client は生の jsonl を読まない |
 | [DR-0003](DR-0003-naming-rules.md) | op / topic / 型名の統一規則 (`.` は階層、`:` は末尾 1 回、`_` は語の連結)。`mesh.*` は作らない |
 | [DR-0004](DR-0004-config-edited-and-applied.md) | 設定は編集用と適用用に分け、検証を通った値だけを適用する。通らなければ前回の値で起動する |
-| [DR-0005](DR-0005-withdraw-the-cluster-concept.md) | cluster 概念の撤回 (権限構造が未解決のまま構造だけが先行したため)。再開時の用語と論点を残す |
 | [DR-0006](DR-0006-dump-writes-typed-items.md) | dump は行ではなく型付き item を書く。呼び出しと答えは 2 item、畳むのは描画側 |
 | [DR-0007](DR-0007-classify-by-who-the-conversation-is-with.md) | transcript の item 分類は「相手が誰か」で決める。立場は開いた側が決め、嗅ぎ分けない |
 | [DR-0008](DR-0008-direct-route-first-inbox-persisted.md) | 配送は harness 直送を優先し topic へ落ちる。inbox は永続、drop は配送済みにしない |

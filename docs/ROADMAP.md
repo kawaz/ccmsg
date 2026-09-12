@@ -65,7 +65,6 @@ kawaz が v1 の webui を使い続けている理由を潰す束。**契約と 
 
 ## 束 6 — 保留 (kawaz)
 
-- **cluster / 権限構造** — 再開する時は権限構造から起票し直す ([DR-0005](./decisions/DR-0005-withdraw-the-cluster-concept.md) §2.1 / §2.2 に用語と論点がある)
 - **Codex の hook trust** — trust を install 側が書かない方針のまま、人が承認する導線を用意していない
 
 ## 関連

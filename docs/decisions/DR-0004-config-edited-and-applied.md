@@ -3,7 +3,7 @@
 Status: Accepted (2026-09-12。kawaz 裁定。TS ローダー化そのものは 2026-09-11 の裁定)
 Date: 2026-09-12
 Sponsor: kawaz (2026-09-11/12)「編集用と適用用を分ける」「検証 NG でも前回 OK で起動する」
-関連: 設計 §8.2 (設定)、§8.3 (起動の順序)、§8.4 (常駐)、[DR-0005](DR-0005-withdraw-the-cluster-concept.md) (cluster の撤回)、[DR-0013](DR-0013-instances-are-long-running.md)、issue `2026-09-11-ts-config-loader`
+関連: 設計 §8.2 (設定)、§8.3 (起動の順序)、§8.4 (常駐)、[DR-0013](DR-0013-instances-are-long-running.md)、issue `2026-09-11-ts-config-loader`
 
 ## 1. 背景
 
