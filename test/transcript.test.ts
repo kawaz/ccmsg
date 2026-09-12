@@ -1155,6 +1155,44 @@ describe("the transcript.items topic (§3.6)", () => {
     expect(items.every((item) => item["uuid"] === "a1")).toBe(true);
   });
 
+  test("one bulk append reaches a topic subscriber in full", async () => {
+    const file = transcript([spoke("u1", "count the lines")]);
+    let hub: Topics;
+    const transcripts = new Transcripts({
+      self: SELF,
+      pathOf: () => file.path,
+      publish: (topic, data) => {
+        hub.publish(topic, data);
+      },
+      onFacts: () => {},
+      pollMs: POLL_MS,
+    });
+    running.push(transcripts);
+    hub = new Topics(SELF, new Set(), undefined, unthrottled());
+    hub.attach("transcript", transcripts);
+    hub.attach("transcript.items", transcripts);
+    const watcher = connAs("user");
+    expect(hub.subscribe(watcher, ITEMS_TOPIC)).toBe("ok");
+    watcher.flush();
+    await settled(() => transcripts.following(SID));
+
+    const rows = Array.from({ length: 500 }, (_unused, n) =>
+      spoke(`bulk-${String(n)}`, `bulk ${String(n)}`, n + 1),
+    );
+    file.append(...rows);
+    const received = () =>
+      watcher
+        .topics()
+        .filter((frame) => frame["topic"] === ITEMS_TOPIC)
+        .flatMap((frame) => (frame["data"] as { items: Record<string, unknown>[] }).items)
+        .filter((item) => String(item["uuid"]).startsWith("bulk-"));
+    await settled(() => received().length === rows.length);
+
+    expect(received()).toHaveLength(rows.length);
+    expect(received()[0]?.["uuid"]).toBe("bulk-0");
+    expect(received().at(-1)?.["uuid"]).toBe("bulk-499");
+  });
+
   test("the record behind an item is what its source addresses", async () => {
     const file = transcript([spoke("u1", "count the lines")]);
     const { transcripts, published } = domain(file.path);
