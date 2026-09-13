@@ -388,6 +388,27 @@ describe("classifying a transcript", () => {
     expect(of(items[1])["text"]).toContain("<cross-session-message");
   });
 
+  test("what a session pushed to its person is the words it pushed", () => {
+    // The harness's own notification tool. What it was given is what a person
+    // heard, so the item carries it as `text` — the same field a message has —
+    // rather than as a call whose arguments happen to include some words.
+    const items = classify(
+      lines(
+        said("u1", "start"),
+        answered("a1", [
+          {
+            type: "tool_use",
+            id: "t1",
+            name: "PushNotification",
+            input: { message: "手が空きました" },
+          },
+        ]),
+      ),
+    );
+    expect(typesOf(items)).toEqual(["message.user.in", "tool.PushNotification"]);
+    expect(of(items[1])["text"]).toBe("手が空きました");
+  });
+
   test("who wrote decides whether an envelope is the one above or one alongside", () => {
     const items = classify(
       lines(

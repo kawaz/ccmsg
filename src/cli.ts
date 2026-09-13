@@ -91,9 +91,9 @@ function ownSid(): string | undefined {
  * of its own to write to. */
 export type Read = () => Promise<string>;
 
-/** The system speech binary. Absolute on purpose: a `say` shim earlier on PATH
- * is what delegates here, so resolving through PATH again would re-enter the
- * shim. */
+/** The system speech binary. Absolute on purpose: what is on `PATH` under this
+ * name is whatever the host has arranged, and a notification is meant to be
+ * heard rather than routed. */
 const SYSTEM_SAY = "/usr/bin/say";
 
 /** What every command may be given, and what every command reads from.
@@ -137,8 +137,8 @@ interface Command {
    * `service status` take nothing, and printing their help instead of their
    * answer would make them unreachable. */
   readonly bare?: boolean;
-  /** A command that takes its arguments over rather than parsing them, which
-   * is what `say` is: its arguments belong to another program. */
+  /** A command that takes its arguments over rather than parsing them: they
+   * belong to another program. */
   readonly raw?: (args: readonly string[]) => Promise<number>;
 }
 
@@ -529,17 +529,6 @@ const ROOT: Command = {
       ],
       env: sessionEnv(),
       run: (args) => hello(args),
-    },
-    {
-      name: "say",
-      summary: `${SYSTEM_SAY} で発声し、どのセッションが喋ったかを知らせる`,
-      usage: "ccmsg say [say-options] [text...]",
-      options: [["", `引数は ${SYSTEM_SAY} へそのまま渡す (単独の --help だけが例外)`]],
-      env: [
-        [SESSION_ENV.join(" / "), "喋ったセッションの名乗り"],
-        ["CCMSG_SAY_BIN", `発声に使うバイナリ (既定は ${SYSTEM_SAY})`],
-      ],
-      raw: (args) => say(args),
     },
   ],
 };
@@ -1421,18 +1410,58 @@ function reply(args: readonly string[]): Promise<unknown> {
 
 /** `ccmsg notify <text>`: a line for whoever is watching. Nothing is held and
  * nothing is acknowledged, so there is no outcome to report beyond the op
- * having been accepted. */
-function notify(args: readonly string[]): Promise<unknown> {
-  const parsed = options(args, ["sid", "about"]);
+ * having been accepted.
+ *
+ * `--hook` is the same line, taken from what the harness's own notification
+ * tool was given: a session that pushed a notification said something to the
+ * person it works for, and this is that host's two ways of reaching them — a
+ * line on the page they are watching, and the machine saying it aloud. Both
+ * run whatever the tool itself decided to do with it. */
+export async function notify(args: readonly string[], read?: Read): Promise<unknown> {
+  const parsed = options(args, ["sid", "about"], ["hook"]);
+  if (parsed.flags.has("hook")) return await pushed(await hookEvent(read));
   const [text] = parsed.rest;
   if (text === undefined) {
-    throw new CommandError("invalid_args", "使い方: ccmsg notify <text> [--about <sid>]");
+    throw new CommandError("invalid_args", "使い方: ccmsg notify <text> [--about <sid>] | --hook");
   }
   const about = parsed.named.get("about");
-  return announce(parsed.named.get("sid"), {
+  return await announce(parsed.named.get("sid"), {
     text,
     ...(about === undefined ? {} : { sid: about }),
   });
+}
+
+/** What a pushed notification becomes here: said aloud, and written to the
+ * page.
+ *
+ * Nothing to say is nothing to do — a hook fires on the tool whatever the tool
+ * was given — and a failure on either half leaves the other alone: the speech
+ * is what a person in the room hears and the line is what a person at the page
+ * reads, and neither is worth losing because the other could not be had. */
+export async function pushed(
+  event: { sid?: string; tool_message?: string },
+  spawn: Spawn = spawnSpeech,
+): Promise<unknown> {
+  const text = event.tool_message?.trim();
+  if (text === undefined || text === "") return { pushed: false };
+  const spoken = spoke(text, spawn);
+  let sent = false;
+  try {
+    await announce(event.sid, { text });
+    sent = true;
+  } catch {
+    // No instance, or one that refused: the person in the room still hears it.
+  }
+  return { pushed: true, spoken: await spoken, sent };
+}
+
+/** Say it aloud, and answer whether the machine could. */
+async function spoke(text: string, spawn: Spawn): Promise<boolean> {
+  try {
+    return (await spawn([process.env["CCMSG_SAY_BIN"] ?? SYSTEM_SAY, text]).exited) === 0;
+  } catch {
+    return false;
+  }
 }
 
 /** `ccmsg stopping`: this session is about to go.
@@ -1681,74 +1710,12 @@ async function exchange(
   }
 }
 
-/** What one attempt to record a `say` may cost before the speech goes ahead
- * without it. The record is a nicety — which session spoke — and the speech is
- * what the caller asked for, so an instance that has wedged costs latency once
- * rather than silence. */
-const SAY_POST_MS = 1_500;
-
 /** How a speech process is started. Named so a test can watch the arguments
  * without the machine making a sound. */
 export type Spawn = (command: string[]) => { exited: Promise<number> };
 
 const spawnSpeech: Spawn = (command) =>
-  Bun.spawn(command, { stdin: "inherit", stdout: "inherit", stderr: "inherit" });
-
-/** `ccmsg say [say-options] [text...]`: speak, and say who spoke.
- *
- * Every argument goes to the speech binary untouched, so its own flags work and
- * a PATH shim delegating here changes nothing about what the caller gets. The
- * one exception is a lone `--help`, which the binary does not define.
- *
- * No arguments is not an error: `echo hi | say` reads its text from stdin, and
- * that is the form a shim exists to preserve. */
-export async function say(args: readonly string[], spawn: Spawn = spawnSpeech): Promise<number> {
-  if (args.length === 1 && (args[0] === "--help" || args[0] === "-h")) {
-    process.stdout.write(help([ROOT, ROOT.children?.find((one) => one.name === "say") as Command]));
-    return 0;
-  }
-  await posted(args.join(" "));
-  const binary = process.env["CCMSG_SAY_BIN"] ?? SYSTEM_SAY;
-  return await spawn([binary, ...args]).exited;
-}
-
-/** Tell the instance this session spoke, and say nothing if it cannot be told.
- *
- * Best effort on purpose: no instance, a refused greeting or a socket that goes
- * away under us all leave the speech itself untouched, and a message about the
- * record would be noise in front of the thing the caller wanted. Text the
- * contract will not take — a bare `say` reading its text from stdin has none —
- * is nothing to record either. */
-async function posted(text: string): Promise<void> {
-  const sid = ownSid();
-  if (text === "" || sid === undefined || sid === "") return;
-  const conn = await connect(resolvePaths().socket);
-  if (conn === undefined) return;
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const record = async (): Promise<void> => {
-    const greeting = await conn.ask({
-      op: "hello.session",
-      sid,
-      protocol_version: PROTOCOL_VERSION,
-      ...statedMeta(),
-    });
-    if (greeting["ok"] === true) await conn.ask({ op: "say.post", text });
-  };
-  const budget = new Promise<void>((resolve) => {
-    timer = setTimeout(resolve, SAY_POST_MS);
-  });
-  try {
-    // Raced rather than cancelled: an exchange that never answers is one this
-    // waits out, and closing under it would leave a reply nobody resolves.
-    await Promise.race([record(), budget]);
-  } catch {
-    // The instance went away mid-exchange. The speech is what was asked for
-    // and it happens regardless.
-  } finally {
-    clearTimeout(timer);
-    conn.close();
-  }
-}
+  Bun.spawn(command, { stdin: "ignore", stdout: "ignore", stderr: "ignore" });
 
 /** Long options and what is left over.
  *

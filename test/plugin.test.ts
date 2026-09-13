@@ -262,13 +262,13 @@ describe("the plugin's files", () => {
     expect(existsSync(join(root, ".claude-plugin"))).toBe(true);
   });
 
-  test("the hooks say hello and goodbye through the ccmsg on PATH, and are quiet without one", async () => {
+  test("the hooks say hello, goodbye and what was pushed, through the ccmsg on PATH", async () => {
     const { read } = await laid();
 
     const hooks = JSON.parse(await read("hooks/hooks.json")) as {
       hooks: Record<string, { matcher?: string; hooks: { type: string; command: string }[] }[]>;
     };
-    expect(Object.keys(hooks.hooks).sort()).toEqual(["SessionEnd", "SessionStart"]);
+    expect(Object.keys(hooks.hooks).sort()).toEqual(["PostToolUse", "SessionEnd", "SessionStart"]);
 
     const start = hooks.hooks["SessionStart"]?.[0];
     expect(start?.matcher).toBe("startup|resume|clear|compact");
@@ -277,6 +277,12 @@ describe("the plugin's files", () => {
 
     const end = hooks.hooks["SessionEnd"]?.[0];
     expect(end?.hooks[0]?.command).toContain("ccmsg stopping --hook");
+
+    // What a session tells the person it works for: the harness's own tool
+    // raises it, and this host says it aloud and puts it on the page.
+    const pushed = hooks.hooks["PostToolUse"]?.[0];
+    expect(pushed?.matcher).toBe("PushNotification");
+    expect(pushed?.hooks[0]?.command).toContain("ccmsg notify --hook");
 
     // Neither command names the plugin's own directory: the binary comes from
     // PATH, and a session without one leaves without saying anything.

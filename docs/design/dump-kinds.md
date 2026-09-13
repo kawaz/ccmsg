@@ -70,6 +70,7 @@ dump は transcript の行をそのまま並べるのではなく、**アイテ�
 | `tool.Skill` | `{skill, args}` | `{agent_id, background, status}` |
 | `tool.TodoWrite` | `{todos: [{content, status}]}` | `{ok}` |
 | `tool.TaskStop` | `{task_id}` | `{ok}` |
+| `tool.PushNotification` | `{text}` (ツールの `message`) | `{ok}` |
 | `tool.<その他>` | `{input}` の汎用形 | `{result}` の汎用形 |
 
 `tool.Bash` の result に **exit code は無い**。実 transcript の `toolUseResult` は `{interrupted, isImage, noOutputExpected, stderr, stdout}` で、終了コードは記録されていない (稀に `returnCodeInterpretation` が付く)。`exit_code` は item の形としては持てるが、Bash では埋まらない。表示は `interrupted` と `stderr` の有無で代替する。

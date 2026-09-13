@@ -107,6 +107,13 @@ const USE: Record<string, Reader> = {
     const cron = str(input["cron"]);
     return cron === undefined ? undefined : { cron, ...optional("prompt", str(input["prompt"])) };
   },
+  /** What a session told the person it works for, as `text`: the same field a
+   * message carries, because this is the same thing — words meant for a person
+   * to read, rather than a call whose arguments happen to include some. */
+  PushNotification: (input) => {
+    const text = str(input["message"]);
+    return text === undefined ? undefined : { text };
+  },
 };
 
 function pattern(input: Record<string, unknown>): Record<string, unknown> | undefined {

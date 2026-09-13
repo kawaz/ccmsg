@@ -23,7 +23,6 @@ const LEVELS = [
   ["notify"],
   ["stopping"],
   ["hello"],
-  ["say"],
 ];
 
 describe("the help, at every level", () => {

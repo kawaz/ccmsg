@@ -196,6 +196,7 @@ const STARTING_PRESETS = [
         "message.sub.in",
         "message.team.in",
         "notice",
+        "tool.PushNotification",
         "thinking",
       ],
     },

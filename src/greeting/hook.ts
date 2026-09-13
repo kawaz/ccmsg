@@ -10,6 +10,11 @@ export interface HookEvent {
   readonly cwd?: string;
   readonly transcript_path?: string;
   readonly reason?: string;
+  /** Which tool the event is about, on the events that are about one. */
+  readonly tool_name?: string;
+  /** What that tool was asked to say. A tool event carries the whole of the
+   * tool's input; this is the one field of it a hook of ours reads. */
+  readonly tool_message?: string;
 }
 
 /** Read one such event, or nothing to go on.
@@ -30,11 +35,16 @@ export async function hookEvent(
   }
   if (typeof parsed !== "object" || parsed === null) return {};
   const event = parsed as Record<string, unknown>;
+  const input = event["tool_input"];
   return {
     ...text(event, "session_id", "sid"),
     ...text(event, "cwd", "cwd"),
     ...text(event, "transcript_path", "transcript_path"),
     ...text(event, "reason", "reason"),
+    ...text(event, "tool_name", "tool_name"),
+    ...(typeof input === "object" && input !== null
+      ? text(input as Record<string, unknown>, "message", "tool_message")
+      : {}),
   };
 }
 

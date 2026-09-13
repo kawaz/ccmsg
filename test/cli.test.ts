@@ -8,7 +8,7 @@ import {
   type Notification,
   PROTOCOL_VERSION,
 } from "@ccmsg/protocol";
-import { main, say, type Spawn } from "../src/cli.ts";
+import { main, notify as notified, pushed, type Spawn } from "../src/cli.ts";
 import { type Instance, isRunning, start } from "../src/instance/index.ts";
 import { connectUds, type LineClient } from "./client.ts";
 import { capture, json } from "./harness.ts";
@@ -285,7 +285,7 @@ describe("ccmsg peers / ccmsg agents", () => {
   });
 });
 
-describe("ccmsg say", () => {
+describe("a notification the session pushed", () => {
   /** A speech binary that makes no sound and remembers what it was asked. */
   function fake(exitCode = 0): { spawn: Spawn; commands: string[][] } {
     const commands: string[][] = [];
@@ -298,33 +298,35 @@ describe("ccmsg say", () => {
     };
   }
 
-  test("every argument reaches the speech binary untouched", async () => {
-    env("CLAUDE_CODE_SESSION_ID", undefined);
-    const speech = fake();
-    expect(await say(["-v", "Kyoko", "-r", "220", "こんにちは"], speech.spawn)).toBe(0);
-    expect(speech.commands).toEqual([["/usr/bin/say", "-v", "Kyoko", "-r", "220", "こんにちは"]]);
-  });
-
-  test("CCMSG_SAY_BIN replaces the binary, and its exit code is the command's", async () => {
-    env("CLAUDE_CODE_SESSION_ID", undefined);
-    env("CCMSG_SAY_BIN", "/nowhere/say");
-    const speech = fake(3);
-    expect(await say(["だめでした"], speech.spawn)).toBe(3);
-    expect(speech.commands[0]?.[0]).toBe("/nowhere/say");
-  });
-
-  test("speaking says who spoke, and the speech still happens", async () => {
+  test("it is said aloud and written to whoever is watching", async () => {
     const at = await instance();
     env("CLAUDE_CODE_SESSION_ID", SID);
     const watcher = await greet(at, { role: "user" });
     await subscribe(watcher, "notify");
 
     const speech = fake();
-    expect(await say(["喋ります"], speech.spawn)).toBe(0);
+    expect(await pushed({ sid: SID, tool_message: "ビルドが通りました" }, speech.spawn)).toEqual({
+      pushed: true,
+      spoken: true,
+      sent: true,
+    });
 
     const notification = (await watcher.next())["data"] as Notification;
-    expect(notification).toMatchObject({ sid: SID, text: "喋ります" });
-    expect(speech.commands).toEqual([["/usr/bin/say", "喋ります"]]);
+    expect(notification).toMatchObject({ sid: SID, text: "ビルドが通りました" });
+    expect(speech.commands).toEqual([["/usr/bin/say", "ビルドが通りました"]]);
+  });
+
+  test("CCMSG_SAY_BIN replaces the binary, and a machine that cannot speak is not a failure", async () => {
+    const at = await instance();
+    env("CLAUDE_CODE_SESSION_ID", SID);
+    env("CCMSG_SAY_BIN", "/nowhere/say");
+    const speech = fake(3);
+    const answered = await pushed({ sid: SID, tool_message: "声は出ない" }, speech.spawn);
+    expect(speech.commands[0]?.[0]).toBe("/nowhere/say");
+    // The line still reached the page, which is the other half of telling
+    // somebody something.
+    expect(answered).toEqual({ pushed: true, spoken: false, sent: true });
+    void at;
   });
 
   test("no instance to tell is not a reason to stay silent", async () => {
@@ -336,8 +338,41 @@ describe("ccmsg say", () => {
     env("CLAUDE_CODE_SESSION_ID", SID);
 
     const speech = fake();
-    expect(await say(["誰も聞いていない"], speech.spawn)).toBe(0);
+    expect(await pushed({ sid: SID, tool_message: "誰も聞いていない" }, speech.spawn)).toEqual({
+      pushed: true,
+      spoken: true,
+      sent: false,
+    });
     expect(speech.commands).toEqual([["/usr/bin/say", "誰も聞いていない"]]);
+  });
+
+  test("a tool call with nothing to say is nothing to do", async () => {
+    const speech = fake();
+    expect(await pushed({ sid: SID, tool_message: "   " }, speech.spawn)).toEqual({
+      pushed: false,
+    });
+    expect(await pushed({ sid: SID }, speech.spawn)).toEqual({ pushed: false });
+    expect(speech.commands).toEqual([]);
+  });
+
+  test("the hook reads the tool's message off the event the harness writes", async () => {
+    const at = await instance();
+    env("CLAUDE_CODE_SESSION_ID", SID);
+    const watcher = await greet(at, { role: "user" });
+    await subscribe(watcher, "notify");
+    // What Claude Code hands a PostToolUse hook: the session, the tool, and
+    // what the tool was given.
+    const event = JSON.stringify({
+      session_id: SID,
+      hook_event_name: "PostToolUse",
+      tool_name: "PushNotification",
+      tool_input: { message: "手が空きました" },
+    });
+    expect(await notified(["--hook"], () => Promise.resolve(event))).toMatchObject({
+      pushed: true,
+      sent: true,
+    });
+    expect((await watcher.next())["data"]).toMatchObject({ sid: SID, text: "手が空きました" });
   });
 });
 

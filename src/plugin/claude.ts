@@ -9,7 +9,8 @@ import { DESCRIPTION, SKILL } from "./skill.ts";
  *
  * The plugin itself is thin on purpose. Messages reach a session through the
  * harness's own socket, so nothing here listens, polls or holds a connection —
- * the skill says how to speak, and the two hooks say hello and goodbye. */
+ * the skill says how to speak, and the hooks say hello, goodbye, and whatever
+ * the session pushed to the person it works for. */
 
 /** The plugin's name, the marketplace's name, and therefore the id Claude Code
  * knows it by. One word for all three: there is one plugin here and a
@@ -41,6 +42,19 @@ const HOOKS = {
       {
         matcher: "startup|resume|clear|compact",
         hooks: [{ type: "command", command: throughPath("hello --hook"), timeout: HOOK_TIMEOUT_S }],
+      },
+    ],
+    PostToolUse: [
+      {
+        // What a session tells the person it is working for goes out the way
+        // this host tells them anything: aloud, and as a line on the page they
+        // are watching. The harness's own tool decides whether to raise a
+        // notification of its own; this runs either way, because a session that
+        // said something meant to say it.
+        matcher: "PushNotification",
+        hooks: [
+          { type: "command", command: throughPath("notify --hook"), timeout: HOOK_TIMEOUT_S },
+        ],
       },
     ],
     SessionEnd: [
