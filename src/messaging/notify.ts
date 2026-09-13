@@ -1,5 +1,6 @@
 import type {
   InstanceId,
+  Mid,
   Notification,
   NotifySendArgs,
   NotifySendResult,
@@ -48,7 +49,10 @@ export class Notify implements UpstreamResource {
    * caller otherwise, so a session notifying about itself says only the text. */
   send = (input: HandlerInput): NotifySendResult => {
     const args = input.args as unknown as NotifySendArgs;
-    this.#announce(args.sid ?? this.#caller(input), args.text);
+    // What it answers travels with it: a notification is shown while the
+    // session's own account of the same answer is still being written, and the
+    // `mid` is what tells a reader holding both that they are one thing.
+    this.#announce(args.sid ?? this.#caller(input), args.text, Date.now(), args.reply_to);
     return {};
   };
 
@@ -92,11 +96,12 @@ export class Notify implements UpstreamResource {
     return [];
   }
 
-  #announce(sid: Sid, text: string, now: Timestamp = Date.now()): Timestamp {
+  #announce(sid: Sid, text: string, now: Timestamp = Date.now(), reply_to?: Mid): Timestamp {
     const notification: Notification = {
       sid,
       sid_label: this.deps.label(sid),
       text,
+      ...(reply_to === undefined ? {} : { reply_to }),
       sent_at: now,
     };
     // A notification is an occurrence, so nothing folds it away and a watcher

@@ -47,7 +47,7 @@ const NEEDS_HELLO_OP = OP_NAMES.find((op) => {
     attrs.needs_hello &&
     attrs.roles.includes("user") &&
     attrs.capability === undefined &&
-    attrs.locality === "cluster"
+    attrs.locality === "any_instance"
   );
 });
 

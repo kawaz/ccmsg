@@ -6,9 +6,9 @@ import type { Requester } from "../dispatch/index.ts";
  * list cannot see a change arrive sooner than the display draws it, so frames
  * closer together than a few display frames are spent on nothing, while a wait
  * long enough to be read as lag starts around a quarter of a second. Towards
- * the cluster: a relayed frame waits once per hop, so the delay a subscriber
+ * the mesh: a relayed frame waits once per hop, so the delay a subscriber
  * sees is this value times the hops between it and the instance that produced
- * the value — at 100 ms a two-hop cluster still answers inside the window a
+ * the value — at 100 ms a two-hop mesh still answers inside the window a
  * person reads as immediate, which a longer period would leave.
  *
  * It is not a poll. Nothing is looked at when the period elapses: the timer is

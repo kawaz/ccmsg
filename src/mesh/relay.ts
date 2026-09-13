@@ -9,7 +9,7 @@ import {
 } from "@ccmsg/protocol";
 import { Elements, type TopicValue } from "../topics/index.ts";
 
-/** The rows of sessions the whole cluster is seen through.
+/** The rows of sessions the whole mesh is seen through.
  *
  * They are `element`-granular, and an element topic is relayable only when its
  * elements say whose they are: a row here names the instance that holds the
@@ -19,13 +19,13 @@ import { Elements, type TopicValue } from "../topics/index.ts";
  * such name — an `inbox` frame belongs to a session, not to an instance. */
 const ROW_TOPICS: readonly string[] = ["peers", "agents"];
 
-/** The topics a subscriber sees the whole cluster on.
+/** The topics a subscriber sees the whole mesh on.
  *
  * A per-instance whole is relayable by construction (DESIGN §6.2): a frame replaces
  * its own instance's entries and leaves every other instance's alone, so
  * several instances can state the same topic name without colliding. The rows
  * above are relayable for the same reason read one element at a time. */
-export const CLUSTER_TOPICS: readonly string[] = [
+export const MESH_TOPICS: readonly string[] = [
   ...PLAIN_TOPICS.filter((topic) => TOPIC_ATTRIBUTES[topic].granularity === "per_instance_whole"),
   ...ROW_TOPICS,
 ];
@@ -37,8 +37,8 @@ export const CLUSTER_TOPICS: readonly string[] = [
  * the set this instance holds rather than held here (DR-0001 §2.6). */
 export const AUTH_TOPIC = "auth.records";
 
-export function isClusterTopic(topic: string): boolean {
-  return CLUSTER_TOPICS.includes(topic);
+export function isMeshTopic(topic: string): boolean {
+  return MESH_TOPICS.includes(topic);
 }
 
 /** Whether what a frame of this topic carries is rows to be merged rather than
@@ -64,7 +64,7 @@ export interface RelayDeps {
 }
 
 /** What the peers said, held on this instance so that losing a peer does not
- * empty the cluster view (DESIGN §7.5).
+ * empty the mesh view (DESIGN §7.5).
  *
  * Two things live here and nowhere else: the last whole value each instance
  * stated per topic, and whether that instance can be reached right now. The
@@ -99,7 +99,7 @@ export class Relay {
    * unchanged — recomputing it would put the same judgement in two places
    * (DESIGN §7.4). */
   accept(instance: InstanceId, topic: string, data: unknown, snapshot = false): void {
-    if (!isClusterTopic(topic)) return;
+    if (!isMeshTopic(topic)) return;
     this.#sweep();
     const held = this.#held.get(instance) ?? new Map<string, unknown>();
     this.#held.set(instance, held);
@@ -174,7 +174,7 @@ export class Relay {
     return values;
   }
 
-  /** Which instance a session belongs to, read from the cluster values the
+  /** Which instance a session belongs to, read from the mesh values the
    * peers stated (DESIGN §7.3).
    *
    * `peers` names every session an instance holds, connected and lost alike,

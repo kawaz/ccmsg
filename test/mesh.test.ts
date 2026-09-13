@@ -17,7 +17,7 @@ import {
   release,
   startAt,
   withFakePeer,
-} from "./cluster.ts";
+} from "./mesh.ts";
 
 afterEach(release);
 
@@ -42,7 +42,7 @@ function repointEndpoints(env: Env, alias: Endpoint): void {
  * an address and listening on it there is a gap that only the kernel's own
  * record of who holds the port keeps anyone else out of. These say the fixture
  * keeps that record standing, because a test that lost the race would fail as
- * this cluster's own fault rather than the machine's. */
+ * this mesh's own fault rather than the machine's. */
 describe("the addresses a test hands out", () => {
   test("a leased address is not free for anything else to be given", () => {
     const lease = leasePort();

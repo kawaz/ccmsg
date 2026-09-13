@@ -99,6 +99,17 @@ describe("notify.send reaches whoever is watching", () => {
     ]);
   });
 
+  test("what it answers travels with it, so a reader holding both knows they are one thing", () => {
+    const { topics, send } = rig();
+    const watcher = connAs("user");
+    topics.subscribe(watcher, "notify");
+    watcher.flush();
+
+    send(connAs("session", SID), { text: "答えました", reply_to: `${SELF}/7` });
+
+    expect(received(watcher)[0]?.reply_to).toBe(`${SELF}/7`);
+  });
+
   test("a person naming no session has named nobody for it to be about", () => {
     const { send } = rig();
     const person = new TestConn({ state: "settled", role: "user" });

@@ -887,6 +887,43 @@ describe("session.dump.write", () => {
     expect(answer?.["stdout"]).toBe("3\n");
   });
 
+  test("`records` hands back the harness's own lines, one per record and none of ours around them", async () => {
+    const { configHome, handlers } = ops();
+    writeTranscript(configHome, SID, BUSY_TRANSCRIPT);
+    const written = await run("session.dump.write", handlers["session.dump.write"], {
+      sid: SID,
+      types: ["tool.Bash", "tool.Agent"],
+      format: "records",
+    });
+    const path = written["path"] as string;
+    expect(path.endsWith(".jsonl")).toBe(true);
+    const lines = readFileSync(path, "utf8").trimEnd().split("\n");
+    // Four items came out of three records: several items out of one record
+    // are one record here, and the count the reply states is of the selection.
+    expect(lines.map((line) => (JSON.parse(line) as { uuid: string }).uuid)).toEqual([
+      "a1",
+      "r1",
+      "r2",
+    ]);
+    expect(written["entries"]).toEqual({ "tool.Bash": 2, "tool.Agent": 2 });
+  });
+
+  test("`text` is the reading of the same selection, written where the transcript is", async () => {
+    const { configHome, handlers } = ops();
+    writeTranscript(configHome, SID, BUSY_TRANSCRIPT);
+    const written = await run("session.dump.write", handlers["session.dump.write"], {
+      sid: SID,
+      types: ["tool.Bash"],
+      format: "text",
+    });
+    const path = written["path"] as string;
+    expect(path.endsWith(".md")).toBe(true);
+    const body = readFileSync(path, "utf8");
+    expect(body).toContain("## items");
+    expect(body).toContain("wc -l < f");
+    expect(written["entries"]).toEqual({ "tool.Bash": 2 });
+  });
+
   test("a teammate's brief and its answer are the two halves of one message", async () => {
     const { configHome, handlers } = ops();
     writeTranscript(configHome, SID, BUSY_TRANSCRIPT);

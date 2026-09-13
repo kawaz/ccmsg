@@ -423,7 +423,7 @@ export class Instance {
           : { terminal_gateway: config.upstream.terminal_gateway }),
       }),
     ]);
-    // The mesh is the rest of the cluster as the topic mechanism sees it: what
+    // The mesh is the rest of the mesh as the topic mechanism sees it: what
     // the peers have stated, and where a local subscription has to travel to
     // (DESIGN §7.4). An instance without one has no other instance to hear from.
     this.#topics = new Topics(this.self, this.#capabilities, this.#mesh);
@@ -561,7 +561,7 @@ export class Instance {
     this.#delivery = new Delivery({
       self: this.self,
       sessions: this.#sessions,
-      ...(this.#mesh === undefined ? {} : { cluster: this.#mesh }),
+      ...(this.#mesh === undefined ? {} : { mesh: this.#mesh }),
       inbox,
       direct: this.#direct,
       publish: (topic, data, instance, to) => this.#topics.publish(topic, data, instance, to),
@@ -604,7 +604,7 @@ export class Instance {
     });
     this.#topics.attach("kv", kv);
 
-    // The credentials, tokens and removals the cluster shares (DR-0001 §2.6).
+    // The credentials, tokens and removals the mesh shares (DR-0001 §2.6).
     // Written down beside the store and for the same reason: none of it is
     // derived from anything else this instance holds (DESIGN §2.5).
     const records = new AuthRecords({
@@ -860,7 +860,7 @@ export class Instance {
 
   /** A link came up or went down. Told to every client when it changes what
    * the instance would answer about the host link, and to nobody when the set
-   * of reachable peers moved without changing that — a five-peer cluster
+   * of reachable peers moved without changing that — a five-peer mesh
    * losing one is not this host going offline. */
   #linkMoved(): void {
     const network = this.network;
@@ -945,11 +945,11 @@ export class Instance {
       : await this.#mesh.forward(decided.to, decided.frame, stated ?? callerOfIdentity(identity));
   }
 
-  /** Which instance owns the subject of an instance-local op.
+  /** Which instance owns the subject of an owner_instance op.
    *
    * The subject is the session an op names, and an op that names none is about
    * this instance and stays here. A session this instance holds is its own
-   * whatever the cluster last said; one it does not hold is looked for in the
+   * whatever the mesh last said; one it does not hold is looked for in the
    * routing table the `peers` topic is (DESIGN §7.3). */
   #owner(fields: Record<string, unknown>): InstanceId | undefined {
     const sid = fields["sid"];

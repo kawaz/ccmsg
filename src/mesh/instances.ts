@@ -8,16 +8,16 @@ export interface MeshView {
   instances(): InstanceInfo[];
 }
 
-/** The cluster as one instance sees it, itself included.
+/** The mesh as one instance sees it, itself included.
  *
- * An instance with no mesh is a cluster of one and says so: it is reached at
+ * An instance with no mesh is a mesh of one and says so: it is reached at
  * whatever it serves, which is a row without an endpoint when that is the unix
  * socket alone rather than no row at all (contract, `InstanceInfo`).
  *
  * The same answer feeds `hello` and the topic, from here rather than from two
  * places: a greeting and a subscription that disagreed about who is in the
- * cluster would be one instance stating two views of itself. */
-export function clusterView(
+ * mesh would be one instance stating two views of itself. */
+export function meshView(
   self: InstanceId,
   endpoint: Endpoint | undefined,
   mesh: MeshView | undefined,
@@ -56,7 +56,7 @@ export class Instances implements UpstreamResource {
   ) {}
 
   view(): InstanceInfo[] {
-    return clusterView(this.deps.self, this.deps.endpoint, this.deps.mesh);
+    return meshView(this.deps.self, this.deps.endpoint, this.deps.mesh);
   }
 
   /** State the view, which the mesh asks for whenever a link moves. A frame

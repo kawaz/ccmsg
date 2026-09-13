@@ -18,7 +18,7 @@ import {
   type SettledIdentity,
 } from "../dispatch/index.ts";
 import type { TopicValue } from "../topics/index.ts";
-import { AUTH_TOPIC, isClusterTopic, Relay } from "./relay.ts";
+import { AUTH_TOPIC, isMeshTopic, Relay } from "./relay.ts";
 import {
   ALLOWED_ALGS,
   EphemeralKey,
@@ -388,7 +388,7 @@ export class Mesh {
    * whether it can be reached right now (DESIGN §7.5).
    *
    * A peer no handshake has settled yet is listed without an id. The operator
-   * configured that endpoint, so it is an entry of the cluster whether or not
+   * configured that endpoint, so it is an entry of the mesh whether or not
    * anything has answered there — and leaving it out would hide exactly the
    * peer whose link is down, which is the one a reader is looking for. */
   instances(): InstanceInfo[] {
@@ -408,7 +408,7 @@ export class Mesh {
 
   /** Whether any peer is currently out of reach.
    *
-   * What separates "no instance in the cluster knows this session" from "an
+   * What separates "no instance in the mesh knows this session" from "an
    * instance that might know it cannot be asked" — the one distinction DESIGN §6.6
    * says rests on the mesh's connection state and on nothing else. */
   anyUnreachable(): boolean {
@@ -417,7 +417,7 @@ export class Mesh {
 
   /** Which instance should answer for a session this instance does not hold.
    *
-   * A session the cluster has named belongs to the instance its `peers` row
+   * A session the mesh has named belongs to the instance its `peers` row
    * states. One nobody has named while a peer is out of reach is answered with
    * that peer: forwarding there fails and the caller is told
    * `instance_unreachable`, which is what DESIGN §6.6 asks for in place of deciding
@@ -532,7 +532,7 @@ export class Mesh {
    *
    * The caller the envelope names, on the link it arrived over. A request that
    * names none is dispatched as the link itself, whose role is `instance` —
-   * which the attribute table already answers, since no instance-local op is
+   * which the attribute table already answers, since no owner_instance op is
    * open to an instance. */
   caller(conn: Requester, caller: CallerIdentity | undefined): Requester {
     const link = this.#linkOf.get(conn);
@@ -553,12 +553,12 @@ export class Mesh {
 
   /** The current value of a relayed topic, one entry per instance that has
    * stated one. Handed to a fresh local subscriber beside this instance's own
-   * snapshot, so it opens on the cluster rather than on us. */
+   * snapshot, so it opens on the mesh rather than on us. */
   snapshot(topic: string): readonly TopicValue[] {
     return this.relay.snapshot(topic);
   }
 
-  /** A local subscriber appeared on a cluster topic, or the last one left.
+  /** A local subscriber appeared on a mesh topic, or the last one left.
    *
    * The subscription travels: what a subscriber asks of this instance, this
    * instance asks of every peer, and the frames come back unchanged (DESIGN §7.4).
@@ -567,7 +567,7 @@ export class Mesh {
     // `auth.records` is never given up and never asked for on demand: every
     // instance holds the whole set whether or not anything local is watching
     // it, the way `peers` is also the routing table (DESIGN §7.4, DR-0001 §2.6).
-    if (topic === AUTH_TOPIC || !isClusterTopic(topic)) return;
+    if (topic === AUTH_TOPIC || !isMeshTopic(topic)) return;
     if (wanted) {
       if (this.#demanded.has(topic)) return;
       this.#demanded.add(topic);
@@ -593,7 +593,7 @@ export class Mesh {
       topic,
       // The instance asks on behalf of whoever subscribed to it, and what they
       // have in common is that they are this deployment's people rather than
-      // any one session: a cluster topic is the same value for all of them
+      // any one session: a mesh topic is the same value for all of them
       // (DESIGN §6.2), so there is nothing narrower to name.
       //
       // `auth.records` is the exception, and the one topic no person may hear:
@@ -1090,12 +1090,12 @@ export class Mesh {
     //
     // The far end has no other way to learn this instance is going: it would
     // keep the link, keep answering `reachable`, and keep routing
-    // `instance-local` ops here until its own heartbeat gave up minutes later,
+    // `owner_instance` ops here until its own heartbeat gave up minutes later,
     // where the disconnection of DESIGN §7.5 is supposed to be immediate. Which side
     // dialled a link is decided by the glare rule from a comparison of
     // endpoint strings (mesh-peer-auth §8.1), so which of a peer's links this instance
     // accepted is not something either end chose — leaving those open makes a
-    // clean stop look like a silent one to whichever half of the cluster the
+    // clean stop look like a silent one to whichever half of the mesh the
     // comparison put on this side.
     //
     // An accepted socket is transport's to release (DESIGN §8.5 step 5), and left to

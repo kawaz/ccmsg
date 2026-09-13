@@ -21,9 +21,9 @@ import {
   leasePort,
   release,
   startAt,
-} from "./cluster.ts";
+} from "./mesh.ts";
 
-/** What a cluster does with a request and with an event once the links of
+/** What a mesh does with a request and with an event once the links of
  * mesh-peer-auth are up: daemon-v2 §11.5's daemon-specific cases.
  *
  * Everything here runs against instances speaking over real sockets, because
@@ -80,7 +80,7 @@ async function greet(
 
 /** The next frame answering this request. The topic frames that arrive between
  * a request and its reply are put back rather than dropped: they are the
- * cluster's own events, and the case reading them next is entitled to them.
+ * mesh's own events, and the case reading them next is entitled to them.
  * Each is stepped over once — what was already held is searched before the
  * connection is read again, and goes back in front of whatever is behind it. */
 async function reply(conn: HoldingClient, requestId: string): Promise<Record<string, unknown>> {
@@ -154,7 +154,7 @@ async function pair(): Promise<{
 }
 
 describe("forwarding an op (§7.3)", () => {
-  test("an instance-local op about another instance's session is answered by that instance", async () => {
+  test("an owner_instance op about another instance's session is answered by that instance", async () => {
     const { a, b } = await pair();
     const user = await client(a);
     await greet(user, {});
@@ -215,7 +215,7 @@ describe("forwarding an op (§7.3)", () => {
     });
   });
 
-  test("a session this cluster has never named is not found, while an unreachable instance makes it unreachable", async () => {
+  test("a session this mesh has never named is not found, while an unreachable instance makes it unreachable", async () => {
     const { a, b } = await pair();
     const user = await client(a);
     await greet(user, {});
@@ -256,7 +256,7 @@ describe("who a forwarded request runs as (§7.3)", () => {
     const { peer } = await linked();
     // Every field of the envelope but the caller, including a `from_instance`
     // pointing anywhere at all. There is nobody named, so the request runs as
-    // what the connection is — an instance — and no instance-local op is open
+    // what the connection is — an instance — and no owner_instance op is open
     // to one.
     peer.send({
       op: "session.forget",
@@ -500,7 +500,7 @@ describe("a message to a session on another instance (§4)", () => {
 describe("what a disconnected instance leaves behind (§7.5, DV-Q12)", () => {
   test("an instance that stops is out of reach at once, whichever end dialled the link", async () => {
     // Which end holds the dialled half of a link is decided by comparing the
-    // two endpoint strings (§8.1), so a cluster has instances on both sides of
+    // two endpoint strings (§8.1), so a mesh has instances on both sides of
     // that comparison and both have to be covered. Ports are handed out by the
     // kernel, so the two cases are chosen here rather than waited for: stopping
     // the smaller `iss` leaves the survivor holding a link it accepted, and
@@ -550,7 +550,7 @@ describe("what a disconnected instance leaves behind (§7.5, DV-Q12)", () => {
     await b.stop();
     await eventually(() => a.mesh?.reachable(endpointOf(b)) === false);
     // Still there, and marked: a subscriber that arrives now sees B's sessions
-    // rather than an empty cluster (§7.5).
+    // rather than an empty mesh (§7.5).
     expect(a.mesh?.relay.snapshot("peers").length).toBe(1);
     expect(a.mesh?.relay.unreachable(b.self)).toBe(true);
     await ask(user, { op: "topic.subscribe", request_id: "sub", topic: "peers" });
@@ -593,7 +593,7 @@ describe("what a disconnected instance leaves behind (§7.5, DV-Q12)", () => {
 
     relay.lost(peer);
     now += LAST_LIVE_RETENTION_MS;
-    // On the window, not past it: the value is still the cluster's.
+    // On the window, not past it: the value is still the mesh's.
     expect(relay.snapshot("peers").length).toBe(1);
     now += 1;
     expect(relay.snapshot("peers")).toEqual([]);
@@ -685,7 +685,7 @@ describe("what a disconnected instance leaves behind (§7.5, DV-Q12)", () => {
   });
 });
 
-describe("the credentials and tokens the cluster shares (DR-0001 §2.6)", () => {
+describe("the credentials and tokens the mesh shares (DR-0001 §2.6)", () => {
   test("a record written on one instance authenticates at the other", async () => {
     const { a, b } = await pair();
     // What a registration would have left behind, written where it happened.
@@ -874,7 +874,7 @@ describe("authenticating where the challenge was not issued (DR-0001 §2.6)", ()
   });
 });
 
-/** One `/auth/*` request against an instance in the cluster. */
+/** One `/auth/*` request against an instance in the mesh. */
 async function authPost(
   instance: Instance,
   origin: string,

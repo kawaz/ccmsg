@@ -73,7 +73,7 @@ credential record と token family は peer 間で複製する。載せ先は **
 - WebAuthn の challenge (発行 instance の id を challenge に含め、返ってきた側がそこへ転送して照合する。LB で発行と応答の instance が違ってよい。challenge は 16 byte 以上の乱数 + 発行者、寿命 5 分、使い切り)
 - token family の lookup / rotate (単一 writer なので rotate は常に転送)
 
-`iss` が落ちていれば refresh か passkey 認証に落ちる。侵害された peer にこれらが token を返す点は「token は cluster 内の共有秘密」の前提どおりで、新しい穴ではない。
+`iss` が落ちていれば refresh か passkey 認証に落ちる。侵害された peer にこれらが token を返す点は「token は mesh 内の共有秘密」の前提どおりで、新しい穴ではない。
 
 tombstone: `passkey remove` は sub 単位の tombstone を credential と全 family に打ち、tombstone はその key への以後の書き込みを拒む (LWW の例外。分断中の instance が復活させられない)。**credential の tombstone は保持期限を持たない** (sub ごと数十 byte。7 日超の分断から復帰した peer の snapshot で credential が復活するのを防ぐ)。family は refresh の exp で自然失効するので tombstone は 7 日で足りる。
 

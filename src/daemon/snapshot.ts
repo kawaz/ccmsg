@@ -6,7 +6,7 @@ import { CommandError } from "./link.ts";
  *
  * The pair rather than the payload alone, because two instances state the same
  * topic name: a payload with the name of its author taken off could not be told
- * from the other's, and which instance said it is half of what a cluster read
+ * from the other's, and which instance said it is half of what a mesh read
  * answers. */
 export interface Snapshot {
   readonly instance: InstanceId;
@@ -31,7 +31,7 @@ interface Frame {
   readonly data?: unknown;
 }
 
-/** What a greeting answered, as the two fields a cluster read needs of it. */
+/** What a greeting answered, as the two fields a mesh read needs of it. */
 interface Greeted {
   readonly instance?: unknown;
   readonly instances?: unknown;
@@ -92,7 +92,7 @@ export async function snapshots(
   return [...held].map(([instance, data]) => ({ instance, data }));
 }
 
-/** The instances a greeting named, as the set a read of a cluster topic waits
+/** The instances a greeting named, as the set a read of a mesh topic waits
  * for.
  *
  * `all` is every instance the answering one can currently reach, itself

@@ -189,7 +189,7 @@ describe("ccmsg stopping", () => {
 });
 
 describe("ccmsg peers / ccmsg agents", () => {
-  /** One entry per instance, which is what a cluster topic answers with. */
+  /** One entry per instance, which is what a mesh topic answers with. */
   type Answer = { instance: string; data: Record<string, unknown> }[];
 
   async function answered(args: string[]): Promise<Answer> {
@@ -279,7 +279,7 @@ describe("ccmsg peers / ccmsg agents", () => {
 
     const answer = await answered(["agents", "--all"]);
 
-    // A host running one instance is a cluster of one: the same shape, with
+    // A host running one instance is a mesh of one: the same shape, with
     // one entry in it rather than a different answer.
     expect(answer.map((one) => one.instance)).toEqual([at.self]);
   });

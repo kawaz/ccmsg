@@ -27,7 +27,7 @@ import {
 } from "../src/daemon/index.ts";
 import { applied, DEFAULT_CONFIG, evaluate, TYPES_FILE } from "../src/instance/index.ts";
 import { resolvePaths } from "../src/instance/paths.ts";
-import { leasePort } from "./cluster.ts";
+import { leasePort } from "./mesh.ts";
 import { capture, Host, json, reapOrphans, writeConfigHome } from "./harness.ts";
 
 /** Register a config home, as a test that is not about the options would.

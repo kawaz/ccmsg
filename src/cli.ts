@@ -434,7 +434,7 @@ const ROOT: Command = {
     {
       name: "dump",
       summary: "セッション (か配下の worker 1 体) の transcript を型ごとの表示で書き出す",
-      usage: "ccmsg dump <sid>[/agent-<id>] [--preset <名前>] [--types <選択>]",
+      usage: "ccmsg dump <sid>[/agent-<id>] [--preset <名前>] [--types <選択>] [--format <形式>]",
       options: [
         ["--preset <名前>", "instance が持つ選択 (ccmsg dump presets で一覧)"],
         ["--types <選択>", "型をカンマ区切りで。prefix 可、-で除外、@名前で preset 展開"],
@@ -444,6 +444,10 @@ const ROOT: Command = {
         ],
         ["--until <at|ago|uuid>", "上限。同上"],
         ["--max-chars <n>", "1 アイテムの本文をこの文字数で切る (既定は切らない)"],
+        [
+          "--format <形式>",
+          "instance に書かせる形式: items (型付き JSON) / records (元の jsonl) / text (markdown)",
+        ],
         ["--json", "markdown ではなく dump file の中身をそのまま出す"],
         ["--out <path>", "標準出力ではなくこの path に書く"],
       ],
@@ -1181,7 +1185,7 @@ function agents(args: readonly string[]): Promise<unknown> {
   });
 }
 
-/** Read the current value of a cluster topic and answer with it.
+/** Read the current value of a mesh topic and answer with it.
  *
  * One entry per instance, carrying the topic's payload exactly as the contract
  * defines it: a whole value per instance is not something to merge into one
@@ -1221,7 +1225,11 @@ async function topic(
  *
  * `--json` hands over the file as it stands, for a reader that is a program. */
 async function dump(args: readonly string[]): Promise<unknown> {
-  const parsed = options(args, ["preset", "types", "since", "until", "out", "max-chars"], ["json"]);
+  const parsed = options(
+    args,
+    ["preset", "types", "since", "until", "out", "max-chars", "format"],
+    ["json"],
+  );
   const subject = parsed.rest[0];
   if (subject === undefined) {
     throw new CommandError(
@@ -1234,6 +1242,11 @@ async function dump(args: readonly string[]): Promise<unknown> {
     ...dumpArgs(subject, parsed.named),
   })) as unknown as SessionDumpWriteResult;
   const body = readFileSync(written.path, "utf8");
+  // A format the instance was asked for is a file it wrote for that purpose,
+  // so it is handed over as it stands: rendering it again here would be this
+  // command deciding what a caller already decided.
+  const format = parsed.named.get("format");
+  if (format !== undefined) return await handed(body, parsed.named.get("out"));
   // What the heading states is where the cut fell, not the words it was asked
   // for in: a dump read next week cannot work out what "10 minutes ago" was.
   const since = spelled(resolved("since", parsed.named.get("since")));
@@ -1269,6 +1282,16 @@ async function dump(args: readonly string[]): Promise<unknown> {
  * two apart so that a sid stays a validated sid, and the joined spelling is
  * the CLI's own convenience — it is how the file the agent's records live in
  * is named, which is what makes the two halves tellable apart by eye. */
+/** Write out what the instance wrote, wherever the caller wanted it. */
+async function handed(body: string, out: string | undefined): Promise<undefined> {
+  if (out === undefined) {
+    process.stdout.write(body.endsWith("\n") ? body : `${body}\n`);
+    return undefined;
+  }
+  await Bun.write(out, body);
+  return undefined;
+}
+
 export function dumpArgs(
   subject: string,
   named: ReadonlyMap<string, string> = new Map(),
@@ -1278,8 +1301,13 @@ export function dumpArgs(
   const agent = at === -1 ? undefined : subject.slice(at + AGENT_MARK.length);
   const types = named.get("types");
   const preset = named.get("preset");
+  const format = named.get("format");
+  if (format !== undefined && format !== "items" && format !== "records" && format !== "text") {
+    throw new CommandError("invalid_args", "--format は items / records / text のどれかです");
+  }
   return {
     sid,
+    ...(format === undefined ? {} : { format }),
     ...(agent === undefined || agent === "" ? {} : { agent_id: agent }),
     ...(preset === undefined ? {} : { preset }),
     ...(types === undefined
@@ -1418,16 +1446,21 @@ function reply(args: readonly string[]): Promise<unknown> {
  * line on the page they are watching, and the machine saying it aloud. Both
  * run whatever the tool itself decided to do with it. */
 export async function notify(args: readonly string[], read?: Read): Promise<unknown> {
-  const parsed = options(args, ["sid", "about"], ["hook"]);
+  const parsed = options(args, ["sid", "about", "reply-to"], ["hook"]);
   if (parsed.flags.has("hook")) return await pushed(await hookEvent(read));
   const [text] = parsed.rest;
   if (text === undefined) {
-    throw new CommandError("invalid_args", "使い方: ccmsg notify <text> [--about <sid>] | --hook");
+    throw new CommandError(
+      "invalid_args",
+      "使い方: ccmsg notify <text> [--about <sid>] [--reply-to <mid>] | --hook",
+    );
   }
   const about = parsed.named.get("about");
+  const answering = parsed.named.get("reply-to");
   return await announce(parsed.named.get("sid"), {
     text,
     ...(about === undefined ? {} : { sid: about }),
+    ...(answering === undefined ? {} : { reply_to: answering as NotifySendArgs["reply_to"] }),
   });
 }
 

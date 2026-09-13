@@ -488,7 +488,7 @@ export class Auth {
    * Only its issuer can say, because only the issuer holds the secret that
    * signed it — and the six digits are held beside that secret. So the digits
    * travel there unjudged: an instance that decided them itself would let
-   * somebody spread guesses across the cluster without any of them counting
+   * somebody spread guesses across the mesh without any of them counting
    * against the URL (contract, `AuthResolveArgs`). Nothing is spent here.
    *
    * The claims come back from the issuer having been checked and consumed, and

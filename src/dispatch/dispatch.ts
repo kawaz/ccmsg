@@ -14,11 +14,11 @@ import { type DispatchResult, failure, OpError, reply } from "./result.ts";
 /** What dispatch needs from the instance around it. */
 export interface DispatchDeps {
   /** This instance's own id, compared with the destination of an
-   * `instance-local` op to decide whether the op is ours to run. */
+   * `owner_instance` op to decide whether the op is ours to run. */
   readonly self: InstanceId;
   /** The capabilities this instance has, as `hello` reports them. */
   readonly capabilities: ReadonlySet<Capability>;
-  /** The instance that owns the subject of an `instance-local` op, or
+  /** The instance that owns the subject of an `owner_instance` op, or
    * `undefined` when no other instance owns it and we answer ourselves.
    * The routing table behind this is the `peers` topic (DESIGN §7.3). */
   readonly resolveInstance: (op: OpName, frame: Record<string, unknown>) => InstanceId | undefined;
@@ -97,7 +97,7 @@ export async function dispatch(
     );
   }
 
-  // 6. an instance-local op whose subject belongs elsewhere goes to mesh.
+  // 6. an owner_instance op whose subject belongs elsewhere goes to mesh.
   //
   // A request that has already been here is dropped before that: a cycle in
   // the routing would otherwise send it round the same instances until every
@@ -108,7 +108,7 @@ export async function dispatch(
   if (Array.isArray(hops) && hops.includes(deps.self)) {
     return failure(requestId, "instance_unreachable", `${op} came back to ${deps.self}`);
   }
-  if (attrs.locality === "instance-local") {
+  if (attrs.locality === "owner_instance") {
     const asked = fields["to_instance"];
     const target = typeof asked === "string" ? asked : deps.resolveInstance(op, fields);
     if (target !== undefined && target !== deps.self) {

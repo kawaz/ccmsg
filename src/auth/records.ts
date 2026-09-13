@@ -127,7 +127,7 @@ export class AuthRecords {
     }
   }
 
-  /** Write one record of this instance's own, and tell the cluster.
+  /** Write one record of this instance's own, and tell the mesh.
    *
    * A local write always displaces what the key holds. Last-write-wins settles
    * a disagreement between instances; this is not one — the writer is the

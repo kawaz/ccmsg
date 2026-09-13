@@ -98,7 +98,7 @@ For a single frame, in order:
 3. `needs_hello` versus the connection's identity. If undetermined, `hello_required`
 4. `roles` versus the connection's role. If outside, `forbidden`
 5. `capability` versus the instance's capability set. If absent, `capability_unavailable`
-6. If `locality` is `instance-local` and the target belongs to another instance, forward via mesh (§7.3). If unreachable, `instance_unreachable`
+6. If `locality` is `owner_instance` and the target belongs to another instance, forward via mesh (§7.3). If unreachable, `instance_unreachable`
 7. Call the op's implementation
 
 **Steps 1–6 are never written per op.** They are mechanically derived from the attribute table, so adding an op is closed to "add one row to the attribute table and write the schema and the implementation" (M1). Only ops that carry `scope: "role"` (`transcript.read` / `dir.list` / `file.read`) change the visible range rather than the allow/deny decision, so the role is passed into the implementation. **Passing the role to the implementation is the only route, and it is limited to ops whose attribute table declares `scope`.**
@@ -112,7 +112,7 @@ For a single frame, in order:
 | topics | the current value and subscribers per topic (§6) | the owner of each value (the two below, or upstream) |
 | transcript | one tail per sid, and the fold built from it | file (written by Claude Code) |
 | upstream | values copied from `sessions/<pid>.json` / llm-gateway | external (§2.4) |
-| mesh | the last whole value each peer stated on a cluster-wide topic, and the mark saying whether it can be reached (§7.4 / §7.5) | the originating instance |
+| mesh | the last whole value each peer stated on a mesh-wide topic, and the mark saying whether it can be reached (§7.4 / §7.5) | the originating instance |
 
 **The transcript's fold is a single one.** It is shaped as tail 1 → fold 1 → deriving each topic's value from that (M5; why it is not a two-tier fold is DR-0009). If load becomes a problem, the answer is to lighten the fold's content, not to add more folds.
 
@@ -171,7 +171,7 @@ DR-0001 is the source of truth. What is here is only where it joins the other la
 
 `hello`'s `auth_expires_at` is the connection's deadline, and `auth.extend` moves it only with **that same person's** access token. The ops the table carries over HTTP (`auth.challenge`, `auth.register`, `auth.assert`, `auth.token.refresh`) are **not reachable as frames**: reading or setting a cookie is not something an open connection can do, so answering one there would answer without the half that matters, and dispatch refuses them from the table. The carrier runs `OP_SCHEMAS` before any handler, and refuses a POST that carries no `Origin`.
 
-**A challenge is 32 bytes of randomness plus its issuer (an instance id), good for five minutes and good once.** Behind a load balancer the instance that issued it need not be the one that receives the answer: the receiver verifies the assertion itself and asks the issuer only to spend the challenge and to check a registration jwt, with `auth.resolve`. **The six digits travel to the issuer unjudged**: a receiver that decided them would count the tries separately per instance, letting somebody spread guesses across the cluster. The jwt, the code and the count of attempts are the issuer's alone.
+**A challenge is 32 bytes of randomness plus its issuer (an instance id), good for five minutes and good once.** Behind a load balancer the instance that issued it need not be the one that receives the answer: the receiver verifies the assertion itself and asks the issuer only to spend the challenge and to check a registration jwt, with `auth.resolve`. **The six digits travel to the issuer unjudged**: a receiver that decided them would count the tries separately per instance, letting somebody spread guesses across the mesh. The jwt, the code and the count of attempts are the issuer's alone.
 
 **The person's WebAuthn user handle (`user_id`) is settled once per subject by the issuer.** Sixteen random bytes go in the jwt, the page creates the credential against them, the record keeps them as `user_handle`, and an assertion naming a handle is held to it. An authenticator stores the handle beyond this instance's reach, so two values for one person would show up on their device as two accounts; a second registration of the same subject reuses the handle it already has.
 
@@ -350,6 +350,8 @@ so nothing here knows which part of it is the body and it is kept whole.
 
 **What is kept is decided by `types`, read left to right.** An element is a type name (a prefix will do), an exclusion beginning with `-`, or `@<preset>` expanding a configured selection in place (recursively). Absent keeps everything but `system.attachment`. Presets live in the config's `dump.presets` rather than in the contract, because what a preset names is an interest and not a property of the wire. A cycle, or a preset name nobody configured, is **refused when the config is read** — finding it per request would be finding it far too late. `daemon add` writes five examples into `config_v2.ts` as a starting point to edit, and `dump.presets.read` lists them. **The file's own shape is the contract's too** (`SessionDumpFile`): the reply names a path rather than carrying the items, so a successor session handed that path would otherwise be reading a format nothing states. It is `{sid, agent_id?, written_at, types, items, ids}`, where `types` is **the selection as applied** — presets expanded, exclusions in place — because a file outlives the request that made it and has to say on its own what it is a dump of and what was left out. The `ids` ledger is not a type and is never selected away. The older `no_thinking` / `no_agent` mean `["-thinking"]` and `["-message.sub", "-tool.Agent"]`, and are applied last. They take out the machinery of errands and leave a teammate's correspondence standing: what passes with a teammate is talk, and dropping it would take conversation out of a dump that asked to keep conversation.
 
+**Which items a dump is of is one thing, and what the file says about them another** (`format`). The range and the `types` settle the selection, so all three formats are dumps of the same items and the reply counts that selection whichever was asked for. `items` is the shape above. `records` writes the transcript records those items were read from, byte for byte out of the file they were read from, one JSON document per line and nothing of ours around them — for a tool that already reads the harness's format and wants only the classifying. An item names its record, so several items out of one record are one line and the line count is not the item count; one dump is one transcript — the session's, or one agent's — so no line has to say which file it came from. `text` is §5.4's drawing, written here rather than by whoever was handed the path. The name says which it is (`.dump.json` / `.jsonl` / `.md`), because the file travels by its path and is opened by whatever reads that kind of file.
+
 ### 5.4 Drawing
 
 **Turning types into readable words is the drawing layer's work** (`src/transcript/items/render.ts` and `document.ts`, and the CLI's `ccmsg dump`). One function per type answers with the words of a heading and the lines under it; the document is those, each headed `[<uuid8>:<index>] <type> <heading> <time> turn` with its body indented, behind a preamble naming the subject, the instance, the selection and the bounds, and followed by the `ids` ledger. **A type nobody drew is drawn anyway**: an unknown tool and an unknown attachment lay out their type name and whatever fields they carried, since a drawing sharpens how a type reads and never decides whether it is kept. Whether a call and its answer are folded into one is **decided here** — touching, they are folded under `→`; apart, the answer is drawn where it arrived under `←`. What a reader follows is the order things happened in, so an answer that came back later — an agent answers minutes afterwards — is a later moment and is drawn as one. The id on a heading is the short form of `id` rather than of the record, so a heading names the same thing an arrow points at.
@@ -418,6 +420,8 @@ The difference is taken against **what subscribers were sent**, so the opening `
 
 **The delta granularities (`element` / `append`) and `event` pass straight through.** Two frames with the same content are two things happening, not a duplicate — offering an inbox message again is the one chance to reach a peer that was not listening the first time, and restating a `kv` entry is itself the operation. **Event** additionally holds no current value, so subscribing to it produces no snapshot. Suppression stays one implementation, which reads the contract's granularity to decide where it applies.
 
+**A notification says what it answers** (`reply_to`). It is shown while the session's own account of the same answer is still being written, so a reader holding both the notification and the message it replies to has no way of telling that they are one thing — the `mid` is what tells them, and it is the sending session's to state because nothing downstream knows which message was being answered.
+
 **Full replacement per instance** is the key to mesh. A frame always carries its originating `instance`, and subscribers replace "only that instance's portion." Other instances' portions remain. This rule is what prevents multiple instances' full values from colliding under the same topic name.
 
 ### 6.3 Managing subscriptions
@@ -425,7 +429,7 @@ The difference is taken against **what subscribers were sent**, so the opening `
 - A subscription is subordinate to a connection. When the connection closes, the subscription disappears too (no separate teardown)
 - **Upstream resources run only while there are subscribers.** When `transcript:<sid>`'s subscriber count reaches 0, stop the tail; when `agents`'s subscriber count reaches 0, stop watching `sessions/`. Subscriptions are the sole driver of a resource's lifecycle
 - What is subordinate to subscription here is **only the watch that pushes changes**, never **reading what the state is right now**. Asking an owner for its current value (§2.3) and the classification inputs of §4.2 give the same answer with zero subscribers
-- An instance whose cluster-wide topic has been subscribed to also subscribes to the same topic on each mesh peer, and streams the received frames straight through to its own subscribers (keeping the originating `instance` intact) (§7.4)
+- An instance whose mesh-wide topic has been subscribed to also subscribes to the same topic on each mesh peer, and streams the received frames straight through to its own subscribers (keeping the originating `instance` intact) (§7.4)
 
 ### 6.4 The limit on the send side
 
@@ -442,7 +446,7 @@ Folded values and the occurrences beside them leave **on the same flush, in the 
 
 | Value | Kind | What it decides | Reason |
 |---|---|---|---|
-| Flush period 100ms (`FLUSH_PERIOD_MS`) | Limit | The upper bound on how often frames go out to one terminal | For the reader: frames closer together than the display redraws are seen by nobody, while a wait starts reading as lag around a quarter of a second. For the cluster: a relayed frame waits once per hop, so the delay is 100ms times the hops — two hops still land inside what a person reads as immediate |
+| Flush period 100ms (`FLUSH_PERIOD_MS`) | Limit | The upper bound on how often frames go out to one terminal | For the reader: frames closer together than the display redraws are seen by nobody, while a wait starts reading as lag around a quarter of a second. For the mesh: a relayed frame waits once per hop, so the delay is 100ms times the hops — two hops still land inside what a person reads as immediate |
 | 256 unfoldable frames (`QUEUE_LIMIT`) | Limit | How many frames that cannot be folded one terminal holds at once | Foldable frames need no bound: however often stated, they are one entry. 256 is what a terminal drains every 100ms, so reaching it means over 2500 frames a second sustained — past anything a person, a session or a peer produces, and into the storm this layer exists for |
 
 **It is not a periodic timer** (outside M3). The timer is armed only when a frame has to wait, and an idle terminal holds none. If a period has passed since the last flush the frame **goes out on the spot**, so a lone change is never delayed.
@@ -495,7 +499,7 @@ All non-delivery reasons in contract §2.1 are derived from the §4 state model 
 | `inbox_full` | Over the limit, the oldest was dropped | inbox |
 | `throttled` | Rejected by the receiving side's rate limiting on route (a) (§6.8) | (a)'s drop response |
 
-`session_not_found` (the op itself failing) applies only when "no instance in the cluster knows the sid." As long as it's possible that an unreachable instance owns it, the result is `instance_unreachable`, not `session_not_found`. **This distinction depends solely on mesh's connection state.**
+`session_not_found` (the op itself failing) applies only when "no instance in the mesh knows the sid." As long as it's possible that an unreachable instance owns it, the result is `instance_unreachable`, not `session_not_found`. **This distinction depends solely on mesh's connection state.**
 
 For `paused` / `disappeared`, the sid attached to `candidates` is "a session currently running with the same repo root." repo root is the value hello declared, or, if none was declared, the value derived from cwd.
 
@@ -569,18 +573,18 @@ webui ──▶ instance A ──(envelope: to_instance=B, from_instance=A, hops
 - **A forwarded op is put through §2.2's steps 1–6 again at the forwarding destination.** We never treat "A already authorized it, so B trusts it" — because if A were compromised, that would make B's authorization disappear
 - What they are run against is the envelope's `caller`, the identity an authenticated link named, rather than the forwarding instance's outcome
 
-How "the owning instance of the target" is decided: the sid-to-owning-instance mapping is looked for, in order, in the rows of the `peers` topic (alive, and lost but still within the retention window), then in the rows of the `agents` topic (every session the harness knows of). An unknown sid means "nowhere in the cluster" = `session_not_found`. However, while an unreachable instance exists, the judgment is deferred (§6.6).
+How "the owning instance of the target" is decided: the sid-to-owning-instance mapping is looked for, in order, in the rows of the `peers` topic (alive, and lost but still within the retention window), then in the rows of the `agents` topic (every session the harness knows of). An unknown sid means "nowhere in the mesh" = `session_not_found`. However, while an unreachable instance exists, the judgment is deferred (§6.6).
 
 ### 7.4 Event relay
 
-For a subscriber connected to instance A to see the whole cluster, A subscribes to the same topic on each peer, and streams the received frames through to its own subscribers while keeping the `instance` field intact. A does not recompute the content (recomputing would create the same judgment in two places — the origin and A).
+For a subscriber connected to instance A to see the whole mesh, A subscribes to the same topic on each peer, and streams the received frames through to its own subscribers while keeping the `instance` field intact. A does not recompute the content (recomputing would create the same judgment in two places — the origin and A).
 
 What is relayed is **the whole-value-per-instance topics, plus `peers` and `agents`**. The latter two are element-granular, but their rows name the instance they belong to, so several instances' rows stand under one topic name (an `inbox` element says only which session it is for, so it is not relayed). For the row topics A holds the elements too, and **a row a peer merely restated does not reach A's subscribers** — the suppression of §6.1 applied per element. A peer's snapshot frame (that instance's whole set of rows) is a restatement of the list rather than of one row, so a row the peer no longer has is passed on by A as `removed`.
 
 ### 7.5 Instance disconnection
 
-- That instance's sessions are treated **as a kind of Disappeared** (issue multi-host-cluster 7). They return on reconnection
-- An `instance-local` op during a disconnection is `instance_unreachable`
+- That instance's sessions are treated **as a kind of Disappeared** (issue multi-host-mesh 7). They return on reconnection
+- An `owner_instance` op during a disconnection is `instance_unreachable`
 - Disconnection appears in the `reachable` field of the `instances[]` returned in `hello`'s response, and on the `instances` topic
 - The `instances` topic carries that same list, so a subscriber learns of a link going down without greeting again. It is apart from the rows of `peers` because a mesh view is one instance's reading of all its links taken together rather than a set of rows (§6.2, on how a granularity is chosen)
 - **A disconnected instance's full value set is never dropped.** Dropping it would leave things empty until the full set comes back on reconnection. It is kept with an "unreachable" marker, **replaced on reconnection, and discarded after 7 days** (DR-0014). 7 days matches the retention window of inbox / last_live, aligned because "if that instance hasn't come back in 7 days, both its undelivered messages and its previously-running-session record are already gone." Keeping only one of the pair leaves it with nothing to refer to
@@ -746,7 +750,7 @@ Since delivery holds "whether it arrived" as state, the state transitions are pi
 The test table from [mesh-peer-auth](./design/mesh-peer-auth.md) §10 is carried out as-is on the daemon side (the PKI layer / protocol layer / boundary cases / non-persistence of state). In addition, as daemon-specific tests:
 
 - Forwarding loop detection (a request whose `hops` already contains itself is dropped)
-- An `instance-local` op during an instance disconnection becomes `instance_unreachable`, and succeeds after recovery
+- An `owner_instance` op during an instance disconnection becomes `instance_unreachable`, and succeeds after recovery
 - A disconnected instance's full value set is not dropped, is replaced on reconnection, and is discarded once the retention window passes (§7.5)
 - Two instances handed the same `peers` each settle on their own endpoint (§7.1)
 - No match (`peers` does not name this instance) and more than one (two URLs reaching one instance) each fail startup (§7.1)

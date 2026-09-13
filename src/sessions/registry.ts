@@ -22,7 +22,7 @@ import {
 import { type HandlerInput, OpError, type Requester } from "../dispatch/index.ts";
 import { within } from "../files/index.ts";
 import { HARNESS, type Harness } from "../harness/index.ts";
-import { clusterView } from "../mesh/instances.ts";
+import { meshView } from "../mesh/instances.ts";
 import type { TranscriptFacts } from "../transcript/index.ts";
 import { Elements, type TopicValue, type UpstreamResource } from "../topics/index.ts";
 import { classify, type SessionInputs } from "./classify.ts";
@@ -315,8 +315,8 @@ export class Sessions implements UpstreamResource {
       instance: this.deps.self,
       ...(this.deps.endpoint === undefined ? {} : { endpoint: this.deps.endpoint }),
       // The same view the `instances` topic carries, worked out in one place
-      // so a greeting and a subscription cannot state two different clusters.
-      instances: clusterView(this.deps.self, this.deps.endpoint, this.deps.mesh),
+      // so a greeting and a subscription cannot state two different meshs.
+      instances: meshView(this.deps.self, this.deps.endpoint, this.deps.mesh),
       capabilities: [...this.deps.capabilities],
       version: this.deps.version,
       started_at: this.deps.startedAt,

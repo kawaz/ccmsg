@@ -181,7 +181,7 @@ describe("each step answers on its own", () => {
     }
   });
 
-  test("step 6: an instance-local op owned elsewhere is forwarded, not answered", async () => {
+  test("step 6: an owner_instance op owned elsewhere is forwarded, not answered", async () => {
     const elsewhere = deps({ resolveInstance: () => OTHER_INSTANCE });
     const result = await dispatch(frameFor("session.kill"), as("user"), elsewhere);
     expect(result).toEqual({
@@ -191,7 +191,7 @@ describe("each step answers on its own", () => {
     });
   });
 
-  test("step 6: an instance-local op owned here is answered", async () => {
+  test("step 6: an owner_instance op owned here is answered", async () => {
     const here = deps({ resolveInstance: () => SELF });
     const result = await dispatch(frameFor("session.kill"), as("user"), here);
     expect(result.kind).toBe("reply");
@@ -240,10 +240,10 @@ describe("each step answers on its own", () => {
     expect(errorCode(result)).toBe("not_found");
   });
 
-  test("step 6: cluster ops are answered wherever they arrive", async () => {
+  test("step 6: mesh ops are answered wherever they arrive", async () => {
     const elsewhere = deps({ resolveInstance: () => OTHER_INSTANCE });
     for (const op of OP_NAMES.filter(
-      (name) => opAttributes(name).locality === "cluster" && !OVER_HTTP.includes(name),
+      (name) => opAttributes(name).locality === "any_instance" && !OVER_HTTP.includes(name),
     )) {
       const result = await dispatch(frameFor(op), as(allowedRole(op)), elsewhere);
       expect([op, result.kind]).toEqual([op, "reply"]);

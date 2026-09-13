@@ -98,7 +98,7 @@ frame 1 個に対して、順に:
 3. `needs_hello` と接続の identity。未確定なら `hello_required`
 4. `roles` と接続の role。外なら `forbidden`
 5. `capability` と instance の capability 集合。無ければ `capability_unavailable`
-6. `locality` が `instance-local` で、対象が他 instance の担当なら mesh へ転送 (§7.3)。届かなければ `instance_unreachable`
+6. `locality` が `owner_instance` で、対象が他 instance の担当なら mesh へ転送 (§7.3)。届かなければ `instance_unreachable`
 7. op の実装を呼ぶ
 
 **1〜6 は op ごとに書かない。** 属性表から機械的に導かれるので、op を足すことは「属性表に 1 行足して schema と実装を書く」ことに閉じる (M1)。`scope: "role"` が付いた op (`transcript.read` / `dir.list` / `file.read`) だけは、可否ではなく可視範囲が変わるので、実装に role を渡す。**渡すのは属性表が `scope` を宣言している op に限る**、というのが role を実装に露出させる唯一の経路である。
@@ -112,7 +112,7 @@ frame 1 個に対して、順に:
 | topics | topic ごとの現在値と購読者 (§6) | 各値の持ち主 (下 2 つ or upstream) |
 | transcript | sid ごとの tail 1 本と、そこから作る fold | ファイル (Claude Code が書く) |
 | upstream | `sessions/<pid>.json` / llm-gateway から写した値 | 外部 (§2.4) |
-| mesh | 各 peer が最後に述べた cluster 全体の topic の全量と、その到達可否の印 (§7.4 / §7.5) | 発生元の instance |
+| mesh | 各 peer が最後に述べた mesh 全体の topic の全量と、その到達可否の印 (§7.4 / §7.5) | 発生元の instance |
 
 **transcript の fold は 1 本にする。** tail 1 本 → fold 1 本 → そこから各 topic の値を導く (M5。fold を 2 段構えにしない理由は DR-0009)。負荷が問題になるなら fold の中身を軽くするのであって、fold を増やして解かない。
 
@@ -135,7 +135,7 @@ frame 1 個に対して、順に:
 | kv (`kv.write` で保存された値) | 人が保存した値そのもの。派生値ではなく、client 側の複製は写しでしかない |
 | auth records (`<state dir>/auth/records.json`、mode 0600) | 登録された credential・token family・tombstone (§3.3)。credential は authenticator とここにしか無く、family を失うことは人をログアウトさせること |
 
-auth records も同じ理屈で M4 の対象外である: credential は authenticator の中とここにしか無く、他のどこからも再構成できない。cluster の他 instance が写しを持つのは複製であって導出ではない (全 instance が同時に失えば戻らない)。
+auth records も同じ理屈で M4 の対象外である: credential は authenticator の中とここにしか無く、他のどこからも再構成できない。mesh の他 instance が写しを持つのは複製であって導出ではない (全 instance が同時に失えば戻らない)。
 
 inbox と kv は M4 の例外ではなく、M4 の対象外である。M4 が禁じるのは**派生値**の永続化であり、未配送メッセージは派生値ではない。送信側の `message.send` は既に応答を返して終わっており、transcript にも upstream にも「まだ届いていない本文」はどこにも無い。daemon が失えば本文ごと消える。kv も同じ理屈で、テーマ等の保存値は daemon が失えばユーザの設定ごと消える (契約 kv.ts が instance 間ミラーと `updated_at` による決着を前提にしているのも、値がプロセスより長く生きることを前提にしているため)。
 
@@ -171,7 +171,7 @@ greeting の応答は `upstream.terminal_gateway` が設定されている insta
 
 `hello` の `auth_expires_at` は接続の期限で、`auth.extend` は **同じ利用者の** access token でしか延ばせない。carrier が http の op (`auth.challenge` / `auth.register` / `auth.assert` / `auth.token.refresh`) は **frame としては受けない**: cookie の読み書きは開いた接続の上ではできず、答えの片方が欠けたまま返すことになるので、dispatch が属性表を見て断る。carrier 側は handler に渡す前に `OP_SCHEMAS` を通し、`Origin` の無い POST も断る。
 
-**challenge は 32 byte の乱数 + 発行者 (instance id)、寿命 5 分、使い切り。** LB で発行と応答の instance が違ってよく、応答を受けた側が assertion を検証し、challenge の消費と登録 jwt の検証だけを `auth.resolve` で発行者に頼む。**6 桁のコードは判定せずそのまま発行者へ運ぶ**: 受けた側が判定すると、試行回数が instance ごとに別々に数えられ、cluster 全体に推測をばら撒けてしまう。jwt・コード・試行回数は発行者だけが持つ。
+**challenge は 32 byte の乱数 + 発行者 (instance id)、寿命 5 分、使い切り。** LB で発行と応答の instance が違ってよく、応答を受けた側が assertion を検証し、challenge の消費と登録 jwt の検証だけを `auth.resolve` で発行者に頼む。**6 桁のコードは判定せずそのまま発行者へ運ぶ**: 受けた側が判定すると、試行回数が instance ごとに別々に数えられ、mesh 全体に推測をばら撒けてしまう。jwt・コード・試行回数は発行者だけが持つ。
 
 **利用者の WebAuthn user handle (`user_id`) は発行者が sub ごとに 1 度決める。** 16 byte の乱数を jwt に載せ、ページはそれで credential を作り、record の `user_handle` に保存して、handle を名乗る assertion をそれに照合する。authenticator は handle を instance の手の届かない場所に保存するので、同じ人に 2 つの値を配ると端末上で 2 つのアカウントに見えてしまう。同じ sub への追加登録は既にある handle を使い回す。
 
@@ -342,6 +342,8 @@ state dir にはもう 1 つ、`dumps/` がある。`session.dump.write` が tra
 
 **何を残すかは `types` で左から順に決める。** 要素は型 (prefix 可)・`-` 始まりの除外・`@<preset 名>` (config の preset をその位置に展開、再帰可) で、無指定は `system.attachment` を除く全部。preset は契約に焼かず config の `dump.presets` に置く (名前が指すのは「関心の切り方」であって wire の性質ではない)。循環参照と未定義の preset 名は **config 読み込み時に拒否**する (dump のたびに落ちるのでは遅い)。`daemon add` は編集の出発点として 5 つの例を `config_v2.ts` に書く。一覧は `dump.presets.read` で引く。**file の形も契約が持つ** (`SessionDumpFile`)。path だけを返して本文は file にあるので、path を渡された後継セッションが読む形は契約の側で決まっていないと読めない。file は `{sid, agent_id?, written_at, types, items, ids}` で、`types` は **展開・除外適用後の選択そのもの**である (file は要求より長生きするので、何の dump で何を落としたかを file 自身が言えなければならない)。`ids` 台帳は型ではないので選択で落ちない。既存の `no_thinking` / `no_agent` は `["-thinking"]` / `["-message.sub", "-tool.Agent"]` と同義で、最後に適用される。落ちるのは使い捨ての往復の機械仕掛けだけで、teammate との往復は残る (teammate とのやり取りは会話であり、会話を残せと言った dump から会話が消えることになるため)。
 
+**どの item の dump かと、file がその item について何を言うかは別** (`format`)。選択は範囲と `types` で決まるので 3 つの形式はどれも同じ選択の dump であり、応答が数えるのはどれを頼まれても同じその選択である。`items` は上の形。`records` はその item を読み取った元の transcript record を、読んだ file のバイトのまま 1 行 1 JSON で書く (こちらの何かを周りに足さない)。harness の形式を既に読める道具が、分類だけを欲しい場合のためである。item は自分の record を名指すので、1 record から出た複数 item は 1 行になり、行数は item 数ではない。1 つの dump は 1 つの transcript (セッション本体か、agent 1 体) なので、どの file 由来かを行が言う必要はない。`text` は §5.4 の描画を、path を渡された側ではなくここで書いたもの。どれであるかは名前が言う (`.dump.json` / `.jsonl` / `.md`)。file は path で渡り、その種類を読む道具で開かれるためである。
+
 ### 5.4 描画
 
 **型を読める文字に落とすのは表示層の責務である** (`src/transcript/items/render.ts` と `document.ts`、CLI の `ccmsg dump`)。型ごとに 1 つの関数が「見出しの語」と「その下の行」を返し、文書は `[<uuid8>:<index>] <型> <見出し> <時刻> turn` の 1 行とインデントした本文の並びに、対象・instance・選択・範囲の前置きと末尾の `ids` 台帳を付けたものになる。**専用の描き方が無い型も必ず出る**: 未知のツールも未知の添付も、型名と持っていた field が汎用形で並ぶ (描き方を足すのは読みやすさのためであって、出すかどうかの条件ではない)。呼び出しと結果を 1 かたまりに寄せるかは**この層が決める** (隣り合っていれば寄せて `→`、離れていれば結果を自分の位置に置いて `←`)。読み手が辿るのは起きた順なので、後から返ってきた答え — worker の返答は数分後がざらである — は後の瞬間としてその位置に置く。見出しに出す id が `id` の短縮形なのは、リンクの矢印が指す先と見出しが同じものを言うためである (record の id だけを出すと、矢印の指すアイテムが見出しから引けない)。
@@ -410,6 +412,8 @@ M4 とも矛盾しない。M4 が禁じるのは派生値をディスクに置�
 
 **delta の粒度 (`element` / `append`) と `event` は素通しする**。同じ内容の frame が 2 回出るのは「同じことが 2 回起きた」であって重複ではない — inbox の再提示は 1 回目を聞いていなかった相手に届く唯一の機会だし、kv の同値再送も追加操作そのものである。**event** は加えて現在値を持たないので、購読しても snapshot が出ない。抑制の実装は 1 つのままで、契約の粒度を見て適用範囲を決める。
 
+**通知は「何への答えか」を載せる** (`reply_to`)。通知は、同じ答えについてのセッション自身の記述がまだ書かれている最中に表示されるので、通知と返信先のメッセージの両方を持つ読み手には、それが 1 つのことだと分かる手掛かりが無い。それを言うのが `mid` であり、どのメッセージに答えているかは送る側のセッションしか知らないので、載せるのは送る側の務めである。
+
 **instance ごとの全量置換**が mesh の要。frame は発生元 `instance` を必ず伴い、購読側は「その instance 分だけ」を置き換える。他 instance の分は残る。この規則があるので、複数 instance の全量が同じ topic 名で衝突しない。
 
 ### 6.3 購読の管理
@@ -417,7 +421,7 @@ M4 とも矛盾しない。M4 が禁じるのは派生値をディスクに置�
 - 購読は接続に従属する。接続が閉じれば購読も消える (別の後始末を持たない)
 - **上流の資源は購読者がいる間だけ動かす**。`transcript:<sid>` の購読が 0 になれば tail を止め、`agents` の購読が 0 になれば `sessions/` の監視を止める。購読が資源のライフサイクルの唯一の駆動源
 - ここで購読に従属するのは **「変化を push するための監視」だけ**であって、**「今どうなっているかを読むこと」ではない**。値の持ち主に現在値を聞く経路 (§2.3) と、§4.2 の分類の入力は、購読者が 0 でも同じ答えを返す
-- cluster 全体の topic を購読された instance は、mesh の各 peer にも同じ topic を購読させ、受けた frame をそのまま (発生元 `instance` を保ったまま) 購読者へ流す (§7.4)
+- mesh 全体の topic を購読された instance は、mesh の各 peer にも同じ topic を購読させ、受けた frame をそのまま (発生元 `instance` を保ったまま) 購読者へ流す (§7.4)
 
 ### 6.4 送出側の上限
 
@@ -434,7 +438,7 @@ M4 とも矛盾しない。M4 が禁じるのは派生値をディスクに置�
 
 | 値 | 種類 | 何を決めるか | 根拠 |
 |---|---|---|---|
-| flush 周期 100ms (`FLUSH_PERIOD_MS`) | 上限 | 1 つの終端へ frame を出す頻度の上限 | 読み手側: 表示の更新より細かい frame は誰にも見えない一方、遅延として読まれ始めるのは 1/4 秒あたり。cluster 側: relay は hop ごとに 1 回待つので、体感遅延は 100ms × hop 数。2 hop でも「即時」の範囲に収まる |
+| flush 周期 100ms (`FLUSH_PERIOD_MS`) | 上限 | 1 つの終端へ frame を出す頻度の上限 | 読み手側: 表示の更新より細かい frame は誰にも見えない一方、遅延として読まれ始めるのは 1/4 秒あたり。mesh 側: relay は hop ごとに 1 回待つので、体感遅延は 100ms × hop 数。2 hop でも「即時」の範囲に収まる |
 | 畳めない frame の上限 256 (`QUEUE_LIMIT`) | 上限 | 1 終端が同時に抱える「畳めない frame」の数 | 畳める frame は何度 publish されても 1 件なので上限が要らない。256 は 100ms ごとに捌ける量なので、到達するのは 1 秒あたり 2500 件超を出し続けた場合だけ = 人・セッション・peer のいずれの産出量でもなく、この層が備える storm |
 
 **周期タイマーではない** (M3 の対象外)。timer は「待たされる frame が出た時」だけ armed され、静かな終端は何も持たない。直前の flush から周期が経っていれば **その場で送る**ので、単発の変化は待たされない。
@@ -487,7 +491,7 @@ status socket の**置き場は state dir ではなく、宛先 socket と同じ
 | `inbox_full` | 上限超過で古い方を落とした | inbox |
 | `throttled` | 経路 (a) で受信側の流量制御に弾かれた (§6.8) | (a) の drop 応答 |
 
-`session_not_found` (op 自体の失敗) は「cluster のどの instance も知らない sid」の場合のみ。到達不能な instance が担当している可能性がある間は `instance_unreachable` であって `session_not_found` ではない。**この 2 つの区別は mesh の接続状態にしか依存しない。**
+`session_not_found` (op 自体の失敗) は「mesh のどの instance も知らない sid」の場合のみ。到達不能な instance が担当している可能性がある間は `instance_unreachable` であって `session_not_found` ではない。**この 2 つの区別は mesh の接続状態にしか依存しない。**
 
 `paused` / `disappeared` のとき `candidates` に添える sid は「同じ repo root で今動いているセッション」。repo root は hello が名乗った値、名乗らなければ cwd から導出した値を使う。
 
@@ -561,18 +565,18 @@ webui ──▶ instance A ──(封筒: to_instance=B, from_instance=A, hops=[
 - **転送された op も、転送先で §2.2 の 1〜6 をもう一度通す。** 「A が認可したから B は信じる」にしない。A が侵害された場合に B の認可が消えるため
 - やり直す相手は封筒の `caller` (認証済み link が名乗った呼び出し元) であって、転送元の判断ではない
 
-「対象の担当 instance」の決め方: sid → 担当 instance の対応は `peers` topic の行 (生存中と、生存していないが保持期間内のもの) → `agents` topic の行 (ハーネスが把握している全セッション) の順で探す。知らない sid は「cluster のどこにもない」= `session_not_found`。ただし到達不能な instance がある間は判定を保留する (§6.6)。
+「対象の担当 instance」の決め方: sid → 担当 instance の対応は `peers` topic の行 (生存中と、生存していないが保持期間内のもの) → `agents` topic の行 (ハーネスが把握している全セッション) の順で探す。知らない sid は「mesh のどこにもない」= `session_not_found`。ただし到達不能な instance がある間は判定を保留する (§6.6)。
 
 ### 7.4 event の relay
 
-instance A に繋いだ購読者が cluster 全体を見るために、A は各 peer の同じ topic を購読し、受けた frame の `instance` を保ったまま自分の購読者へ流す。A は中身を再計算しない (再計算すると発生元と A の 2 箇所に同じ判定が生まれる)。
+instance A に繋いだ購読者が mesh 全体を見るために、A は各 peer の同じ topic を購読し、受けた frame の `instance` を保ったまま自分の購読者へ流す。A は中身を再計算しない (再計算すると発生元と A の 2 箇所に同じ判定が生まれる)。
 
 relay するのは **instance ごとの全量置換の topic と、`peers` / `agents`** である。後者は要素粒度だが、行が自分の instance を名乗るので他 instance の行と同じ topic 名で並べられる (`inbox` の要素は「どのセッションのものか」しか言わないので relay しない)。行の topic では A も要素ごとに保持し、**peer が言い直しただけの行は自分の購読者へ流さない** (§6.1 の抑制を要素単位で適用する)。peer の snapshot frame (= その instance の全行) は「言い直し」ではなく全量の言い直しとして扱い、peer が持たなくなった行は A が `removed` として下流に伝える。
 
 ### 7.5 instance の断絶
 
-- その instance のセッションは **Disappeared の一種**として扱う (issue multi-host-cluster 7)。復帰時に戻る
-- 断絶中の `instance-local` op は `instance_unreachable`
+- その instance のセッションは **Disappeared の一種**として扱う (issue multi-host-mesh 7)。復帰時に戻る
+- 断絶中の `owner_instance` op は `instance_unreachable`
 - 断絶は `hello` の応答に含まれる `instances[]` の `reachable` と、`instances` topic に現れる
 - `instances` topic が同じ一覧を運ぶので、購読者は挨拶し直さずに link の切断を知る。`peers` の行と分けてあるのは、mesh の見え方が「その instance が全 link をまとめて読んだ 1 つの値」であって行の集まりではないため (§6.2 の粒度の選び方)
 - **断絶した instance の分の全量を消さない**。消すと復帰時に全量が返ってくるまで空になる。「到達不能」という印を付けて保持し、**再接続で置き換える。7 日で破棄する** (DR-0014)。7 日は inbox / last_live の保持窓と同じ値で、揃えているのは「その instance が 7 日戻ってこなければ、そこに紐づく未配送も前回稼働中の記録も既に消えている」ため。片方だけ残っても参照先が無い
@@ -738,7 +742,7 @@ protocol リポが持つ「実 wire の JSON が schema を通る」fixture を�
 [mesh-peer-auth](./design/mesh-peer-auth.md) §10 のテスト表をそのまま daemon 側で実施する (PKI レイヤ / プロトコルレイヤ / 境界ケース / 状態の非残存)。加えて daemon 固有として:
 
 - 転送のループ検出 (`hops` に自分がいる request が落ちる)
-- instance 断絶中の `instance-local` op が `instance_unreachable` になり、復帰後に成功する
+- instance 断絶中の `owner_instance` op が `instance_unreachable` になり、復帰後に成功する
 - 断絶した instance の分の全量が消えず、復帰時に置き換わり、保持窓を過ぎたら破棄される (§7.5)
 - 到達しない peer がある状態で起動でき、その peer は dial 対象に残る (§7.1)
 - 同じ `peers` を配った 2 instance が、それぞれ自分の endpoint に確定する (§7.1)
