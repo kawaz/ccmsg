@@ -1,6 +1,6 @@
 ---
 title: dump-raw-jsonl-format
-status: open
+status: resolved
 category: design
 created: 2026-09-11T13:03:09+09:00
 last_read:
@@ -9,10 +9,10 @@ wip_entered:
 blocked_entered:
 pending_entered:
 discarded_entered:
-resolved_entered:
+resolved_entered: 2026-09-14T00:00:00+09:00
 discard_reason:
 pending_reason:
-close_reason:
+close_reason: ["契約 1.23.0 で session.dump.write に format(items|records|text) 追加、daemon v0.13.0 実装(2026-09-14)","records = 選択 item に対応する元 record を1本のjsonlで出力(1 recordから複数itemでも1行、行数≠item数)","text = daemon側でmarkdown描画","1 dumpは1 transcript(セッション本体かagent1体)に閉じるので複数ファイル出所の印は不要","entries/idsは形式に関わらず選んだitemについて述べる","CLI ccmsg dump --format","既定(format無し)は従来通りCLI側描画(--max-charsを保つため)","done"]
 blocked_by:
 origin: 自リポ TODO
 ---
