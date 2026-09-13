@@ -21,7 +21,7 @@ instance 同士のやり取りは **`hello.instance` と、転送の封筒 (`Req
 
 ### 2.2 転送先でも認可をやり直す
 
-`locality: instance-local` の op は、対象を持つ instance が自分でなければ転送される。**転送先で §2.2 の 1〜6 段をもう一度通す。** 「A が既に認可したから B は信じる」は採らない — A が侵害されていたら B の認可が消えることになる。
+`locality: owner_instance` の op は、対象を持つ instance が自分でなければ転送される。**転送先で §2.2 の 1〜6 段をもう一度通す。** 「A が既に認可したから B は信じる」は採らない — A が侵害されていたら B の認可が消えることになる。
 
 判定の相手は封筒の `caller` (認証済み link が名乗った identity) であって、転送した instance の判定結果ではない。
 
@@ -33,7 +33,7 @@ instance 同士のやり取りは **`hello.instance` と、転送の封筒 (`Req
 
 捨てると、再接続で全量が戻るまで空になる。「到達不能」の印を付けて保持し、**再接続で置き換え、7 日で破棄する**。7 日は inbox / `last_live` の保持窓と揃えてある — 「その instance が 7 日戻らなければ、未配送の message も、以前走っていたセッションの記録もどちらも既に消えている」ため。片方だけ残しても参照先が無い。
 
-断絶中の `instance-local` op は `instance_unreachable`。断絶は `hello` の応答と `instances` topic の `reachable` 欄に出る。`instances` が `peers` の行と別なのは、**mesh の眺めは 1 つの instance が自分の全リンクをまとめて読んだもの**であって、行の集合ではないからである。
+断絶中の `owner_instance` op は `instance_unreachable`。断絶は `hello` の応答と `instances` topic の `reachable` 欄に出る。`instances` が `peers` の行と別なのは、**mesh の眺めは 1 つの instance が自分の全リンクをまとめて読んだもの**であって、行の集合ではないからである。
 
 ### 2.5 1 つの id は 1 本の endpoint にしか束縛されない
 

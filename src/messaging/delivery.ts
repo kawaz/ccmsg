@@ -2,6 +2,8 @@ import type {
   CallerIdentity,
   CandidateSession,
   InboxMessage,
+  InboxRemoved,
+  InboxRemovedReason,
   InstanceId,
   MessageSendArgs,
   MessageSendResult,
@@ -21,7 +23,12 @@ import {
   OpError,
   type Requester,
 } from "../dispatch/index.ts";
-import type { PublishOutcome, TopicValue, UpstreamResource } from "../topics/index.ts";
+import {
+  PEOPLE,
+  type PublishOutcome,
+  type TopicValue,
+  type UpstreamResource,
+} from "../topics/index.ts";
 import type { DirectRoute } from "./direct.ts";
 import type { Inbox } from "./inbox.ts";
 
@@ -71,7 +78,12 @@ export interface DeliveryDeps {
   readonly direct: DirectRoute;
   /** The one way a value reaches subscribers (DESIGN §6.1), narrowed to the session a
    * message is for. */
-  readonly publish: (topic: string, data: unknown, instance: InstanceId, to: Sid) => PublishOutcome;
+  readonly publish: (
+    topic: string,
+    data: unknown,
+    instance: InstanceId,
+    to: Sid | typeof PEOPLE,
+  ) => PublishOutcome;
   /** How many of that session's connections are listening on `inbox`. */
   readonly listeners: (topic: string, to: Sid) => number;
 }
@@ -97,6 +109,14 @@ export class Delivery implements UpstreamResource {
 
   constructor(private readonly deps: DeliveryDeps) {
     this.#counter = deps.inbox.lastCounter(`${deps.self}/`);
+    // Every way out of the inbox is stated to the watchers, and the inbox is
+    // the one that knows about all of them — handed over, timed out, dropped
+    // for a newer message. Read from there rather than published beside each
+    // call that removes something, so a way out nobody thought of here is
+    // still a removal somebody watching sees (DESIGN §6.7).
+    deps.inbox.onRemoved((mid, reason) => {
+      this.#removed([mid], reason);
+    });
   }
 
   /** `message.send`. The op fails only for a sid nobody knows; every other
@@ -123,24 +143,64 @@ export class Delivery implements UpstreamResource {
     if (direct === "refused") {
       // Turned away for now, which is neither delivered nor undeliverable: it
       // waits in the inbox and is offered again (DESIGN §6.8).
-      this.deps.inbox.hold(to, message);
+      this.#hold(to, message);
       return { delivered: false, reason: "throttled" };
     }
 
     if (this.deps.listeners(INBOX, to) > 0) {
       if (this.deps.publish(INBOX, [message], this.deps.self, to) === "ok") {
+        // Route (b) is the topic itself, so the message never waits anywhere:
+        // the watchers are told both halves at once — it arrived, and it is
+        // gone because the session has it — since a view built from frames
+        // alone would otherwise show it waiting for good.
+        this.#watchers(to, [message]);
+        this.#removed([message.mid], "delivered");
         return { delivered: true };
       }
       // The session is listening but is behind on what it has already been
       // offered, which is the same standing as route (a) turning the message
       // away: it waits in the inbox and is offered again (DESIGN §6.8).
-      this.deps.inbox.hold(to, message);
+      this.#hold(to, message);
       return { delivered: false, reason: "throttled" };
     }
 
-    const { evicted } = this.deps.inbox.hold(to, message);
+    const { evicted } = this.#hold(to, message);
     return this.#undelivered(to, evicted ? "inbox_full" : this.#reason(state));
   };
+
+  /** Hold a message the session could not take, and say so to the watchers.
+   *
+   * Stated before it is held, so that a message dropped to make room for it
+   * reads in the order the two happened: a removal of something the watcher
+   * has, rather than of something it is about to be told about. */
+  #hold(to: Sid, message: InboxMessage): { evicted: boolean } {
+    this.#watchers(to, [message]);
+    return this.deps.inbox.hold(to, message);
+  }
+
+  /** What is waiting, as somebody looking at it from outside reads it.
+   *
+   * A person holds every session's inbox in one subscription, so the rows they
+   * are answered with name their recipient; the session's own do not, since
+   * its subscription is already the recipient (contract, `InboxMessage.to`). */
+  #watchers(to: Sid, messages: readonly InboxMessage[]): void {
+    if (messages.length === 0) return;
+    this.deps.publish(
+      INBOX,
+      messages.map((message) => ({ ...message, to })),
+      this.deps.self,
+      PEOPLE,
+    );
+  }
+
+  /** A message has left an inbox, which only a watcher has anything left to do
+   * with: the session it was for either has it or never will, and neither is
+   * something to tell it on the topic it receives messages on. */
+  #removed(mids: readonly Mid[], reason: InboxRemovedReason): void {
+    if (mids.length === 0) return;
+    const gone: InboxRemoved[] = mids.map((mid) => ({ mid, removed: true, reason }));
+    this.deps.publish(INBOX, gone, this.deps.self, PEOPLE);
+  }
 
   /** A session this instance does not hold: carried to the instance that does,
    * or named as one the mesh cannot answer for right now.
@@ -243,11 +303,23 @@ export class Delivery implements UpstreamResource {
    *
    * A message an offer over route (a) has claimed is left out: it is on its way
    * on the other route, and the session subscribing while that runs must not
-   * make it two messages. */
+   * make it two messages.
+   *
+   * **A person's subscription is a view, not a delivery.** They are answered
+   * with everything waiting anywhere on this instance, each row naming its
+   * recipient, and the inbox is left exactly as it was — a person is not who
+   * any of it was addressed to, and a view that consumed what it looked at
+   * would deliver messages to nobody by being opened. Nothing is left out of
+   * it either: a message an offer has claimed is still waiting until that
+   * offer says otherwise, and that is what somebody watching wants to see. */
   snapshot(topic: string, conn: Requester): readonly TopicValue[] {
     const identity = conn.identity;
-    const sid = identity.state === "settled" ? identity.sid : undefined;
-    if (topic !== INBOX || sid === undefined) return [];
+    if (topic !== INBOX || identity.state !== "settled") return [];
+    const sid = identity.sid;
+    // A settled connection that names no session is somebody watching: the
+    // topic table lets nobody but a session and a person subscribe here, so
+    // the sid is the whole of the difference and no role is read for it (M1).
+    if (sid === undefined) return [{ instance: this.deps.self, data: this.#waiting() }];
     const claimed = this.#claimed.get(sid);
     const held = this.deps.inbox
       .undelivered(sid)
@@ -257,6 +329,16 @@ export class Delivery implements UpstreamResource {
       held.map((message) => message.mid),
     );
     return [{ instance: this.deps.self, data: held }];
+  }
+
+  /** Everything still undelivered on this instance, oldest first within each
+   * session, each row naming who it is for. */
+  #waiting(): InboxMessage[] {
+    const rows: InboxMessage[] = [];
+    for (const sid of this.deps.inbox.sids()) {
+      for (const message of this.deps.inbox.undelivered(sid)) rows.push({ ...message, to: sid });
+    }
+    return rows;
   }
 
   /** The reason a message is waiting, named from the classification alone

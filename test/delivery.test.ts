@@ -216,6 +216,15 @@ function listening(topics: Topics, sid: Sid, keepSnapshot = false): TestConn {
   return conn;
 }
 
+/** A person watching, whose subscription is a view rather than a delivery. */
+function watching(topics: Topics, keepSnapshot = false): TestConn {
+  const conn = new TestConn({ state: "settled", role: "user" });
+  expect(topics.subscribe(conn, "inbox")).toBe("ok");
+  conn.flush();
+  if (!keepSnapshot) conn.sent.splice(0);
+  return conn;
+}
+
 function inboxFrames(conn: TestConn): Record<string, unknown>[] {
   return conn.topics().filter((frame) => frame["topic"] === "inbox");
 }
@@ -304,19 +313,100 @@ describe("delivery", () => {
     expect(messagesOf(inboxFrames(listening(topics, OTHER_SID, true))[0])).toEqual([]);
   });
 
-  test("a person watching the topic is handed nobody's messages", async () => {
-    const { sessions, topics, send } = rig();
+  test("a person sees what is waiting, named by who it is for", async () => {
+    const { sessions, topics, inbox, send } = rig();
     sessions.live(SID);
     sessions.live(OTHER_SID);
-    const watcher = connAs("user", OTHER_SID);
-    watcher.identity = { state: "settled", role: "user" };
-    expect(topics.subscribe(watcher, "inbox")).toBe("ok");
-    watcher.flush();
+    const watcher = watching(topics);
 
     const result = await send(connAs("session", SID), OTHER_SID);
 
     expect(result.delivered).toBe(false);
-    expect(inboxFrames(watcher)).toEqual([]);
+    const frames = inboxFrames(watcher);
+    expect(frames).toHaveLength(1);
+    expect(validationErrors(TOPIC_SCHEMAS.inbox, frames[0] as object)).toEqual([]);
+    // A person holds every session's inbox in one subscription, so a row that
+    // did not name its recipient could not be placed against any of them.
+    expect(messagesOf(frames[0])[0]?.to).toBe(OTHER_SID);
+    // Looking at it moved nothing: a person is not who it was addressed to.
+    expect(inbox.undelivered(OTHER_SID)).toHaveLength(1);
+  });
+
+  test("a person subscribing is answered with every inbox, and empties none of them", async () => {
+    const { sessions, topics, inbox, send } = rig();
+    sessions.live(SID);
+    sessions.live(OTHER_SID);
+    sessions.live(THIRD_SID);
+    await send(connAs("session", SID), OTHER_SID, "for one");
+    await send(connAs("session", SID), THIRD_SID, "for another");
+
+    const watcher = watching(topics, true);
+
+    const carried = messagesOf(inboxFrames(watcher)[0]);
+    expect(carried.map((message) => [message.to, message.text])).toEqual([
+      [OTHER_SID, "for one"],
+      [THIRD_SID, "for another"],
+    ]);
+    expect(inbox.undelivered(OTHER_SID)).toHaveLength(1);
+    expect(inbox.undelivered(THIRD_SID)).toHaveLength(1);
+  });
+
+  test("a session's own rows say nothing by naming the session they reached", async () => {
+    const { sessions, topics, send } = rig();
+    sessions.live(SID);
+    sessions.live(OTHER_SID);
+    const recipient = listening(topics, OTHER_SID);
+
+    await send(connAs("session", SID), OTHER_SID);
+
+    expect(messagesOf(inboxFrames(recipient)[0])[0]?.to).toBeUndefined();
+  });
+
+  test("every way out of an inbox reaches the watchers as a removal, and says which", async () => {
+    const { sessions, topics, inbox, send } = rig();
+    sessions.live(SID);
+    sessions.live(OTHER_SID);
+    sessions.live(THIRD_SID);
+    const watcher = watching(topics);
+
+    // Delivered: the session takes what was waiting for it.
+    await send(connAs("session", SID), OTHER_SID, "waited");
+    listening(topics, OTHER_SID);
+    // Dropped: the oldest goes to make room for a newer one.
+    for (let n = 0; n <= INBOX_MAX_PER_SID; n += 1) {
+      await send(connAs("session", SID), THIRD_SID, `n${n}`);
+    }
+    // Expired: the window ran out with nobody having taken it.
+    inbox.undelivered(THIRD_SID, Date.now() + INBOX_RETENTION_MS + 1);
+
+    const reasons = new Set(
+      inboxFrames(watcher)
+        .flatMap((frame) => (frame["data"] ?? []) as { removed?: true; reason?: string }[])
+        .filter((element) => element.removed === true)
+        .map((element) => element.reason),
+    );
+    expect(reasons).toEqual(new Set(["delivered", "dropped", "expired"]));
+    for (const frame of inboxFrames(watcher)) {
+      expect(validationErrors(TOPIC_SCHEMAS.inbox, frame as object)).toEqual([]);
+    }
+  });
+
+  test("a message that goes straight out on the topic is stated as arriving and leaving", async () => {
+    const { sessions, topics, send } = rig();
+    sessions.live(SID);
+    sessions.live(OTHER_SID);
+    listening(topics, OTHER_SID);
+    const watcher = watching(topics);
+
+    await send(connAs("session", SID), OTHER_SID, "straight through");
+
+    const elements = inboxFrames(watcher).flatMap(
+      (frame) => (frame["data"] ?? []) as { text?: string; removed?: true; reason?: string }[],
+    );
+    expect(elements.map((element) => element.text ?? element.reason)).toEqual([
+      "straight through",
+      "delivered",
+    ]);
   });
 
   test("a sid nobody knows fails the op rather than filling an inbox", async () => {

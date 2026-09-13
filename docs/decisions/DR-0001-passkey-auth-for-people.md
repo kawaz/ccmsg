@@ -67,7 +67,7 @@ WebAuthn の RP ID は origin ではなく domain で、passkey は「今開い�
 
 credential record と token family は peer 間で複製する。載せ先は **`kv` ではなく専用 topic `auth_records`** (`roles: ["instance"]`、element 粒度、LWW + tombstone。`kv` は user role が読み書きでき token が漏れる)。session / user role は購読も読み書きもできない。
 
-知らない値を受けた instance は発行者 (`iss` = instance id) へ問い合わせる。契約に instance 間 op を 2 つ (`auth_resolve` = jwt / challenge の検証と消費、`auth_rotate` = family の rotate。どちらも plane `common`、`roles: ["instance"]`、`needs_hello: true`、`locality: instance-local`) 足し、`to_instance = iss` で §7.3 の転送経路に載せる。`auth_records` は relay の `caller` を付けず instance role のまま購読する (relay が `caller: user` を付ける他の topic と違う)。問い合わせが要る場面は 3 つ:
+知らない値を受けた instance は発行者 (`iss` = instance id) へ問い合わせる。契約に instance 間 op を 2 つ (`auth_resolve` = jwt / challenge の検証と消費、`auth_rotate` = family の rotate。どちらも plane `common`、`roles: ["instance"]`、`needs_hello: true`、`locality: owner_instance`) 足し、`to_instance = iss` で §7.3 の転送経路に載せる。`auth_records` は relay の `caller` を付けず instance role のまま購読する (relay が `caller: user` を付ける他の topic と違う)。問い合わせが要る場面は 3 つ:
 
 - 登録 jwt の検証 (HMAC secret は `iss` にしかない)
 - WebAuthn の challenge (発行 instance の id を challenge に含め、返ってきた側がそこへ転送して照合する。LB で発行と応答の instance が違ってよい。challenge は 16 byte 以上の乱数 + 発行者、寿命 5 分、使い切り)

@@ -518,7 +518,11 @@ For `paused` / `disappeared`, the sid attached to `candidates` is "a session cur
 
 Whether to use a per-sid file or a single file is left to implementation discretion (either way the meaning of clearing and retention period is unchanged).
 
-**Delivery over route (b) is at-most-once.** A message counts as delivered the moment its frame is written to the connection. The subscription's snapshot is "everything still undelivered for that sid," and **subscribing is receiving**, so the inbox is cleared of them as the snapshot is returned (the frame is queued on the connection right behind the subscription's reply). The same holds when `message.send` pushes straight to a subscribed connection: nothing goes into the inbox. If the receiving side loses the frame along with its connection, the body is nowhere. A connection with no sid — a person watching — gets an empty snapshot: the topic carries what was said to a session, and a person is not one.
+**Delivery over route (b) is at-most-once.** A message counts as delivered the moment its frame is written to the connection. The subscription's snapshot is "everything still undelivered for that sid," and **subscribing is receiving**, so the inbox is cleared of them as the snapshot is returned (the frame is queued on the connection right behind the subscription's reply). The same holds when `message.send` pushes straight to a subscribed connection: nothing goes into the inbox. If the receiving side loses the frame along with its connection, the body is nowhere.
+
+**A session's subscription is the delivery and a person's is a view.** A connection with no sid is answered with everything waiting anywhere on this instance and the inbox is left exactly as it was: a person is not who any of it was addressed to, and a view that consumed what it looked at would deliver messages to nobody by being opened. Nothing is kept out of that view either — a message an offer has claimed is still waiting until the offer says otherwise, which is what somebody watching wants to see. The rows they are answered with name their recipient (`to`), since a person holds every session's inbox in one subscription and a row that named none could not be placed against any of them; a session's own rows do not, because its subscription is already the recipient.
+
+**A message leaving an inbox is stated as a removal, with the reason it left** (`InboxRemoved`, marked by `mid`): handed over, timed out, or dropped to make room for a newer one. A frame carries only what changed, so an absence in it says nothing, and the reason is the one thing a reader cannot derive — `delivered` means the recipient has it and its own account of it follows, while the other two mean it never arrived and never will. Removals go to the watchers alone: the session either has the message or never will, and neither is something to tell it on the topic it receives messages on. They are read from the inbox itself rather than published beside each call that removes something, so a way out nobody enumerated here is still a removal somebody watching sees. A message that goes straight out on route (b) never waits anywhere, and the watchers are told both halves at once — it arrived, and it is gone — since a view built from frames alone would otherwise show it waiting for good.
 
 This follows from the inbox being the place for "what has not yet arrived" and nothing else (the table above). Keeping what was handed over until it is acknowledged would make the inbox hold "what may have arrived," and the next subscription or the next re-offer over route (a) would deliver the same body twice. **One message goes out on one route**: leaving a message claimed by an in-flight route (a) offer out of the snapshot is the same rule, so a subscription arriving mid-offer does not make it two messages.
 
@@ -560,7 +564,7 @@ Looking up the link to dial down from `to_instance` (an id) also goes through th
 
 ### 7.3 Forwarding ops
 
-An op with `locality: instance-local` is forwarded if the owning instance of its target is not oneself.
+An op with `locality: owner_instance` is forwarded if the owning instance of its target is not oneself.
 
 ```
 webui ──▶ instance A ──(envelope: to_instance=B, from_instance=A, hops=[A])──▶ instance B

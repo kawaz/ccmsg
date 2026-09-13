@@ -11,6 +11,7 @@ import {
   INBOX_MAX_PER_SID,
   INBOX_RETENTION_MS,
   type InboxMessage,
+  type InboxRemovedReason,
   type Sid,
   type Timestamp,
 } from "@ccmsg/protocol";
@@ -44,7 +45,20 @@ type Record_ =
 export class Inbox {
   readonly #held = new Map<Sid, InboxMessage[]>();
 
+  /** Told whenever a message leaves, and why. Every way out passes through
+   * here — handed over, timed out, dropped for a newer one — so whoever states
+   * removals on the topic has one place to hear about them rather than a
+   * reading of its own per way (DESIGN §6.7). Absent until somebody asks: a
+   * replay at startup reaches conclusions about a file, with nobody yet
+   * subscribed for them to be news to. */
+  #onRemoved?: (mid: string, reason: InboxRemovedReason) => void;
+
   constructor(private readonly file: string) {}
+
+  /** Hear about messages leaving. */
+  onRemoved(told: (mid: string, reason: InboxRemovedReason) => void): void {
+    this.#onRemoved = told;
+  }
 
   /** Replay the file, drop what has expired, and write back what is left.
    *
@@ -95,7 +109,10 @@ export class Inbox {
     this.#append({ v: "add", sid, message });
     if (held.length <= INBOX_MAX_PER_SID) return { evicted: false };
     const oldest = held.shift();
-    if (oldest !== undefined) this.#append({ v: "dropped", sid, mid: oldest.mid });
+    if (oldest !== undefined) {
+      this.#append({ v: "dropped", sid, mid: oldest.mid });
+      this.#onRemoved?.(oldest.mid, "dropped");
+    }
     return { evicted: true };
   }
 
@@ -108,7 +125,10 @@ export class Inbox {
     const left = held.filter((message) => !gone.has(message.mid));
     if (left.length === 0) this.#held.delete(sid);
     else this.#held.set(sid, left);
-    for (const mid of mids) this.#append({ v: "delivered", sid, mid });
+    for (const mid of mids) {
+      this.#append({ v: "delivered", sid, mid });
+      this.#onRemoved?.(mid, "delivered");
+    }
   }
 
   /** Every session something is waiting for. What reads it is the offer of
@@ -154,8 +174,12 @@ export class Inbox {
       if (only !== undefined && sid !== only) continue;
       const left = held.filter((message) => now - message.sent_at <= INBOX_RETENTION_MS);
       if (left.length === held.length) continue;
+      const gone = new Set(left.map((message) => message.mid));
       if (left.length === 0) this.#held.delete(sid);
       else this.#held.set(sid, left);
+      for (const message of held) {
+        if (!gone.has(message.mid)) this.#onRemoved?.(message.mid, "expired");
+      }
     }
   }
 
