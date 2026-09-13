@@ -20,35 +20,23 @@
 
 ## 裁定待ち
 
-契約 minor A (「client が見えていないものを見えるようにする」6 件を optional の足し算で 1 回に)。素材は `/tmp/ccmsg-contract-minor-draft.md`、issue は契約リポ `docs/issue/`。
+契約 minor A (「client が見えていないものを見えるようにする」を optional の足し算で 1 回に)。issue は契約リポ `docs/issue/`。裁定済みで外したもの: CT-Q1 (say は契約に載せず、`PushNotification` + hook + 分類で対応、既読は webui ローカル)、CT-Q4 (dump は外部の道具、client から読まない)、CT-Q6 (`entries` は選んだ item の数)。
 
-### CT-Q1 say の未読をどこに載せるか
-
-`say-unread-on-wire`。fold 由来でない値を `peers` の行に載せてよいか、が論点。
-
-- [ ] a: `PeerInfo.say_unread_at` (一覧の行に印を出せる) (推し: 用途が一覧の印なので置き場は行)
-- [ ] b: `SessionStatusSnapshot` に (1 セッションの状態としては筋が通るが一覧に印を出せない)
 
 ### CT-Q2 通知に種別を持たせるか
 
-`notification-lacks-mid`。`reply_to` (返事の鍵) を足すのは確定。`say.post` 由来と `notify.send` 由来を型で分けるか。
+`notification-lacks-mid`。`notify` topic = セッションが人へ出す 1 行の知らせ (webui に出る、保持されない)。今は「どのメッセージへの返事か」の鍵が無く、通知から元の文脈へ飛べない。`reply_to` を足すのは確定。`PushNotification` 由来 (hook が流す) と `notify.send` 由来を型で分けるか。
 
 - [ ] a: 分けない。`reply_to` の有無で読み手が判断 (推し: 「通知の種別」を契約の語彙にしない)
 - [ ] b: `kind` の union を持つ
 
 ### CT-Q3 fold の起点を契約に載せるか
 
-`session-status-partial-marker`。`external_files` が空を「無い」と描く実害を直す。
+`session-status-partial-marker`。instance はセッションの状態 (`session.status`: 走っている worker、TODO、`external_files`) を transcript を畳んで作るが、大きいファイルは途中 (末尾 N byte) から畳むので、それより前で名指されたファイルは状態に現れない。今の契約は「無い」と「途中からなので知らない」を区別できず、webui が空を「無い」と描く。
 
 - [ ] a: `folded_from` (byte offset、transcript の offset 語彙をそのまま。読み手が何が欠けているか言える) (推し)
 - [ ] b: `partial: boolean` (最小だが打てる手が無い)
 
-### CT-Q4 dump を client が読む経路
-
-`dump-file-unreadable-from-clients`。起票時の推し (a) から変わる。
-
-- [ ] a: `FileKind` に `"dump"` の面を足す (`file.read` の既存の paging / binary / mtime を再利用。`file.edit` が書けないよう読み専用の union を切り出す) (推し: 既存の枠組みで解ける)
-- [ ] b: `session.dump.read` を新設 (dump が instance に閉じることを型で表すが、読み op と paging が二重になる)
 
 ### CT-Q5 `file.read` の paging の形
 
@@ -57,20 +45,51 @@
 - [ ] a: 前向き `offset` / `max_bytes` (無指定 = 先頭で現状互換) (推し: 対象の性質に形を合わせる、を既定方針として DESIGN に明記)
 - [ ] b: `transcript.read` と同形の後ろ向き `before` / `max_bytes` (契約内の既成語彙だが無指定の意味が変わる)
 
-### CT-Q6 raw 形式の dump で `entries` / `ids` が述べるもの
-
-`dump-raw-jsonl-format` の契約部分。`format: "items" | "records" | "text"` 引数は実装選択として決める。
-
-- [ ] a: 選んだ item の数を述べる (ファイルの行数とは一致しない。`SessionDumpFile` 型は `items` 形式専用と明記) (推し)
-- [ ] b: ファイルの行数を述べる (選択の結果が分からなくなる)
 
 ### CT-Q7 人が `inbox` を読むこと (minor B、後回し)
 
-`inbox-invisible-to-user-and-lacks-tombstone`。現行の session 向け snapshot は返すと同時に配送済みの印を付ける。
+`inbox-invisible-to-user-and-lacks-tombstone`。inbox = 相手セッションに今すぐ渡せなかったメッセージの箱 (相手が起動中 / paused / 消えている / 届かない時に積み、戻った時に配る、7 日で失効。v1 の `docs/inbox` とは別物)。今は session だけが読め、読むと配送済みの印が付く (人が見ただけで「届いた」ことになる)。
 
 - [ ] a: 人の読みは閲覧 (印を付けない)。同じ topic で role により副作用が違うことを契約に述べる。中身を見せる (推し)
 - [ ] b: 人には件数だけ (`peers` の行に載せる)
 - [ ] c: 人は読まない (`roles` から user を外す、現状維持)
+
+### CS-Q1〜Q6 webui カラーシステム (`ccmsg-webui/docs/design/color-system.md` §12)
+
+3 層 (入力 → 段 → 意味名)、oklch、CSS 相対色構文、部品は意味名だけを参照、の設計案。裁定後に段 1 (語彙表 + hex を意味名経由、見た目不変) → 段 2 (段と入力、コントラスト基準) → 段 3 (テーマエディタ)。
+
+CS-Q1 面と地のどちらを明るくするか (今は温かい地の上に白い紙):
+
+- [ ] a: いまのまま (紙が浮く表現を残す。段表の 1 箇所が非単調) (推し)
+- [ ] b: 地を白、面を薄い灰 (段表が単調、light の見た目が変わる)
+- [ ] c: 地と面を同じ色にし罫だけで分ける
+
+CS-Q2 段の数:
+
+- [ ] a: 9 段 (今の役割の数) (推し)
+- [ ] b: 12 段 (Radix と同じ刻み、使わない段ができる)
+
+CS-Q3 状態色の名前:
+
+- [ ] a: `live` / `waiting` / `danger` を残す (推し)
+- [ ] b: `success` / `warn` / `error` に寄せる
+- [ ] c: a に `info` を足す
+
+CS-Q4 識別のための色 (検索の帯、費用の系列) を意味色から独立させるか:
+
+- [ ] a: 独立した色相の並び (推し)
+- [ ] b: 意味色を借り続ける
+
+CS-Q5 話者ごとの色:
+
+- [ ] a: 今は持たない (左罫の色で続ける) (推し)
+- [ ] b: 自分と相手の 2 色だけ
+- [ ] c: 参加者ごとに色相を割り当てる
+
+CS-Q6 半透明で作っている 7 箇所:
+
+- [ ] a: 不透明な段から作り直す (検査できる) (推し)
+- [ ] b: 半透明のまま名前を付ける
 
 ## 確認待ち
 
