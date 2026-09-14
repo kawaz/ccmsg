@@ -59,6 +59,16 @@ daemon v2 の設計・実装が進む中で、blocking IO を接続後のホッ�
 
 統括の裁定: `instance/log.ts` の `appendFileSync` は原則通り async 化する (書き込みキューで行の順序を保つ。クラッシュ直前の取りこぼしはログとして許容)。`mesh/keys.ts` の `generateKeyPairSync` は CPU のみ・固定コストなので同期のまま。`auth/records.ts` の dead export `ensureDir` は削除。ユーザ指定正規表現の阻害は async 化で解けないので issue `session-search-regex-unbounded` に分離。
 
+## 外部の完了待ち (監査の追加分、2026-09-14)
+
+findings の「外部の完了待ちで他を止めている箇所」の節。直すのは 3 件で、いずれもハンドラ内で完結し連鎖しない:
+
+- `daemon/supervise.ts` の `#over()` が `--all` の各 config home を逐次 await している(並行にする)
+- `messaging/direct.ts` の `sessions/` 走査が 1 件ずつ `await readJson` で deadline も無い(並行 + deadline)
+- `messaging/delivery.ts` の `retry()` が sid ごとに独立な `#offer` を逐次 await している(並行にする)
+
+統括の裁定: `translate/translate.ts` の instance 全体で 1 本の翻訳待ち行列(helper が 1 行 1 答なので直列自体は必然、代償が無関係なセッションに及び最悪 `MAX_MS` × 行列長)は本 issue の範囲外。設計の含意として DESIGN の翻訳の節に 1 文書き、行列をセッション単位にするか helper を複数持つかは別 issue `translate-queue-instance-wide` にする。
+
 ## 関連
 
 - v1 `~/.local/share/repos/github.com/kawaz/claude-ccmsg/main/docs/decisions/DR-0029-async-io-principle.md`、同 `docs/findings/2026-08-12-blocking-io-audit-full.md` (監査の型)

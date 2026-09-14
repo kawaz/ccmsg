@@ -602,6 +602,8 @@ socket path / HTTP の bind / state dir / data dir / ログ。**すべて config
 
 `upstream.terminal_gateway` は rename の経路であると同時に、人が terminal を開く先として `hello` で名乗る値でもある (§3.1)。
 
+translate helper は 1 行渡して 1 行返る対話 process なので、1 バッチが終わるまで次のバッチを渡せない — **instance 全体で 1 本の翻訳待ち行列**になり、無関係なセッションの翻訳が先行するセッションの `MAX_MS` 分だけ遅れうる (issue `translate-queue-instance-wide`)。
+
 **config は起動時に 1 回だけ読む** (無再起動で反映しない理由は DR-0004)。instance ごとの config は小さく、再起動が安い (状態のほとんどが揮発で、永続化するのは §2.5 の 6 種だけ) ので、「編集が次のリクエストから効く」ための mtime 監視・再読込・再配線を持つ理由がない。config を変えたら instance を再起動する、が唯一の反映手順になる。
 
 **設定は、判断であるところは TypeScript、一覧であるところは JSON。そして人が編集する物と instance が読む物は別**。人が編集するのは `${XDG_CONFIG_HOME:-~/.config}/ccmsg/`:
