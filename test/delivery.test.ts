@@ -171,11 +171,17 @@ interface Rig {
   send: (from: TestConn, to: Sid, text?: string) => Promise<MessageSendResult>;
 }
 
-function rig(over: { direct?: DirectRoute; dir?: string } = {}): Rig {
+function rig(
+  over: {
+    direct?: DirectRoute;
+    dir?: string;
+    log?: (message: string, fields: Record<string, unknown>) => void;
+  } = {},
+): Rig {
   const dir = over.dir ?? stateDir();
   const sessions = new FakeSessions();
   const topics = new Topics(SELF, new Set(), undefined, unthrottled());
-  const inbox = new Inbox(inboxPath(dir));
+  const inbox = new Inbox(inboxPath(dir), over.log);
   inbox.load();
   const delivery = new Delivery({
     self: SELF,
@@ -390,6 +396,40 @@ describe("delivery", () => {
     for (const frame of inboxFrames(watcher)) {
       expect(validationErrors(TOPIC_SCHEMAS.inbox, frame as object)).toEqual([]);
     }
+  });
+
+  test("a held record the contract cannot state is dropped rather than replayed into the view", async () => {
+    // The file outlives the contract that wrote it: this is a line from a
+    // spelling of `mid` the contract has since outgrown. Replayed as if it
+    // were current it would be one row of the person's view, and the whole
+    // frame is what the reader refuses for it.
+    const dir = stateDir();
+    const held = (mid: string, text: string) =>
+      JSON.stringify({
+        v: "add",
+        sid: OTHER_SID,
+        message: { mid, from: SID, from_label: SID, text, sent_at: Date.now() },
+      });
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      inboxPath(dir),
+      `${held("ws://localhost/x/2", "from an older contract")}\n${held(`${SELF}/7`, "current")}\n`,
+    );
+
+    const logged: { message: string; fields: Record<string, unknown> }[] = [];
+    const { topics, inbox } = rig({
+      dir,
+      log: (message, fields) => logged.push({ message, fields }),
+    });
+
+    expect(inbox.undelivered(OTHER_SID).map((message) => message.text)).toEqual(["current"]);
+    const view = watching(topics, true);
+    const frames = inboxFrames(view);
+    expect(frames).toHaveLength(1);
+    expect(validationErrors(TOPIC_SCHEMAS.inbox, frames[0] as object)).toEqual([]);
+    expect(logged).toHaveLength(1);
+    expect(logged[0]?.message).toBe("dropped an inbox record the contract cannot state");
+    expect(logged[0]?.fields["why"]).not.toEqual([]);
   });
 
   test("a message that goes straight out on the topic is stated as arriving and leaving", async () => {

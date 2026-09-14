@@ -4,10 +4,12 @@ import { dirname, join } from "node:path";
 import {
   INBOX_MAX_PER_SID,
   INBOX_RETENTION_MS,
-  type InboxMessage,
+  InboxMessage,
   type InboxRemovedReason,
-  type Sid,
+  isValid,
+  Sid,
   type Timestamp,
+  validationErrors,
 } from "@ccmsg/protocol";
 
 export const INBOX_FILE = "inbox.jsonl";
@@ -50,7 +52,12 @@ export class Inbox {
    * subscribed for them to be news to. */
   #onRemoved?: (mid: string, reason: InboxRemovedReason) => void;
 
-  constructor(private readonly file: string) {}
+  constructor(
+    private readonly file: string,
+    /** Where a line the replay could not keep is named. Absent in the tests
+     * that are about the holding rather than about what is said of it. */
+    private readonly log: (message: string, fields: Record<string, unknown>) => void = () => {},
+  ) {}
 
   /** Hear about messages leaving. */
   onRemoved(told: (mid: string, reason: InboxRemovedReason) => void): void {
@@ -79,6 +86,7 @@ export class Inbox {
         // The last line of a file the daemon was killed while writing.
         continue;
       }
+      if (record.v === "add" && !this.#stateable(record.sid, record.message)) continue;
       this.#replay(record);
     }
     this.#expire(now);
@@ -166,6 +174,30 @@ export class Inbox {
       }
     }
     return highest;
+  }
+
+  /** Whether a line read back is a message the contract can state.
+   *
+   * The file outlives the contract that wrote it, and what is held is answered
+   * to a person as rows of the `inbox` topic — so a single line the contract
+   * has since outgrown, replayed as if it were current, is a frame the reader
+   * refuses and a whole view lost for it. An instance states only what the
+   * contract can say, about its own file as much as about anything else.
+   *
+   * Dropped rather than mended: the message is the sender's words and the
+   * contract is what says how they are spelled, so there is nothing here that
+   * could write a spelling the contract would accept without inventing it. It
+   * leaves through the compaction that follows the replay, which writes back
+   * only what is held; nothing is appended and no removal is stated, since a
+   * replay has nobody subscribed to hear one and no `mid` the contract would
+   * take to name it by. */
+  #stateable(sid: unknown, message: unknown): boolean {
+    const why = isValid(Sid, sid)
+      ? validationErrors(InboxMessage, message)
+      : [`sid: ${JSON.stringify(sid)} is no session id`];
+    if (why.length === 0) return true;
+    this.log("dropped an inbox record the contract cannot state", { sid, why });
+    return false;
   }
 
   #replay(record: Record_): void {

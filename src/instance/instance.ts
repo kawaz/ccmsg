@@ -564,7 +564,9 @@ export class Instance {
       },
     });
 
-    const inbox = new Inbox(inboxPath(paths.stateDir));
+    const inbox = new Inbox(inboxPath(paths.stateDir), (msg, fields) => {
+      this.log.write(msg, fields);
+    });
     inbox.load();
     this.#persisted.push(inbox);
     // Route (a) is the harness's own way in (DESIGN §6.5): Claude Code's messaging
