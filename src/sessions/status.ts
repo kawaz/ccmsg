@@ -5,7 +5,7 @@ import type {
   SessionStatusSnapshot,
   Sid,
 } from "@ccmsg/protocol";
-import { canonical, within } from "../files/containment.ts";
+import { canonicalSync, within } from "../files/containment.ts";
 import type { TopicValue, UpstreamResource } from "../topics/index.ts";
 import { topicParam } from "../topics/index.ts";
 import type { TranscriptFacts } from "../transcript/index.ts";
@@ -43,7 +43,7 @@ export function sessionStatusOf(
   sid: Sid;
 } {
   const stopped = stoppedOn(facts);
-  const root = where.root === undefined ? undefined : canonical(where.root);
+  const root = where.root === undefined ? undefined : canonicalSync(where.root);
   return {
     sid,
     todos: [...facts.todos],
@@ -54,7 +54,7 @@ export function sessionStatusOf(
     external_files:
       root === undefined
         ? []
-        : facts.named_files.filter((file) => !within(canonical(file.path), root)),
+        : facts.named_files.filter((file) => !within(canonicalSync(file.path), root)),
     workspace_folders: workspaceFolders(where.cwd),
     ...(stopped === undefined ? {} : { api_error: stopped }),
   };

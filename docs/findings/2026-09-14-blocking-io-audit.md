@@ -93,6 +93,7 @@
 | sessions/workspace.ts:38 | readdirSync | topic `session.status:<sid>` / `session.errors` の snapshot / refresh → `sessionStatusOf()` → `workspaceFolders()` → `workspaceFiles()` | cwd 直下のエントリ数 | async 化 | status の値を作るたびに走る |
 | sessions/workspace.ts:53 | readFileSync | 同上 → `specs(file)` (`.code-workspace` の読み) | ファイル 1 個 (小) | async 化 | 同上 |
 | sessions/workspace.ts:118,119 | realpathSync / statSync | 同上 → `directory(spec.path)` を folders の各要素に対して | folders の要素数 | async 化 | 同上 |
+| sessions/status.ts:46,57 | realpathSync (`canonicalSync` 経由) | topic `session.status:<sid>` の snapshot / refresh → `sessionStatusOf()` の root と `named_files` の正規化 | named_files の数 | async 化 (群 3、CT-Q8 待ち) | 値を同期に作る間は同期版で答える。file 系 op の `canonical` は async 化済み |
 | sessions/harness.ts:183 | readFileSync + JSON.parse | `DirectoryWatch` の fs.watch callback または 5 秒ポーリング → `HarnessSessions.scan()` (topic `peers` / `agents` の購読が生きている間) | `sessions/` の状態ファイル数 × 小さい JSON | async 化 | watcher の callback は購読中ずっと回る |
 | sessions/harness.ts:256 | readdirSync | 同上 → `DirectoryWatch.names()` | ディレクトリのエントリ数 | async 化 | 同上 |
 | sessions/registry.ts:894,903,925 | realpathSync / statSync | op `hello.session` → `register()` → `metaOf()` → `ownTranscript()` / `resolveAsFarAsItGoes()` | 小さい (パス解決) | async 化 | セッションの挨拶ごとに走る。1 回は速いが原則側に倒す |

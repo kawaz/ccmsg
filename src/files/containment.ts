@@ -1,4 +1,5 @@
 import { realpathSync } from "node:fs";
+import { realpath } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import type { FileKind, Role, Sid } from "@ccmsg/protocol";
 import { OpError } from "../dispatch/index.ts";
@@ -69,11 +70,11 @@ export class Containment {
   constructor(private readonly source: RootsSource) {}
 
   /** A path named by kind, as an op's arguments give it. */
-  locate(args: PathArgs, viewer: Viewer = {}): Located {
+  async locate(args: PathArgs, viewer: Viewer = {}): Promise<Located> {
     const roots = this.rootsFor(args.sid, viewer);
-    const named = this.absolute(args, roots);
-    const real = canonical(named);
-    return { ...this.admit(args.kind, real, roots), named };
+    const named = await this.absolute(args, roots);
+    const real = await canonical(named);
+    return { ...(await this.admit(args.kind, real, roots)), named };
   }
 
   /** An absolute path with no kind: which surface admits it, if any.
@@ -81,7 +82,7 @@ export class Containment {
    * The surfaces are tried in the order the contract states, and the answer is
    * one value for every refusal — outside the allowlists, or simply not there —
    * so a caller cannot learn from it whether a path it may not read exists. */
-  identify(sid: Sid, path: string, viewer: Viewer = {}): Located | undefined {
+  async identify(sid: Sid, path: string, viewer: Viewer = {}): Promise<Located | undefined> {
     let roots: SessionRoots;
     try {
       roots = this.rootsFor(sid, viewer);
@@ -90,10 +91,10 @@ export class Containment {
     }
     if (!isAbsolute(path)) return undefined;
     const named = resolve(path);
-    const real = canonical(named);
+    const real = await canonical(named);
     for (const kind of KINDS) {
       try {
-        return { ...this.admit(kind, real, roots), named };
+        return { ...(await this.admit(kind, real, roots)), named };
       } catch {
         // The next surface may admit it; running out of surfaces is the miss.
       }
@@ -106,15 +107,15 @@ export class Containment {
    * fixed to (DR-0019). A name that leaves the inbox is refused as unwritable
    * rather than as forbidden — the path is reachable, and only writing there
    * is not. */
-  inbox(sid: Sid, path: string, viewer: Viewer = {}): Located {
+  async inbox(sid: Sid, path: string, viewer: Viewer = {}): Promise<Located> {
     const roots = this.rootsFor(sid, viewer);
     const cwd = roots.cwd;
     if (cwd === undefined || !isAbsolute(cwd)) {
       throw new OpError("path_forbidden", `${sid} states no working directory to write into`);
     }
-    const base = canonical(cwd);
+    const base = await canonical(cwd);
     const named = resolve(base, path);
-    const real = canonical(named);
+    const real = await canonical(named);
     const inbox = join(base, INBOX);
     if (!within(real, inbox)) {
       throw new OpError("path_not_writable", `only ${INBOX}/ takes a written file`);
@@ -123,7 +124,7 @@ export class Containment {
   }
 
   /** The directory a listing or a walk starts from. */
-  root(args: DirArgs, viewer: Viewer = {}): Located {
+  root(args: DirArgs, viewer: Viewer = {}): Promise<Located> {
     return this.locate({ sid: args.sid, kind: args.kind, path: args.path ?? "" }, viewer);
   }
 
@@ -142,13 +143,13 @@ export class Containment {
   }
 
   /** Turn an op's `path` into an absolute one, in the shape its kind states. */
-  private absolute(args: PathArgs, roots: SessionRoots): string {
+  private async absolute(args: PathArgs, roots: SessionRoots): Promise<string> {
     if (args.kind === "contained") {
       const root = roots.root;
       if (root === undefined || !isAbsolute(root)) {
         throw new OpError("path_forbidden", "this session states no root to be contained by");
       }
-      return resolve(canonical(root), `.${sep}${args.path}`);
+      return resolve(await canonical(root), `.${sep}${args.path}`);
     }
     if (!isAbsolute(args.path)) {
       throw new OpError("path_forbidden", `a ${args.kind} path is absolute`);
@@ -159,17 +160,21 @@ export class Containment {
   /** Whether a resolved path is inside the surface it claims. The check runs on
    * what the filesystem resolved, so a symlink pointing out of a root is
    * refused however it was spelled (DR-0008 §3). */
-  private admit(kind: FileKind, real: string, roots: SessionRoots): Omit<Located, "named"> {
+  private async admit(
+    kind: FileKind,
+    real: string,
+    roots: SessionRoots,
+  ): Promise<Omit<Located, "named">> {
     if (kind === "contained") {
-      const root = roots.root === undefined ? undefined : canonical(roots.root);
+      const root = roots.root === undefined ? undefined : await canonical(roots.root);
       if (root === undefined || !within(real, root)) {
         throw new OpError("path_forbidden", "the path is outside the session's root");
       }
       return { kind, real, path: relativeTo(root, real) };
     }
     if (kind === "workspace") {
-      const folder = roots.workspace_folders.find((each) => within(real, canonical(each)));
-      if (folder === undefined) {
+      const folders = await Promise.all(roots.workspace_folders.map(canonical));
+      if (!folders.some((folder) => within(real, folder))) {
         throw new OpError("path_forbidden", "the path is in no workspace folder of this session");
       }
       return { kind, real, path: real };
@@ -179,7 +184,9 @@ export class Containment {
     // path spelled through a symlink and the same file spelled directly are
     // one entry, and a path since replaced by a symlink resolves elsewhere and
     // is no longer in the list.
-    const named = roots.external_files.some((each) => canonical(each) === real);
+    const named = (await Promise.all(roots.external_files.map(canonical))).some(
+      (each) => each === real,
+    );
     if (!named) {
       throw new OpError("path_forbidden", "the path is not one this session's transcript named");
     }
@@ -234,7 +241,23 @@ const KINDS = ["contained", "workspace", "external"] as const;
  * last segment back, so a file about to be created is decided by where it would
  * land rather than being refused for not being there. A parent that does not
  * resolve either leaves the path as written, which no surface admits. */
-export function canonical(path: string): string {
+export async function canonical(path: string): Promise<string> {
+  const absolute = resolve(path);
+  try {
+    return await realpath(absolute);
+  } catch {
+    const parent = dirname(absolute);
+    if (parent === absolute) return absolute;
+    try {
+      return join(await realpath(parent), basename(absolute));
+    } catch {
+      return absolute;
+    }
+  }
+}
+
+/** The synchronous form required while `session.status` states its value synchronously (DESIGN §6); an asynchronous topic value uses `canonical` as the single path. */
+export function canonicalSync(path: string): string {
   const absolute = resolve(path);
   try {
     return realpathSync(absolute);

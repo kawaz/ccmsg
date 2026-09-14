@@ -67,17 +67,20 @@ export class Launcher {
       templates: this.config.templates.map((template) => ({
         name: template.name,
         command: template.command,
-        params: template.params.map((param) => ({ name: param.name, default: param.default })),
+        params: template.params.map((param) => ({
+          name: param.name,
+          default: param.default,
+        })),
       })),
     };
   }
 
-  tree(args: DirTreeArgs): DirTreeResult {
+  tree(args: DirTreeArgs): Promise<DirTreeResult> {
     return dirTree(this.config, args);
   }
 
-  run(args: LauncherRunArgs): Promise<LauncherRunResult> {
-    const cwd = insideRoots(this.config, args.cwd);
+  async run(args: LauncherRunArgs): Promise<LauncherRunResult> {
+    const cwd = await insideRoots(this.config, args.cwd);
     if (cwd === undefined) {
       // The op states no refusal for a path, so a directory outside the roots
       // is answered as what it is from here: an argument this launcher cannot
@@ -129,7 +132,7 @@ export function launcherHandlers(launcher: Launcher) {
     "launcher.config.read": (): LauncherConfigReadResult => launcher.configRead(),
     "launcher.run": (input: HandlerInput): Promise<LauncherRunResult> =>
       launcher.run(input.args as unknown as LauncherRunArgs),
-    "dir.tree": (input: HandlerInput): DirTreeResult =>
+    "dir.tree": (input: HandlerInput): Promise<DirTreeResult> =>
       launcher.tree(input.args as unknown as DirTreeArgs),
   };
 }

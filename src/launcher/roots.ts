@@ -1,4 +1,4 @@
-import { statSync } from "node:fs";
+import { stat } from "node:fs/promises";
 import { isAbsolute } from "node:path";
 import type { LauncherConfig } from "../instance/config.ts";
 import { canonical, within } from "../files/index.ts";
@@ -13,19 +13,22 @@ import { canonical, within } from "../files/index.ts";
  *
  * A root that no longer resolves grants nothing and stops nothing: another
  * configured root may still hold the candidate. */
-export function insideRoots(config: LauncherConfig, path: string): string | undefined {
+export async function insideRoots(
+  config: LauncherConfig,
+  path: string,
+): Promise<string | undefined> {
   if (!isAbsolute(path)) return undefined;
-  const real = canonical(path);
-  if (!isDirectory(real)) return undefined;
+  const real = await canonical(path);
+  if (!(await isDirectory(real))) return undefined;
   for (const root of config.root_dirs) {
-    if (within(real, canonical(root))) return real;
+    if (within(real, await canonical(root))) return real;
   }
   return undefined;
 }
 
-export function isDirectory(path: string): boolean {
+export async function isDirectory(path: string): Promise<boolean> {
   try {
-    return statSync(path).isDirectory();
+    return (await stat(path)).isDirectory();
   } catch {
     return false;
   }

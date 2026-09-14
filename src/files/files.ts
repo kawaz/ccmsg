@@ -1,16 +1,14 @@
 import {
-  closeSync,
-  lstatSync,
-  mkdirSync,
-  openSync,
-  readdirSync,
-  readFileSync,
-  readSync,
-  renameSync,
-  statSync,
-  unlinkSync,
-  writeFileSync,
-} from "node:fs";
+  lstat,
+  mkdir,
+  open,
+  readdir,
+  readFile,
+  rename,
+  stat,
+  unlink,
+  writeFile,
+} from "node:fs/promises";
 import type { Dirent } from "node:fs";
 import { basename, dirname, join, relative } from "node:path";
 import type {
@@ -62,27 +60,34 @@ const FIND_VISITS = 20_000;
  * caller — the role dispatch states for a `scope: "role"` op, and the session
  * the connection speaks for — is handed over unread. */
 export function fileHandlers(paths: Containment) {
-  const viewer = (input: HandlerInput): Viewer => ({ role: input.role, sid: input.identity?.sid });
+  const viewer = (input: HandlerInput): Viewer => ({
+    role: input.role,
+    sid: input.identity?.sid,
+  });
 
   return {
-    "dir.list": (input: HandlerInput): DirListResult => {
+    "dir.list": async (input: HandlerInput): Promise<DirListResult> => {
       const args = input.args as unknown as DirListArgs;
-      const at = paths.root(args, viewer(input));
-      const stat = existing(at);
+      const at = await paths.root(args, viewer(input));
+      const stat = await existing(at);
       if (!stat.isDirectory()) throw new OpError("not_found", `${args.path ?? ""} is not a folder`);
-      return { sid: args.sid, path: at.path, entries: entriesOf(at.real) };
+      return {
+        sid: args.sid,
+        path: at.path,
+        entries: await entriesOf(at.real),
+      };
     },
 
-    "file.read": (input: HandlerInput): FileReadResult => {
+    "file.read": async (input: HandlerInput): Promise<FileReadResult> => {
       const args = input.args as unknown as FileReadArgs;
-      const at = paths.locate(args, viewer(input));
-      const stat = existing(at);
+      const at = await paths.locate(args, viewer(input));
+      const stat = await existing(at);
       if (!stat.isFile()) throw new OpError("not_found", `${args.path} is not a file`);
       // As much as the answer may carry and no more: a file larger than the
       // limit is answered from its head, so reading it whole would cost the
       // instance the whole of a file whose size is what the limit exists to
       // refuse.
-      const head = bytesOf(at.real, READ_LIMIT);
+      const head = await bytesOf(at.real, READ_LIMIT);
       const binary = isBinary(head);
       return {
         sid: args.sid,
@@ -95,115 +100,126 @@ export function fileHandlers(paths: Containment) {
       };
     },
 
-    "file.write": (input: HandlerInput): FileWriteResult => {
+    "file.write": async (input: HandlerInput): Promise<FileWriteResult> => {
       const args = input.args as unknown as FileWriteArgs;
-      const at = paths.inbox(args.sid, args.path, viewer(input));
+      const at = await paths.inbox(args.sid, args.path, viewer(input));
       // The inbox takes new notes, so an existing name is refused rather than
       // replaced; the folder itself is made, since a repository that has never
       // had one is exactly where the first note goes (DR-0019 §2.1).
-      mkdirSync(dirname(at.real), { recursive: true });
-      create(at.real, args.content);
+      await mkdir(dirname(at.real), { recursive: true });
+      await create(at.real, args.content);
       return { sid: args.sid, path: at.path };
     },
 
-    "file.create": (input: HandlerInput): FileCreateResult => {
+    "file.create": async (input: HandlerInput): Promise<FileCreateResult> => {
       const args = input.args as unknown as FileCreateArgs;
-      const at = paths.locate(args, viewer(input));
+      const at = await paths.locate(args, viewer(input));
       const parent = dirname(at.real);
-      if (!isDirectory(parent)) {
+      if (!(await isDirectory(parent))) {
         throw new OpError("not_found", `${args.path} has no folder to be created in`);
       }
-      create(at.real, args.content);
+      await create(at.real, args.content);
       return { sid: args.sid, path: at.path };
     },
 
-    "file.edit": (input: HandlerInput): FileEditResult => {
+    "file.edit": async (input: HandlerInput): Promise<FileEditResult> => {
       const args = input.args as unknown as FileEditArgs;
-      const at = paths.locate(args, viewer(input));
-      const stat = existing(at);
-      if (!stat.isFile()) throw new OpError("not_found", `${args.path} is not a file`);
-      if (isBinary(bytesOf(at.real, SNIFF))) {
+      const at = await paths.locate(args, viewer(input));
+      const before = await existing(at);
+      if (!before.isFile()) throw new OpError("not_found", `${args.path} is not a file`);
+      if (isBinary(await bytesOf(at.real, SNIFF))) {
         throw new OpError("not_a_text_file", `${args.path} holds binary content`);
       }
-      if (mtimeOf(stat) !== args.expected_mtime_at || stat.size !== args.expected_size) {
+      if (mtimeOf(before) !== args.expected_mtime_at || before.size !== args.expected_size) {
         throw new OpError("file_conflict", `${args.path} changed since it was read`);
       }
-      replace(at.real, args.content);
-      const after = statSync(at.real);
-      return { sid: args.sid, path: at.path, size: after.size, mtime_at: mtimeOf(after) };
+      await replace(at.real, args.content);
+      const after = await stat(at.real);
+      return {
+        sid: args.sid,
+        path: at.path,
+        size: after.size,
+        mtime_at: mtimeOf(after),
+      };
     },
 
-    "file.delete": (input: HandlerInput): FileDeleteResult => {
+    "file.delete": async (input: HandlerInput): Promise<FileDeleteResult> => {
       const args = input.args as unknown as FileDeleteArgs;
-      const at = paths.locate(args, viewer(input));
+      const at = await paths.locate(args, viewer(input));
       // What is unlinked is what is named, so this reads the name itself rather
       // than what it resolves to: a symlink is refused as the wrong kind of
       // thing instead of taking its target's answer. The resolved path is the
       // one containment admitted and would answer for the target, which is the
       // file a link inside the root could otherwise be pointed at.
-      const stat = lstatOf(at.named);
+      const stat = await lstatOf(at.named);
       if (stat === undefined) throw new OpError("not_found", `${args.path} is not there`);
       if (!stat.isFile()) {
         throw new OpError("path_forbidden", `${args.path} is not a plain file`);
       }
-      unlinkSync(at.named);
+      await unlink(at.named);
       return { sid: args.sid, path: at.path };
     },
 
-    "file.find": (input: HandlerInput): FileFindResult => {
+    "file.find": async (input: HandlerInput): Promise<FileFindResult> => {
       const args = input.args as unknown as FileFindArgs;
-      const at = paths.root(
-        { sid: args.sid, kind: args.kind, ...(args.root === undefined ? {} : { path: args.root }) },
+      const at = await paths.root(
+        {
+          sid: args.sid,
+          kind: args.kind,
+          ...(args.root === undefined ? {} : { path: args.root }),
+        },
         viewer(input),
       );
       const terms = parseQuery(args.query);
       // A query with nothing to include matches nothing rather than the whole
       // tree, so a cleared search box costs no walk at all.
       if (terms.include.length === 0) return { sid: args.sid, hits: [], truncated: false };
-      const walk = find(at, terms, args.respect_gitignore ?? true);
+      const walk = await find(at, terms, args.respect_gitignore ?? true);
       return { sid: args.sid, hits: walk.hits, truncated: walk.truncated };
     },
 
-    "file.stat": (input: HandlerInput): FileStatResult => {
+    "file.stat": async (input: HandlerInput): Promise<FileStatResult> => {
       const args = input.args as unknown as FileStatArgs;
-      const results = args.paths.map((path): FileStatEntry | null => {
-        const at = paths.identify(args.sid, path, viewer(input));
-        if (at === undefined || !isFile(at.real)) return null;
-        return { kind: at.kind, path: at.path };
-      });
+      const results = await Promise.all(
+        args.paths.map(async (path): Promise<FileStatEntry | null> => {
+          const at = await paths.identify(args.sid, path, viewer(input));
+          if (at === undefined || !(await isFile(at.real))) return null;
+          return { kind: at.kind, path: at.path };
+        }),
+      );
       return { results };
     },
   };
 }
 
 /** The file a located path names, or the contract's word for "not there". */
-function existing(at: Located) {
+async function existing(at: Located) {
   try {
-    return statSync(at.real);
+    return await stat(at.real);
   } catch {
     throw new OpError("not_found", `${at.path} is not there`);
   }
 }
 
-function lstatOf(path: string) {
+async function lstatOf(path: string) {
   try {
-    return lstatSync(path);
+    return await lstat(path);
   } catch {
     return undefined;
   }
 }
 
-function isFile(path: string): boolean {
+async function isFile(path: string): Promise<boolean> {
   try {
-    return statSync(path).isFile();
+    return (await stat(path)).isFile();
   } catch {
     return false;
   }
 }
 
-function isDirectory(path: string): boolean {
+async function isDirectory(path: string): Promise<boolean> {
   try {
-    return statSync(path).isDirectory();
+    return (await stat(path)).isDirectory();
   } catch {
     return false;
   }
@@ -216,14 +232,14 @@ function mtimeOf(stat: { mtimeMs: number }): Timestamp {
 }
 
 /** A file's leading bytes, at most `limit` of them. */
-function bytesOf(path: string, limit: number): Buffer {
-  const fd = openSync(path, "r");
+async function bytesOf(path: string, limit: number): Promise<Buffer> {
+  const handle = await open(path, "r");
   try {
     const buffer = Buffer.alloc(limit);
-    const read = readSync(fd, buffer, 0, limit, 0);
-    return buffer.subarray(0, read);
+    const { bytesRead } = await handle.read(buffer, 0, limit, 0);
+    return buffer.subarray(0, bytesRead);
   } finally {
-    closeSync(fd);
+    await handle.close();
   }
 }
 
@@ -233,9 +249,9 @@ function isBinary(bytes: Buffer): boolean {
 
 /** Write a file that must not be there yet. The exclusive open is what decides
  * it: a check followed by a write would answer about the moment before. */
-function create(path: string, content: string): void {
+async function create(path: string, content: string): Promise<void> {
   try {
-    writeFileSync(path, content, { flag: "wx" });
+    await writeFile(path, content, { flag: "wx" });
   } catch (cause) {
     if ((cause as NodeJS.ErrnoException).code === "EEXIST") {
       throw new OpError("file_exists", `${basename(path)} is already there`);
@@ -247,39 +263,42 @@ function create(path: string, content: string): void {
 /** Replace a file's content whole. The write lands beside it and is renamed
  * over it, so a reader sees either the old file or the new one and never a
  * half-written one. */
-function replace(path: string, content: string): void {
+async function replace(path: string, content: string): Promise<void> {
   const temporary = `${path}.ccmsg-${process.pid}-${Date.now()}`;
-  writeFileSync(temporary, content);
+  await writeFile(temporary, content);
   try {
-    renameSync(temporary, path);
+    await rename(temporary, path);
   } catch (cause) {
-    unlinkSync(temporary);
+    await unlink(temporary);
     throw cause;
   }
 }
 
-function entriesOf(dir: string): DirEntry[] {
-  return readdirSync(dir, { withFileTypes: true })
-    .map((entry): DirEntry => {
-      const type = entry.isSymbolicLink()
-        ? "symlink"
-        : entry.isDirectory()
-          ? "dir"
-          : entry.isFile()
-            ? "file"
-            : "other";
-      // A symlink is reported as itself, so what is stated about it is the link
-      // and never what it points at — including one pointing out of the root,
-      // which is listed here and refuses to resolve everywhere else.
-      const stat = type === "symlink" ? undefined : lstatOf(join(dir, entry.name));
-      return {
-        name: entry.name,
-        type,
-        ...(stat?.isFile() === true ? { size: stat.size } : {}),
-        ...(stat === undefined ? {} : { mtime_at: mtimeOf(stat) }),
-      };
-    })
-    .sort((a, b) => a.name.localeCompare(b.name));
+async function entriesOf(dir: string): Promise<DirEntry[]> {
+  const entries = await readdir(dir, { withFileTypes: true });
+  return (
+    await Promise.all(
+      entries.map(async (entry): Promise<DirEntry> => {
+        const type = entry.isSymbolicLink()
+          ? "symlink"
+          : entry.isDirectory()
+            ? "dir"
+            : entry.isFile()
+              ? "file"
+              : "other";
+        // A symlink is reported as itself, so what is stated about it is the link
+        // and never what it points at — including one pointing out of the root,
+        // which is listed here and refuses to resolve everywhere else.
+        const info = type === "symlink" ? undefined : await lstatOf(join(dir, entry.name));
+        return {
+          name: entry.name,
+          type,
+          ...(info?.isFile() === true ? { size: info.size } : {}),
+          ...(info === undefined ? {} : { mtime_at: mtimeOf(info) }),
+        };
+      }),
+    )
+  ).sort((a, b) => a.name.localeCompare(b.name));
 }
 
 interface Terms {
@@ -312,17 +331,17 @@ function matches(path: string, terms: Terms): boolean {
  * Both caps are reported the same way: the hits are the ones found, and
  * `truncated` says they are not the whole match set. Saying so is better than
  * implying these are all. */
-function find(at: Located, terms: Terms, respectGitignore: boolean) {
+async function find(at: Located, terms: Terms, respectGitignore: boolean) {
   const hits: FileFindHit[] = [];
   let visits = 0;
   let truncated = false;
 
-  const walk = (dir: string, ignored: Ignores): void => {
+  const walk = async (dir: string, ignored: Ignores): Promise<void> => {
     if (truncated) return;
-    const here = respectGitignore ? ignored.descend(dir) : ignored;
+    const here = respectGitignore ? await ignored.descend(dir) : ignored;
     let entries: Dirent[];
     try {
-      entries = readdirSync(dir, { withFileTypes: true });
+      entries = await readdir(dir, { withFileTypes: true });
     } catch {
       // A folder that cannot be read contributes nothing, and a walk that
       // stopped at one would answer less than it can.
@@ -349,13 +368,13 @@ function find(at: Located, terms: Terms, respectGitignore: boolean) {
       // Only real directories are descended: a symlink is answered as itself,
       // and following one would walk out of the root the walk is bounded by.
       if (isDir && !entry.isSymbolicLink()) {
-        walk(full, here);
+        await walk(full, here);
         if (truncated) return;
       }
     }
   };
 
-  walk(at.real, EMPTY_IGNORES);
+  await walk(at.real, EMPTY_IGNORES);
   return { hits, truncated };
 }
 
@@ -372,7 +391,7 @@ function find(at: Located, terms: Terms, respectGitignore: boolean) {
  * hiding one. */
 interface Ignores {
   hides(name: string, isDir: boolean): boolean;
-  descend(dir: string): Ignores;
+  descend(dir: string): Promise<Ignores>;
 }
 
 const ALWAYS_HIDDEN = new Set([".git"]);
@@ -385,17 +404,17 @@ function makeIgnores(patterns: readonly RegExp[]): Ignores {
       if (ALWAYS_HIDDEN.has(name)) return true;
       return patterns.some((pattern) => pattern.test(name));
     },
-    descend(dir) {
-      const own = readIgnoreFile(join(dir, ".gitignore"));
+    async descend(dir) {
+      const own = await readIgnoreFile(join(dir, ".gitignore"));
       return own.length === 0 ? makeIgnores(patterns) : makeIgnores([...patterns, ...own]);
     },
   };
 }
 
-function readIgnoreFile(file: string): RegExp[] {
+async function readIgnoreFile(file: string): Promise<RegExp[]> {
   let text: string;
   try {
-    text = readFileSync(file, "utf8");
+    text = await readFile(file, "utf8");
   } catch {
     return [];
   }
