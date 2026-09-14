@@ -26,6 +26,9 @@
 
 `starting` の価値 (kawaz 2026-09-14): 「claude を起動したはずなのに webui に流れてこない」時に、起動に失敗したのか TUI で止まっているのかが分かり、TUI で止まっているなら hyoui の terminal へのリンク導線を置ける。含意: `starting` の行には挨拶も transcript も無いので、`terminal_id` は launcher / hyoui の観測から埋める (挨拶由来ではない)。行の鍵 (sid 未定の間は hyoui の sid か pid か) は契約 minor で決める。
 
+鍵の問題 (kawaz 2026-09-14): `starting` の段階で sid は経路により未定 (`new` は `--session-id` で先に生成できる、`resume` / `fork` は引数で決まる、`--continue` は起動後に claude が決めるので先に決められない)。統括の案: `starting` の鍵は sid でなく**起動** (hyoui の `terminal_id`) にし、sid は transcript / 挨拶から取る方針に一本化。`new` の追跡は pid で結ぶ (launcher は子の pid を知る、挨拶の meta に pid を載せて一致させる)。契約は `SessionRow` を sid 必須のまま保ち、挨拶前の起動は別 topic (`launches`、鍵 `terminal_id`、pid / cwd / 経路 / 開始時刻 / `starting` | `failed`) にする。`loading` は sid 確定後なので `SessionState` に足す。`--session-id` の事前生成は URL が先に決まる利点があるので `new` で併用可 (前提にはしない)。
+
+- [ ] a': 上の 2 段構え (`launches` topic + `SessionState.loading`) で契約 minor を起こす (統括推し)
 - [ ] a: `starting` (transcript 未出現、ccmsg が起動に関与したか pid を観測できた時だけ知れる) と `loading` (transcript あり、畳み中) を足す (推し)
 - [ ] b: 別の語 (`preparing` は `UndeliveredReason` に既にあるので避ける)
 - [ ] c: 足さない (CT-Q8 a の待ちだけで表す)
