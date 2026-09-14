@@ -25,6 +25,7 @@ wire の契約は [kawaz/ccmsg-protocol](https://github.com/kawaz/ccmsg-protocol
 
 | date | category | status | slug | 概要 |
 |---|---|---|---|---|
+| 2026-09-14 | design | open | [async-io-principle-and-blocking-io-audit](./2026-09-14-async-io-principle-and-blocking-io-audit.md) | IO を伴うイベント / メッセージ処理を非同期にする原則を v2 daemon の DR に起こし、接続後に走る同期… |
 | 2026-09-14 | design | open | [fold-from-head-with-versioned-cache](./2026-09-14-fold-from-head-with-versioned-cache.md) | instance は `session.status` を transcript を畳んで作るが、`#seed()` は末尾 1 MiB… |
 | 2026-09-12 | task | open | [webauthn-tests-library-grade](./2026-09-12-webauthn-tests-library-grade.md) | WebAuthn の検証を自前 (`src/auth/webauthn.ts` 401 行 + `cbor.ts` 150 行、DR-0001 §2.11) で… |
 | 2026-09-11 | bug | open | [daemon-restart-all-leaves-supervisor-on-old-build](./2026-09-11-daemon-restart-all-leaves-supervisor-on-old-build.md) | `ccmsg daemon restart --all` は子 instance だけを新コードで起動し直し、launchd 配下の監督者 (`c… |

@@ -1,0 +1,50 @@
+---
+title: IO を伴うイベント / メッセージ処理を非同期にする原則を v2 daemon の DR に起こし、接続後に走る同期 IO を監査して直す
+status: open
+category: design
+created: 2026-09-14T11:56:56+09:00
+last_read:
+open_entered: 2026-09-14T11:56:56+09:00
+wip_entered:
+blocked_entered:
+pending_entered:
+discarded_entered:
+resolved_entered:
+discard_reason:
+pending_reason:
+close_reason:
+blocked_by:
+origin: 自リポ TODO
+---
+
+# IO を伴うイベント / メッセージ処理を非同期にする原則を v2 daemon の DR に起こし、接続後に走る同期 IO を監査して直す
+
+## 概要
+
+v1 (`claude-ccmsg`) の DR-0029「IO を伴うイベント / メッセージ処理は全て非同期化する」は v2 daemon に持ち越されておらず、daemon DESIGN §6 は「snapshot を空で返さないために seed は購読に答えるターンの内側で同期に読む」と、それと衝突する判断を別の目的から明文化している。kawaz (2026-09-14): 原則は「IO を伴う処理を同期でやらない」。IO を伴わない処理 (メモリ上の情報を返すだけの req/res、`hello.session` / `hello.user` の同期応答など) は同期で構わない。
+
+v1 が実測で問題にした症状 (218 MB transcript の cold scan 中に同一接続の `ping` が 1.15 秒待つ、v1 `docs/findings/2026-09-02-session-status-same-connection-latency.md`) は v2 でも同じ形で起こりうる。
+
+## 背景
+
+daemon v2 の設計・実装が進む中で、blocking IO を接続後のホットパスに置かない原則が明文化されないまま、DESIGN §6 の同期 seed のような個別判断が先行してしまっている。v1 で既に痛みとして観測済みの症状を v2 で再発させないため、原則を DR として固定し、既存コードの同期 IO 箇所を棚卸しする。
+
+## やること
+
+1. **DR を起こす** (`docs/decisions/`): 原則 = 「IO を伴うイベント / メッセージ / 購読の処理は async で行い、イベントループを塞がない。メモリだけで答える処理は同期でよい。まとめ処理 (batching / 窓集約) は kawaz の承認なしに入れない」。v1 DR-0029 の決定と追補 (相関 id による同一接続の並行実行) のうち v2 に既にある前提 (`request_id`) は前提として書き、経緯は書かない
+2. **DESIGN{,-ja}.md §6 の同期 seed の記述を改める**: 「snapshot を空で返さない」という目的は保ちつつ、同期に読むことでは達成しない。どう達成するかは契約側の CT-Q8 (開始応答で値を述べないまま開くことを契約が許すか) の裁定と issue `fold-from-head-with-versioned-cache` の設計に従う
+3. **接続後に走る同期 IO の監査**: CLI 以外の `*Sync(` 146 箇所 (2026-09-14 時点) を「起動時 / 停止時に 1 回だけ走る (同期でよい)」「接続を握った後、イベント / メッセージ / 購読の処理から走る (直す)」に分類して findings に表で残す。まず疑わしいのは `src/transcript/tail.ts` (seed の `readSync` / `#sliceSync`)、`src/transcript/read.ts`、`src/kv/store.ts` (`readFileSync`)、`src/upstream/gateway.ts`
+4. 「直す」に分類したものを直す。fold の seed は issue `fold-from-head-with-versioned-cache` の側で直すので、ここでは重複させず参照だけ
+
+## 受け入れ条件
+
+- [ ] DR が INDEX に載り、DESIGN §6 に同期 seed の記述が残っていない
+- [ ] `docs/findings/` に監査表 (ファイル:行、走る契機、分類、処置) がある
+- [ ] 「直す」に分類した箇所の同期 fs 呼び出しが無くなり、`just ci` が通る
+- [ ] 大きい transcript (数十 MB 以上) を持つセッションの購読開始中に同一接続の `instance.ping` が待たされないことを test で確認する
+
+## 関連
+
+- v1 `~/.local/share/repos/github.com/kawaz/claude-ccmsg/main/docs/decisions/DR-0029-async-io-principle.md`、同 `docs/findings/2026-08-12-blocking-io-audit-full.md` (監査の型)
+- issue `fold-from-head-with-versioned-cache`
+- 契約 CT-Q8 (`docs/QUESTIONS.md`)
