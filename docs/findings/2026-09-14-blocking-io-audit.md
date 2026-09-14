@@ -8,10 +8,14 @@
 |---|---|
 | (A) | CLI の単発コマンド内でのみ走る。プロセスは 1 コマンドで終わるので、イベントループを塞いでも待たされる相手がいない |
 | (B) | instance / supervisor プロセスの起動時・停止時に 1 回だけ走る。接続を握る前 (または全部手放した後) なので同上 |
-| (C) | 接続を握った後に、op ハンドラ・topic の snapshot / publish・fs watcher の callback・定期ポーリングから走る。走っている間はイベントループが止まり、全接続の処理が待たされる |
+| (C) | 接続を握った後に、op ハンドラ・topic の snapshot / publish・fs watcher の callback・定期ポーリングから走る。走っている間はイベントループが止まり、instance 全体が待たされる |
 | (D) | test 専用 |
 
-(C) の同期呼び出しはプロセスのイベントループを塞ぐので、待たされるのは同一接続に限らず全接続・全 topic である (`src/transport/driver.ts` は frame ごとに `handle` を並行に投げるが、同期呼び出しの間は次の frame を読めない)。
+「IO」はファイル / ネットワークに限らず、外部の完了を待つブロッキング待ち全般を指す (kawaz 2026-09-14)。同期 fs API を前半の表に、外部の完了待ちで他を止めている箇所を後半の「外部の完了待ち」の節に載せる。
+
+**(C) が止めるのは、同一接続の他の op ではなく instance 全体である。** 受信側に接続ごとの直列化は無い: `src/transport/driver.ts:33` は `void handle(frame, conn).then(...)` と fire-and-forget で呼び、`src/transport/framing.ts:62` の `LineReader` は 1 チャンクに含まれる行を `while` ループで次々 `sink.line(text)` に渡す。だから先行フレームのハンドラが `await` している間に、同じ接続の後続フレームのハンドラが並行に走り始める。これは UDS・person 向け WS・mesh の peer 接続のいずれも同じ `createDriver` / `LineReader` を通るので全接続種別で共通である。直列化されているのは送信側だけで (`framing.ts:98-131` の `WriteQueue`)、これは書き込み順序の保証であって処理順序の保証ではない。
+
+この構造の帰結として、(C) の同期 IO は待たせる範囲が狭いのではなく広い。ハンドラが `await` で譲る限り他のフレームは進めるが、同期 fs はイベントループそのものを止めるので、その間は同じ接続の他の op も、他の接続も、topic の flush も、watcher の callback も、mesh の heartbeat も一切進まない。v1 で `instance.ping` が 1.15 秒待ったのはこの形である。
 
 ## (A) CLI の単発コマンド内
 
@@ -131,7 +135,23 @@
 | transcript/transcripts.ts:174,197 | `#appended` の `foldAll(fold, appended.lines)` と `#keep` の `readAll(…)` | `TranscriptTail.onAppended` (watcher callback / ポーリング)、購読中は常時 | append されたバイト数 (通常はポーリング間隔ぶんで小さい) | 同期のまま。ただし issue `fold-from-head-with-versioned-cache` で初回の畳みが頭からになると、同じ `foldAll` が transcript 全体を回るので、その設計と一緒に見る |
 | greeting/meta.ts:21 | `Bun.spawnSync(["git", …])` | cli.ts のみ (`statedMeta()`) | 子プロセス 1 回 | 同期のまま ((A) なので daemon のイベントループに乗らない) |
 
-`execSync` / `child_process` の同期版は `src/` に存在しない。
+`execSync` / `child_process` の同期版は `src/` に存在しない。`Bun.spawnSync` は `greeting/meta.ts:21` の 1 件のみで、呼び出し元は cli.ts だけなので daemon のイベントループには乗らない。daemon 側の子プロセス起動 (`launcher/spawn.ts` / `sessions/processes.ts` / `translate/helper.ts` / `daemon/registry.ts` / `messaging/direct.ts` / `plugin/*`) はすべて非同期の `Bun.spawn` である。
+
+## 外部の完了待ちで他を止めている箇所
+
+ここでの「止まる」は、イベントループが塞がることではなく、直列化のガードや待ち行列によって後続の処理が進めなくなることを指す。
+
+| 場所 | 何を待つ | 何が止まるか | deadline | 処置 | 根拠 |
+|---|---|---|---|---|---|
+| translate/translate.ts:35,46-51 | 常駐 translate helper の子プロセスとの 1 行 1 答のやりとり (`#exchange()`) | **instance 全体**。`#queue: Promise<unknown>` に全呼び出しを連ね、`run()` は前の `#exchange` の完了を待ってから次を走らせる。無関係なセッション・接続の `translate.run` が 1 本の待ち行列に並ぶ | あり (`deadlineMs(chars)` を `Promise.race`、超過で `stop()`。上限 `MAX_MS` は 120 秒) | 現状の直列化は維持し、待ち行列の長さに上限を置くか、要求元に待ち時間を答える方法を kawaz に諮る | 直列化そのものは設計上必然 (コメント: "One batch is in flight at a time — the helper answers one line per line it is given, and two batches sharing that channel could not tell the answers apart")。ただし「1 バッチ待ち」の代償が instance 全体に及び、最悪 120 秒 × 待ち行列長になる点は設計の含意として明示されていない |
+| daemon/supervise.ts:283-285 | `#over()` の `for (const unit of units) { answers.push(await op(unit)); }` — 各 config home の子 instance の起動 / 停止 | `--all` の実行中、先行する config home の起動 (`#serving` の待ち) が長引くと後続の config home が丸ごと足止めされる | この `#over()` 自体には無い | 並行化する (`Promise.allSettled`) | 各 unit は独立した子プロセスで、順序に意味があるとは書かれていない。その場のコメント ("Taken as a list first: … what `--all` answers about is the set as it stood when it was asked") が説明しているのは対象リストを先に固定する理由であって、逐次実行する理由ではない |
+| messaging/direct.ts:292,321 | `#target()` / `#token()` が `readdir` の結果を `for` で回して 1 件ずつ `await readJson(...)` | 1 回の `message.send` の route (a) 判定が `sessions/` のファイル数に比例して伸びる。他の接続は止まらない | **無し**。呼び出し元の `DIRECT_ACK_MS` (2000ms) / `DIRECT_STATUS_MS` (250ms) はこの走査の後の書き込みに掛かる deadline で、走査自体は青天井 | 並行化する (`Promise.all` で読み、一致を選ぶ) | 各ファイルの読みは独立で、見ているのは `sessionId` の一致だけ。順序に意味があるという記述は無い |
+| messaging/delivery.ts:250-253 | `retry()` の `for (const sid of inbox.sids()) { await this.#offer(sid); }` | 1 つの sid が deadline まで詰まると、後続の sid の再提示がその分遅れる (最大 2250ms × sid 数が累積しうる) | 各 `#offer` の中の `direct.send` には有り | 並行化する (sid ごとに `#offer` を起こす) | sid ごとの反復は独立で、`#offer` 自体が `#offering` / `#claimed` で sid 単位のガードを持つ。`retry()` のコメントは sid 間の順序に触れていない |
+| messaging/delivery.ts:264-284 | `#offer()` が `#offering` の sid ガードを保持したまま `direct.send()` (相手セッションの受信確認ソケットの応答) を await | 同一 sid への他の提示のみ。他の sid は進む | あり (2000ms + 250ms) | 同期のまま | 1 通ずつ出すのは意図された順序保証 (コメント: "Out of the inbox one at a time rather than in one batch at the end: an offer interrupted partway through has still delivered what it delivered, and a daemon killed here must not offer those again")。deadline も揃っている |
+| mesh/mesh.ts:472-494 | `ask()` / `forward()` が peer の応答を待つ | 何も止めない。要求ごとに `carried = mesh-fwd-<id>` の一意な待ちオブジェクトを作るので、同じ peer・同じリンクへの他の要求は独立に進む | あり (`forwardTimeoutMs ?? FORWARD_TIMEOUT_MS`) | 同期のまま | 直列化のガードが無く、相関 id で並行に待つ形が既にできている |
+| sessions/processes.ts:125-141 | `kill()` が SIGTERM / SIGKILL の後、`sleep(LIVENESS_POLL_MS)` で消滅をポーリング | 呼び出した 1 要求のみ。グローバルなガードは無い | あり (`GRACE_MS` 3000ms) | 同期のまま | 直列化のガードが無いので他を止めていない。ポーリングである点は残るが、プロセスの消滅を通知する primitive がこの経路に無い |
+| instance/lock.ts | ファイルロックの取得 / 解放 | 該当なし | — | 同期のまま | lock を保持したまま外部の完了を await する箇所は無い。`acquireLock()` は起動時、`release()` は停止時にそれぞれ完結する |
+| files/sandbox.ts:71-97 | — | 該当なし | — | 該当なし | `sandbox.grant` は人の承認を待つ設計ではない。`SandboxGrants.mint()` は同期に完結し、呼ばれた時点でトークンを発行する (コメント: "A grant widens nothing. The same containment check the matching read performs runs when the URL is minted")。承認の完了待ちでハンドラが止まる箇所は `src/` に無い |
 
 ## 件数
 
@@ -141,6 +161,8 @@
 | (B) | 52 |
 | (C) | 71 |
 | (D) | 1 |
+
+外部の完了待ちは 9 件を検分し、直すのが 3 件 (`daemon/supervise.ts` の `#over()`、`messaging/direct.ts` のセッション走査、`messaging/delivery.ts` の `retry()`)、判断を仰ぐのが 1 件 (`translate/translate.ts` の instance 単位の待ち行列)、設計どおりで同期のままが 5 件である。
 
 ## async 化する対象
 
@@ -155,5 +177,13 @@
 **3. topic の値を作る経路 (`sessions/workspace.ts` 4 件 + `sessions/harness.ts` 2 件 + `sessions/registry.ts` 3 件 + `sessions/last-live.ts` 3 件、計 12 件)**
 `sessionStatusOf()` と `HarnessSessions.scan()` を async にする。`SessionStatus.value` / `refresh` と `DirectoryWatch` の callback が async になるので、topic の「値を述べる」入口が Promise を返す形に変わる。snapshot を返すターンの内側で値が要るという DESIGN §6 の要請とぶつかるのはここなので、`fold-from-head-with-versioned-cache` の裁定 (開始応答で値を述べないまま開くことを許すか = CT-Q8) と歩調を合わせる必要がある。`hello.session` の `ownTranscript()` は単独で async 化できる。
 
+**0. 前提: 並行に走ることを当てにできる**
+受信側に接続ごとの直列化が無い (`transport/driver.ts:33` の `void handle(...)`) ので、ハンドラを async にすれば、その await 中に同じ接続の他の op が実際に進む。つまり async 化の効果は「待ち時間が要求ごとに分かれる」ではなく「他の要求が本当に並行に答えられるようになる」である。逆に言えば、同期のまま残した 1 箇所が instance 全体を止め続けるので、経路のどこか 1 つに同期 fs が残ると、その経路を async 化した効果は消える。ハンドラ単位ではなく、入口から fs 呼び出しまでの経路を丸ごと直す必要がある。
+
 **4. 永続化 (`kv/store.ts` 5 件 + `auth/records.ts` 5 件 + `messaging/inbox.ts` 2 件 + `messaging/direct.ts` 1 件、計 13 件)**
 `#load()` / `#persist()` / `#append()` を `fs/promises` に置き換える。連鎖は各 op ハンドラ (`kv.*` / `auth.*` / `message.send`) までで止まり、いずれも既に async か、async にしても呼び出し側の形が変わらない。ここは書き込みの順序が意味を持つので、`#persist()` を「前の書き込みの Promise に連ねる」直列化を入れる (同時に 2 つの書き込みが一時ファイルを取り合わないため)。読みの `#load()` は初回だけなので、初回の Promise を保持して以後は同じものを await する形にする。
+
+**5. 外部の完了待ち (3 件)**
+`daemon/supervise.ts:283-285` の `#over()` は `answers.push(await op(unit))` を `Promise.allSettled(units.map(op))` に置き換える。対象リストを先に固定する現在の性質は保たれ、答えの並びも入力順のままになる。`messaging/direct.ts:292,321` の `#target()` / `#token()` は `readdir` の結果を `Promise.all` で読んでから一致を選ぶ形にする。`#target()` は現在 1 件目の一致で早期に返るので、全件読みに変えると読む量は増えるが、一致しない場合に全件読むのは今も同じで、掛かる時間は最も遅い 1 件ぶんになる。`messaging/delivery.ts:250-253` の `retry()` は sid ごとの `#offer` を並行に起こす。`#offer` が sid 単位のガード (`#offering` / `#claimed`) を既に持つので、1 通ずつ出すという sid 内の順序保証は保たれる。
+
+これら 3 件はいずれもハンドラの内側で完結するので、呼び出し側への連鎖は無い。
