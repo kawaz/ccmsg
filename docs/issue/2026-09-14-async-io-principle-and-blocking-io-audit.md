@@ -55,7 +55,7 @@ DR の決定文はこの形を使う。
 - [ ] DR が INDEX に載り、DESIGN §6 に同期 seed の記述が残っていない
 - [ ] `docs/findings/` に監査表 (ファイル:行、走る契機、分類、処置) がある
 - [ ] 「直す」に分類した箇所の同期 fs 呼び出しが無くなり、`just ci` が通る
-- [ ] 大きい transcript (数十 MB 以上) を持つセッションの購読開始中に同一接続の `instance.ping` が待たされないことを test で確認する
+- [x] 大きい transcript を読む op の実行中に、同一接続の `instance.ping` が待たされないことを test で確認する (`test/async-transcript.test.ts`)。購読開始 (seed) は同期のままなので issue `fold-from-head-with-versioned-cache` の側で見る
 
 ## 監査結果と裁定 (2026-09-14)
 

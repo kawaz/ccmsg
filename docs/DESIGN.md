@@ -130,7 +130,7 @@ Write only 6 kinds of things.
 |---|---|
 | The instance id (`<state dir>/instance.id`) | This instance's identity. Lose it and `mid`, the store's keys, `last_live` and the issuer of every record it minted all lose what they point at |
 | `last_live` (previously running sessions) | Losing it on restart makes Paused / Disappeared rows vanish from the list |
-| Logs | To read the cause after a crash. Keep a single writer that does not drop the line right before exit |
+| Logs | To read the cause after a crash. One writer appends in the order the lines were stated, and a graceful stop waits for its last one; a kill can still cost the lines that had not landed |
 | inbox (undelivered messages) | State that cannot be reconstructed from anywhere else (§6.7) |
 | kv (values saved through `kv.write`) | The value a person saved, itself. Not a derived value: a client's copy is a copy |
 | auth records (`<state dir>/auth/records.json`, mode 0600) | The registered credentials, token families and tombstones (§3.3). A credential exists nowhere but the authenticator and here, and losing a family logs its person out |
@@ -147,7 +147,7 @@ There is no room jsonl (per contract §2.1, the source of truth for conversation
 
 ### 3.1 The greeting and the role
 
-**A connection greets once, and the reply is what binds its identity.** There is one greeting op per role — `hello.session`, `hello.user`, `hello.instance` — so the role is read from the name the greeting arrived under, and what each greeting has to carry is its own schema's to state. The role is set once and fixed for the connection's life (contract, `Role`); a second greeting on a connection whose identity is settled is `bad_request` whether it repeats the role or names another — it is not a re-identification but a request to be somebody else on a connection that already is somebody. The binding happens at the moment transport writes the reply (these three are the op names transport knows; every other op is opaque to it). `hello.session` and `hello.user` are answered synchronously; **`hello.instance` is the only one that answers with a promise**: it cannot be answered until the mesh-peer-auth verification has run, and since nothing but a reply settles an identity, the connection stays anonymous until the verification is done (§7.2). An instance with no mesh refuses `hello.instance` with `capability_unavailable`.
+**A connection greets once, and the reply is what binds its identity.** There is one greeting op per role — `hello.session`, `hello.user`, `hello.instance` — so the role is read from the name the greeting arrived under, and what each greeting has to carry is its own schema's to state. The role is set once and fixed for the connection's life (contract, `Role`); a second greeting on a connection whose identity is settled is `bad_request` whether it repeats the role or names another — it is not a re-identification but a request to be somebody else on a connection that already is somebody. The binding happens at the moment transport writes the reply (these three are the op names transport knows; every other op is opaque to it). `hello.user` is answered synchronously; **`hello.session` and `hello.instance` answer with a promise**: the first has the transcript the greeting names to look over before it can say what it took of it, and the second cannot be answered until the mesh-peer-auth verification has run. Since nothing but a reply settles an identity, such a connection stays anonymous until its answer is ready (§7.2). An instance with no mesh refuses `hello.instance` with `capability_unavailable`.
 
 The greeting's reply names `terminal_gateway` only on an instance configured with `upstream.terminal_gateway`. A session's terminal is named by `terminal_id` on the `agents` topic, so a person opens that terminal at `<terminal_gateway>/sessions/<terminal_id>`.
 
@@ -474,11 +474,12 @@ The contract's `message.send` promises only "deliver to the destination sid," re
 Route (a) applies **only when every condition is satisfied**. If even one is missing, it falls back to (b) without further judgment.
 
 0. **The feature flag is enabled** — verified on real hardware, so it is enabled by default and can be turned off in config (while it is off, delivery is accomplished by (b) alone — the fallback simply becomes the everyday route; the semantics of delivery do not change)
-1. `sessions/<pid>.json` has `messagingSocketPath` and a known `peerProtocol`
-2. The corresponding key file can be read by ourselves (= same uid, same config home, matching A2 / A4)
-3. The receiving side does not say, within the deadline, that it did not take the message
+1. Reading `sessions/` answers which file names this session within its own deadline (1 s). The files are read together and the first name that matches decides, so what the deadline covers is a directory that has stopped answering rather than a long search
+2. `sessions/<pid>.json` has `messagingSocketPath` and a known `peerProtocol`
+3. The corresponding key file can be read by ourselves (= same uid, same config home, matching A2 / A4)
+4. The receiving side does not say, within the deadline, that it did not take the message
 
-Condition 3 is settled on **a separate delivery-status socket, not on the connection the message was written to**. That connection is one-way: the receiving side writes not a single byte back. When it does have something to say, it writes a `peer_message_status` to the address the user frame's `from` named. So ccmsg holds a UDS of its own (0600) and passes it as `uds:<path>` in `from`.
+Condition 4 is settled on **a separate delivery-status socket, not on the connection the message was written to**. That connection is one-way: the receiving side writes not a single byte back. When it does have something to say, it writes a `peer_message_status` to the address the user frame's `from` named. So ccmsg holds a UDS of its own (0600) and passes it as `uds:<path>` in `from`.
 
 **The receiving side sends no positive acknowledgement.** A message it accepts gets nothing back; `refused` / `denied` / `dropped` / `expired` / `held` are raised only where it does not take the message (2.1.263's inbound gate). So silence within the deadline reads as "it arrived," and one of those arriving reads as the drop of §6.8. The deadline's value has no primary source (**provisional**). What can be said for it is that the receiving side raises the receipt from the same gate decision, so it is one UDS round trip away on this same host.
 
@@ -681,7 +682,7 @@ Being long-running (resident) means the daemon for an unused config home keeps r
 1. Stop accepting new requests (reentrancy guard)
 2. Stop watching upstream and any child processes
 3. Notify all connections that "it will restart" (**before tearing down transport**)
-4. Finalize what must be persisted (§2.5)
+4. Finalize what must be persisted (§2.5). Each of them is written as it changes rather than at exit, so what is settled here is the writes already asked for and not yet landed — `last_live`, the inbox, the store, the records, and the log's own lines. They land before step 6, since a successor reads these files as it starts
 5. Close the listeners. **Close UDS last** — clients observe "cannot connect to UDS" as completion of withdrawal, so give up the address that could contend with a successor (the HTTP listener) before closing it. Among the listeners that are not the UDS there is no order, so they close together: each has its own deadline of 250 ms, and closing them one after another would add those up for no reason. Closing removes only the `daemon.<pid>.sock` this process bound; the stable path's symlink is left alone (a successor may have already pointed it at itself, and a dangling symlink still pointing here is exactly the "cannot connect to UDS" that this clause means by completed withdrawal)
 6. Release the pid file and the lock, **after every listener has finished closing** — the pid and the lock are the observable proof that this process is still leaving, and released first they leave an unreachable socket indistinguishable from a completed stop (which is how a process wedged in its own shutdown reads, from outside, as one that has stopped). They are released even when closing a listener failed: this process is leaving either way, and holding them keeps a successor out of a config home nothing is serving
 

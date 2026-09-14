@@ -39,7 +39,7 @@ export class DisabledDirectRoute implements DirectRoute {
 
 /** The `peerProtocol` generation this speaks. One value, because one is what
  * has been read off a running harness (2.1.263); any other generation is a
- * protocol nobody here has seen, which is condition 1 of DESIGN §6.5. */
+ * protocol nobody here has seen, which is condition 2 of DESIGN §6.5. */
 export const PEER_PROTOCOL = 1;
 
 /** How long one attempt has to reach the point where the harness holds our
@@ -52,7 +52,7 @@ export const PEER_PROTOCOL = 1;
 export const DIRECT_ACK_MS = 2_000;
 
 /** How long the status inbox is watched for word about this message before the
- * send is taken to have landed (DESIGN §6.5 condition 3).
+ * send is taken to have landed (DESIGN §6.5 condition 4).
  *
  * Provisional. What is known from the harness (2.1.263) is where the receipt
  * is raised, not how long it takes to arrive: the receiving session decides a
@@ -63,7 +63,8 @@ export const DIRECT_ACK_MS = 2_000;
  * answer. Nothing measured stands behind the number itself. */
 export const DIRECT_STATUS_MS = 250;
 
-/** How long reading `sessions/` has to answer which file names this session.
+/** How long reading `sessions/` has to answer which file names this session
+ * (DESIGN §6.5 condition 1).
  *
  * The other two budgets cover what the route does after the target is found,
  * and none of them covers the finding: a directory of small JSON files on the
@@ -87,7 +88,7 @@ export const DIRECT_SCAN_MS = 1_000;
 const REFUSING = new Set(["refused", "denied", "dropped", "expired", "held"]);
 
 /** The socket this daemon offers so the receiving session can say what became
- * of a message (DESIGN §6.5 condition 3).
+ * of a message (DESIGN §6.5 condition 4).
  *
  * It lives in the directory the target's own socket is in, and not in this
  * instance's state directory, because the receiving harness vets the address it
@@ -227,7 +228,7 @@ export interface SocketRouteOptions {
 /** Route (a) against the harness's messaging socket (DESIGN §6.5).
  *
  * The path is `sessions/<pid>.json` of this instance's own config home, which
- * is also the answer to condition 2: a key beside it that this uid can read is
+ * is also the answer to condition 3: a key beside it that this uid can read is
  * exactly the same-uid, same-config-home boundary the instance already stands
  * on (A2 / A4). Nothing here searches another config home, and a session this
  * instance cannot see a state file for is simply not reachable this way.
@@ -327,7 +328,7 @@ export class ClaudeCodeSocketRoute implements DirectRoute {
   }
 
   /** The state file naming this session, if it names a socket of a generation
-   * we speak (DESIGN §6.5 conditions 1). */
+   * we speak (DESIGN §6.5 condition 2). */
   async #target(sid: Sid): Promise<HarnessTarget | undefined> {
     const rows = await this.#rows(/^\d+\.json$/);
     if (rows === undefined) return undefined;
@@ -343,7 +344,7 @@ export class ClaudeCodeSocketRoute implements DirectRoute {
     return undefined;
   }
 
-  /** The `peerToken` the harness wrote for this session (DESIGN §6.5 condition 2).
+  /** The `peerToken` the harness wrote for this session (DESIGN §6.5 condition 3).
    *
    * Found by the pid the key is named after rather than by rebuilding the rest
    * of the name: the digest in `<pid>.<digest>.key` is stated to be over the
@@ -542,7 +543,7 @@ function frames(sid: Sid, token: string, message: InboxMessage, from?: string): 
 }
 
 /** Connect and write, and answer whether the harness holds our bytes (DESIGN §6.5
- * condition 3).
+ * condition 4).
  *
  * That is the whole of what this can decide. The connection carries nothing
  * back — a real send measured zero bytes on it — so waiting here for an answer
@@ -585,7 +586,7 @@ async function write(path: string, payload: string, ackMs: number): Promise<Dire
     });
   } catch {
     // No socket at the path, or nothing listening on it: the session ended and
-    // took its socket with it, or never had one (DESIGN §6.5 condition 1).
+    // took its socket with it, or never had one (DESIGN §6.5 condition 2).
     return "unavailable";
   }
 
@@ -608,7 +609,7 @@ async function readJson(path: string): Promise<Record<string, unknown> | undefin
     return document as Record<string, unknown>;
   } catch {
     // Missing, unreadable by this uid, or half written — all of them are
-    // "route (a) does not apply here" (DESIGN §6.5 conditions 1 and 2).
+    // "route (a) does not apply here" (DESIGN §6.5 conditions 2 and 3).
     return undefined;
   }
 }

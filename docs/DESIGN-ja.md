@@ -130,7 +130,7 @@ frame 1 個に対して、順に:
 |---|---|
 | instance id (`<state dir>/instance.id`) | この instance の identity。失うと `mid` / store の鍵 / `last_live` / 発行済みレコードの発行者が、すべて指し先を失う |
 | `last_live` (前回稼働中のセッション) | 再起動で失うと、一覧から Paused / Disappeared の行が消える |
-| ログ | 落ちた原因を後から読むため。exit 直前の行を落とさない writer を 1 つ持つ |
+| ログ | 落ちた原因を後から読むため。writer は 1 つで、述べられた順に追記する。graceful な停止は最終行まで待つが、kill では着地前の行が落ちうる |
 | inbox (未配送メッセージ) | 他のどこからも再構成できない状態 (§6.7) |
 | kv (`kv.write` で保存された値) | 人が保存した値そのもの。派生値ではなく、client 側の複製は写しでしかない |
 | auth records (`<state dir>/auth/records.json`、mode 0600) | 登録された credential・token family・tombstone (§3.3)。credential は authenticator とここにしか無く、family を失うことは人をログアウトさせること |
@@ -147,7 +147,7 @@ room jsonl は無い (契約 §2.1 で会話ログの正本は transcript)。san
 
 ### 3.1 挨拶と役割
 
-**greeting は接続につき 1 回で、その応答が identity を束縛する。** greeting の op は role ごとに 1 つずつあり (`hello.session` / `hello.user` / `hello.instance`)、role は greeting が届いた op 名から読む。各 greeting が何を持つべきかはそれぞれの schema が述べる。role は接続の生存期間で固定され (契約 `Role`)、identity が確定した接続からの 2 回目の greeting は、同じ role を名乗っても別の role を名乗っても `bad_request` になる — 再識別ではなく「既に誰かである接続が別の誰かになろうとする要求」だからである。束縛は transport が応答を書く瞬間に行う (transport が名前を知っている op はこの 3 つだけで、他の op は透過する)。`hello.session` / `hello.user` は同期で答え、**`hello.instance` だけが promise を返す**: mesh-peer-auth の検証を待ってからでないと答えられず、応答以外に identity を確定させるものは無いので、検証が終わるまで接続は匿名のままになる (§7.2)。mesh を持たない instance は `hello.instance` を `capability_unavailable` で断る。
+**greeting は接続につき 1 回で、その応答が identity を束縛する。** greeting の op は role ごとに 1 つずつあり (`hello.session` / `hello.user` / `hello.instance`)、role は greeting が届いた op 名から読む。各 greeting が何を持つべきかはそれぞれの schema が述べる。role は接続の生存期間で固定され (契約 `Role`)、identity が確定した接続からの 2 回目の greeting は、同じ role を名乗っても別の role を名乗っても `bad_request` になる — 再識別ではなく「既に誰かである接続が別の誰かになろうとする要求」だからである。束縛は transport が応答を書く瞬間に行う (transport が名前を知っている op はこの 3 つだけで、他の op は透過する)。`hello.user` は同期で答え、**`hello.session` と `hello.instance` は promise を返す**: 前者は greeting が名指す transcript を検分してからでないと何を取ったかを言えず、後者は mesh-peer-auth の検証を待ってからでないと答えられない。応答以外に identity を確定させるものは無いので、答えが出るまでその接続は匿名のままになる (§7.2)。mesh を持たない instance は `hello.instance` を `capability_unavailable` で断る。
 
 greeting の応答は `upstream.terminal_gateway` が設定されている instance に限り `terminal_gateway` を名乗る。セッションの terminal 自体は `agents` topic の `terminal_id` が指すので、人がその terminal を開く先は `<terminal_gateway>/sessions/<terminal_id>` になる。
 
@@ -466,11 +466,12 @@ M4 とも矛盾しない。M4 が禁じるのは派生値をディスクに置�
 (a) の適用条件は**すべて満たしたときだけ**とする。1 つでも欠ければ判定なしに (b) へ落ちる。
 
 0. **feature flag が有効** — 実機確認済みなので既定で有効。config で無効化できる (無効な間、配送は (b) だけで成立する。フォールバック先が常用経路になるだけで、配送の意味論は変わらない)
-1. `sessions/<pid>.json` が `messagingSocketPath` と既知の `peerProtocol` を持つ
-2. 対応する key file を自分が読める (= 同一 uid・同一 config home = A2 / A4 と一致)
-3. 期限内に受信側が「受け取らなかった」と言ってこない
+1. `sessions/` の読みが、どのファイルがこのセッションを名乗るかを自身の期限内 (1 秒) に答える。ファイルはまとめて読み、一致した最初の名前が答えを決めるので、この期限が覆うのは探索の長さではなく「答えなくなったディレクトリ」である
+2. `sessions/<pid>.json` が `messagingSocketPath` と既知の `peerProtocol` を持つ
+3. 対応する key file を自分が読める (= 同一 uid・同一 config home = A2 / A4 と一致)
+4. 期限内に受信側が「受け取らなかった」と言ってこない
 
-条件 3 の判定元は**送信した接続ではなく、送達ステータス用の別 socket**。送信した接続は片方向で、受信側は 1 バイトも返さない。受信側が何か言う時は user frame の `from` が名乗ったアドレスへ `peer_message_status` を書く。よって ccmsg は自前の UDS (0600) を持ち、`from` に `uds:<path>` として渡す。
+条件 4 の判定元は**送信した接続ではなく、送達ステータス用の別 socket**。送信した接続は片方向で、受信側は 1 バイトも返さない。受信側が何か言う時は user frame の `from` が名乗ったアドレスへ `peer_message_status` を書く。よって ccmsg は自前の UDS (0600) を持ち、`from` に `uds:<path>` として渡す。
 
 **受信側は肯定応答を出さない**。受理した message には何も返さず、`refused` / `denied` / `dropped` / `expired` / `held` を返すのは受け取らなかった時だけ (2.1.263 の inbound gate)。したがって「期限内に沈黙 = 届いた」「期限内に上記が来た = §6.8 の drop」と読む。期限の値は一次資料に無い (**仮値**)。根拠として言えるのは「受信側は gate の判定と同じ場所で receipt を出すので、同一ホストの UDS 1 往復で届く」ところまで。
 
@@ -673,7 +674,7 @@ instance と監督者が読むのは `$CCMSG_STATE_DIR/config/` の方である:
 1. 新しい要求の受理を止める (再入ガード)
 2. 上流の監視と子プロセスを止める
 3. 全接続に「再起動する」を通知する (**transport を落とす前**)
-4. 永続化するもの (§2.5) を確定させる
+4. 永続化するもの (§2.5) を確定させる。いずれも変化のたびに書いており exit 時にまとめて書くものは無いので、ここで確定させるのは「既に依頼済みでまだ着地していない書き込み」— `last_live`・inbox・store・records と、ログ自身の行である。後継は起動時にこれらのファイルを読むので、6 より前に着地させる
 5. listener を閉じる。**UDS を最後に閉じる** — クライアントは「UDS に繋がらない」を退去完了として観測するので、後継と競合しうる address (HTTP listener) を手放してから閉じる。UDS 以外の間には順序が無いので並行に閉じる (期限がそれぞれ 250 ms あり、直列だと理由なく足し算になる)。閉じることで消えるのは自分が bind した `daemon.<pid>.sock` だけで、安定 path の symlink は触らない (後継が既に自分へ付け替えているかもしれない。自分を指したままの dangling symlink は「UDS に繋がらない」= 退去完了の観測として本項の意味論どおり)
 6. pid ファイルとロックを手放す。**listener を全部閉じ切ってから** — pid とロックは「まだ退去中」であることの観測可能な証拠なので、これが先に消えると、届かない socket が完了した停止と区別できなくなる (= 自分の停止処理で固まったプロセスが、外からは停止済みに見える)。listener の close が失敗しても手放す (どちらにせよこの process は去るので、握ったままだと誰も serve していない config home に後継が入れない)
 
