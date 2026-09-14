@@ -839,7 +839,7 @@ describe("the harness's sessions directory", () => {
     expect(carried).toBe(true);
   });
 
-  test("the watch runs while a subscriber holds either topic, and not otherwise", () => {
+  test("the watch runs while a subscriber holds either topic, and not otherwise", async () => {
     const context = sessions();
     const hub = new Topics(SELF, new Set(), undefined, unthrottled());
     hub.attach("peers", context.domain);
@@ -847,8 +847,8 @@ describe("the harness's sessions directory", () => {
     expect(context.domain.watching).toBe(false);
 
     const user = connAs("user");
-    expect(hub.subscribe(user, "peers")).toBe("ok");
-    expect(hub.subscribe(user, "agents")).toBe("ok");
+    expect(await hub.subscribe(user, "peers")).toBe("ok");
+    expect(await hub.subscribe(user, "agents")).toBe("ok");
     expect(context.domain.watching).toBe(true);
 
     hub.unsubscribe(user, "peers");
@@ -864,7 +864,7 @@ describe("the harness's sessions directory", () => {
     await helloFrom(context.domain, greeting());
 
     const user = connAs("user");
-    hub.subscribe(user, "peers");
+    await hub.subscribe(user, "peers");
     user.flush();
     const snapshot = user.topics()[0] as { snapshot: boolean; data: { peers: unknown[] } };
     expect(snapshot.snapshot).toBe(true);

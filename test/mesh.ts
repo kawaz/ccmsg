@@ -144,6 +144,7 @@ export function homeFor(lease: PortLease, peers: readonly Endpoint[], endpoint?:
   const env: Env = {
     CLAUDE_CONFIG_DIR: home,
     CCMSG_STATE_DIR: join(root, "state"),
+    CCMSG_CACHE_DIR: join(root, "cache"),
     CCMSG_CONFIG_DIR: configDir,
   };
   // The instance is an entry of the mesh, at the address it says it is reached

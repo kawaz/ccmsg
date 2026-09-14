@@ -61,6 +61,29 @@ export const NO_FACTS: TranscriptFacts = {
   agent_tree: { teammates: [], agents: [], workflows: [] },
 };
 
+/** Everything the fold carries from one record to the next, as data.
+ *
+ * The facts are what a consumer reads; this is what reading further needs. The
+ * two are not the same — a todo is held under the key a later record updates it
+ * by, a call is held until its result arrives — so a fold resumed from its
+ * facts alone would answer the next record differently from one that had read
+ * every record before it. What is kept here is the whole of that difference,
+ * which is what makes resuming from it the same reading rather than a similar
+ * one. */
+export interface FoldState {
+  readonly api_error?: SessionApiError;
+  readonly last_user_input_at?: Timestamp;
+  readonly model?: string;
+  readonly effort?: string;
+  readonly files: readonly (readonly [string, ExternalFile])[];
+  readonly todos: readonly (readonly [string, SessionTodo])[];
+  readonly teammates: readonly (readonly [string, Teammate])[];
+  readonly background: readonly (readonly [string, SessionBackgroundStatus])[];
+  readonly workflows: readonly (readonly [string, SessionWorkflowStatus])[];
+  readonly agents: readonly (readonly [string, AgentTreeNode])[];
+  readonly calls: readonly (readonly [string, PendingCall])[];
+}
+
 /** The one place a transcript line is interpreted.
  *
  * Nothing outside this module parses a transcript record. A line arrives, the
@@ -102,6 +125,43 @@ export class TranscriptFold {
       workflows: [...this.#workflows.values()],
       agent_tree: this.#agentTree(),
     };
+  }
+
+  /** Everything the reading carries forward, so that it can be taken up again
+   * where it stopped. */
+  get held(): FoldState {
+    return {
+      ...(this.#apiError === undefined ? {} : { api_error: this.#apiError }),
+      ...(this.#lastUserInputAt === undefined ? {} : { last_user_input_at: this.#lastUserInputAt }),
+      ...(this.#model === undefined ? {} : { model: this.#model }),
+      ...(this.#effort === undefined ? {} : { effort: this.#effort }),
+      files: [...this.#files],
+      todos: [...this.#todos],
+      teammates: [...this.#teammates],
+      background: [...this.#background],
+      workflows: [...this.#workflows],
+      agents: [...this.#agents],
+      calls: [...this.#calls],
+    };
+  }
+
+  /** Take up a reading somebody else left off, replacing whatever this fold
+   * held. The state is trusted as the record of records already read — what
+   * makes it trustworthy is decided where it is kept (`FOLD_CACHE_VERSION`),
+   * not here. */
+  restore(state: FoldState): void {
+    this.reset();
+    this.#apiError = state.api_error;
+    this.#lastUserInputAt = state.last_user_input_at;
+    this.#model = state.model;
+    this.#effort = state.effort;
+    for (const [key, value] of state.files) this.#files.set(key, value);
+    for (const [key, value] of state.todos) this.#todos.set(key, value);
+    for (const [key, value] of state.teammates) this.#teammates.set(key, value);
+    for (const [key, value] of state.background) this.#background.set(key, { ...value });
+    for (const [key, value] of state.workflows) this.#workflows.set(key, { ...value });
+    for (const [key, value] of state.agents) this.#agents.set(key, { ...value });
+    for (const [key, value] of state.calls) this.#calls.set(key, value);
   }
 
   reset(): void {
@@ -648,13 +708,13 @@ type Mutable<T> = { -readonly [K in keyof T]: T[K] };
 
 /** A teammate as the fold holds it: what the contract states about it, and the
  * two facts only the tree needs. */
-interface Teammate {
+export interface Teammate {
   readonly status: Mutable<SessionTeammate>;
   agent_id?: string;
   team_name?: string;
 }
 
-interface PendingCall {
+export interface PendingCall {
   readonly name: string;
   readonly input: Record<string, unknown>;
   readonly at?: Timestamp;

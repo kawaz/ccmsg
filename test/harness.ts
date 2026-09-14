@@ -224,6 +224,7 @@ export class Host {
     this.env = {
       XDG_CONFIG_HOME: join(this.root, "config"),
       XDG_STATE_HOME: join(this.root, "state"),
+      XDG_CACHE_HOME: join(this.root, "cache"),
       HOME: this.root,
     };
   }
@@ -244,7 +245,12 @@ export class Host {
       if (!this.#saved.has(name)) this.#saved.set(name, process.env[name]);
       process.env[name] = value;
     }
-    for (const name of ["CCMSG_CONFIG_DIR", "CCMSG_STATE_DIR", "CLAUDE_CONFIG_DIR"]) {
+    for (const name of [
+      "CCMSG_CONFIG_DIR",
+      "CCMSG_STATE_DIR",
+      "CCMSG_CACHE_DIR",
+      "CLAUDE_CONFIG_DIR",
+    ]) {
       if (!this.#saved.has(name)) this.#saved.set(name, process.env[name]);
       delete process.env[name];
     }

@@ -1,4 +1,4 @@
-import { readdirSync, type Stats, statSync } from "node:fs";
+import type { Stats } from "node:fs";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import type { Sid, TranscriptSubject } from "@ccmsg/protocol";
@@ -95,16 +95,16 @@ export class TranscriptFiles {
    * greeted or is no longer running. Both stay inside this harness's own
    * transcript tree — the announced path because it was taken only if it was
    * inside it, the walk because that tree is what it walks (M6). */
-  path(sid: Sid): string | undefined {
+  async path(sid: Sid): Promise<string | undefined> {
     const announced = this.deps.announced(sid);
-    if (announced !== undefined && isFile(announced)) return announced;
-    return this.find(sid);
+    if (announced !== undefined && (await stated(announced)) !== undefined) return announced;
+    return await this.find(sid);
   }
 
   /** The session's own transcript, for an op that has nothing to answer
    * without one. */
-  session(sid: Sid): string {
-    const found = this.path(sid);
+  async session(sid: Sid): Promise<string> {
+    const found = await this.path(sid);
     if (found === undefined) throw new OpError("not_found", `no transcript is held for ${sid}`);
     return found;
   }
@@ -116,7 +116,7 @@ export class TranscriptFiles {
    * cannot be combined — a request carrying both names two files and is a
    * caller's mistake rather than a choice this makes for them. */
   async locate(sid: Sid, names: AgentNames = {}): Promise<string> {
-    const file = this.session(sid);
+    const file = await this.session(sid);
     if (names.agent_id !== undefined && names.teammate !== undefined) {
       throw new OpError("invalid_args", "agent_id and teammate name two different transcripts");
     }
@@ -238,21 +238,23 @@ export class TranscriptFiles {
    * which is one `stat` per directory instead of a listing; one whose name
    * carries more than the sid is walked, because the rest of the name is
    * exactly what this does not know. */
-  private find(sid: Sid): string | undefined {
+  private async find(sid: Sid): Promise<string | undefined> {
     const layout = LAYOUTS[this.deps.harness];
-    const dirs = directories(this.#root(), layout.depth);
+    const dirs = await walked(this.#root(), layout.depth);
     const nameOf = layout.nameOf;
     if (nameOf !== undefined) {
       if (!SID.test(sid)) return undefined;
       for (const dir of dirs) {
         const file = join(dir, nameOf(sid));
-        if (isFile(file)) return file;
+        if ((await stated(file)) !== undefined) return file;
       }
       return undefined;
     }
     for (const dir of dirs) {
-      for (const entry of names(dir)) {
-        if (layout.sidOf(entry) === sid && isFile(join(dir, entry))) return join(dir, entry);
+      for (const entry of await listed(dir)) {
+        if (layout.sidOf(entry) !== sid) continue;
+        const file = join(dir, entry);
+        if ((await stated(file)) !== undefined) return file;
       }
     }
     return undefined;
@@ -265,13 +267,9 @@ export class TranscriptFiles {
  * wrote, and a tree with a directory nobody expected is one whose files are
  * still found.
  *
- * There are two of this walk, and of the two readings below it, because the
- * two callers are not alike: `all()` runs from an op and reads the tree
- * without holding the instance, while `path()` also runs from a subscription
- * being opened, which states its value in the turn it is opened in and so
- * cannot wait (DESIGN §6.2). The one that cannot wait is the one CT-Q8 and the
- * issue `fold-from-head-with-versioned-cache` settle, and the two become one
- * reading again when they do. */
+ * One walk for every caller: enumerating the tree and finding one session's
+ * file in it are the same reading, and a subscription that opens on it waits
+ * for it like any other caller (CT-Q8). */
 async function walked(root: string, depth: number): Promise<string[]> {
   let level = [root];
   for (let step = 0; step < depth; step += 1) {
@@ -280,14 +278,6 @@ async function walked(root: string, depth: number): Promise<string[]> {
       for (const entry of await listed(dir)) below.push(join(dir, entry));
     }
     level = below;
-  }
-  return level;
-}
-
-function directories(root: string, depth: number): string[] {
-  let level = [root];
-  for (let step = 0; step < depth; step += 1) {
-    level = level.flatMap((dir) => names(dir).map((entry) => join(dir, entry)));
   }
   return level;
 }
@@ -343,14 +333,6 @@ async function listed(dir: string): Promise<string[]> {
   }
 }
 
-function names(dir: string): string[] {
-  try {
-    return readdirSync(dir);
-  } catch {
-    return [];
-  }
-}
-
 async function stated(file: string): Promise<Stats | undefined> {
   try {
     const known = await stat(file);
@@ -358,17 +340,4 @@ async function stated(file: string): Promise<Stats | undefined> {
   } catch {
     return undefined;
   }
-}
-
-function statOf(file: string) {
-  try {
-    const known = statSync(file);
-    return known.isFile() ? known : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-function isFile(file: string): boolean {
-  return statOf(file) !== undefined;
 }

@@ -67,6 +67,7 @@ function disposable(): { env: Env; root: string; home: string } {
     env: {
       CLAUDE_CONFIG_DIR: home,
       CCMSG_STATE_DIR: join(root, "state"),
+      CCMSG_CACHE_DIR: join(root, "cache"),
       CCMSG_CONFIG_DIR: join(root, "config"),
     },
   };

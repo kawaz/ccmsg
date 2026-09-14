@@ -1,4 +1,3 @@
-import { realpathSync } from "node:fs";
 import { realpath } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import type { FileKind, Role, Sid } from "@ccmsg/protocol";
@@ -28,7 +27,7 @@ export interface SessionRoots {
 
 /** Who states a session's allowlists. */
 export interface RootsSource {
-  roots(sid: Sid): SessionRoots | undefined;
+  roots(sid: Sid): Promise<SessionRoots | undefined>;
 }
 
 /** One path, decided.
@@ -71,7 +70,7 @@ export class Containment {
 
   /** A path named by kind, as an op's arguments give it. */
   async locate(args: PathArgs, viewer: Viewer = {}): Promise<Located> {
-    const roots = this.rootsFor(args.sid, viewer);
+    const roots = await this.rootsFor(args.sid, viewer);
     const named = await this.absolute(args, roots);
     const real = await canonical(named);
     return { ...(await this.admit(args.kind, real, roots)), named };
@@ -85,7 +84,7 @@ export class Containment {
   async identify(sid: Sid, path: string, viewer: Viewer = {}): Promise<Located | undefined> {
     let roots: SessionRoots;
     try {
-      roots = this.rootsFor(sid, viewer);
+      roots = await this.rootsFor(sid, viewer);
     } catch {
       return undefined;
     }
@@ -108,7 +107,7 @@ export class Containment {
    * rather than as forbidden — the path is reachable, and only writing there
    * is not. */
   async inbox(sid: Sid, path: string, viewer: Viewer = {}): Promise<Located> {
-    const roots = this.rootsFor(sid, viewer);
+    const roots = await this.rootsFor(sid, viewer);
     const cwd = roots.cwd;
     if (cwd === undefined || !isAbsolute(cwd)) {
       throw new OpError("path_forbidden", `${sid} states no working directory to write into`);
@@ -128,14 +127,14 @@ export class Containment {
     return this.locate({ sid: args.sid, kind: args.kind, path: args.path ?? "" }, viewer);
   }
 
-  private rootsFor(sid: Sid, viewer: Viewer): SessionRoots {
+  private async rootsFor(sid: Sid, viewer: Viewer): Promise<SessionRoots> {
     if (!sees(sid, viewer)) {
       throw new OpError(
         "path_forbidden",
         `the files of ${sid} are outside this connection's range`,
       );
     }
-    const roots = this.source.roots(sid);
+    const roots = await this.source.roots(sid);
     if (roots === undefined) {
       throw new OpError("path_forbidden", `nothing is known about the files of ${sid}`);
     }
@@ -250,22 +249,6 @@ export async function canonical(path: string): Promise<string> {
     if (parent === absolute) return absolute;
     try {
       return join(await realpath(parent), basename(absolute));
-    } catch {
-      return absolute;
-    }
-  }
-}
-
-/** The synchronous form required while `session.status` states its value synchronously (DESIGN §6); an asynchronous topic value uses `canonical` as the single path. */
-export function canonicalSync(path: string): string {
-  const absolute = resolve(path);
-  try {
-    return realpathSync(absolute);
-  } catch {
-    const parent = dirname(absolute);
-    if (parent === absolute) return absolute;
-    try {
-      return join(realpathSync(parent), basename(absolute));
     } catch {
       return absolute;
     }

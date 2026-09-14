@@ -122,6 +122,10 @@ describe("nothing pushes a topic frame outside the topic mechanism (M5)", () => 
       // the rows that changed.
       "topics/elements.ts",
       "topics/topics.ts",
+      // What a transcript was folded into, written as the file the next run
+      // takes it up from: persistence of something derived, which can be
+      // thrown away at any moment and derived again.
+      "transcript/cache.ts",
       // Framing once more, towards an upstream rather than a client: the
       // translation helper takes one JSON object per line.
       "translate/translate.ts",

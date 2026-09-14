@@ -46,6 +46,7 @@ const VERSION = "9.9.9";
 const OWNED = [
   "CLAUDE_CONFIG_DIR",
   "CCMSG_STATE_DIR",
+  "CCMSG_CACHE_DIR",
   "CCMSG_CONFIG_DIR",
   "CLAUDE_CODE_SESSION_ID",
 ] as const;
@@ -79,6 +80,7 @@ function home(): InstancePaths {
   mkdirSync(join(root, "home", "sessions"), { recursive: true });
   env("CLAUDE_CONFIG_DIR", join(root, "home"));
   env("CCMSG_STATE_DIR", join(root, "state"));
+  env("CCMSG_CACHE_DIR", join(root, "cache"));
   env("CCMSG_CONFIG_DIR", join(root, "config"));
   return resolvePaths();
 }

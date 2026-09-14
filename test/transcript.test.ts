@@ -5,6 +5,7 @@ import {
   mkdtempSync,
   realpathSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -14,7 +15,9 @@ import { PROTOCOL_VERSION, TOPIC_SCHEMAS, validationErrors } from "@ccmsg/protoc
 import { isLive, classify, Sessions, sessionStatusOf } from "../src/sessions/index.ts";
 import { Topics } from "../src/topics/index.ts";
 import {
-  FOLD_TAIL_BYTES,
+  FOLD_CACHE_VERSION,
+  FoldCache,
+  READ_CHUNK_BYTES,
   ITEMS_SNAPSHOT,
   NO_FACTS,
   type TranscriptFacts,
@@ -71,7 +74,7 @@ function domain(path: string | undefined) {
   const facts: string[] = [];
   const transcripts = new Transcripts({
     self: SELF,
-    pathOf: () => path,
+    pathOf: async () => path,
     publish: (topic, data) => published.push({ topic, data: data as Record<string, unknown> }),
     onFacts: (sid) => facts.push(sid),
     pollMs: POLL_MS,
@@ -299,7 +302,7 @@ describe("the transcript topic (§6.2)", () => {
     const { transcripts, published } = domain(file.path);
     transcripts.hold(SID);
     await settled(() => transcripts.following(SID));
-    const before = transcripts.snapshot(TOPIC)[0]?.data as { size: number };
+    const before = (await transcripts.snapshot(TOPIC))[0]?.data as { size: number };
 
     const added = jsonl([answer(1)]);
     file.append(answer(1));
@@ -337,7 +340,7 @@ describe("the transcript topic (§6.2)", () => {
     const { transcripts, published } = domain(file.path);
     transcripts.hold(SID);
     await settled(() => transcripts.following(SID));
-    const snapshot = transcripts.snapshot(TOPIC)[0]?.data;
+    const snapshot = (await transcripts.snapshot(TOPIC))[0]?.data;
     file.append(answer(1));
     await settled(() => published.length > 0);
 
@@ -363,11 +366,11 @@ describe("the transcript topic (§6.2)", () => {
     expect(facts.length).toBeGreaterThan(0);
   });
 
-  test("a session that never said where its transcript is is not followed", () => {
+  test("a session that never said where its transcript is is not followed", async () => {
     const { transcripts } = domain(undefined);
     transcripts.hold(SID);
+    expect(await transcripts.snapshot(TOPIC)).toEqual([]);
     expect(transcripts.following(SID)).toBe(false);
-    expect(transcripts.snapshot(TOPIC)).toEqual([]);
     expect(transcripts.facts(SID)).toEqual(NO_FACTS);
   });
 });
@@ -382,10 +385,10 @@ describe("the tail runs while somebody is listening (§6.3)", () => {
     const second = connAs("user");
 
     expect(transcripts.following(SID)).toBe(false);
-    expect(hub.subscribe(watcher, TOPIC)).toBe("ok");
+    expect(await hub.subscribe(watcher, TOPIC)).toBe("ok");
     await settled(() => transcripts.following(SID));
 
-    expect(hub.subscribe(second, TOPIC)).toBe("ok");
+    expect(await hub.subscribe(second, TOPIC)).toBe("ok");
     hub.unsubscribe(watcher, TOPIC);
     expect(transcripts.following(SID)).toBe(true);
 
@@ -405,17 +408,16 @@ describe("the tail runs while somebody is listening (§6.3)", () => {
     expect(transcripts.following(SID)).toBe(false);
   });
 
-  test("the subscriber is told where the transcript ends, in the same turn", () => {
-    // The snapshot goes out with the subscribe, before anything the tail does
-    // asynchronously: a size read later would be zero here, and every byte
-    // already in the file would then look appended to whoever stitched the
-    // frames onto it.
+  test("the subscribe is answered once the transcript has been read", async () => {
+    // The snapshot the subscribe hands over states the end of the file as the
+    // reading of it left off, so a subscriber never holds a zero it would
+    // stitch every byte already written onto as though it had just arrived.
     const file = transcript([prompt("first")]);
     const { transcripts } = domain(file.path);
     const hub = new Topics(SELF, new Set(), undefined, unthrottled());
     hub.attach("transcript", transcripts);
     const watcher = new TestConn({ state: "settled", role: "user", sid: SID });
-    hub.subscribe(watcher, TOPIC);
+    await hub.subscribe(watcher, TOPIC);
     watcher.flush();
     const frame = watcher.topics()[0] as { data: Record<string, unknown> };
     expect(frame.data["size"]).toBe(Buffer.byteLength(jsonl([prompt("first")])));
@@ -872,12 +874,12 @@ describe("what else the fold settles", () => {
     });
   }
 
-  test("a frame carrying every field the fold can fill still passes the contract", () => {
+  test("a frame carrying every field the fold can fill still passes the contract", async () => {
     const fold = new TranscriptFold();
     for (const each of cases) {
       for (const row of each.rows) fold.line(JSON.stringify(row));
     }
-    const data = sessionStatusOf(SID, fold.facts, { root: "/tmp/ccmsg-fold-root" });
+    const data = await sessionStatusOf(SID, fold.facts, { root: "/tmp/ccmsg-fold-root" });
     // Every list the contract names actually carries something, so a schema
     // that only ever saw empty lists is not what passed.
     expect(data.todos.length).toBeGreaterThan(0);
@@ -907,10 +909,10 @@ describe("what else the fold settles", () => {
   });
 });
 
-/** What a transcript of any size can still be asked (§3.3): the fold is seeded
- * from the end of the file, so a value that describes the present survives a
- * long session and a declaration made once, long ago, does not. */
-describe("the tail window bounds what the fold can know", () => {
+/** What a transcript of any size says (§3.3): the fold reads the file from its
+ * beginning, so a declaration made once, long ago, is still what the session
+ * states about itself however much has been written since. */
+describe("the fold reads the whole transcript", () => {
   const spawn = [
     {
       type: "assistant",
@@ -930,30 +932,165 @@ describe("the tail window bounds what the fold can know", () => {
     },
   ];
 
-  /** Enough rows to push the ones before them past the seed's window. */
+  /** Enough rows after the ones before them to put those beyond any one read. */
   function filler(): object[] {
     const padding = "x".repeat(4096);
     const rows: object[] = [];
-    while (rows.length * padding.length < FOLD_TAIL_BYTES + padding.length) {
+    while (rows.length * padding.length < READ_CHUNK_BYTES + padding.length) {
       rows.push({ type: "system", subtype: "note", text: padding });
     }
     return rows;
   }
 
-  test("a declaration older than the window is reported as nothing declared", async () => {
+  test("a declaration made before a megabyte of other records is still stated", async () => {
     const file = transcript([...spawn, ...filler()]);
     const { transcripts } = domain(file.path);
     transcripts.hold(SID);
-    await settled(() => transcripts.following(SID));
-    // Indistinguishable from a session that started no task: the contract
-    // spells "not in the window" and "nothing was declared" the same way.
-    expect(transcripts.facts(SID).background).toEqual([]);
-
-    // What happens after the fold is following is seen in full, however long
-    // the file already was.
-    file.append(...spawn.map((row) => ({ ...row, timestamp: at(2) })));
-    await settled(() => transcripts.facts(SID).background.length > 0);
+    await transcripts.ready(SID);
     expect(transcripts.facts(SID).background[0]?.task_id).toBe("m-old");
+  });
+
+  test("a file the session named before a megabyte of records is still named", async () => {
+    const named = "/tmp/ccmsg-head-fold/early.txt";
+    const read = {
+      type: "assistant",
+      timestamp: at(0),
+      message: {
+        model: "claude-fable-5",
+        content: [{ type: "tool_use", id: "t9", name: "Read", input: { file_path: named } }],
+      },
+    };
+    const file = transcript([read, ...filler()]);
+    const { transcripts } = domain(file.path);
+    transcripts.hold(SID);
+    await transcripts.ready(SID);
+    expect(transcripts.facts(SID).named_files.map((each) => each.path)).toEqual([named]);
+  });
+});
+
+describe("a reading is taken up where the last one left off", () => {
+  /** A cache directory, and the fold domain that reads through it. */
+  function cached(): { cache: FoldCache; dir: string } {
+    const dir = mkdtempSync(join(tmpdir(), "ccmsg-fold-cache-"));
+    roots.push(dir);
+    return { cache: new FoldCache(dir), dir };
+  }
+
+  function domainOver(path: string, cache: FoldCache) {
+    const transcripts = new Transcripts({
+      self: SELF,
+      pathOf: async () => path,
+      cache,
+      publish: () => {},
+      onFacts: () => {},
+      pollMs: POLL_MS,
+    });
+    running.push(transcripts);
+    return transcripts;
+  }
+
+  /** An entry claiming something the file does not say, so that reading it back
+   * is the only way the claim can appear. */
+  function planted(path: string, version: number, offset = statSync(path).size): object {
+    const known = statSync(path);
+    return {
+      version,
+      path,
+      dev: known.dev,
+      ino: known.ino,
+      offset,
+      fold: {
+        last_user_input_at: 4242,
+        files: [],
+        todos: [],
+        teammates: [],
+        background: [],
+        workflows: [],
+        agents: [],
+        calls: [],
+      },
+      items: [],
+    };
+  }
+
+  /** Where `FoldCache` keeps one transcript, named the way it names it. */
+  async function plant(dir: string, path: string, entry: object): Promise<void> {
+    const { createHash } = await import("node:crypto");
+    const name = `${createHash("sha256").update(path).digest("hex").slice(0, 32)}.json`;
+    writeFileSync(join(dir, name), JSON.stringify(entry));
+  }
+
+  test("what a past reading kept is what the next one starts from", async () => {
+    const file = transcript([prompt("the first thing typed")]);
+    const { cache, dir } = cached();
+    await plant(dir, file.path, planted(file.path, FOLD_CACHE_VERSION));
+
+    const transcripts = domainOver(file.path, cache);
+    transcripts.hold(SID);
+    await transcripts.ready(SID);
+    // The kept answer, which the file itself does not say: the records before
+    // the offset were not read again.
+    expect(transcripts.facts(SID).last_user_input_at).toBe(4242);
+  });
+
+  test("what an older shape of the fold kept is thrown away and read again", async () => {
+    const file = transcript([prompt("the first thing typed")]);
+    const { cache, dir } = cached();
+    await plant(dir, file.path, planted(file.path, FOLD_CACHE_VERSION - 1));
+
+    const transcripts = domainOver(file.path, cache);
+    transcripts.hold(SID);
+    await transcripts.ready(SID);
+    // The file read from its beginning, which says something else entirely.
+    expect(transcripts.facts(SID).last_user_input_at).toBe(NOW);
+  });
+
+  test("what was kept about a file that has since shrunk is thrown away", async () => {
+    const file = transcript([prompt("the first thing typed")]);
+    const { cache, dir } = cached();
+    await plant(
+      dir,
+      file.path,
+      planted(file.path, FOLD_CACHE_VERSION, statSync(file.path).size + 1),
+    );
+
+    const transcripts = domainOver(file.path, cache);
+    transcripts.hold(SID);
+    await transcripts.ready(SID);
+    expect(transcripts.facts(SID).last_user_input_at).toBe(NOW);
+  });
+
+  test("what was kept about another file of the same name is thrown away", async () => {
+    const file = transcript([prompt("the first thing typed")]);
+    const { cache, dir } = cached();
+    const entry = planted(file.path, FOLD_CACHE_VERSION) as Record<string, unknown>;
+    await plant(dir, file.path, { ...entry, ino: Number(entry["ino"]) + 1 });
+
+    const transcripts = domainOver(file.path, cache);
+    transcripts.hold(SID);
+    await transcripts.ready(SID);
+    expect(transcripts.facts(SID).last_user_input_at).toBe(NOW);
+  });
+
+  test("the version stands for the sources it is read back by", async () => {
+    // Raising it is what makes a kept answer unreadable to a build that would
+    // no longer derive it, so the sources that decide that answer are hashed
+    // here: when one of them moves, this fails until the version moves with it.
+    const { createHash } = await import("node:crypto");
+    const digest = createHash("sha256");
+    const sources = [
+      "src/transcript/fold.ts",
+      "src/transcript/items/classify.ts",
+      "src/transcript/items/item.ts",
+      "src/transcript/items/record.ts",
+      "src/transcript/items/tools.ts",
+      "src/transcript/items/ids.ts",
+    ];
+    for (const source of sources) digest.update(await Bun.file(source).text());
+    expect([FOLD_CACHE_VERSION, digest.digest("hex").slice(0, 16)]).toEqual([
+      1,
+      "d8a1f06cec5e1bfa",
+    ]);
   });
 });
 
@@ -1026,7 +1163,7 @@ describe("where a sid's transcript is (§5.1)", () => {
       configHome: root,
       announced: () => announced,
     });
-    expect(files.path(SID)).toBe(announced);
+    expect(await files.path(SID)).toBe(announced);
   });
 
   test("a sid nobody announced is found by the name the file carries", async () => {
@@ -1038,7 +1175,7 @@ describe("where a sid's transcript is (§5.1)", () => {
       configHome: root,
       announced: () => undefined,
     });
-    expect(files.path(SID)).toBe(written);
+    expect(await files.path(SID)).toBe(written);
   });
 
   test("a sid with no file under this config home has none", async () => {
@@ -1047,7 +1184,7 @@ describe("where a sid's transcript is (§5.1)", () => {
       configHome: configHome(),
       announced: () => undefined,
     });
-    expect(files.path(SID)).toBeUndefined();
+    expect(await files.path(SID)).toBeUndefined();
   });
 });
 
@@ -1079,7 +1216,7 @@ describe("which standing a transcript was written from (§3.6)", () => {
 
   test("a session's own transcript is read from the session", async () => {
     const { files } = written();
-    expect(await files.subjectOf(files.session(SID))).toBe("main");
+    expect(await files.subjectOf(await files.session(SID))).toBe("main");
   });
 
   test("an agent the harness noted as a teammate is read as one", async () => {
@@ -1160,7 +1297,7 @@ describe("the transcript.items topic (§3.6)", () => {
     let hub: Topics;
     const transcripts = new Transcripts({
       self: SELF,
-      pathOf: () => file.path,
+      pathOf: async () => file.path,
       publish: (topic, data) => {
         hub.publish(topic, data);
       },
@@ -1172,7 +1309,7 @@ describe("the transcript.items topic (§3.6)", () => {
     hub.attach("transcript", transcripts);
     hub.attach("transcript.items", transcripts);
     const watcher = connAs("user");
-    expect(hub.subscribe(watcher, ITEMS_TOPIC)).toBe("ok");
+    expect(await hub.subscribe(watcher, ITEMS_TOPIC)).toBe("ok");
     watcher.flush();
     await settled(() => transcripts.following(SID));
 
@@ -1241,12 +1378,10 @@ describe("the transcript.items topic (§3.6)", () => {
     const { transcripts } = domain(file.path);
     transcripts.hold(SID);
     await settled(() => transcripts.following(SID));
-    const opened = () =>
-      transcripts.snapshot(ITEMS_TOPIC)[0]?.data as
-        | { items: Record<string, unknown>[] }
-        | undefined;
-    await settled(() => (opened()?.items.length ?? 0) > 0);
-    expect(opened()?.items.map((item) => item["type"])).toEqual([
+    const opened = (await transcripts.snapshot(ITEMS_TOPIC))[0]?.data as
+      | { items: Record<string, unknown>[] }
+      | undefined;
+    expect(opened?.items.map((item) => item["type"])).toEqual([
       "message.user.in",
       "thinking",
       "message.user.out",
@@ -1254,9 +1389,9 @@ describe("the transcript.items topic (§3.6)", () => {
     ]);
   });
 
-  test("a subscription in the turn the tail starts opens on the end, not on nothing", () => {
-    // The items a subscriber opens on are read in the same turn the tail is
-    // started, for the reason the raw topic's size is: an empty snapshot would
+  test("the first subscription opens on the end, not on nothing", async () => {
+    // The items a subscriber opens on are the end of a reading of the whole
+    // file, and the subscribe waits for that reading: an empty snapshot would
     // send a client that draws the newest items looking for them at the
     // beginning of the transcript instead.
     const rows = Array.from({ length: ITEMS_SNAPSHOT + 40 }, (_, at) =>
@@ -1265,7 +1400,7 @@ describe("the transcript.items topic (§3.6)", () => {
     const file = transcript(rows);
     const { transcripts } = domain(file.path);
     transcripts.hold(SID);
-    const opened = transcripts.snapshot(ITEMS_TOPIC)[0]?.data as {
+    const opened = (await transcripts.snapshot(ITEMS_TOPIC))[0]?.data as {
       items: Record<string, unknown>[];
     };
     // One item per record here, so the tail of the file is the tail of the
@@ -1279,7 +1414,7 @@ describe("the transcript.items topic (§3.6)", () => {
     const { transcripts, published } = domain(file.path);
     transcripts.hold(SID);
     await settled(() => transcripts.following(SID));
-    const snapshot = transcripts.snapshot(ITEMS_TOPIC)[0]?.data;
+    const snapshot = (await transcripts.snapshot(ITEMS_TOPIC))[0]?.data;
     file.append(turn("a1", 1));
     await settled(() => itemsOf(published).length >= 3);
 
@@ -1301,7 +1436,7 @@ describe("the transcript.items topic (§3.6)", () => {
     writeFileSync(file.path, jsonl([spoke("u9", "a fresh start", 2)]));
     await settled(() => itemsOf(published).length > 0);
     expect(itemsOf(published).map((item) => item["id"])).toEqual(["u9:0"]);
-    const opened = transcripts.snapshot(ITEMS_TOPIC)[0]?.data as {
+    const opened = (await transcripts.snapshot(ITEMS_TOPIC))[0]?.data as {
       items: Record<string, unknown>[];
     };
     expect(opened.items.map((item) => item["uuid"])).toEqual(["u9"]);

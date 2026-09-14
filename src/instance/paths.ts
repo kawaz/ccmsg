@@ -41,6 +41,11 @@ export interface InstancePaths {
   /** Where a file is put before it is overwritten by the checked copy. */
   readonly rejectedDir: string;
   readonly stateDir: string;
+  /** Where what was derived from a file is kept so it need not be derived
+   * again. Everything here can be rebuilt from the file it came from, so the
+   * directory may be emptied at any moment and the only cost is the work of
+   * deriving it once more. */
+  readonly cacheDir: string;
   /** The address clients connect to. A symlink to whichever `socketReal` is
    * currently serving, so a client's path outlives the process behind it. */
   readonly socket: string;
@@ -148,6 +153,7 @@ export function resolvePathsFor(configHome: string, env: Env = process.env): Ins
     satisfiedFile: join(stateRoot, STATE_CONFIG_DIR, SATISFIED_FILE),
     rejectedDir: join(stateRoot, REJECTED_DIR),
     stateDir,
+    cacheDir: appDir(env, "CCMSG_CACHE_DIR", "XDG_CACHE_HOME", [".cache"], key),
     socketDir,
     socket: join(socketDir, SOCKET_NAME),
     socketReal: join(socketDir, realSocketName(process.pid)),

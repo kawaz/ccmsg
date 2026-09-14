@@ -1,17 +1,17 @@
 import type { InstanceId, Sid } from "@ccmsg/protocol";
 import { topicParam, type TopicValue, type UpstreamResource } from "../topics/index.ts";
+import type { FoldCache } from "./cache.ts";
 import { NO_FACTS, type TranscriptFacts, TranscriptFold } from "./fold.ts";
 import { Classification, type Item, positioned } from "./items/index.ts";
 import { type Appended, TranscriptTail } from "./tail.ts";
 
 /** How many items a subscription to `transcript.items:<sid>` opens with.
  *
- * The tail of the same megabyte the fold is seeded from, bounded by a count
- * because that read is bounded by bytes: a file of many small records would
- * otherwise make the opening frame as large as the read that produced it. Two
- * hundred items is several turns at the sizes the harness writes, which is
- * more than a live view shows at once — and a client that wants further back
- * asks for it by range rather than waiting for a snapshot to grow. */
+ * The end of a reading that covers the whole file, bounded by a count because
+ * the whole file is what was read: an opening frame is what a live view draws,
+ * and two hundred items is several turns at the sizes the harness writes —
+ * more than such a view shows at once. A client that wants further back asks
+ * for it by range rather than waiting for a snapshot to grow. */
 export const ITEMS_SNAPSHOT = 200;
 
 /** Which of the two topics a name is. Both are fed by one tail, so the
@@ -26,7 +26,11 @@ export interface TranscriptsDeps {
    * (DESIGN §4.2), or the `<sid>.jsonl` under this instance's `projects/` that
    * carries its name. A sid neither names nor is named by a file there has
    * none, and nothing is guessed for it. */
-  readonly pathOf: (sid: Sid) => string | undefined;
+  readonly pathOf: (sid: Sid) => Promise<string | undefined>;
+  /** Where a reading of a transcript is kept so the next one resumes from it.
+   * Absent leaves every reading starting from the file's beginning, which is
+   * the same answer at the price of reading it again. */
+  readonly cache?: FoldCache;
   /** The one way a value reaches subscribers (DESIGN §6.1). */
   readonly publish: (topic: string, data: unknown) => void;
   /** The fold now says something different about this session. What the fold
@@ -70,16 +74,20 @@ export class Transcripts implements UpstreamResource {
    * there, which is the whole of the snapshot for a topic whose frames are an
    * append rather than a value (DESIGN §6.2). A session whose transcript this
    * instance cannot find has nothing to state, and the subscriber begins at
-   * the first thing appended after one appears. */
-  snapshot(topic: string): readonly TopicValue[] {
+   * the first thing appended after one appears.
+   *
+   * Answered once the transcript has been read, which is what makes the size
+   * and the items it states describe the same whole file the fold does. */
+  async snapshot(topic: string): Promise<readonly TopicValue[]> {
     const sid = topicParam(topic);
-    const followed = sid === undefined ? undefined : this.#followed.get(sid);
-    if (sid === undefined || followed === undefined) return [];
+    if (sid === undefined) return [];
+    await this.ready(sid);
+    const followed = this.#followed.get(sid);
+    const tail = followed?.tail;
+    if (followed === undefined || tail === undefined) return [];
     // The items topic holds a list that is only appended to, so its snapshot
     // is the end of that list rather than a place to start from.
-    const data = isItems(topic)
-      ? { sid, items: [...followed.recent] }
-      : { sid, size: followed.tail.size };
+    const data = isItems(topic) ? { sid, items: [...followed.recent] } : { sid, size: tail.size };
     return [{ instance: this.deps.self, data }];
   }
 
@@ -89,10 +97,17 @@ export class Transcripts implements UpstreamResource {
     return this.#followed.get(sid)?.fold.facts ?? NO_FACTS;
   }
 
+  /** When the transcript held for a session has been read. Whoever states a
+   * value the fold settles waits on this, so what is stated describes the
+   * whole file rather than the part of it read so far (CT-Q8). */
+  ready(sid: Sid): Promise<void> {
+    return this.#followed.get(sid)?.ready ?? Promise.resolve();
+  }
+
   /** Whether a session's transcript is being followed, which is how "the
    * subscription drives the resource" is observable from outside. */
   following(sid: Sid): boolean {
-    return this.#followed.get(sid)?.tail.running === true;
+    return this.#followed.get(sid)?.tail?.running === true;
   }
 
   /** Ask for a session's transcript to be followed. Each hold is released
@@ -103,11 +118,15 @@ export class Transcripts implements UpstreamResource {
       held.holds += 1;
       return;
     }
-    const path = this.deps.pathOf(sid);
-    if (path === undefined) return;
-    const followed = this.#follow(sid, path);
+    const followed: Followed = {
+      holds: 1,
+      fold: new TranscriptFold(),
+      reading: new Classification(),
+      recent: [],
+      ready: Promise.resolve(),
+    };
     this.#followed.set(sid, followed);
-    void followed.tail.start();
+    followed.ready = this.#open(sid, followed);
   }
 
   release(sid: Sid): void {
@@ -116,7 +135,8 @@ export class Transcripts implements UpstreamResource {
     held.holds -= 1;
     if (held.holds > 0) return;
     this.#followed.delete(sid);
-    held.tail.stop();
+    held.tail?.stop();
+    void this.#remember(held);
     // What the fold held goes with it: the values it derived describe a file
     // this instance is no longer reading, and stating them from memory would
     // outlive the reading that justified them.
@@ -129,36 +149,61 @@ export class Transcripts implements UpstreamResource {
     const followed = new Map(this.#followed);
     this.#followed.clear();
     for (const [sid, entry] of followed) {
-      entry.tail.stop();
+      entry.tail?.stop();
+      void this.#remember(entry);
       this.deps.onFacts(sid);
     }
   }
 
-  #follow(sid: Sid, path: string): Followed {
-    const fold = new TranscriptFold();
-    const followed: Followed = {
-      holds: 1,
-      fold,
-      reading: new Classification(),
-      recent: [],
-      tail: new TranscriptTail(path, {
-        onSeed: (seeded) => {
-          // The end of the file as it already stood: it settles what the fold
-          // says and opens the reading that classifies what comes next, and it
-          // is not an append, so nothing is published for it.
-          this.#keep(sid, seeded);
-          if (foldAll(fold, seeded.lines)) this.deps.onFacts(sid);
-        },
-        onAppended: (appended) => this.#appended(sid, fold, appended),
-        onTruncated: () => {
-          fold.reset();
-          this.#reset(sid);
-          this.deps.onFacts(sid);
-        },
-        ...(this.deps.pollMs === undefined ? {} : { pollMs: this.deps.pollMs }),
-      }),
-    };
-    return followed;
+  /** Find the file, take up whatever reading of it was left behind, and read
+   * the rest of it. */
+  async #open(sid: Sid, followed: Followed): Promise<void> {
+    const path = await this.deps.pathOf(sid);
+    if (path === undefined) {
+      // Nothing to follow. The entry goes rather than standing as a session
+      // with an empty fold, so a later hold looks for the file again.
+      if (this.#followed.get(sid) === followed) this.#followed.delete(sid);
+      return;
+    }
+    followed.path = path;
+    const kept = await this.deps.cache?.read(path);
+    let settled = false;
+    if (kept !== undefined) {
+      followed.fold.restore(kept.fold);
+      followed.recent.push(...kept.items);
+      settled = true;
+    }
+    const tail = new TranscriptTail(path, {
+      onExisting: (read) => {
+        // What was already in the file: it settles what the fold says and opens
+        // the reading that classifies what comes next, and it is not an append,
+        // so nothing is published for it.
+        this.#keep(sid, read);
+        if (foldAll(followed.fold, read.lines)) settled = true;
+      },
+      onAppended: (appended) => this.#appended(sid, followed.fold, appended),
+      onTruncated: () => {
+        followed.fold.reset();
+        this.#reset(sid);
+        void this.deps.cache?.drop(path);
+        this.deps.onFacts(sid);
+      },
+      ...(this.deps.pollMs === undefined ? {} : { pollMs: this.deps.pollMs }),
+    });
+    followed.tail = tail;
+    await tail.start(kept?.offset ?? 0);
+    await this.#remember(followed);
+    // A file that said nothing says nothing: the reading is finished either
+    // way, and only a reading that settled something is news to the domain.
+    if (settled) this.deps.onFacts(sid);
+  }
+
+  /** Write down where the reading has reached, so the next one starts there. */
+  async #remember(followed: Followed): Promise<void> {
+    const path = followed.path;
+    const tail = followed.tail;
+    if (path === undefined || tail === undefined) return;
+    await this.deps.cache?.save(path, tail.offset, followed.fold.held, followed.recent);
   }
 
   /** The one pass over what was appended: the lines go to the fold, to the
@@ -219,7 +264,10 @@ interface Followed {
   reading: Classification;
   /** The end of what has been read, which is what a subscription opens on. */
   readonly recent: Item[];
-  readonly tail: TranscriptTail;
+  /** Settled once the file has been found and read. */
+  ready: Promise<void>;
+  path?: string;
+  tail?: TranscriptTail;
 }
 
 function foldAll(fold: TranscriptFold, lines: readonly string[]): boolean {

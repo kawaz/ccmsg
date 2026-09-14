@@ -4,7 +4,9 @@ export {
   TranscriptFiles,
   type TranscriptFilesDeps,
 } from "./files.ts";
+export { FOLD_CACHE_VERSION, FoldCache, type FoldCacheEntry } from "./cache.ts";
 export {
+  type FoldState,
   NO_FACTS,
   readRecord,
   type TranscriptFacts,
@@ -12,5 +14,5 @@ export {
   type TranscriptRecord,
 } from "./fold.ts";
 export { READ_LIMIT, readSlice } from "./read.ts";
-export { type Appended, FOLD_TAIL_BYTES, TranscriptTail } from "./tail.ts";
+export { type Appended, READ_CHUNK_BYTES, TranscriptTail } from "./tail.ts";
 export { ITEMS_SNAPSHOT, Transcripts, type TranscriptsDeps } from "./transcripts.ts";

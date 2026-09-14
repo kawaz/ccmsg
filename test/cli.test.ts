@@ -19,6 +19,7 @@ import { OTHER_SID, SID } from "./frames.ts";
 const OWNED = [
   "CLAUDE_CONFIG_DIR",
   "CCMSG_STATE_DIR",
+  "CCMSG_CACHE_DIR",
   "CCMSG_CONFIG_DIR",
   "CLAUDE_CODE_SESSION_ID",
   "CCMSG_SAY_BIN",
@@ -53,6 +54,7 @@ async function instance(): Promise<Instance> {
   mkdirSync(join(root, "home", "sessions"), { recursive: true });
   env("CLAUDE_CONFIG_DIR", join(root, "home"));
   env("CCMSG_STATE_DIR", join(root, "state"));
+  env("CCMSG_CACHE_DIR", join(root, "cache"));
   env("CCMSG_CONFIG_DIR", join(root, "config"));
   const outcome = await start({ echoLog: false });
   if (!isRunning(outcome)) throw new Error("another instance holds this config home");
@@ -264,6 +266,7 @@ describe("ccmsg peers / ccmsg agents", () => {
     dirs.push(root);
     env("CLAUDE_CONFIG_DIR", join(root, "home"));
     env("CCMSG_STATE_DIR", join(root, "state"));
+    env("CCMSG_CACHE_DIR", join(root, "cache"));
     env("CCMSG_CONFIG_DIR", join(root, "config"));
 
     const written = await capture(() => main(["peers"]));
@@ -334,6 +337,7 @@ describe("a notification the session pushed", () => {
     dirs.push(root);
     env("CLAUDE_CONFIG_DIR", join(root, "home"));
     env("CCMSG_STATE_DIR", join(root, "state"));
+    env("CCMSG_CACHE_DIR", join(root, "cache"));
     env("CCMSG_CONFIG_DIR", join(root, "config"));
     env("CLAUDE_CODE_SESSION_ID", SID);
 

@@ -73,6 +73,7 @@ function env(): Record<string, string> {
     HOME: temp("ccmsg-codex-fakehome-"),
     CCMSG_CONFIG_DIR: temp("ccmsg-codex-config-"),
     CCMSG_STATE_DIR: temp("ccmsg-codex-state-"),
+    CCMSG_CACHE_DIR: temp("ccmsg-codex-cache-"),
   };
 }
 
@@ -152,13 +153,13 @@ describe("transcripts", () => {
       configHome: home,
       announced: () => undefined,
     });
-    expect(files.path("01a089f0-5415-7b91-8400-39f3f40b408d" as Sid)).toBe(file);
+    expect(await files.path("01a089f0-5415-7b91-8400-39f3f40b408d" as Sid)).toBe(file);
     expect((await files.all()).map((each) => each.sid)).toEqual([
       "01a089f0-5415-7b91-8400-39f3f40b408d",
     ]);
   });
 
-  test("a reverted thread's new rollout still names the same session", () => {
+  test("a reverted thread's new rollout still names the same session", async () => {
     const home = codexHome();
     const file = rollout(
       home,
@@ -170,7 +171,7 @@ describe("transcripts", () => {
       configHome: home,
       announced: () => undefined,
     });
-    expect(files.path("01a089f0-5415-7b91-8400-39f3f40b408d" as Sid)).toBe(file);
+    expect(await files.path("01a089f0-5415-7b91-8400-39f3f40b408d" as Sid)).toBe(file);
   });
 
   test("what is not a rollout is not a transcript", async () => {
@@ -600,7 +601,7 @@ describe("a Codex thread id is a sid", () => {
     expect(validationErrors(Sid, THREAD_ID)).toEqual([]);
   });
 
-  test("every place ccmsg reads a sid out of a name takes it too", () => {
+  test("every place ccmsg reads a sid out of a name takes it too", async () => {
     const home = codexHome();
     const file = rollout(home, "2026/09/10", `rollout-2026-09-10T15-10-23-${THREAD_ID}.jsonl`);
     const files = new TranscriptFiles({
@@ -608,7 +609,7 @@ describe("a Codex thread id is a sid", () => {
       configHome: home,
       announced: () => undefined,
     });
-    expect(files.path(THREAD_ID as Sid)).toBe(file);
+    expect(await files.path(THREAD_ID as Sid)).toBe(file);
 
     mkdirSync(join(home, "thread-writer-locks"), { recursive: true });
     writeFileSync(join(home, "thread-writer-locks", `${THREAD_ID}.lock`), "");

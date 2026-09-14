@@ -74,7 +74,7 @@ afterAll(() => {
 
 function containment(over: Partial<SessionRoots> = {}): Containment {
   return new Containment({
-    roots: (sid) => (sid === SID ? { ...roots, ...over } : undefined),
+    roots: async (sid) => (sid === SID ? { ...roots, ...over } : undefined),
   });
 }
 
@@ -190,7 +190,7 @@ describe("contained", () => {
   });
 
   test("a session that greeted with no root admits nothing", async () => {
-    const bare = fileHandlers(new Containment({ roots: () => undefined }));
+    const bare = fileHandlers(new Containment({ roots: async () => undefined }));
     expect(
       await refusalOf(() =>
         run("file.read", bare["file.read"], {
@@ -691,14 +691,14 @@ describe("the allowlists a session's own facts state", () => {
 
   /** The status frame for a transcript of these rows, as `session.status:<sid>`
    * would carry it and as containment reads it. */
-  function stated(rows: object[], where: { root?: string; cwd?: string }) {
+  async function stated(rows: object[], where: { root?: string; cwd?: string }) {
     const fold = new TranscriptFold();
     for (const row of rows) fold.line(JSON.stringify(row));
-    const status = sessionStatusOf(SID, fold.facts, where);
+    const status = await sessionStatusOf(SID, fold.facts, where);
     return {
       status,
       containment: new Containment({
-        roots: (sid) =>
+        roots: async (sid) =>
           sid === SID
             ? {
                 ...where,
@@ -733,7 +733,7 @@ describe("the allowlists a session's own facts state", () => {
   });
 
   test("a file the transcript named outside the root is reachable as external", async () => {
-    const { status, containment } = stated([read(join(base, "outside", NAMED))], where());
+    const { status, containment } = await stated([read(join(base, "outside", NAMED))], where());
     expect(status.external_files).toEqual([{ path: join(base, "outside", NAMED), origin: "tool" }]);
     expect(
       (
@@ -747,7 +747,7 @@ describe("the allowlists a session's own facts state", () => {
   });
 
   test("a file the transcript never named is not", async () => {
-    const { containment } = stated([read(join(base, "outside", NAMED))], where());
+    const { containment } = await stated([read(join(base, "outside", NAMED))], where());
     expect(
       await refusalOf(() =>
         containment.locate({
@@ -761,12 +761,12 @@ describe("the allowlists a session's own facts state", () => {
 
   test("a file inside the root is not external, since external is what is outside it", async () => {
     const inside = join(base, "repo/ws/hello.txt");
-    const { status } = stated([read(inside)], where());
+    const { status } = await stated([read(inside)], where());
     expect(status.external_files).toEqual([]);
   });
 
   test("a session that stated no root admits none of the paths it named", async () => {
-    const { status } = stated([read(join(base, "outside", NAMED))], {
+    const { status } = await stated([read(join(base, "outside", NAMED))], {
       cwd: join(base, "repo/ws"),
     });
     expect(status.external_files).toEqual([]);
@@ -779,7 +779,7 @@ describe("the allowlists a session's own facts state", () => {
       `{\n  // the folders of this workspace\n  "folders": [{ "path": "../../space", "name": "docs" },],\n}\n`,
     );
     try {
-      const { status, containment } = stated([], where());
+      const { status, containment } = await stated([], where());
       expect(status.workspace_folders).toEqual([{ name: "docs", path: join(base, "space") }]);
       expect(
         (
@@ -805,7 +805,7 @@ describe("the allowlists a session's own facts state", () => {
   });
 
   test("a working directory with no workspace file names no folder", async () => {
-    const { status, containment } = stated([], where());
+    const { status, containment } = await stated([], where());
     expect(status.workspace_folders).toEqual([]);
     expect(
       await refusalOf(() =>

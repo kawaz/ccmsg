@@ -64,6 +64,7 @@ function loaded(sids: readonly string[] = SESSIONS, records = RECORDS): Env {
   return {
     CLAUDE_CONFIG_DIR: home,
     CCMSG_STATE_DIR: join(root, "state"),
+    CCMSG_CACHE_DIR: join(root, "cache"),
     CCMSG_CONFIG_DIR: join(root, "config"),
   };
 }
@@ -150,5 +151,37 @@ describe("reading a transcript does not stop the instance (DR: async IO)", () =>
     expect((search?.at ?? 0) - searching).toBeGreaterThan(PROBE_MS * 2);
     expect(order[0]).toBe("ping");
     expect((ping?.at ?? Infinity) - asked).toBeLessThan(((search?.at ?? 0) - asked) / 5);
+  }, 60_000);
+
+  test("and from the middle of the read a subscription opens with", async () => {
+    // The other route into a whole transcript: a subscription is answered once
+    // the file has been folded (CT-Q8), so the subscriber waits — and nobody
+    // else does.
+    const instance = await start({ env: loaded([SID], RECORDS * 3), echoLog: false });
+    if (!isRunning(instance)) throw new Error("another instance holds this config home");
+    running.push(instance);
+    const client = await connectUds(instance.socketPath);
+    clients.push(client);
+    client.send({ op: "hello.user", request_id: "hello", protocol_version: PROTOCOL_VERSION });
+    expect((await client.next())["ok"]).toBe(true);
+
+    const subscribing = performance.now();
+    client.send({
+      op: "topic.subscribe",
+      request_id: "subscribe",
+      topic: `transcript.items:${SID}`,
+    });
+    await Bun.sleep(PROBE_MS);
+    const asked = performance.now();
+    client.send({ op: "instance.ping", request_id: "ping" });
+    const { back, order } = await answers(client, ["subscribe", "ping"]);
+
+    const subscribe = back.get("subscribe");
+    const ping = back.get("ping");
+    expect(subscribe?.frame["ok"]).toBe(true);
+    // The probe landed inside the reading rather than after it.
+    expect((subscribe?.at ?? 0) - subscribing).toBeGreaterThan(PROBE_MS * 2);
+    expect(order[0]).toBe("ping");
+    expect((ping?.at ?? Infinity) - asked).toBeLessThan(((subscribe?.at ?? 0) - asked) / 5);
   }, 60_000);
 });

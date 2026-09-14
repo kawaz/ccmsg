@@ -111,6 +111,7 @@ async function greet(gatewayUrl?: string): Promise<LineClient> {
   const env: Env = {
     CLAUDE_CONFIG_DIR: join(root, "home"),
     CCMSG_STATE_DIR: join(root, "state"),
+    CCMSG_CACHE_DIR: join(root, "cache"),
     CCMSG_CONFIG_DIR: join(root, "config"),
   };
   const outcome = await start({ env, echoLog: false });

@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { readdir, readFile, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, resolve, sep } from "node:path";
 import type { WorkspaceFolder } from "@ccmsg/protocol";
@@ -14,15 +14,15 @@ import type { WorkspaceFolder } from "@ccmsg/protocol";
  *
  * A session that has no workspace file names no folders, which is what an empty
  * list means to the contract and admits no `workspace` path at all. */
-export function workspaceFolders(cwd: string | undefined): WorkspaceFolder[] {
+export async function workspaceFolders(cwd: string | undefined): Promise<WorkspaceFolder[]> {
   if (cwd === undefined || !isAbsolute(cwd)) return [];
   const folders: WorkspaceFolder[] = [];
   const seen = new Set<string>();
-  for (const file of workspaceFiles(cwd)) {
-    for (const spec of specs(file)) {
+  for (const file of await workspaceFiles(cwd)) {
+    for (const spec of await specs(file)) {
       // Relative to the workspace file, which is how an editor reads them.
-      const real = directory(resolve(dirname(file), spec.path));
-      if (real === undefined || overbroad(real) || seen.has(real)) continue;
+      const real = await directory(resolve(dirname(file), spec.path));
+      if (real === undefined || (await overbroad(real)) || seen.has(real)) continue;
       seen.add(real);
       folders.push({ name: spec.name ?? basename(real), path: real });
     }
@@ -32,10 +32,10 @@ export function workspaceFolders(cwd: string | undefined): WorkspaceFolder[] {
 
 /** The workspace files directly beside the session's working directory, in a
  * fixed order so the same directory always states its folders the same way. */
-function workspaceFiles(cwd: string): string[] {
+async function workspaceFiles(cwd: string): Promise<string[]> {
   let entries: string[];
   try {
-    entries = readdirSync(cwd);
+    entries = await readdir(cwd);
   } catch {
     return [];
   }
@@ -47,10 +47,10 @@ function workspaceFiles(cwd: string): string[] {
 
 /** What one workspace file declares: the `folders` array, and of each entry the
  * path it names and the name it may give that path. */
-function specs(file: string): { path: string; name?: string }[] {
+async function specs(file: string): Promise<{ path: string; name?: string }[]> {
   let parsed: unknown;
   try {
-    parsed = JSON.parse(uncommented(readFileSync(file, "utf8")));
+    parsed = JSON.parse(uncommented(await readFile(file, "utf8")));
   } catch {
     // Written by hand and half-saved, or not a workspace file after all.
     return [];
@@ -113,10 +113,10 @@ function uncommented(text: string): string {
 
 /** What the filesystem calls a folder that is one. A path naming a file, or
  * nothing at all, names no folder and is dropped. */
-function directory(path: string): string | undefined {
+async function directory(path: string): Promise<string | undefined> {
   try {
-    const real = realpathSync(path);
-    return statSync(real).isDirectory() ? real : undefined;
+    const real = await realpath(path);
+    return (await stat(real)).isDirectory() ? real : undefined;
   } catch {
     return undefined;
   }
@@ -127,9 +127,9 @@ function directory(path: string): string | undefined {
  * The root and the home directory and anything above them are refused: a
  * workspace file naming one of those turns the `workspace` surface into the
  * whole filesystem, and the folders are an allowlist rather than a hint. */
-function overbroad(real: string): boolean {
+async function overbroad(real: string): Promise<boolean> {
   if (real === sep || dirname(real) === real) return true;
-  const home = directory(homedir());
+  const home = await directory(homedir());
   return home !== undefined && (real === home || home.startsWith(withSep(real)));
 }
 

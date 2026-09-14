@@ -41,7 +41,7 @@ export async function forkOrigin(
   sid: Sid,
   files: TranscriptFiles,
 ): Promise<ForkOrigin | undefined> {
-  const file = files.session(sid);
+  const file = await files.session(sid);
   const ours = await recordIds(file);
   const head = ours?.[0];
   if (ours === undefined || head === undefined) return undefined;

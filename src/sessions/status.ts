@@ -5,7 +5,7 @@ import type {
   SessionStatusSnapshot,
   Sid,
 } from "@ccmsg/protocol";
-import { canonicalSync, within } from "../files/containment.ts";
+import { canonical, within } from "../files/containment.ts";
 import type { TopicValue, UpstreamResource } from "../topics/index.ts";
 import { topicParam } from "../topics/index.ts";
 import type { TranscriptFacts } from "../transcript/index.ts";
@@ -35,15 +35,26 @@ export function stoppedOn(facts: TranscriptFacts): SessionApiError | undefined {
  * root is known. A session that stated no root contributes none of them rather
  * than all of them: the list is the allowlist an `external` read is checked
  * against, so not knowing where the session works has to admit nothing. */
-export function sessionStatusOf(
+export async function sessionStatusOf(
   sid: Sid,
   facts: TranscriptFacts,
   where: SessionWhere = {},
-): SessionStatusSnapshot & {
-  sid: Sid;
-} {
+): Promise<
+  SessionStatusSnapshot & {
+    sid: Sid;
+  }
+> {
   const stopped = stoppedOn(facts);
-  const root = where.root === undefined ? undefined : canonicalSync(where.root);
+  const root = where.root === undefined ? undefined : await canonical(where.root);
+  const named =
+    root === undefined
+      ? []
+      : await Promise.all(
+          facts.named_files.map(async (file) => ({
+            file,
+            real: await canonical(file.path),
+          })),
+        );
   return {
     sid,
     todos: [...facts.todos],
@@ -54,8 +65,8 @@ export function sessionStatusOf(
     external_files:
       root === undefined
         ? []
-        : facts.named_files.filter((file) => !within(canonicalSync(file.path), root)),
-    workspace_folders: workspaceFolders(where.cwd),
+        : named.filter((each) => !within(each.real, root)).map((each) => each.file),
+    workspace_folders: await workspaceFolders(where.cwd),
     ...(stopped === undefined ? {} : { api_error: stopped }),
   };
 }
@@ -81,6 +92,10 @@ export interface SessionStatusDeps {
   /** The tail behind a session's fold, asked for and let go by name. */
   readonly hold: (sid: Sid) => void;
   readonly release: (sid: Sid) => void;
+  /** When the fold of a held session has read the whole transcript. What this
+   * owner states rests on the fold, so it waits on this before stating it
+   * (CT-Q8). */
+  readonly ready: (sid: Sid) => Promise<void>;
   /** The one way a value reaches subscribers (DESIGN §6.1). */
   readonly publish: (topic: string, data: unknown) => void;
 }
@@ -112,16 +127,16 @@ export class SessionStatus implements UpstreamResource {
 
   start(topic: string): void {
     this.#wanted.add(topic);
-    this.refresh();
+    void this.refresh();
   }
 
   stop(topic: string): void {
     this.#wanted.delete(topic);
-    this.refresh();
+    void this.refresh();
   }
 
-  snapshot(topic: string): readonly TopicValue[] {
-    const data = this.value(topic);
+  async snapshot(topic: string): Promise<readonly TopicValue[]> {
+    const data = await this.value(topic);
     return data === undefined ? [] : [{ instance: this.deps.self, data }];
   }
 
@@ -129,7 +144,7 @@ export class SessionStatus implements UpstreamResource {
    * says, and which sessions exist, are the two things that move either.
    *
    * Called by whoever changes one of them, rather than on a timer (M3). */
-  refresh(): void {
+  async refresh(): Promise<void> {
     if (this.#converging) {
       this.#pending = true;
       return;
@@ -143,8 +158,11 @@ export class SessionStatus implements UpstreamResource {
     } finally {
       this.#converging = false;
     }
-    for (const topic of this.#wanted) {
-      const data = this.value(topic);
+    // The topics as they stand now: stating one waits on a reading, and a
+    // subscription arriving during that wait must not be iterated into.
+    const stating = [...this.#wanted];
+    for (const topic of stating) {
+      const data = await this.value(topic);
       if (data !== undefined) this.deps.publish(topic, data);
     }
   }
@@ -169,12 +187,17 @@ export class SessionStatus implements UpstreamResource {
 
   /** What a topic of this owner currently says, for a snapshot and for a
    * change alike — built here and nowhere else, so the two cannot drift. */
-  private value(topic: string): unknown {
-    if (topic === "session.errors") return this.errors();
+  private async value(topic: string): Promise<unknown> {
+    if (topic === "session.errors") {
+      // Every session's fold, so the list is of the transcripts as they read
+      // rather than of the ones that happen to have been read by now.
+      await Promise.all(this.deps.sessions().map((sid) => this.deps.ready(sid)));
+      return this.errors();
+    }
     const sid = topicParam(topic);
-    return sid === undefined
-      ? undefined
-      : sessionStatusOf(sid, this.deps.facts(sid), this.deps.where(sid));
+    if (sid === undefined) return undefined;
+    await this.deps.ready(sid);
+    return await sessionStatusOf(sid, this.deps.facts(sid), this.deps.where(sid));
   }
 
   /** Bring the held tails in line with what the subscriptions need. */

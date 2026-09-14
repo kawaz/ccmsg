@@ -51,7 +51,7 @@ import {
   SessionStatus,
 } from "../sessions/index.ts";
 import { topicHandlers, Topics } from "../topics/index.ts";
-import { TranscriptFiles, Transcripts } from "../transcript/index.ts";
+import { FoldCache, TranscriptFiles, Transcripts } from "../transcript/index.ts";
 import {
   type AuthorizedUpgrade,
   ConnRegistry,
@@ -502,6 +502,9 @@ export class Instance {
     this.#transcripts = new Transcripts({
       self: this.self,
       pathOf: (sid) => transcriptFiles.path(sid),
+      // What a past reading of each transcript reached, so a transcript is
+      // read from its beginning once rather than once per start.
+      cache: new FoldCache(join(paths.cacheDir, "transcripts")),
       publish: (topic, data) => {
         this.#topics.publish(topic, data);
       },
@@ -536,7 +539,7 @@ export class Instance {
       },
       ...(this.#mesh === undefined ? {} : { mesh: this.#mesh }),
       onChanged: () => {
-        this.#status.refresh();
+        void this.#status.refresh();
         // A session that is live again is one route (a) can be tried against,
         // which is what the inbox is waiting for (DESIGN §6.7).
         void this.#delivery.retry();
@@ -559,6 +562,7 @@ export class Instance {
       release: (sid) => {
         this.#transcripts.release(sid);
       },
+      ready: (sid) => this.#transcripts.ready(sid),
       publish: (topic, data) => {
         this.#topics.publish(topic, data);
       },
@@ -664,10 +668,11 @@ export class Instance {
     // greeting says where the session works, and the fold says which folders
     // its editor names and which files outside them its transcript named.
     const files = new Containment({
-      roots: (sid): SessionRoots | undefined => {
+      roots: async (sid): Promise<SessionRoots | undefined> => {
         const where = this.#sessions.where(sid);
         if (where.root === undefined && where.cwd === undefined) return undefined;
-        const status = sessionStatusOf(sid, this.#transcripts.facts(sid), where);
+        await this.#transcripts.ready(sid);
+        const status = await sessionStatusOf(sid, this.#transcripts.facts(sid), where);
         return {
           ...where,
           workspace_folders: status.workspace_folders.map((folder) => folder.path),
