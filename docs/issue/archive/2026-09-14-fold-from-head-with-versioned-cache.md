@@ -1,6 +1,6 @@
 ---
 title: session.status の fold を transcript の頭から畳み、version 付きキャッシュに置く
-status: wip
+status: resolved
 category: design
 created: 2026-09-14T11:54:33+09:00
 last_read:
@@ -9,10 +9,10 @@ wip_entered: 2026-09-14T14:04:19+09:00
 blocked_entered:
 pending_entered:
 discarded_entered:
-resolved_entered:
+resolved_entered: 2026-09-14T14:50:43+09:00
 discard_reason:
 pending_reason:
-close_reason:
+close_reason: ["journal/2026-09-14-fold-from-head","dr/DR-0015","implemented","done:監査(fable-high)の要修正4件を修正済み、残る同期境界はissue harness-sessions-scan-stays-synchronousへ分離"]
 blocked_by:
 origin: 自リポ TODO
 ---
