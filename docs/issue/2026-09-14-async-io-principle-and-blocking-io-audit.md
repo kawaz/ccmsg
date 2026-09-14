@@ -36,6 +36,12 @@ daemon v2 の設計・実装が進む中で、blocking IO を接続後のホッ�
 3. **接続後に走る同期 IO の監査**: CLI 以外の `*Sync(` 146 箇所 (2026-09-14 時点) を「起動時 / 停止時に 1 回だけ走る (同期でよい)」「接続を握った後、イベント / メッセージ / 購読の処理から走る (直す)」に分類して findings に表で残す。まず疑わしいのは `src/transcript/tail.ts` (seed の `readSync` / `#sliceSync`)、`src/transcript/read.ts`、`src/kv/store.ts` (`readFileSync`)、`src/upstream/gateway.ts`
 4. 「直す」に分類したものを直す。fold の seed は issue `fold-from-head-with-versioned-cache` の側で直すので、ここでは重複させず参照だけ
 
+## 「IO」の定義 (kawaz 2026-09-14)
+
+原則で言う IO はファイル / ネットワークに限らない。エージェントへの依頼の応答待ち、バックグラウンド実行の結果取得、何かの承認処理の待ちなど、**外部の完了を待つブロッキング待ち全般**を同じ枠組みで IO と呼ぶ。DR ではこの定義で書く。対して、メモリ上の情報を返すだけの req/res は同期でよい。
+
+監査 (やること 3) にもこの定義を適用する: 同期 fs API に加えて、ハンドラが外部の完了 (peer の応答、子プロセス、承認、lock) を待つ間に他の処理を止めている箇所 (接続・topic・instance 単位の直列化、lock の保持中の await、`spawnSync` / `execSync`) を同じ表に載せる。
+
 ## 受け入れ条件
 
 - [ ] DR が INDEX に載り、DESIGN §6 に同期 seed の記述が残っていない
