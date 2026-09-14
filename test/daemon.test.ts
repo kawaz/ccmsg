@@ -269,7 +269,8 @@ describe("which config homes there are (daemon add / remove / list)", () => {
  * test. Everything `daemon start` / `stop` / `status` does is a request to one,
  * so a test that is about those needs one running. */
 async function supervising(options: Record<string, unknown> = {}): Promise<Supervisor> {
-  const supervisor = new Supervisor({ startTimeoutMs: 15_000, log: () => undefined, ...options });
+  const startTimeoutMs = 15_000;
+  const supervisor = new Supervisor({ startTimeoutMs, log: () => undefined, ...options });
   supervisors.push(supervisor);
   const ran = supervisor.run();
   runs.push(ran);
@@ -279,8 +280,13 @@ async function supervising(options: Record<string, unknown> = {}): Promise<Super
   // leave, not when everything it looks after is up.
   await awaitFile(supervisor.socketPath);
   // Serving, not merely started: the lock is taken before the listener is up,
-  // so a test that asks an instance anything waits for its socket.
-  await waitFor(() => supervisor.targets.every((target) => existsSync(target.paths.socket)));
+  // so a test that asks an instance anything waits for its socket. The wait
+  // is the one the supervisor itself gives a child, since that is how long a
+  // host of several instances may take to bring every process up at once.
+  await waitFor(
+    () => supervisor.targets.every((target) => existsSync(target.paths.socket)),
+    startTimeoutMs,
+  );
   return supervisor;
 }
 
