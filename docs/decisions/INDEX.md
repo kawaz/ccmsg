@@ -24,6 +24,7 @@ Status は各 DR ファイルの `Status:` 行が正本。
 | [DR-0012](DR-0012-gateway-cache-window.md) | gateway の cache 窓は約束 (`cache_notice`) で仮に引き、実結果 (`cache`) で引き直す |
 | [DR-0013](DR-0013-instances-are-long-running.md) | instance は常駐し、監督者が唯一の起動経路。監督者の載せ替えは `service stop` → `start` |
 | [DR-0014](DR-0014-mesh-has-no-ops-of-its-own.md) | mesh は専用 op を持たない。到達しない peer は起動を止めず、断絶中の全量は 7 日保持 |
+| [DR-0015](DR-0015-async-io-principle.md) | 外部の完了を待つものは全て非同期。同期呼び出しは instance 全体を止めるので、経路を丸ごと直す |
 
 ## Archived
 
