@@ -610,6 +610,8 @@ socket path / HTTP bind / state dir / data dir / logs. **All are derived from th
 
 `upstream.terminal_gateway` is both the rename route and the value `hello` names as where a person opens a terminal (§3.1).
 
+The translate helper is a conversational process that is handed one line and answers one line, so the next batch cannot be handed over until the current one is answered — **one translation queue for the whole instance**, on which an unrelated session's translation may wait as long as the `MAX_MS` of the one ahead of it (issue `translate-queue-instance-wide`).
+
 **config is read only once, at startup** (why there is no hot reload is DR-0004). Because per-instance config is small and restart is cheap (most state is volatile; the only things persisted are the 6 kinds in §2.5), there is no reason to hold mtime watching / reload / rewiring so that "an edit takes effect on the next request." Restarting the instance is the sole way to make a config change take effect.
 
 **Settings are TypeScript where they are decisions and JSON where they are a list, and what is edited is not what is read.** A person edits `${XDG_CONFIG_HOME:-~/.config}/ccmsg/`:
