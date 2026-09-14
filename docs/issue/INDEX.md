@@ -28,13 +28,13 @@ wire の契約は [kawaz/ccmsg-protocol](https://github.com/kawaz/ccmsg-protocol
 | 2026-09-14 | bug | open | [reply-instruction-names-ambiguous-ccmsg-binary](./2026-09-14-reply-instruction-names-ambiguous-ccmsg-binary.md) | 直送メッセージの返信案内 `ccmsg reply <mid>` が、旧 plugin の `ccmsg` (r<N>m<M> 形式) と混同されて拒否される |
 | 2026-09-14 | design | open | [session-search-regex-unbounded](./2026-09-14-session-search-regex-unbounded.md) | `session.search` のユーザ指定正規表現が 1 回の `test()` でイベントループを塞ぎ切る |
 | 2026-09-14 | design | open | [async-io-principle-and-blocking-io-audit](./2026-09-14-async-io-principle-and-blocking-io-audit.md) | IO を伴うイベント / メッセージ処理を非同期にする原則を v2 daemon の DR に起こし、接続後に走る同期… |
-| 2026-09-14 | design | open | [fold-from-head-with-versioned-cache](./2026-09-14-fold-from-head-with-versioned-cache.md) | instance は `session.status` を transcript を畳んで作るが、`#seed()` は末尾 1 MiB… |
 | 2026-09-14 | design | open | [translate-queue-instance-wide](./2026-09-14-translate-queue-instance-wide.md) | 翻訳の待ち行列が instance 全体で 1 本なので、無関係なセッションの翻訳が互いを待つ |
 | 2026-09-12 | task | open | [webauthn-tests-library-grade](./2026-09-12-webauthn-tests-library-grade.md) | WebAuthn の検証を自前 (`src/auth/webauthn.ts` 401 行 + `cbor.ts` 150 行、DR-0001 §2.11) で… |
 | 2026-09-11 | bug | open | [daemon-restart-all-leaves-supervisor-on-old-build](./2026-09-11-daemon-restart-all-leaves-supervisor-on-old-build.md) | `ccmsg daemon restart --all` は子 instance だけを新コードで起動し直し、launchd 配下の監督者 (`c… |
 | 2026-09-11 | design | open | [dump-timeline-shared-selection](./2026-09-11-dump-timeline-shared-selection.md) | dump と timeline (webui の TL) は「型の階層で item を選ぶ」設計を共有している (kawaz 2026-09-11)… |
 | 2026-09-10 | bug | open | [service-stop-wedges-with-sockets-unlinked](./2026-09-10-service-stop-wedges-with-sockets-unlinked.md) | 本運用 (v0.2.13 監督者 + 3 instance) で `service stop` が socket unlink 後に wedge し、応答は `run… |
 | 2026-09-09 | design | open | [sandbox-grant-delivery-path](./2026-09-09-sandbox-grant-delivery-path.md) | sandbox_grant は capability URL を発行するが、`SandboxGrants.find` の呼び... |
+| 2026-09-14 | design | wip | [fold-from-head-with-versioned-cache](./2026-09-14-fold-from-head-with-versioned-cache.md) | instance は `session.status` を transcript を畳んで作るが、`#seed()` は末尾 1 MiB… |
 
 <!--
 INDEX の列構成・canonical 順序・行形式の唯一の正本:

@@ -1,11 +1,11 @@
 ---
 title: session.status の fold を transcript の頭から畳み、version 付きキャッシュに置く
-status: open
+status: wip
 category: design
 created: 2026-09-14T11:54:33+09:00
 last_read:
 open_entered: 2026-09-14T11:54:33+09:00
-wip_entered:
+wip_entered: 2026-09-14T14:04:19+09:00
 blocked_entered:
 pending_entered:
 discarded_entered:
@@ -42,6 +42,13 @@ kawaz の裁定 (2026-09-14): 途中から畳んで不完全な状態を作る�
 - [ ] version 違いのキャッシュを置いた状態で起動すると捨てて頭から畳み直す (test)
 - [ ] 大きい transcript (数十 MB) の購読開始で instance が固まらない (計測を journal に)
 - [ ] DESIGN{,-ja}.md §6 の `FOLD_TAIL_BYTES` の記述を新しい仕組みに書き換える (経緯は書かない)
+
+## 裁定 (2026-09-14)
+
+- CT-Q8 = a: `session.status:<sid>` (および transcript 系 topic) の購読の開始応答 (snapshot) は畳み終えてから返す。それまで購読者は待つ。同一接続の他の要求は `request_id` で並行なので巻き込まれない (`src/transport/driver.ts` は frame ごとに `handle` を並行に投げる)。契約は変えない。「述べるなら本当のことだけ」。
+- 初回の畳みは非同期で行う (DR-0015)。seed の同期読み (`#sliceSync`) は無くす。
+- 群 3 として同期のまま残していた境界 (`canonicalSync` (`sessions/status.ts`)、`TranscriptFiles.path()` / `find()` とその同期 helper、`sessions/workspace.ts`、`sessions/harness.ts`) はこの作業で async に一本化する。topic の「値を述べる」入口 (`UpstreamResource.snapshot`) が Promise を返せる形にする必要があり、その設計は `src/topics/` を読んで決める (契約は変えない: snapshot frame の形は同じ、返るタイミングだけ畳み終えた後になる)。
+- 待ちの間の理由をセッションの状態で述べる語 (`loading` 等) は CT-Q9 (契約 minor) で別に決める。本 issue はそれに依存しない。
 
 ## 関連
 
