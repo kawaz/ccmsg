@@ -29,11 +29,12 @@ async 化した全経路 (findings `2026-09-14-blocking-io-audit.md` の群 1 / 
 
 ## 受け入れ条件
 
-- [ ] `docs/findings/` に await × 前提 の表があり、「根拠なし」が 0 件
-- [ ] 見つけた欠落ごとに再現 test がある
+- [x] `docs/findings/` に await × 前提 の表があり、「根拠なし」が 0 件
+- [x] 見つけた欠落ごとに再現 test がある
 
 ## 関連
 
 - DR-0015 §2 (「await をまたいだら前提を確かめ直す」の項)
 - issue `fold-from-head-with-versioned-cache` の監査結果
 - `/tmp/ccmsg-fold-audit.md` (消えていたら本 issue の概要が要約)
+- findings `docs/findings/2026-09-14-await-crossing-invariants.md`
