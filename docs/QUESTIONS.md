@@ -20,12 +20,13 @@
 
 ## 裁定待ち
 
-### CT-Q8 購読の開始応答は「まだ知らない」状態で開けるか (契約)
+### CT-Q9 セッションのライフサイクルに `starting` / `loading` を足すか (契約)
 
-daemon は `session.status` を transcript を頭から畳んで作る方針になった (issue `fold-from-head-with-versioned-cache`)。畳むのは IO なので同期でやらず (issue `async-io-principle-and-blocking-io-audit`)、購読を受けた時点でまだ畳み終えていないことがある。契約は今、snapshot の「値が無い」を「無い」の意味で使っており、「まだ畳んでいない」を言う語彙が無い。印 (`partial` 等) は CT-Q3 で退けた。
+`SessionState` は `waiting` / `live` / `live_unmanaged` / `paused` / `disappeared`。kawaz の指摘 (2026-09-14): 最初の状態が来る前を分けると、(1) process (pid / hyoui) は掴めているが transcript がまだ無い (初回ディレクトリの trust 確認で TUI が止まっている等)、(2) transcript はあるが状態の畳みが終わっていない、の 2 段階に語が無い。(3) 畳み済み = `live` / `waiting`、(4) 畳み済みで process 無し = `paused` / `disappeared` は既にある。CT-Q8 は a (開始応答は畳み終えてから) で裁定済みで、その待ちの間の理由を `peers` の状態が述べる形になる。
 
-- [ ] a: 開始応答 (snapshot) は畳み終えてから返す。それまで購読者は待つ (同一接続の他の op は `request_id` で並行なので巻き込まれない。契約は変えない) (推し。「述べるなら本当のことだけ」を契約が保つ)
-- [ ] b: 値を述べないまま購読を開き、畳み終えたら topic の更新として述べる。契約に「開始応答が値を持たないことがある」を明記する (購読者は「開いたが空」を「無い」と描けなくなる、= 描き方を変える必要が webui 側に出る)
+- [ ] a: `starting` (transcript 未出現、ccmsg が起動に関与したか pid を観測できた時だけ知れる) と `loading` (transcript あり、畳み中) を足す (推し)
+- [ ] b: 別の語 (`preparing` は `UndeliveredReason` に既にあるので避ける)
+- [ ] c: 足さない (CT-Q8 a の待ちだけで表す)
 
 ## 確認待ち
 
