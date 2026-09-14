@@ -128,7 +128,9 @@ export class TranscriptFiles {
     }
     const under = agentsDir(file, names.run_id);
     if (names.agent_id !== undefined) {
-      return existing(join(under, `agent-${name(names.agent_id, AGENT_ID, "agent_id")}${SUFFIX}`));
+      return await existing(
+        join(under, `agent-${name(names.agent_id, AGENT_ID, "agent_id")}${SUFFIX}`),
+      );
     }
     return await this.teammate(under, name(names.teammate ?? "", TEAMMATE, "teammate"));
   }
@@ -186,7 +188,7 @@ export class TranscriptFiles {
       }
       const named = (document as { name?: unknown } | null)?.name;
       if (named !== wanted) continue;
-      return existing(join(under, `${each.slice(0, -".meta.json".length)}${SUFFIX}`));
+      return await existing(join(under, `${each.slice(0, -".meta.json".length)}${SUFFIX}`));
     }
     throw new OpError("not_found", `no teammate of this session is addressed as ${wanted}`);
   }
@@ -326,8 +328,10 @@ function name(value: string, shape: RegExp, field: string): string {
   return value;
 }
 
-function existing(file: string): string {
-  if (!isFile(file)) throw new OpError("not_found", "no transcript is held for that agent");
+async function existing(file: string): Promise<string> {
+  if ((await stated(file)) === undefined) {
+    throw new OpError("not_found", "no transcript is held for that agent");
+  }
   return file;
 }
 
