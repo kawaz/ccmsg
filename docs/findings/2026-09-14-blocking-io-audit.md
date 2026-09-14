@@ -1,0 +1,159 @@
+# ccmsg v2 daemon 同期 IO 監査
+
+対象: `src/` (test を除く)。列挙は `grep -rn -E '[a-zA-Z]+Sync\(' src | grep -v '\.test\.'` の全件 (CLI 含む)。
+
+## 分類の定義
+
+| 記号 | 契機 |
+|---|---|
+| (A) | CLI の単発コマンド内でのみ走る。プロセスは 1 コマンドで終わるので、イベントループを塞いでも待たされる相手がいない |
+| (B) | instance / supervisor プロセスの起動時・停止時に 1 回だけ走る。接続を握る前 (または全部手放した後) なので同上 |
+| (C) | 接続を握った後に、op ハンドラ・topic の snapshot / publish・fs watcher の callback・定期ポーリングから走る。走っている間はイベントループが止まり、全接続の処理が待たされる |
+| (D) | test 専用 |
+
+(C) の同期呼び出しはプロセスのイベントループを塞ぐので、待たされるのは同一接続に限らず全接続・全 topic である (`src/transport/driver.ts` は frame ごとに `handle` を並行に投げるが、同期呼び出しの間は次の frame を読めない)。
+
+## (A) CLI の単発コマンド内
+
+| ファイル:行 | API | 呼び出し経路 | 処置 |
+|---|---|---|---|
+| cli.ts:751,755,756,858,864,866,867,869,870,883,889,890,899 | existsSync / mkdirSync / copyFileSync / readdirSync / statSync / readFileSync | plugin の install / status / 復元コマンド | 同期のまま |
+| cli.ts:1244,1268 | readFileSync / writeFileSync | dump の書き出し・読み戻し | 同期のまま |
+| daemon/log.ts:47,48,73,74 | existsSync / statSync | `daemon log` / `service log` の `tailOf()` と `--follow` の `pull()`。`daemon.log` という op / topic は存在せず、稼働中 instance を経由しない | 同期のまま |
+| daemon/registry.ts:41,257,349,350,351,384,393,403,404,408,409,438 | existsSync / writeFileSync / mkdirSync / readFileSync / rmSync | `daemon add` / `daemon remove` の `configHome()` `harnessOf()` `add()` `remove()` `readEndpointRows()` `saveEndpoints()` `saveSupervisor()` | 同期のまま |
+| service/program.ts:38,46,66,67,129,139 | readFileSync / statSync / realpathSync / existsSync | `service install` / `service status` の `supervisorProgram()` `leadsHere()` `registeredProgram()` | 同期のまま |
+| service/service.ts:277,278,344,423,424,477,512,513,514 | existsSync / rmSync / mkdirSync / writeFileSync | `service install` / `uninstall` / `status` の launchd / systemd unit 操作 | 同期のまま |
+| instance/config.ts:571,572 | mkdirSync / copyFileSync | `daemon add` → `registry.add()` → `writeConfigTypes()` | 同期のまま |
+| instance/lock.ts:89 | readFileSync | `lockHolder(file)` を `daemon status` 系が呼ぶ経路 (同じ関数は起動時の `acquireLock` からも走る = (B)) | 同期のまま |
+| greeting/meta.ts:21 | Bun.spawnSync | `statedMeta()` → `askGit()`。呼び出し元は cli.ts のみ (1172 / 1579 / 1687 行)。daemon 側の `hello.session` ハンドラからは呼ばれない | 同期のまま |
+| daemon/registry.ts:679 | existsSync | `awaitSocket()`。`daemon run` / `daemon start` から呼ぶ経路が (A)、`Supervisor#startOne()` から呼ぶ経路が (B) | 同期のまま |
+
+## (B) 起動時・停止時に 1 回
+
+| ファイル:行 | API | 呼び出し経路 | 処置 |
+|---|---|---|---|
+| instance/instance.ts:182 | mkdirSync | `start()` 冒頭の state ディレクトリ作成 | 同期のまま |
+| instance/instance.ts:703 | writeFileSync | `listen()` の pid ファイル書き出し | 同期のまま |
+| instance/instance.ts:1106 | unlinkSync | `stop()` → `remove(pidFile)` | 同期のまま |
+| instance/identity.ts:39,40,47 | mkdirSync / writeFileSync / readFileSync | `instanceIdentity(file)` (起動時、instance id ファイルは数十バイト) | 同期のまま |
+| instance/lock.ts:38,41,43,49,59 | mkdirSync / writeFileSync / linkSync / unlinkSync | `start()` → `acquireLock()` | 同期のまま |
+| instance/lock.ts:74 | unlinkSync | `stop()` → `release()` | 同期のまま |
+| instance/log.ts:18 | mkdirSync | `new Log(paths.logFile)` (構築時に 1 回) | 同期のまま |
+| instance/socket.ts:19,20,36,53,58 | symlinkSync / renameSync / readdirSync / mkdirSync / unlinkSync | `listen()` → `prepareSocketDir()` / `sweepOrphanSockets()` / `publishSocket()` | 同期のまま |
+| instance/config.ts:343,435,437,489,510,512,513,515,552,588 | existsSync / readFileSync / mkdirSync / copyFileSync / writeFileSync / statSync | `start()` → `configFor()` → `settle()` → `evaluate()` / `apply()` / `applied()`。同じ関数群を cli.ts が単発で呼ぶ経路もあり、そちらは (A) | 同期のまま |
+| transport/uds.ts:79 | chmodSync | `listen()` → `listenUds()` の bind 直後 | 同期のまま |
+| translate/helper.ts:33 | accessSync | `start()` → `translateSetup()` の実行可否チェック | 同期のまま |
+| upstream/gateway.ts:264 | readFileSync | `start()` → `gatewaySetup()` → `token(path)` (webhook token、小さい固定ファイル) | 同期のまま |
+| messaging/inbox.ts:72,198,205,206,207 | readFileSync / unlinkSync / mkdirSync / writeFileSync / renameSync | `Instance` 構築 → `inbox.load()` → `#compact()`。`load()` は起動時の 1 回のみ | 同期のまま |
+| messaging/direct.ts:154 | unlinkSync | `stop()` → `ClaudeCodeSocketRoute.close()` → 各 `StatusInbox.close()` | 同期のまま |
+| sessions/last-live.ts:71 | readFileSync + JSON.parse | `Sessions` コンストラクタ → `lastLive.load()` (起動時 1 回) | 同期のまま |
+| daemon/supervise.ts:190,192,235 | mkdirSync / unlinkSync / chmodSync | supervisor の `run()` → `#serve()` → `#listen()` | 同期のまま |
+| daemon/registry.ts:668 | mkdirSync | `Supervisor#keep()` → `prepareFor()` (子 instance 起動の都度) | 同期のまま |
+
+## (C) 接続を握った後に走る
+
+比例の欄は「1 回の呼び出しで読み書きする量が何に比例するか」。
+
+### transcript を丸ごと触るもの (最優先)
+
+| ファイル:行 | API | 契機 | 何に比例 | 処置 | 根拠 |
+|---|---|---|---|---|---|
+| sessions/search.ts:180 | readFileSync | op `session.search` → `search()` → `read()` | 候補 transcript の合計サイズ (`SCAN_BUDGET_BYTES` 64 MB まで) | async 化 | 1 回の検索で最大 64 MB を同期に読み、その間 dispatch が止まる |
+| sessions/fork.ts:97 | readFileSync | op `session.fork.origin.read` → `forkOrigin()` → `recordIds()` を `files.all()` の全候補に対して | 同ディレクトリの候補数 × 各 transcript 全体 (`SWEEP_MAX_BYTES` 64 MB) | async 化 | 兄弟 transcript を総なめする。capability が任意な理由もこのコストにある |
+| sessions/fork.ts:96,122 | statSync | 同上 (`recordIds()` 前のサイズ確認、`bornAt()`) | 候補ファイル数 | async 化 | 上と同じループの中なので一緒に非同期化する |
+| sessions/dump.ts:66 | readFileSync | op `session.dump.write` → `dumpWrite()` | transcript 全体 | async 化 | 出力対象の選択前に全文を読む |
+| sessions/dump.ts:114,117 | mkdirSync / writeFileSync | 同上 (出力先の作成と本文の書き出し) | 選択された items の量 | async 化 | 同じハンドラの中なので一緒に |
+| sessions/items.ts:66 | readFileSync | op `transcript.items.read` → `itemsRead()` | transcript 全体 | async 化 | ページングの要求ごとに全文を読み直す |
+| transcript/tail.ts:128,176,180,186,188 | openSync / readSync / closeSync | topic `transcript:<sid>` / `transcript.items:<sid>` / `session.status:<sid>` の購読開始 → `Transcripts.hold()` → `TranscriptTail.start()` → `#seed()` → `#sliceSync()` | 現状 `FOLD_TAIL_BYTES` (1 MiB) 固定。issue `fold-from-head-with-versioned-cache` で頭から畳む設計に変わると transcript 全体になる | issue 参照 | fold の seed は issue `fold-from-head-with-versioned-cache` 側で直すので、本監査では重複させない |
+| transcript/tail.ts:230 | statSync | `sizeNow(path)`。`TranscriptTail` の構築 (= `hold()` の都度) | 小さい (サイズ取得のみ) | issue 参照 | 同上、seed の設計と一体で扱う |
+
+### transcript 以外の file / ディレクトリを触るもの
+
+| ファイル:行 | API | 契機 | 何に比例 | 処置 | 根拠 |
+|---|---|---|---|---|---|
+| files/files.ts:220,223,226 | openSync / readSync / closeSync | op `file.read` / `file.edit` → `bytesOf()` | 読み取り上限 (`READ_LIMIT` 512 KiB、sniff は 8 KiB) | async 化 | 1 回 512 KiB の同期読み。file 系 op は人が連打する経路 |
+| files/files.ts:238 | writeFileSync | op `file.write` / `file.create` → `create()` | 書き込む content のバイト数 | async 化 | 同上、上限は要求側が決める |
+| files/files.ts:252,254,256 | writeFileSync / renameSync / unlinkSync | op `file.edit` → `replace()` (一時ファイル経由の置換) | content のバイト数 | async 化 | 同上 |
+| files/files.ts:104 | mkdirSync | op `file.write` → 親ディレクトリの作成 | パス階層の深さ | async 化 | 同じハンドラの中 |
+| files/files.ts:262 | readdirSync | op `dir.list` → `entriesOf()` | ディレクトリのエントリ数 | async 化 | 大きいディレクトリで syscall が伸びる |
+| files/files.ts:325 | readdirSync | op `file.find` → `find()` → `walk()` | 探索した木全体のエントリ数 (`FIND_VISITS` で頭打ち) | async 化 | 木を歩く間ずっと塞ぐ。(C) の中でここと search が最も長い |
+| files/files.ts:398 | readFileSync | op `file.find` → `walk()` → `Ignores#descend()` → `readIgnoreFile()` | `.gitignore` のサイズ × 訪れたディレクトリ数 | async 化 | 上のループの中 |
+| files/files.ts:132,149,182,190,198,206 | statSync / lstatSync | op `file.edit` / `file.delete` / `file.stat` / `file.create` / `dir.list` の存在確認 | 小さい | async 化 | 1 回は速いが同じハンドラを async 化する以上あわせて直す |
+| files/containment.ts:240,245 | realpathSync | file / dir / sandbox 系 op のすべてが通る `Containment` の `canonical()` | パス階層の深さ | async 化 | 全 file 系 op の入口。`fs.promises.realpath` に置き換える |
+| launcher/tree.ts:69 | readdirSync | op `dir.tree` → `dirTree()` → `walk()` → `read()` | 木全体のエントリ数 (深さ 5 で頭打ち) | async 化 | 木を歩く間塞ぐ |
+| launcher/roots.ts:28 | statSync | op `dir.tree` / `launcher.run` → `insideRoots()` | 小さい | async 化 | 同じ経路 |
+| transcript/files.ts:315,323 | readdirSync / statSync | `TranscriptFiles.all()` (op `session.search` / `session.fork.origin.read`) と `find()` (`transcript.read` 等の announced パスが無い場合のフォールバック) | config home 配下の transcript 数 | async 化 | セッション数に比例。`all()` はループ全体で繰り返す |
+| transcript/files.ts:157 | readFileSync | `subjectOf(file)` → agent の `.meta.json` (op `transcript.items.read` / `session.dump.write`) | 小さい JSON 1 個 | async 化 | 呼び出し元を async 化する流れで一緒に |
+| transcript/files.ts:174,182 | readdirSync / readFileSync + JSON.parse | `locate()` の `teammate` 指定時 → `teammate()` が subagents の meta を総なめ | セッション配下の agent 数 | async 化 | 同上 |
+| transcript/read.ts:31,74,77,80 | statSync / openSync / readSync / closeSync | op `transcript.read` → `readSlice()` → `slice()` | 読み取り範囲 (最大 512 KB、`max_bytes`) | async 化 | 人がスクロールするたびに走る経路。`fs.promises.open` + `read` に置き換える |
+| sessions/workspace.ts:38 | readdirSync | topic `session.status:<sid>` / `session.errors` の snapshot / refresh → `sessionStatusOf()` → `workspaceFolders()` → `workspaceFiles()` | cwd 直下のエントリ数 | async 化 | status の値を作るたびに走る |
+| sessions/workspace.ts:53 | readFileSync | 同上 → `specs(file)` (`.code-workspace` の読み) | ファイル 1 個 (小) | async 化 | 同上 |
+| sessions/workspace.ts:118,119 | realpathSync / statSync | 同上 → `directory(spec.path)` を folders の各要素に対して | folders の要素数 | async 化 | 同上 |
+| sessions/harness.ts:183 | readFileSync + JSON.parse | `DirectoryWatch` の fs.watch callback または 5 秒ポーリング → `HarnessSessions.scan()` (topic `peers` / `agents` の購読が生きている間) | `sessions/` の状態ファイル数 × 小さい JSON | async 化 | watcher の callback は購読中ずっと回る |
+| sessions/harness.ts:256 | readdirSync | 同上 → `DirectoryWatch.names()` | ディレクトリのエントリ数 | async 化 | 同上 |
+| sessions/registry.ts:894,903,925 | realpathSync / statSync | op `hello.session` → `register()` → `metaOf()` → `ownTranscript()` / `resolveAsFarAsItGoes()` | 小さい (パス解決) | async 化 | セッションの挨拶ごとに走る。1 回は速いが原則側に倒す |
+
+### 永続化 (小さい固定サイズ)
+
+| ファイル:行 | API | 契機 | 何に比例 | 処置 | 根拠 |
+|---|---|---|---|---|---|
+| kv/store.ts:119 | readFileSync | op `kv.read` / `kv.write` / `kv.delete`、topic `kv:<ns>` の snapshot → `#load(ns)` (初回のみ、以後メモリ) | 1 namespace のファイル全体 | async 化 | 初回の読みが購読の開始ターンに乗る。値は小さいが原則の対象 |
+| kv/store.ts:152,157,159,161 | mkdirSync / writeFileSync / renameSync / unlinkSync | op `kv.write` / `kv.delete` → `#persist()` | namespace の全キーの合計 | async 化 | 書き込みごとに namespace 全体を書き直す |
+| auth/records.ts:338 | readFileSync | `#load()` の初回。op `auth.extend` / `auth.resolve` / `auth.rotate`、HTTP route の `auth.challenge` / `register` / `assert` / `token.refresh`、mesh の element 受信 → `Auth.merge()`、topic `auth.records` の snapshot | records.json 全体 | async 化 | 認証の最初の 1 回が接続処理の中に乗る |
+| auth/records.ts:361,367,369,371 | mkdirSync / writeFileSync / renameSync / unlinkSync | 同上の書き込み系 (`write` / `merge` / `remove` / `fail`) → `#persist()` | records.json 全体 | async 化 | 認証のたびにファイル全体を書き直す |
+| messaging/inbox.ts:187,188 | mkdirSync / appendFileSync | op `message.send` → `Delivery.send()` → `#hold()` → `inbox.hold()`、および `#offer()` → `inbox.delivered()` | 追記 1 行 (メッセージ本文) | async 化 | メッセージのたびに走る。追記なので量は小さいが経路はホットパス |
+| messaging/direct.ts:128 | chmodSync | op `message.send` → `ClaudeCodeSocketRoute.send()` → `#inbox()` → `new StatusInbox(dir).address()` (相手ごと初回のみ) | 固定 | async 化 | 同じハンドラの中 |
+| sessions/last-live.ts:132,133,134 | mkdirSync / writeFileSync / renameSync | `LastLiveStore.#save()` ← `record()` (セッションの live 遷移を `Sessions.changed()` が拾った時) / `remove()` (op `hello.session` / `session.forget`) | 保持エントリ数 (通常小) | async 化 | セッションの出入りのたびに走る |
+
+### 同期のまま置くもの ((C) だが IO でない / 設計上の理由がある)
+
+| ファイル:行 | API | 契機 | 処置 | 根拠 |
+|---|---|---|---|---|
+| mesh/keys.ts:61 | generateKeyPairSync | mesh の `#dial()` / 被 dial で `new EphemeralKey()` | 同期のまま | fs IO ではなく CPU。ed25519 の鍵生成は固定コストで、接続の確立ごとに 1 回しか走らない |
+| instance/log.ts:25 | appendFileSync | `Log.write()`。起動 / 停止のほか、mesh・sessions・auth の各コールバックから任意のイベント処理中にも走る | kawaz の裁定が要る | 原則に従えば async 化対象だが、ログを非同期にすると行の順序とクラッシュ直前の取りこぼしの扱いが変わる。1 行の追記で量は固定。判断を仰ぐ |
+
+## (D) test 専用
+
+| ファイル:行 | API | 状態 |
+|---|---|---|
+| auth/records.ts:388 | mkdirSync (`ensureDir`) | export されているが `src/` にも `test/` にも呼び出し元がない。dead export |
+
+## 同期 fs API 以外のイベントループ阻害
+
+| 場所 | 内容 | 契機 | 何に比例 | 処置 |
+|---|---|---|---|---|
+| sessions/search.ts:75-91, 191 | `files.all()` のループ内で各候補を `readFileSync` して `text.split("\n")` で全行走査 | op `session.search` | 候補 transcript の合計サイズ (最大 64 MB) | async 化 (読みを非同期にし、行の走査も候補ごとに譲る) |
+| sessions/search.ts:144-163 | ユーザ指定の正規表現を `matcher.test(text)` で各レコードに適用。`CLAUSE_BUDGET_MS` (2000ms) の予算は `test()` の呼び出しの合間にしか効かず、1 回の `test()` は最後まで塞ぐ。コード中のコメントに `[a-z]+ing` で 86 秒かかった実測がある | op `session.search` の `regex: true` | 1 レコードの長さ × パターンの複雑度 (最悪は指数) | 別件。async 化では解けない (JS の RegExp に打ち切りが無い)。worker / 子プロセスに追い出すか、パターンを制限するかの設計判断が要る。issue を分けて起こす |
+| sessions/fork.ts:48-62 | 候補ごとに `recordIds()` (全文読み + `split("\n")` + 行ごとの `readRecord`) と `run()` の線形走査 | op `session.fork.origin.read` | 候補数 × 各ファイル (最大 64 MB) | async 化 |
+| sessions/dump.ts:82-85 / sessions/items.ts:71 | `classify(located(text), …)` が transcript 全文をパースして全レコードを `readRecord` (内部で `JSON.parse`) | op `session.dump.write` / `transcript.items.read` | transcript 全体の行数 | async 化 (読みと合わせて、行のパースを分割して譲る) |
+| sessions/items.ts:130 | `paged()` のループで item ごとに `JSON.stringify(item).length` を計算 (サイズ計測のために再シリアライズ) | op `transcript.items.read` | 返す items 数 × 各 item のサイズ | 同期のまま (返却分だけに限られる)。計測のための二重シリアライズは別途の簡素化候補 |
+| sessions/dump.ts:103 | `JSON.stringify(document, undefined, 2)` | op `session.dump.write` | 選択された items の量 | 同期のまま (書き出しを async 化すれば塞ぐのはこの 1 回分のみ) |
+| transcript/transcripts.ts:174,197 | `#appended` の `foldAll(fold, appended.lines)` と `#keep` の `readAll(…)` | `TranscriptTail.onAppended` (watcher callback / ポーリング)、購読中は常時 | append されたバイト数 (通常はポーリング間隔ぶんで小さい) | 同期のまま。ただし issue `fold-from-head-with-versioned-cache` で初回の畳みが頭からになると、同じ `foldAll` が transcript 全体を回るので、その設計と一緒に見る |
+| greeting/meta.ts:21 | `Bun.spawnSync(["git", …])` | cli.ts のみ (`statedMeta()`) | 子プロセス 1 回 | 同期のまま ((A) なので daemon のイベントループに乗らない) |
+
+`execSync` / `child_process` の同期版は `src/` に存在しない。
+
+## 件数
+
+| 分類 | 件数 |
+|---|---|
+| (A) | 46 |
+| (B) | 52 |
+| (C) | 71 |
+| (D) | 1 |
+
+## async 化する対象
+
+(C) の 71 件のうち、fold の seed に属する 6 件 (`transcript/tail.ts`) は issue `fold-from-head-with-versioned-cache` に委ね、`mesh/keys.ts:61` は fs IO でないため同期のまま、`instance/log.ts:25` は判断を仰ぐ。残る **63 件が async 化の対象**である。直し方の方向を、連鎖する範囲ごとにまとめる。
+
+**1. file / dir / sandbox 系 op (`files/files.ts` 17 件 + `files/containment.ts` 2 件 + `launcher/tree.ts` `launcher/roots.ts` 2 件、計 21 件)**
+`node:fs` の同期版を `node:fs/promises` (`readFile` / `writeFile` / `mkdir` / `stat` / `lstat` / `readdir` / `realpath` / `rename` / `unlink`) に、`openSync` + `readSync` + `closeSync` は `fs.promises.open()` が返す `FileHandle#read()` に置き換える。連鎖するのは `Containment` の `canonical()` を通る全メソッド (`locate` / `root` / `inbox` / `identify`) で、これが async になると file 系・dir 系・sandbox 系のハンドラがすべて async になる。ハンドラの戻り値は dispatch が `await` する形になっているので、呼び出し側の契約は変わらない。`find()` / `walk()` / `dirTree()` の再帰は async の再帰に変え、ディレクトリ 1 段ごとにイベントループへ譲る形になる。
+
+**2. transcript を読む op (`sessions/search.ts` `sessions/fork.ts` `sessions/dump.ts` `sessions/items.ts` `transcript/read.ts` `transcript/files.ts`、計 24 件)**
+`readFileSync(file, "utf8")` を `await readFile(file, "utf8")` に、`readSlice()` の `openSync` / `readSync` を `FileHandle#read()` に置き換える。連鎖するのは `sessionHandlers()` の `transcript.read` / `transcript.items.read` / `session.fork.origin.read` (現在は同期のハンドラ) が async になることと、`TranscriptFiles` の `all()` / `find()` / `locate()` / `subjectOf()` が async になって、これらを呼ぶ `Transcripts` 側にも波及することである。64 MB を一息に読む `search()` / `forkOrigin()` は、読みを非同期にするだけでは行の走査が同期に残るので、候補ファイル 1 つごとに (必要なら数千行ごとに) `await` を挟んで譲る形にする。
+
+**3. topic の値を作る経路 (`sessions/workspace.ts` 4 件 + `sessions/harness.ts` 2 件 + `sessions/registry.ts` 3 件 + `sessions/last-live.ts` 3 件、計 12 件)**
+`sessionStatusOf()` と `HarnessSessions.scan()` を async にする。`SessionStatus.value` / `refresh` と `DirectoryWatch` の callback が async になるので、topic の「値を述べる」入口が Promise を返す形に変わる。snapshot を返すターンの内側で値が要るという DESIGN §6 の要請とぶつかるのはここなので、`fold-from-head-with-versioned-cache` の裁定 (開始応答で値を述べないまま開くことを許すか = CT-Q8) と歩調を合わせる必要がある。`hello.session` の `ownTranscript()` は単独で async 化できる。
+
+**4. 永続化 (`kv/store.ts` 5 件 + `auth/records.ts` 5 件 + `messaging/inbox.ts` 2 件 + `messaging/direct.ts` 1 件、計 13 件)**
+`#load()` / `#persist()` / `#append()` を `fs/promises` に置き換える。連鎖は各 op ハンドラ (`kv.*` / `auth.*` / `message.send`) までで止まり、いずれも既に async か、async にしても呼び出し側の形が変わらない。ここは書き込みの順序が意味を持つので、`#persist()` を「前の書き込みの Promise に連ねる」直列化を入れる (同時に 2 つの書き込みが一時ファイルを取り合わないため)。読みの `#load()` は初回だけなので、初回の Promise を保持して以後は同じものを await する形にする。
