@@ -130,6 +130,9 @@ export interface StartOptions {
   readonly settle?: boolean;
   /** Overrides the confirmation poll of the sessions watch, for tests. */
   readonly pollMs?: number;
+  /** Overrides how long the stop order waits for the requests already past the
+   * door (`IN_FLIGHT_STOP_MS`), for a test that cannot wait that out. */
+  readonly inFlightStopMs?: number;
   /** Overrides the mesh's own intervals, for a test that cannot wait out a
    * heartbeat or a reconnection backoff. */
   readonly meshTiming?: MeshTiming;
@@ -235,6 +238,7 @@ export async function start(options: StartOptions = {}): Promise<StartOutcome> {
       helper,
       wiring,
       options.now,
+      options.inFlightStopMs,
     );
     wiring?.attach(instance);
     await instance.listen();
@@ -404,8 +408,9 @@ export class Instance {
    * write it ends with is not on any chain until that wait is over — so a
    * flush that waited only for what had been asked for would let it land after
    * the lock is gone, on a file a successor has already read (DR-0015 §2.5).
-   * The stop order waits for these first. */
-  readonly #inFlight = new Set<Promise<unknown>>();
+   * The stop order waits for these first, for as long as `IN_FLIGHT_STOP_MS`.
+   * Each is named so that what a stop had to leave behind can be said. */
+  readonly #inFlight = new Set<Admitted>();
   #stopped: Promise<void> | undefined;
   /** The link state the last `net_online` announced, so the event marks a
    * change rather than repeating what every client already holds. */
@@ -413,6 +418,7 @@ export class Instance {
   /** Resolved once the stop order has run to the end, so a foreground run has
    * something to wait on that does not depend on what asked it to stop. */
   readonly #done = Promise.withResolvers<void>();
+  readonly #inFlightStopMs: number;
 
   constructor(
     readonly paths: InstancePaths,
@@ -429,7 +435,10 @@ export class Instance {
     wiring?: MeshWiring,
     /** The clock the person's authentication reads (`StartOptions.now`). */
     now?: () => Timestamp,
+    /** How long the stop order waits for the requests already let through. */
+    inFlightStopMs?: number,
   ) {
+    this.#inFlightStopMs = inFlightStopMs ?? IN_FLIGHT_STOP_MS;
     this.#conns = wiring?.conns ?? new ConnRegistry();
     // Config refused anything that does not parse, so what is dropped here is
     // nothing an operator wrote.
@@ -777,7 +786,7 @@ export class Instance {
           const admin = adminRequestOf(frame);
           if (admin === undefined) return this.handle(frame, conn);
           if (this.#stopping) return Promise.resolve(this.#refused(admin));
-          return this.#admit(() =>
+          return this.#admit(admin.admin, () =>
             handleAdmin(
               { auth: this.#auth, ...(this.#mesh === undefined ? {} : { mesh: this.#mesh }) },
               admin,
@@ -830,7 +839,9 @@ export class Instance {
     if (this.#stopping) {
       return Promise.resolve(new Response(`${this.self} is shutting down`, { status: 503 }));
     }
-    return this.#admit(() => this.#route(request, source));
+    return this.#admit(`${request.method} ${new URL(request.url).pathname}`, () =>
+      this.#route(request, source),
+    );
   }
 
   async #route(request: Request, source: string | undefined): Promise<Response | undefined> {
@@ -945,7 +956,7 @@ export class Instance {
    * here because this is the single door every request comes through. */
   handle(frame: unknown, conn: Requester): Promise<DispatchResult> {
     if (this.#stopping) return Promise.resolve(this.#refused(frame));
-    return this.#admit(() => this.#handle(frame, conn));
+    return this.#admit(opOf(frame) ?? "frame", () => this.#handle(frame, conn));
   }
 
   #refused(frame: unknown): DispatchResult {
@@ -955,12 +966,49 @@ export class Instance {
   /** Run one request that the guard let through, and hold it in the set the
    * stop order waits on. The set is kept here rather than at each door so that
    * every door — the frame, the HTTP route, the administrative frame — is
-   * counted the same way, and one added later cannot be left out. */
-  #admit<T>(work: () => Promise<T>): Promise<T> {
+   * counted the same way, and one added later cannot be left out.
+   *
+   * What the stop order waits on is `done` rather than the request itself, so
+   * that a wait which ends because everything finished sees an empty set: the
+   * entry is taken out before `done` settles, where a `finally` on the request
+   * would take it out a turn later and leave a finished op looking left behind. */
+  #admit<T>(name: string, work: () => Promise<T>): Promise<T> {
     const running = work();
-    this.#inFlight.add(running);
-    return running.finally(() => {
-      this.#inFlight.delete(running);
+    const entry: Admitted = { name, done: Promise.resolve() };
+    const forget = (): void => {
+      this.#inFlight.delete(entry);
+    };
+    entry.done = running.then(forget, forget);
+    this.#inFlight.add(entry);
+    return running;
+  }
+
+  /** Wait for what the guard already let through, but not past
+   * `IN_FLIGHT_STOP_MS`. An op that runs longer than that is left to finish on
+   * its own: the writes it ends with may then land after the flush, which is
+   * the same risk this wait exists to remove — so what could not be waited for
+   * is named in the log rather than passed over in silence. */
+  async #settleInFlight(): Promise<void> {
+    if (this.#inFlight.size === 0) return;
+    const timer = Promise.withResolvers<void>();
+    const alarm = setTimeout(() => {
+      timer.resolve();
+    }, this.#inFlightStopMs);
+    try {
+      await Promise.race([
+        Promise.all([...this.#inFlight].map((each) => each.done)),
+        timer.promise,
+      ]);
+    } finally {
+      clearTimeout(alarm);
+    }
+    const left = [...this.#inFlight];
+    if (left.length === 0) return;
+    this.log.write("stop_left_behind", {
+      instance: this.self,
+      count: left.length,
+      ops: left.map((each) => each.name),
+      after_ms: this.#inFlightStopMs,
     });
   }
 
@@ -1086,7 +1134,7 @@ export class Instance {
     // the writes those requests end with are asked for before the flush below
     // looks. After the mesh has let go, so a request forwarded to a peer that
     // is not answering is not what this stop waits on.
-    await Promise.allSettled(this.#inFlight);
+    await this.#settleInFlight();
     // A request answered during that wait may have subscribed, or taken a hold,
     // after the watches were stopped (DR-0015 §2.5). Nothing has been admitted
     // since, so stopping them again leaves nothing running.
@@ -1186,6 +1234,21 @@ function entryPolicy(
 /** How an access token reaches a WebSocket handshake (DR-0001 §2.4). The proxy
  * in front of an instance has to pass `Sec-WebSocket-Protocol` through. */
 export const TOKEN_PROTOCOL = "ccmsg.token.";
+
+/** How long a stop waits for the requests the guard had already let through.
+ *
+ * The supervisor gives a graceful stop `STOP_TIMEOUT_MS` before it sends a
+ * signal, and half of that is left here for the flush and for closing the
+ * listeners: waiting the whole of it for one long op would spend the budget
+ * that has to land the writes. An op that outlasts this is left running. */
+export const IN_FLIGHT_STOP_MS = 5_000;
+
+/** One request past the door, with the name a stop says if it has to go on
+ * without it. */
+interface Admitted {
+  readonly name: string;
+  done: Promise<void>;
+}
 
 function protocolsOf(request: Request): string[] {
   const header = request.headers.get("sec-websocket-protocol");

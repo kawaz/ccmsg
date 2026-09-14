@@ -42,7 +42,7 @@ const STOP_GRACE_MS = 1_000;
 
 describe("an instance's stop and a request already past the door", () => {
   /** An instance serving the WebSocket, so the authentication routes exist. */
-  async function serving(): Promise<{ instance: Instance; origin: string }> {
+  async function serving(inFlightStopMs?: number): Promise<{ instance: Instance; origin: string }> {
     const lease = leasePort();
     await lease.release();
     const port = lease.port;
@@ -59,7 +59,11 @@ describe("an instance's stop and a request already past the door", () => {
       CCMSG_CACHE_DIR: join(root, "cache"),
       CCMSG_CONFIG_DIR: join(root, "config"),
     };
-    const outcome = await start({ env, echoLog: false });
+    const outcome = await start({
+      env,
+      echoLog: false,
+      ...(inFlightStopMs === undefined ? {} : { inFlightStopMs }),
+    });
     if (!isRunning(outcome)) throw new Error("another instance holds this config home");
     running.push(outcome);
     return { instance: outcome, origin };
@@ -145,6 +149,60 @@ describe("an instance's stop and a request already past the door", () => {
     expect(written.map((record) => record.body.kind === "credential" && record.body.sub)).toEqual([
       issued.sub,
     ]);
+  });
+
+  test("a request that outlasts the bound is left behind by name, not waited out", async () => {
+    const bound = 200;
+    const at = await serving(bound);
+    const { instance } = at;
+
+    // Held open for longer than the stop will wait. The supervisor's graceful
+    // stage is what the bound protects: one request must not be able to spend
+    // the budget the flush and the listeners need.
+    let release = (): void => undefined;
+    const held = new ReadableStream<Uint8Array>({
+      start(controller) {
+        release = (): void => {
+          controller.enqueue(new TextEncoder().encode("{}"));
+          controller.close();
+        };
+      },
+    });
+    const inFlight = post(at, "register", held).catch(() => undefined);
+
+    const began = Date.now();
+    const stopped = instance.stop();
+    const outcome = await Promise.race([
+      stopped.then(() => "stopped"),
+      Bun.sleep(STOP_GRACE_MS).then(() => "held"),
+    ]);
+    expect(outcome).toBe("stopped");
+    expect(Date.now() - began).toBeGreaterThanOrEqual(bound);
+    expect(existsSync(instance.paths.lockFile)).toBe(false);
+
+    // What it could not wait for is said, with the name of the route, rather
+    // than passed over: the writes that request ends with may land after the
+    // flush, which is what the wait exists to prevent.
+    const lines = readFileSync(instance.paths.logFile, "utf8")
+      .split("\n")
+      .filter((line) => line !== "")
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+    const leftBehind = lines.filter((line) => line["message"] === "stop_left_behind");
+    expect(leftBehind.length).toBe(1);
+    expect(leftBehind[0]?.["count"]).toBe(1);
+    expect(leftBehind[0]?.["ops"]).toEqual(["POST /auth/register"]);
+    expect(leftBehind[0]?.["after_ms"]).toBe(bound);
+
+    release();
+    await inFlight;
+  });
+
+  test("a stop with nothing under way says nothing about what it left", async () => {
+    const at = await serving(200);
+    const { instance } = at;
+    await instance.stop();
+    const lines = readFileSync(instance.paths.logFile, "utf8");
+    expect(lines).not.toContain("stop_left_behind");
   });
 });
 

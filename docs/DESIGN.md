@@ -690,7 +690,7 @@ Being long-running (resident) means the daemon for an unused config home keeps r
 ### 8.5 Shutdown order
 
 1. Stop accepting new requests (reentrancy guard)
-2. Stop watching upstream and any child processes
+2. Stop watching upstream and any child processes. What the guard in step 1 had already let through is then answered before step 3, for at most **5 seconds** (`IN_FLIGHT_STOP_MS`) — a request still running after that is left to finish on its own and is named in the log, because waiting the whole of the supervisor's graceful budget for one long request would spend what step 4 needs to land its writes
 3. Notify all connections that "it will restart" (**before tearing down transport**)
 4. Finalize what must be persisted (§2.5). Each of them is written as it changes rather than at exit, so what is settled here is the writes already asked for and not yet landed — `last_live`, the inbox, the store, the records, and the log's own lines. They land before step 6, since a successor reads these files as it starts
 5. Close the listeners. **Close UDS last** — clients observe "cannot connect to UDS" as completion of withdrawal, so give up the address that could contend with a successor (the HTTP listener) before closing it. Among the listeners that are not the UDS there is no order, so they close together: each has its own deadline of 250 ms, and closing them one after another would add those up for no reason. Closing removes only the `daemon.<pid>.sock` this process bound; the stable path's symlink is left alone (a successor may have already pointed it at itself, and a dangling symlink still pointing here is exactly the "cannot connect to UDS" that this clause means by completed withdrawal)
