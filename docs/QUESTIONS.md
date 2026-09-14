@@ -20,18 +20,22 @@
 
 ## 裁定待ち
 
-### CT-Q9 セッションのライフサイクルに `starting` / `loading` を足すか (契約)
+### CT-Q10 session と run の分離、重複起動の凍結と制限モード (契約)
 
-`SessionState` は `waiting` / `live` / `live_unmanaged` / `paused` / `disappeared`。kawaz の指摘 (2026-09-14): 最初の状態が来る前を分けると、(1) process (pid / hyoui) は掴めているが transcript がまだ無い (初回ディレクトリの trust 確認で TUI が止まっている等)、(2) transcript はあるが状態の畳みが終わっていない、の 2 段階に語が無い。(3) 畳み済み = `live` / `waiting`、(4) 畳み済みで process 無し = `paused` / `disappeared` は既にある。CT-Q8 は a (開始応答は畳み終えてから) で裁定済みで、その待ちの間の理由を `peers` の状態が述べる形になる。
+kawaz の指摘 (2026-09-14): 同じ sid のプロセスが 2 つ起動しうる (走行中の sid を resume する等)。今の daemon は `HarnessSessions.scan()` と接続を `Map<Sid, …>` で持つので後勝ちで 1 行に畳み、重複の存在自体が見えない。fork した時点以降の jsonl は信頼できず、読み位置の byte もずれる。どちらを畳むべきかは自動判断できない (新しい方がバイナリが新しい可能性がある一方、teammate は古い方が保持している等)。
 
-`starting` の価値 (kawaz 2026-09-14): 「claude を起動したはずなのに webui に流れてこない」時に、起動に失敗したのか TUI で止まっているのかが分かり、TUI で止まっているなら hyoui の terminal へのリンク導線を置ける。含意: `starting` の行には挨拶も transcript も無いので、`terminal_id` は launcher / hyoui の観測から埋める (挨拶由来ではない)。行の鍵 (sid 未定の間は hyoui の sid か pid か) は契約 minor で決める。
+方向 (統括案、kawaz と合意済みの骨子):
 
-鍵の問題 (kawaz 2026-09-14): `starting` の段階で sid は経路により未定 (`new` は `--session-id` で先に生成できる、`resume` / `fork` は引数で決まる、`--continue` は起動後に claude が決めるので先に決められない)。統括の案: `starting` の鍵は sid でなく**起動** (hyoui の `terminal_id`) にし、sid は transcript / 挨拶から取る方針に一本化。`new` の追跡は pid で結ぶ (launcher は子の pid を知る、挨拶の meta に pid を載せて一致させる)。契約は `SessionRow` を sid 必須のまま保ち、挨拶前の起動は別 topic (`launches`、鍵 `terminal_id`、pid / cwd / 経路 / 開始時刻 / `starting` | `failed`) にする。`loading` は sid 確定後なので `SessionState` に足す。`--session-id` の事前生成は URL が先に決まる利点があるので `new` で併用可 (前提にはしない)。
+- **session** (鍵 sid) = transcript / fold した状態 / dump / 履歴。**run** (鍵 pid、`terminal_id` = `<scheme>:<id>` 例 `hyoui:<id>`) = 生存 / terminal / 接続 / stop・notify・message.send の宛先。`peers` の行は sid ごとに `runs: [{pid, started_at, terminal_id, route (new/resume/continue/fork)?, version?, connected (teammate / subagent / 接続の数と誰か), last_activity_at}]` を持つ
+- run の状態: `starting` (sid 未定、hyoui 経由で起動した時だけ知れる) → 挨拶で sid が付く → `loading` (fold 中) → `live` / `waiting` …。CT-Q9 はここに吸収
+- **重複 (run が 2 つ以上)**: `SessionState` を `duplicated` (仮) にし、fold と transcript の追記配信を止め、最後に信頼できた値を凍結表示。cache のその sid の entry は解消後に捨てて頭から畳み直す。ccmsg は自動で片方を畳まない、jsonl を修復しない、どちらが正しいかを推定しない
+- **URL** `sid[.pid]`: run が 1 つなら省略可。複数なら webui はセッション選択時にどの run かを選ばせて pid 付きへ。`sid.pid` の画面は重複中は**制限モード**: 使えるのは判断材料の表示・terminal リンク・その run の `session.stop` (pid 必須、sid だけの stop は `ambiguous_run` で pid 一覧を返す)・凍結表示。封印は `message.send` / `notify` (inbox に保留、解消後に配る)、fold の更新、dump / file 系 op。解消後、消えた pid の URL は「その run は終了した」を示して `sid` へ誘導
 
-- [ ] a': 上の 2 段構え (`launches` topic + `SessionState.loading`) で契約 minor を起こす (統括推し)
-- [ ] a: `starting` (transcript 未出現、ccmsg が起動に関与したか pid を観測できた時だけ知れる) と `loading` (transcript あり、畳み中) を足す (推し)
-- [ ] b: 別の語 (`preparing` は `UndeliveredReason` に既にあるので避ける)
-- [ ] c: 足さない (CT-Q8 a の待ちだけで表す)
+裁定が要る点:
+
+- [ ] a: 重複中の `message.send` は inbox に保留して解消後に配る (統括推し) / 断る
+- [ ] b: 判断材料の最終セット (上の `runs` の要素で足りるか、足すもの・引くもの)
+- [ ] c: この骨子で契約の DR 草案を統括が起草してよいか (契約 minor: `runs`、run 状態、`duplicated`、`ambiguous_run`、`terminal_id` の scheme 形式)
 
 ## 確認待ち
 
