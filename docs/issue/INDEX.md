@@ -25,7 +25,6 @@ wire の契約は [kawaz/ccmsg-protocol](https://github.com/kawaz/ccmsg-protocol
 
 | date | category | status | slug | 概要 |
 |---|---|---|---|---|
-| 2026-09-14 | task | open | [await-crossing-invariants-sweep](./2026-09-14-await-crossing-invariants-sweep.md) | DR-0015 で async 化した全経路の await をまたいだ前提の確かめ直しを総点検する |
 | 2026-09-14 | bug | open | [reply-instruction-names-ambiguous-ccmsg-binary](./2026-09-14-reply-instruction-names-ambiguous-ccmsg-binary.md) | 直送メッセージの返信案内 `ccmsg reply <mid>` が、旧 plugin の `ccmsg` (r<N>m<M> 形式) と混同されて拒否される |
 | 2026-09-14 | design | open | [session-search-regex-unbounded](./2026-09-14-session-search-regex-unbounded.md) | `session.search` のユーザ指定正規表現が 1 回の `test()` でイベントループを塞ぎ切る |
 | 2026-09-14 | design | open | [async-io-principle-and-blocking-io-audit](./2026-09-14-async-io-principle-and-blocking-io-audit.md) | IO を伴うイベント / メッセージ処理を非同期にする原則を v2 daemon の DR に起こし、接続後に走る同期… |

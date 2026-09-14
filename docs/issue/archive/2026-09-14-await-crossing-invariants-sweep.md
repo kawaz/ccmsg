@@ -1,6 +1,6 @@
 ---
 title: await をまたいだ前提の確かめ直しを全 async 経路で総点検
-status: open
+status: resolved
 category: task
 created: 2026-09-14T14:38:46+09:00
 last_read:
@@ -9,10 +9,10 @@ wip_entered:
 blocked_entered:
 pending_entered:
 discarded_entered:
-resolved_entered:
+resolved_entered: 2026-09-14T16:16:11+09:00
 discard_reason:
 pending_reason:
-close_reason:
+close_reason: ["finding/2026-09-14-await-crossing-invariants", "done: 323 await の表 (根拠なし0件)、欠落12件を修正、再現test 31件 (test/{files-edit-concurrency,auth-await-crossing,instance-stop-await-crossing,sessions-await-crossing,transcript-await-crossing}.test.ts)、stop の in-flight 待ちに IN_FLIGHT_STOP_MS(5s)上限、据え置き5件は finding の据え置き節、reviewer-sol-high レビューで land前の要修正なし、v0.16.0"]
 blocked_by:
 origin: 自リポ TODO
 ---
