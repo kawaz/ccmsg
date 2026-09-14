@@ -102,9 +102,9 @@
 
 | ファイル:行 | API | 契機 | 何に比例 | 処置 | 根拠 |
 |---|---|---|---|---|---|
-| kv/store.ts:119 | readFileSync | op `kv.read` / `kv.write` / `kv.delete`、topic `kv:<ns>` の snapshot → `#load(ns)` (初回のみ、以後メモリ) | 1 namespace のファイル全体 | async 化 | 初回の読みが購読の開始ターンに乗る。値は小さいが原則の対象 |
+| kv/store.ts:119 | readFileSync | op `kv.read` / `kv.write` / `kv.delete`、topic `kv:<ns>` の snapshot → `#load(ns)` (初回のみ、以後メモリ) | 1 namespace のファイル全体 | 起動時 1 回の同期読みに寄せる | 初回の読みが購読の開始ターンに乗る。ただし `#load()` は同期契約の `KvStore.snapshot()` からも呼ばれるので、読みを Promise にすると topic の「値を述べる」入口が Promise を返すことになり CT-Q8 の領域に入る。構築時に kv ディレクトリを readdir して全 namespace を読めば (C) の読みが消え、snapshot の契約も変わらない |
 | kv/store.ts:152,157,159,161 | mkdirSync / writeFileSync / renameSync / unlinkSync | op `kv.write` / `kv.delete` → `#persist()` | namespace の全キーの合計 | async 化 | 書き込みごとに namespace 全体を書き直す |
-| auth/records.ts:338 | readFileSync | `#load()` の初回。op `auth.extend` / `auth.resolve` / `auth.rotate`、HTTP route の `auth.challenge` / `register` / `assert` / `token.refresh`、mesh の element 受信 → `Auth.merge()`、topic `auth.records` の snapshot | records.json 全体 | async 化 | 認証の最初の 1 回が接続処理の中に乗る |
+| auth/records.ts:338 | readFileSync | `#load()` の初回。op `auth.extend` / `auth.resolve` / `auth.rotate`、HTTP route の `auth.challenge` / `register` / `assert` / `token.refresh`、mesh の element 受信 → `Auth.merge()`、topic `auth.records` の snapshot | records.json 全体 | 起動時 1 回の同期読みに寄せる | 認証の最初の 1 回が接続処理の中に乗る。ただし `#load()` は同期契約の `AuthTopic.snapshot()` → `all()` からも呼ばれるので kv と同じ理由で読みは Promise にできない。構築時に読めば (C) の読みが消え、snapshot の契約も変わらない |
 | auth/records.ts:361,367,369,371 | mkdirSync / writeFileSync / renameSync / unlinkSync | 同上の書き込み系 (`write` / `merge` / `remove` / `fail`) → `#persist()` | records.json 全体 | async 化 | 認証のたびにファイル全体を書き直す |
 | messaging/inbox.ts:187,188 | mkdirSync / appendFileSync | op `message.send` → `Delivery.send()` → `#hold()` → `inbox.hold()`、および `#offer()` → `inbox.delivered()` | 追記 1 行 (メッセージ本文) | async 化 | メッセージのたびに走る。追記なので量は小さいが経路はホットパス |
 | messaging/direct.ts:128 | chmodSync | op `message.send` → `ClaudeCodeSocketRoute.send()` → `#inbox()` → `new StatusInbox(dir).address()` (相手ごと初回のみ) | 固定 | async 化 | 同じハンドラの中 |
@@ -182,7 +182,9 @@
 受信側に接続ごとの直列化が無い (`transport/driver.ts:33` の `void handle(...)`) ので、ハンドラを async にすれば、その await 中に同じ接続の他の op が実際に進む。つまり async 化の効果は「待ち時間が要求ごとに分かれる」ではなく「他の要求が本当に並行に答えられるようになる」である。逆に言えば、同期のまま残した 1 箇所が instance 全体を止め続けるので、経路のどこか 1 つに同期 fs が残ると、その経路を async 化した効果は消える。ハンドラ単位ではなく、入口から fs 呼び出しまでの経路を丸ごと直す必要がある。
 
 **4. 永続化 (`kv/store.ts` 5 件 + `auth/records.ts` 5 件 + `messaging/inbox.ts` 2 件 + `messaging/direct.ts` 1 件、計 13 件)**
-`#load()` / `#persist()` / `#append()` を `fs/promises` に置き換える。連鎖は各 op ハンドラ (`kv.*` / `auth.*` / `message.send`) までで止まり、いずれも既に async か、async にしても呼び出し側の形が変わらない。ここは書き込みの順序が意味を持つので、`#persist()` を「前の書き込みの Promise に連ねる」直列化を入れる (同時に 2 つの書き込みが一時ファイルを取り合わないため)。読みの `#load()` は初回だけなので、初回の Promise を保持して以後は同じものを await する形にする。
+`#persist()` / `#append()` を `fs/promises` に置き換える。ここは書き込みの順序が意味を持つので、「前の書き込みの Promise に連ねる」直列化を入れる (同時に 2 つの書き込みが一時ファイルを取り合わないため)。
+
+**読みと書きで行き先が違う。** 書きの連鎖は各 op ハンドラ (`kv.*` / `auth.*` / `message.send`) までで止まる — `auth` は `Auth` の `mint` / `rotate` / `remove` / `merge` を経て HTTP route と mesh の element 受信まで async になるが、いずれも既に async な経路の内側である。一方 **読みの `#load()` は op ハンドラでは止まらない**: `KvStore.snapshot()` と `AuthTopic.snapshot()` が呼んでおり、これらは同期契約の `UpstreamResource.snapshot` である。初回の Promise を保持して await する形にすると topic の「値を述べる」入口が Promise を返すことになり、群 3 と同じく CT-Q8 の裁定待ちになる。そこで読みは非同期化せず、**構築時に 1 回だけ同期で読む (B 分類) に寄せる** — `kv` は kv ディレクトリを readdir して全 namespace を、`auth` は `records.json` を読む。instance がこれらのファイルの唯一の書き手なので、遅延読みを前倒しても見えるものは変わらず、(C) の読みは消え、snapshot の契約も変わらない。起動後に生まれる namespace は、ファイルを持たない namespace としてメモリ上で空から始まる。
 
 **5. 外部の完了待ち (3 件)**
 `daemon/supervise.ts:283-285` の `#over()` は `answers.push(await op(unit))` を `Promise.allSettled(units.map(op))` に置き換える。対象リストを先に固定する現在の性質は保たれ、答えの並びも入力順のままになる。`messaging/direct.ts:292,321` の `#target()` / `#token()` は `readdir` の結果を `Promise.all` で読んでから一致を選ぶ形にする。`#target()` は現在 1 件目の一致で早期に返るので、全件読みに変えると読む量は増えるが、一致しない場合に全件読むのは今も同じで、掛かる時間は最も遅い 1 件ぶんになる。`messaging/delivery.ts:250-253` の `retry()` は sid ごとの `#offer` を並行に起こす。`#offer` が sid 単位のガード (`#offering` / `#claimed`) を既に持つので、1 通ずつ出すという sid 内の順序保証は保たれる。

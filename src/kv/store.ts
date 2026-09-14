@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { mkdir, rename, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type {
@@ -29,7 +29,15 @@ export const KV_DIR = "kv";
  * One file per namespace, whole-file: a namespace holds a handful of small
  * values, and the whole of it is what both a snapshot and a reload state. The
  * write lands through a temporary and a rename, so a kill leaves either the
- * previous namespace or the new one. */
+ * previous namespace or the new one.
+ *
+ * The files are read here, as the store is built — before this instance is
+ * accepting anything, so nobody is waiting on the read (DR-0015). Reading them
+ * when a namespace was first asked about would put the read inside the turn
+ * that answers a `kv.read` or opens a `kv:<ns>` subscription, and a snapshot is
+ * answered from what is held rather than from a promise. A namespace with no
+ * file starts empty, which is the same thing a namespace written for the first
+ * time after this starts from. */
 export class KvStore implements UpstreamResource {
   readonly #namespaces = new Map<string, Map<string, Held>>();
 
@@ -40,7 +48,19 @@ export class KvStore implements UpstreamResource {
     private readonly dir: string,
     private readonly self: InstanceId,
     private readonly publish: (topic: string, data: unknown) => void,
-  ) {}
+  ) {
+    let names: string[];
+    try {
+      names = readdirSync(this.dir);
+    } catch {
+      // No directory yet, which is an instance nobody has written a value to.
+      return;
+    }
+    for (const name of names) {
+      if (!name.endsWith(".json")) continue;
+      this.#namespaces.set(name.slice(0, -".json".length), read(join(this.dir, name)));
+    }
+  }
 
   read(args: KvReadArgs): KvReadResult {
     const held = this.#load(args.ns).get(args.key);
@@ -100,8 +120,7 @@ export class KvStore implements UpstreamResource {
   }
 
   /** Nothing to start or stop: the values are here whether anyone is watching
-   * or not, and the file they live in is read the first time the namespace is
-   * touched. */
+   * or not, and the files they live in were read as this was built. */
   start(): void {}
   stop(): void {}
 
@@ -116,42 +135,13 @@ export class KvStore implements UpstreamResource {
     return [{ instance: this.self, data: { entries } }];
   }
 
+  /** What the namespace holds, dropping the removals nothing can still be
+   * carrying an older write for. A name this store read no file for is a
+   * namespace with nothing in it. */
   #load(ns: string, now: Timestamp = Date.now()): Map<string, Held> {
-    const known = this.#namespaces.get(ns);
-    if (known !== undefined) return forget(known, now);
-    const entries = new Map<string, Held>();
-    let text: string;
-    try {
-      text = readFileSync(this.#file(ns), "utf8");
-    } catch {
-      this.#namespaces.set(ns, entries);
-      return entries;
-    }
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(text);
-    } catch {
-      // A file a kill damaged states nothing this instance can act on, and
-      // refusing every read of the namespace would be worse than starting it
-      // empty: the next write replaces the file.
-      parsed = undefined;
-    }
-    if (typeof parsed === "object" && parsed !== null) {
-      for (const [key, held] of Object.entries(parsed as Record<string, unknown>)) {
-        if (typeof held !== "object" || held === null) continue;
-        const fields = held as Record<string, unknown>;
-        const updatedAt = fields["updated_at"];
-        if (typeof updatedAt !== "number") continue;
-        entries.set(
-          key,
-          fields["deleted"] === true
-            ? { updated_at: updatedAt, deleted: true }
-            : { value: fields["value"], updated_at: updatedAt },
-        );
-      }
-    }
-    this.#namespaces.set(ns, entries);
-    return forget(entries, now);
+    const known = this.#namespaces.get(ns) ?? new Map<string, Held>();
+    this.#namespaces.set(ns, known);
+    return forget(known, now);
   }
 
   /** The namespace as it stands, written whole.
@@ -191,6 +181,35 @@ export class KvStore implements UpstreamResource {
   #file(ns: string): string {
     return join(this.dir, `${ns}.json`);
   }
+}
+
+/** One namespace's file, as the entries it states.
+ *
+ * A file a kill damaged states nothing this instance can act on, and refusing
+ * every read of the namespace would be worse than starting it empty: the next
+ * write replaces the file. */
+function read(file: string): Map<string, Held> {
+  const entries = new Map<string, Held>();
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(file, "utf8"));
+  } catch {
+    return entries;
+  }
+  if (typeof parsed !== "object" || parsed === null) return entries;
+  for (const [key, held] of Object.entries(parsed as Record<string, unknown>)) {
+    if (typeof held !== "object" || held === null) continue;
+    const fields = held as Record<string, unknown>;
+    const updatedAt = fields["updated_at"];
+    if (typeof updatedAt !== "number") continue;
+    entries.set(
+      key,
+      fields["deleted"] === true
+        ? { updated_at: updatedAt, deleted: true }
+        : { value: fields["value"], updated_at: updatedAt },
+    );
+  }
+  return entries;
 }
 
 /** Drop the removals nothing can still be carrying an older write for.

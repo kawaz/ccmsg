@@ -82,12 +82,13 @@ export interface RecordsDeps {
  * and in the authenticator, and losing a family logs its person out. */
 export class AuthRecords {
   readonly #records = new Map<string, AuthRecord>();
-  #loaded = false;
 
   /** The writes already asked for, as one chain. */
   #writing: Promise<void> = Promise.resolve();
 
-  constructor(private readonly deps: RecordsDeps) {}
+  constructor(private readonly deps: RecordsDeps) {
+    this.#read();
+  }
 
   #now(): Timestamp {
     return (this.deps.now ?? Date.now)();
@@ -98,7 +99,6 @@ export class AuthRecords {
    * Answers whether the set moved, which is what decides whether the change is
    * worth writing down and passing on. */
   accept(record: AuthRecord): boolean {
-    this.#load();
     const held = this.#records.get(record.key);
     if (held !== undefined && held.updated_at >= record.updated_at) return false;
     if (this.#refused(record)) return false;
@@ -144,7 +144,6 @@ export class AuthRecords {
     body: AuthRecord["body"],
     now: Timestamp = this.#now(),
   ): Promise<boolean> {
-    this.#load();
     const held = this.#records.get(key);
     const at = held === undefined ? now : Math.max(now, held.updated_at + 1);
     const record: AuthRecord = { key, updated_at: at, body };
@@ -207,13 +206,11 @@ export class AuthRecords {
   /** Whether this subject has been removed, which is what a registration for
    * one has to be refused by. */
   removed(sub: Subject): boolean {
-    this.#load();
     const held = this.#records.get(credentialPrefix(sub));
     return held?.body.kind === "tombstone";
   }
 
   credentials(): CredentialRecord[] {
-    this.#load();
     const found: CredentialRecord[] = [];
     for (const record of this.#records.values()) {
       if (record.body.kind === "credential") found.push(record.body);
@@ -238,7 +235,6 @@ export class AuthRecords {
   }
 
   families(): { key: string; body: TokenFamily }[] {
-    this.#load();
     const found: { key: string; body: TokenFamily }[] = [];
     for (const record of this.#records.values()) {
       if (record.body.kind === "token_family") found.push({ key: record.key, body: record.body });
@@ -286,7 +282,6 @@ export class AuthRecords {
    * same seven days a removal's is: past the longest refresh token, there is
    * nothing left for a returning peer to revive. */
   async fail(key: string): Promise<void> {
-    this.#load();
     const held = this.#records.get(key);
     if (held === undefined || held.body.kind !== "token_family") return;
     const at = this.#now();
@@ -316,7 +311,6 @@ export class AuthRecords {
 
   /** Every record, for the snapshot a peer's subscription is answered with. */
   all(): AuthRecord[] {
-    this.#load();
     this.#expire();
     return [...this.#records.values()];
   }
@@ -340,9 +334,13 @@ export class AuthRecords {
     }
   }
 
-  #load(): void {
-    if (this.#loaded) return;
-    this.#loaded = true;
+  /** The file, read as this is built — before the instance is accepting
+   * anything, so nobody is waiting on it (DR-0015). Reading it when the first
+   * authentication asked would put the read inside the turn that answers it,
+   * and the `auth.records` snapshot is answered from what is held rather than
+   * from a promise. A file that is not there is an instance nobody has
+   * registered against, which is what an empty set says. */
+  #read(): void {
     let text: string;
     try {
       text = readFileSync(this.#file(), "utf8");
