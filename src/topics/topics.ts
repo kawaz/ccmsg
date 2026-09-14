@@ -92,6 +92,14 @@ export class Topics {
    * another's (§6.2), so neither does it make the other a repeat. */
   readonly #lastSent = new Map<string, Map<InstanceId, string>>();
   readonly #upstream = new Map<TopicKind, UpstreamResource>();
+  /** The subscriptions whose opening value is still being read, per topic name.
+   *
+   * A connection is here and not among the subscribers while it waits: it is
+   * not sent what happens during the wait (that is what its snapshot is for),
+   * and it is what keeps the resource running for a topic nobody is listening
+   * to yet. An unsubscribe or a close during the wait takes the connection out
+   * of here, which is how the wait learns that its subscription is gone. */
+  readonly #opening = new Map<string, Set<Requester>>();
   /** The connections a close listener has already been registered on. Weak
    * because the entry says nothing once the connection is gone. */
   readonly #closers = new WeakSet<Requester>();
@@ -189,35 +197,61 @@ export class Topics {
       return "capability_unavailable";
     }
 
-    let subscribers = this.#subscribers.get(topic);
-    if (subscribers === undefined) {
-      subscribers = new Set();
-      this.#subscribers.set(topic, subscribers);
-      // Before the connection joins, so a value the resource produces while
-      // starting is held rather than pushed as a change to a subscriber that
-      // has not had its snapshot yet.
+    // One listener for the connection rather than one per subscription: a
+    // client that subscribes and unsubscribes as it moves between views does
+    // so any number of times on one connection, and a listener registered per
+    // subscription would be kept for every one of them until it closed. What
+    // the single listener releases is every subscription still held, which is
+    // what a close means (§6.3). It goes on before the wait, so a connection
+    // that closes during one is released by it.
+    if (!this.#closers.has(conn)) {
+      this.#closers.add(conn);
+      conn.onClose(() => this.dropAll(conn));
+    }
+    const started =
+      this.#subscribers.get(topic) !== undefined || this.#opening.get(topic) !== undefined;
+    const opening = this.#opening.get(topic) ?? new Set<Requester>();
+    this.#opening.set(topic, opening);
+    opening.add(conn);
+    if (!started) {
+      // The resource runs from the first want, and an opening subscription is
+      // one: what it is being asked for is the resource's own value.
       this.#upstream.get(kind)?.start(topic);
       // The subscription travels with the same trigger the local resource has:
       // one listener starts it, none stops it (§6.3, §7.4).
       this.remote?.demand(topic, true);
     }
-    if (!subscribers.has(conn)) {
-      subscribers.add(conn);
-      // One listener for the connection rather than one per subscription: a
-      // client that subscribes and unsubscribes as it moves between views does
-      // so any number of times on one connection, and a listener registered
-      // per subscription would be kept for every one of them until it closed.
-      // What the single listener releases is every subscription still held,
-      // which is what a close means (§6.3).
-      if (!this.#closers.has(conn)) {
-        this.#closers.add(conn);
-        conn.onClose(() => this.dropAll(conn));
-      }
-    }
     // The owner states the current value. A topic with no owner attached yet
     // answers nothing, as does one with no value to state (§6.2, event), and
     // in both cases the subscriber starts at the next thing that happens.
-    for (const value of (await this.#upstream.get(kind)?.snapshot(topic, conn)) ?? []) {
+    let stated: readonly TopicValue[];
+    try {
+      stated = (await this.#upstream.get(kind)?.snapshot(topic, conn)) ?? [];
+    } catch (failure) {
+      // No value came back, so there is no subscription: the connection was
+      // never among the subscribers, and what was started for it stops unless
+      // somebody else still wants it. The failure is the caller's answer.
+      opening.delete(conn);
+      this.#idle(kind, topic);
+      throw failure;
+    }
+    // Gone while the value was being read — an unsubscribe, or a close. The
+    // snapshot is not sent and the connection does not join: what it asked for
+    // it has since asked to be let out of (DR-0015 §2.5).
+    if (!opening.delete(conn)) {
+      this.#idle(kind, topic);
+      return "ok";
+    }
+    let subscribers = this.#subscribers.get(topic);
+    if (subscribers === undefined) {
+      subscribers = new Set();
+      this.#subscribers.set(topic, subscribers);
+    }
+    // The connection joins only now, with its snapshot in hand: a frame raised
+    // while it waited would otherwise have reached it before the value that
+    // frame is a change to (§6.1).
+    subscribers.add(conn);
+    for (const value of stated) {
       conn.deferSend(this.#frame(topic, value.instance, value.data, true));
     }
     // What the other instances last stated, under their own names. A whole
@@ -235,17 +269,32 @@ export class Topics {
   unsubscribe(conn: Requester, topic: string): SubscribeOutcome {
     const kind = topicKind(topic);
     if (kind === undefined) return "topic_unknown";
+    // A subscription still being opened is dropped the same way one already
+    // open is: the wait sees it is gone and neither sends the snapshot nor
+    // joins the connection.
+    const dropped = this.#opening.get(topic)?.delete(conn) === true;
     const subscribers = this.#subscribers.get(topic);
-    if (subscribers === undefined || !subscribers.delete(conn)) return "ok";
-    if (subscribers.size > 0) return "ok";
+    if (subscribers?.delete(conn) !== true && !dropped) return "ok";
+    this.#idle(kind, topic);
+    return "ok";
+  }
+
+  /** Let a topic go once nothing wants it — neither a subscriber nor a
+   * subscription still being opened. What it last sent is forgotten with it:
+   * comparing against a frame from before the resource stopped would suppress
+   * the first frame after it starts again. */
+  #idle(kind: TopicKind, topic: string): void {
+    const subscribers = this.#subscribers.get(topic);
+    const opening = this.#opening.get(topic);
+    // Already let go. Asking a resource to stop twice would take two of the
+    // holds it counts, where only one was ever taken.
+    if (subscribers === undefined && opening === undefined) return;
+    if ((subscribers?.size ?? 0) > 0 || (opening?.size ?? 0) > 0) return;
     this.#subscribers.delete(topic);
-    // Nothing is listening, so the resource stops. What it last sent is
-    // forgotten with it: comparing against a frame from before the resource
-    // stopped would suppress the first frame after it starts again.
+    this.#opening.delete(topic);
     this.#lastSent.delete(topic);
     this.#upstream.get(kind)?.stop(topic);
     this.remote?.demand(topic, false);
-    return "ok";
   }
 
   /** Drop every subscription one connection holds.
@@ -259,6 +308,9 @@ export class Topics {
     const held: string[] = [];
     for (const [topic, subscribers] of this.#subscribers) {
       if (subscribers.has(conn)) held.push(topic);
+    }
+    for (const [topic, opening] of this.#opening) {
+      if (opening.has(conn) && !held.includes(topic)) held.push(topic);
     }
     for (const topic of held) this.unsubscribe(conn, topic);
     // Whatever was waiting for this terminal was raised while it was still

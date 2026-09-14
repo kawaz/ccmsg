@@ -48,10 +48,109 @@ function owner(hub: Topics, kind: TopicKind, current: readonly TopicValue[] = []
   return { started, stopped, state };
 }
 
+/** An owner whose value has to be read: it answers with a promise the case
+ * settles when it chooses to, which is the window every await opens. */
+function slowOwner(hub: Topics, kind: TopicKind, current: readonly TopicValue[] = []) {
+  const started: string[] = [];
+  const stopped: string[] = [];
+  let release: ((values: readonly TopicValue[]) => void) | undefined;
+  let refuse: ((failure: Error) => void) | undefined;
+  hub.attach(kind, {
+    start: (topic) => started.push(topic),
+    stop: (topic) => stopped.push(topic),
+    snapshot: () =>
+      new Promise<readonly TopicValue[]>((settle, fail) => {
+        release = settle;
+        refuse = fail;
+      }),
+  });
+  return {
+    started,
+    stopped,
+    state: () => {
+      release?.(current);
+    },
+    fail: () => {
+      refuse?.(new Error("the file could not be read"));
+    },
+  };
+}
+
 /** A role the topic table allows for a kind, read from the table. */
 function allowedRole(kind: TopicKind) {
   return TOPIC_ATTRIBUTES[kind].roles[0];
 }
+
+describe("a value that has to be read is waited for (CT-Q8)", () => {
+  const KIND: TopicKind = "kv";
+
+  test("what is published while the value is read arrives after the snapshot", async () => {
+    // The subscriber joins with its snapshot in hand. Joining first and reading
+    // after would send it a change to a value it had not been given yet, which
+    // is the one order §6.1 fixes.
+    const hub = topics();
+    const owned = slowOwner(hub, KIND, [{ instance: SELF, data: ENTRIES }]);
+    const conn = connAs("user");
+
+    const subscribing = hub.subscribe(conn, KV);
+    await Bun.sleep(0);
+    hub.publish(KV, { ns: "notes", entries: [{ key: "k", value: "later" }] });
+    owned.state();
+    expect(await subscribing).toBe("ok");
+    conn.flush();
+
+    const marks = conn
+      .topics()
+      .map((frame) => (frame["snapshot"] === true ? "snapshot" : "change"));
+    expect(marks[0]).toBe("snapshot");
+  });
+
+  test("a subscription let go while its value is read is not opened", async () => {
+    // The wait is a window: a view switched away from, a connection closed. The
+    // snapshot is not sent to a connection that has asked to be let out, and
+    // what was started for it stops with it.
+    const hub = topics();
+    const owned = slowOwner(hub, KIND, [{ instance: SELF, data: ENTRIES }]);
+    const conn = connAs("user");
+
+    const subscribing = hub.subscribe(conn, KV);
+    await Bun.sleep(0);
+    expect(hub.unsubscribe(conn, KV)).toBe("ok");
+    owned.state();
+    await subscribing;
+    conn.flush();
+
+    expect(conn.topics()).toEqual([]);
+    expect(owned.stopped).toEqual([KV]);
+    // And nothing is left holding the topic open.
+    expect(hub.subscriberCount(KV)).toBe(0);
+  });
+
+  test("a value that cannot be read leaves no subscription behind", async () => {
+    // The caller is told, and the connection is not left among the subscribers
+    // of a topic whose value it never received.
+    const hub = topics();
+    const owned = slowOwner(hub, KIND);
+    const conn = connAs("user");
+
+    const subscribing = hub.subscribe(conn, KV);
+    await Bun.sleep(0);
+    owned.fail();
+    let refused: unknown;
+    try {
+      await subscribing;
+    } catch (failure) {
+      refused = failure;
+    }
+    expect(refused).toBeInstanceOf(Error);
+
+    expect(hub.subscriberCount(KV)).toBe(0);
+    expect(owned.stopped).toEqual([KV]);
+    hub.publish(KV, { ns: "notes", entries: [] });
+    conn.flush();
+    expect(conn.topics()).toEqual([]);
+  });
+});
 
 describe("the subscription is the whole of what a topic holds (§6.1)", () => {
   test("subscribing hands over the current value once, marked as a snapshot", async () => {
