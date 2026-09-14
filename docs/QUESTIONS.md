@@ -24,6 +24,8 @@
 
 `SessionState` は `waiting` / `live` / `live_unmanaged` / `paused` / `disappeared`。kawaz の指摘 (2026-09-14): 最初の状態が来る前を分けると、(1) process (pid / hyoui) は掴めているが transcript がまだ無い (初回ディレクトリの trust 確認で TUI が止まっている等)、(2) transcript はあるが状態の畳みが終わっていない、の 2 段階に語が無い。(3) 畳み済み = `live` / `waiting`、(4) 畳み済みで process 無し = `paused` / `disappeared` は既にある。CT-Q8 は a (開始応答は畳み終えてから) で裁定済みで、その待ちの間の理由を `peers` の状態が述べる形になる。
 
+`starting` の価値 (kawaz 2026-09-14): 「claude を起動したはずなのに webui に流れてこない」時に、起動に失敗したのか TUI で止まっているのかが分かり、TUI で止まっているなら hyoui の terminal へのリンク導線を置ける。含意: `starting` の行には挨拶も transcript も無いので、`terminal_id` は launcher / hyoui の観測から埋める (挨拶由来ではない)。行の鍵 (sid 未定の間は hyoui の sid か pid か) は契約 minor で決める。
+
 - [ ] a: `starting` (transcript 未出現、ccmsg が起動に関与したか pid を観測できた時だけ知れる) と `loading` (transcript あり、畳み中) を足す (推し)
 - [ ] b: 別の語 (`preparing` は `UndeliveredReason` に既にあるので避ける)
 - [ ] c: 足さない (CT-Q8 a の待ちだけで表す)
