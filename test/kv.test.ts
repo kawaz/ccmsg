@@ -362,21 +362,21 @@ describe("mirroring one namespace onto another instance's", () => {
 });
 
 describe("a removal this store no longer remembers", () => {
-  test("is forgotten when it is read, without a clock of its own", () => {
+  test("is forgotten when it is read, without a clock of its own", async () => {
     const { state } = disposable();
     const recent = new KvStore(join(state, "recent"), SELF, () => undefined);
     const at = Date.now();
-    recent.delete({ ns: "theme", key: "default" }, at);
+    await recent.delete({ ns: "theme", key: "default" }, at);
     // Inside the window the removal stands against a write from before it.
-    recent.write({ ns: "theme", key: "default", value: "back", updated_at: at - 1 });
+    await recent.write({ ns: "theme", key: "default", value: "back", updated_at: at - 1 });
     expect(() => recent.read({ ns: "theme", key: "default" })).toThrow();
 
     // Past it, nothing is holding that write back any more: the removal is
     // gone from what the namespace states, without a timer having run.
     const stale = new KvStore(join(state, "stale"), SELF, () => undefined);
     const expiredAt = at - LAST_LIVE_RETENTION_MS - 1;
-    stale.delete({ ns: "theme", key: "default" }, expiredAt);
-    stale.write({ ns: "theme", key: "default", value: "back", updated_at: expiredAt - 1 });
+    await stale.delete({ ns: "theme", key: "default" }, expiredAt);
+    await stale.write({ ns: "theme", key: "default", value: "back", updated_at: expiredAt - 1 });
     expect(stale.read({ ns: "theme", key: "default" })).toEqual({
       value: "back",
       updated_at: expiredAt - 1,

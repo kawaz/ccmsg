@@ -505,7 +505,7 @@ describe("a token reused after its grace fails the family (§2.4)", () => {
     // A fresh domain over the same records: nothing of the rotation is left in
     // memory, and the value from two generations back is still recognised.
     const after = new Auth({ ...deps, records: new AuthRecords({ dir, self, publish: () => {} }) });
-    await expect(after.rotate(zero)).rejects.toThrow();
+    expect(after.rotate(zero)).rejects.toThrow();
     expect(after.admits(two.access.value)).toBeUndefined();
   });
 
@@ -530,7 +530,7 @@ describe("a token reused after its grace fails the family (§2.4)", () => {
     expect((await auth.rotate(zero)).refresh.value).toBe(one.refresh.value);
 
     now += PREVIOUS_GRACE_MS + 1;
-    await expect(auth.rotate(zero)).rejects.toThrow();
+    expect(auth.rotate(zero)).rejects.toThrow();
     // The family went with it, so the value that was standing is gone too.
     expect(auth.admits(one.access.value)).toBeUndefined();
   });
