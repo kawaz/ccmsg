@@ -20,14 +20,7 @@
 
 ## 裁定待ち
 
-契約 minor A (「client が見えていないものを見えるようにする」を optional の足し算で 1 回に)。issue は契約リポ `docs/issue/`。裁定済み (2026-09-13): CT-Q1 say は契約外 / CT-Q2 `reply_to` だけ足す / CT-Q4 dump は client から読まない / CT-Q5 paging は取り下げ / CT-Q6 `entries` は選んだ item の数 / CT-Q7 人は inbox を読まない (現状維持)。カラーシステム CS-Q1〜6 も裁定済み (`ccmsg-webui/docs/design/color-system.md` に反映)。
-
-### CT-Q3 fold の起点を契約に載せるか
-
-`session-status-partial-marker`。instance はセッションの状態 (`session.status`: 走っている worker、TODO、`external_files`) を transcript を畳んで作るが、大きいファイルは途中 (末尾 N byte) から畳むので、それより前で名指されたファイルは状態に現れない。今の契約は「無い」と「途中からなので知らない」を区別できず、webui が空を「無い」と描く。
-
-- [ ] a: `folded_from` (byte offset、transcript の offset 語彙をそのまま。読み手が何が欠けているか言える) (推し)
-- [ ] b: `partial: boolean` (最小だが打てる手が無い)
+(なし)
 
 ## 確認待ち
 
