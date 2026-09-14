@@ -53,6 +53,12 @@ daemon v2 の設計・実装が進む中で、blocking IO を接続後のホッ�
 - [ ] 「直す」に分類した箇所の同期 fs 呼び出しが無くなり、`just ci` が通る
 - [ ] 大きい transcript (数十 MB 以上) を持つセッションの購読開始中に同一接続の `instance.ping` が待たされないことを test で確認する
 
+## 監査結果と裁定 (2026-09-14)
+
+監査表は `docs/findings/2026-09-14-blocking-io-audit.md`。(C) 71 件、async 化の対象 63 件、連鎖の範囲で 4 群 (file / dir / sandbox 系 op 21、transcript を読む op 24、topic の値を作る経路 12、永続化 13)。群 3 は topic の「値を述べる」入口が Promise を返す形になるので CT-Q8 の裁定と歩調を合わせる。
+
+統括の裁定: `instance/log.ts` の `appendFileSync` は原則通り async 化する (書き込みキューで行の順序を保つ。クラッシュ直前の取りこぼしはログとして許容)。`mesh/keys.ts` の `generateKeyPairSync` は CPU のみ・固定コストなので同期のまま。`auth/records.ts` の dead export `ensureDir` は削除。ユーザ指定正規表現の阻害は async 化で解けないので issue `session-search-regex-unbounded` に分離。
+
 ## 関連
 
 - v1 `~/.local/share/repos/github.com/kawaz/claude-ccmsg/main/docs/decisions/DR-0029-async-io-principle.md`、同 `docs/findings/2026-08-12-blocking-io-audit-full.md` (監査の型)
