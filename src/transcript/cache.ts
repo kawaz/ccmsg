@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import type { Stats } from "node:fs";
 import { mkdir, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { ClassificationState, Item } from "./items/index.ts";
@@ -15,7 +16,7 @@ import type { FoldState } from "./fold.ts";
  * `test/transcript.test.ts` holds the digest of the sources this number stands
  * for and fails when they move without it, so the assertion is checked rather
  * than remembered. */
-export const FOLD_CACHE_VERSION = 2;
+export const FOLD_CACHE_VERSION = 3;
 
 /** What one session's fold had reached, as it is written down.
  *
@@ -100,11 +101,24 @@ export class FoldCache {
     reading: ClassificationState,
     items: readonly Item[],
   ): Promise<void> {
-    // The items are taken now rather than when the write runs: the offset and
-    // the fold describe this moment, and a list still being appended to would
-    // put records past the offset into an entry that claims to end at it.
-    const held = [...items];
-    this.#writing = this.#writing.then(() => this.#write(path, offset, fold, reading, held));
+    // Everything is taken now rather than when the write runs: the offset
+    // describes this moment, and the state is copied to its leaves because a
+    // fold still reading and a reading still filling in its calls write into
+    // the very objects handed over here — a copy one level deep would put
+    // records past the offset into an entry that claims to end at it. The
+    // file's identity is asked for now for the same reason: the offset counts
+    // bytes of the file that is there as this is called, and a write that
+    // stats later would name whatever file had taken the name by then.
+    let kept: Pick<FoldCacheEntry, "fold" | "reading" | "items">;
+    try {
+      kept = structuredClone({ fold, reading, items });
+    } catch {
+      // State that cannot be copied cannot be written either, and a cache that
+      // was not written costs the next run one read.
+      return this.#writing;
+    }
+    const identity = stat(path).catch(() => undefined);
+    this.#writing = this.#writing.then(() => this.#write(path, identity, offset, kept));
     return this.#writing;
   }
 
@@ -119,26 +133,19 @@ export class FoldCache {
 
   async #write(
     path: string,
+    identity: Promise<Stats | undefined>,
     offset: number,
-    fold: FoldState,
-    reading: ClassificationState,
-    items: readonly Item[],
+    kept: Pick<FoldCacheEntry, "fold" | "reading" | "items">,
   ): Promise<void> {
-    let known: Awaited<ReturnType<typeof stat>>;
-    try {
-      known = await stat(path);
-    } catch {
-      return;
-    }
+    const known = await identity;
+    if (known === undefined) return;
     const entry: FoldCacheEntry = {
       version: FOLD_CACHE_VERSION,
       path,
       dev: known.dev,
       ino: known.ino,
       offset,
-      fold,
-      reading,
-      items: [...items],
+      ...kept,
     };
     const file = this.#fileFor(path);
     const temporary = `${file}.${process.pid}.tmp`;
@@ -161,28 +168,46 @@ export class FoldCache {
 
 /** Whether what was read back is an entry this build can take up.
  *
- * Everything the fold and the reading are restored from is checked, because
- * restoring walks it: a field of the wrong shape is a file that says nothing
- * this build can use, which is the same as no file at all. What is not checked
- * is what nothing walks — the contents of an item, of a call's arguments, of a
- * todo — since those are carried whole and stated as they were written. */
+ * Checked as deep as anything walks it, not as deep as it is restored: restoring
+ * copies the lists, but the records read after it take a call's name and
+ * arguments apart, write into a teammate's status, add to a todo's dependency
+ * lists, and match the outstanding calls back to the items by id. A field of
+ * the wrong shape at any of those depths is a file that says nothing this build
+ * can use, which is the same as no file at all. What lies below those depths —
+ * the values of a call's arguments, a todo's subject, the rest of an item — is
+ * carried whole and stated as it was written, so it is not checked. */
 function describes(entry: unknown, path: string): entry is FoldCacheEntry {
   if (!isObject(entry)) return false;
   if (entry["version"] !== FOLD_CACHE_VERSION || entry["path"] !== path) return false;
   if (!counted(entry["offset"]) || !counted(entry["dev"]) || !counted(entry["ino"])) return false;
-  return states(entry["fold"]) && reads(entry["reading"]) && Array.isArray(entry["items"]);
+  const items = entry["items"];
+  if (!Array.isArray(items) || !items.every(isObject)) return false;
+  return states(entry["fold"]) && reads(entry["reading"]);
 }
 
+/** Every list of the fold is pairs of a key and an object, and the three whose
+ * objects a later record reaches into hold what that reaching expects. */
 function states(fold: unknown): boolean {
   if (!isObject(fold)) return false;
+  const deeper: Record<string, (value: Record<string, unknown>) => boolean> = {
+    calls: (call) => typeof call["name"] === "string" && isObject(call["input"]),
+    teammates: (each) => isObject(each["status"]) && typeof each["status"]["name"] === "string",
+    todos: (todo) => strings(todo["blocked_by"]) && strings(todo["blocks"]),
+  };
   for (const key of ["files", "todos", "teammates", "background", "workflows", "agents", "calls"]) {
     const held = fold[key];
     if (!Array.isArray(held)) return false;
     for (const pair of held) {
       if (!Array.isArray(pair) || pair.length !== 2 || typeof pair[0] !== "string") return false;
+      const value: unknown = pair[1];
+      if (!isObject(value) || deeper[key]?.(value) === false) return false;
     }
   }
   return true;
+}
+
+function strings(value: unknown): value is readonly string[] {
+  return Array.isArray(value) && value.every((each) => typeof each === "string");
 }
 
 function reads(reading: unknown): boolean {
@@ -195,6 +220,7 @@ function reads(reading: unknown): boolean {
     if (!isObject(call) || typeof call["tool"] !== "string" || typeof call["name"] !== "string") {
       return false;
     }
+    if (call["message"] !== undefined && typeof call["message"] !== "string") return false;
   }
   return true;
 }

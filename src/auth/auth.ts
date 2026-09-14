@@ -24,6 +24,8 @@ import type {
 } from "@ccmsg/protocol";
 import {
   AUTH_CHALLENGE_TTL_MS,
+  AuthResolveResult as AuthResolveResultSchema,
+  AuthRotateResult as AuthRotateResultSchema,
   Endpoint as EndpointSchema,
   REGISTER_TTL_MS,
   validationErrors,
@@ -402,6 +404,30 @@ export class Auth {
     return ask(iss, op, args);
   }
 
+  /** Ask the issuer, and read its answer against the contract before anything
+   * turns on it.
+   *
+   * What comes back is a peer's word, not a guarantee: an instance a version
+   * behind, or one with a bug, answers something shaped otherwise, and a record
+   * built out of that would be written down and handed to every peer. So an
+   * answer that is not the op's result is `internal_error` — the caller's
+   * arguments were right, and the failure is between the instances (DR-0015
+   * §2.5). */
+  async #answerOf<T>(
+    iss: InstanceId,
+    op: string,
+    args: Record<string, unknown>,
+    result: Parameters<typeof validationErrors>[0],
+  ): Promise<T> {
+    const answer = await this.#atIssuer(iss, op, args);
+    const problems = validationErrors(result, answer);
+    if (problems.length > 0) {
+      this.deps.log?.("an issuer answered outside the contract", { iss, op, problems });
+      throw new OpError("internal_error", `${iss} の ${op} の答えが契約の形ではありません`);
+    }
+    return answer as T;
+  }
+
   // --- registration (DR-0001 §2.2) ---
 
   /** Verify a registration and write the credential down.
@@ -479,7 +505,16 @@ export class Auth {
       ...(from.ip === undefined ? {} : { registered_ip: from.ip }),
       ...(from.userAgent === undefined ? {} : { registered_user_agent: from.userAgent }),
     };
-    await this.deps.records.write(credentialKey(claims.sub, verified.credentialId), record, at);
+    // The write is the last word on whether the person still exists: a removal
+    // that landed while the issuer was being asked refuses the key, and a
+    // session minted over a credential that was never written down would be the
+    // removal not having happened (DR-0015 §2.5).
+    const written = await this.deps.records.write(
+      credentialKey(claims.sub, verified.credentialId),
+      record,
+      at,
+    );
+    if (!written) throw new OpError("forbidden", `${claims.sub} は削除済みです`);
     return this.mint(claims.sub);
   }
 
@@ -497,11 +532,12 @@ export class Auth {
   async #claimsOf(args: AuthRegisterArgs): Promise<RegisterClaims> {
     const stated = claimsOf(args.token);
     if (stated.iss === this.deps.self) return this.resolveRegistration(args.token, args.code);
-    const answer = (await this.#atIssuer(stated.iss, "auth.resolve", {
-      kind: "register",
-      token: args.token,
-      code: args.code,
-    } satisfies AuthResolveArgs)) as AuthResolveResult;
+    const answer = await this.#answerOf<AuthResolveResult>(
+      stated.iss,
+      "auth.resolve",
+      { kind: "register", token: args.token, code: args.code } satisfies AuthResolveArgs,
+      AuthResolveResultSchema,
+    );
     if (answer.kind !== "register") {
       throw new OpError("auth_invalid", "登録 URL の発行者が別のものを答えました");
     }
@@ -588,11 +624,26 @@ export class Auth {
       ),
     );
     await this.#spendAnywhere(args.challenge);
+    // Read again after the waits, and written on what stands now rather than on
+    // what was read before them: a removal may have taken the credential, and
+    // another assertion of the same credential may have finished first. The
+    // counter is held to the standing record the way it was held to the one
+    // read above — a reading that no longer advances it is the reading a copy
+    // of the credential would make, whichever of the two arrived first — so
+    // the earlier assertion cannot put its lower count back over the later
+    // one's (DR-0015 §2.5).
+    const standing = this.deps.records.credential(args.credential.raw_id);
+    if (standing === undefined) {
+      throw new OpError("auth_invalid", "この credential は登録されていません");
+    }
+    if (!advances(standing.sign_count, signCount)) {
+      throw new OpError("auth_invalid", "the authenticator's counter did not advance");
+    }
     const at = this.#now();
-    await this.deps.records.write(
-      credentialKey(record.sub, record.credential_id),
+    const written = await this.deps.records.write(
+      credentialKey(standing.sub, standing.credential_id),
       {
-        ...record,
+        ...standing,
         sign_count: signCount,
         last_used_at: at,
         ...(from.ip === undefined ? {} : { last_used_ip: from.ip }),
@@ -600,7 +651,8 @@ export class Auth {
       },
       at,
     );
-    return this.mint(record.sub);
+    if (!written) throw new OpError("forbidden", `${standing.sub} は削除済みです`);
+    return this.mint(standing.sub);
   }
 
   /** Refuse an exchange that arrived somewhere other than the endpoint it is
@@ -664,7 +716,11 @@ export class Auth {
       refresh: { value: token(), expires_at: at + REFRESH_TTL_MS },
     };
     const id = randomBytes(8).toString("hex");
-    await this.deps.records.write(familyKey(sub, id), family, at);
+    // A family the records refused is a person whose removal stands over the
+    // key. Tokens answered for it would open connections nothing written down
+    // admits, so the refusal is the answer.
+    const written = await this.deps.records.write(familyKey(sub, id), family, at);
+    if (!written) throw new OpError("forbidden", `${sub} は削除済みです`);
     return { session: { sub, access: family.access }, refresh: family.refresh };
   }
 
@@ -690,12 +746,17 @@ export class Auth {
       // remembered as a time and nothing else. The issuer writes them
       // unchecked, as it does the ones it observes itself (contract,
       // `AuthRotateArgs`).
-      const answer = (await this.#atIssuer(held.body.iss, "auth.rotate", {
-        refresh_token: value,
-        ...(from.reason === undefined ? {} : { reason: from.reason }),
-        ...(from.ip === undefined ? {} : { ip: from.ip }),
-        ...(from.userAgent === undefined ? {} : { user_agent: from.userAgent }),
-      } satisfies AuthRotateArgs)) as AuthRotateResult;
+      const answer = await this.#answerOf<AuthRotateResult>(
+        held.body.iss,
+        "auth.rotate",
+        {
+          refresh_token: value,
+          ...(from.reason === undefined ? {} : { reason: from.reason }),
+          ...(from.ip === undefined ? {} : { ip: from.ip }),
+          ...(from.userAgent === undefined ? {} : { user_agent: from.userAgent }),
+        } satisfies AuthRotateArgs,
+        AuthRotateResultSchema,
+      );
       return { session: { sub: answer.sub, access: answer.access }, refresh: answer.refresh };
     }
     const rotated = await this.rotate(value, from);
@@ -994,6 +1055,17 @@ function retire(family: TokenFamily, now: Timestamp): { hash: string; expires_at
     ...(family.retired ?? []).filter((one) => one.expires_at > now),
     { hash: digestOf(family.refresh.value), expires_at: family.refresh.expires_at },
   ];
+}
+
+/** Whether a counter reading moves the record forward.
+ *
+ * The rule the verification applies (L2 §7.2, `verifyAssertion`): a synced
+ * passkey reports zero forever, and an authenticator that counts only counts
+ * up, so once a non-zero reading is on the record every later one has to be
+ * higher. Applied again here, to the record as it stands after the waits. */
+function advances(recorded: number | undefined, reading: number): boolean {
+  const last = recorded ?? 0;
+  return last === 0 || reading > last;
 }
 
 /** The digest a retired token is remembered by. */

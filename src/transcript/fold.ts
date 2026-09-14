@@ -112,35 +112,46 @@ export class TranscriptFold {
    * describes what started on its own. */
   readonly #calls = new Map<string, PendingCall>();
 
+  /** What the fold says at this instant, as values of its own.
+   *
+   * The fold writes into the entries it holds as later records move them, and
+   * a reader that took those entries would be reading whatever record the fold
+   * had reached by the time it looked — one field from the instant it asked
+   * and another from a later one, once anything it does between the two waits.
+   * So nothing handed out here is an entry the fold still writes to: every
+   * element is copied down to the last array, and what the reader holds stays
+   * the instant it was given (DR-0015 §2.5). */
   get facts(): TranscriptFacts {
     return {
-      ...(this.#apiError === undefined ? {} : { api_error: this.#apiError }),
+      ...(this.#apiError === undefined ? {} : { api_error: { ...this.#apiError } }),
       ...(this.#lastUserInputAt === undefined ? {} : { last_user_input_at: this.#lastUserInputAt }),
       ...(this.#model === undefined ? {} : { model: this.#model }),
       ...(this.#effort === undefined ? {} : { effort: this.#effort }),
-      named_files: [...this.#files.values()],
-      todos: [...this.#todos.values()],
-      teammates: [...this.#teammates.values()].map((each) => each.status),
-      background: [...this.#background.values()],
-      workflows: [...this.#workflows.values()],
+      named_files: Array.from(this.#files.values(), (each) => ({ ...each })),
+      todos: Array.from(this.#todos.values(), todoCopy),
+      teammates: Array.from(this.#teammates.values(), (each) => ({ ...each.status })),
+      background: Array.from(this.#background.values(), (each) => ({ ...each })),
+      workflows: Array.from(this.#workflows.values(), workflowCopy),
       agent_tree: this.#agentTree(),
     };
   }
 
   /** Everything the reading carries forward, so that it can be taken up again
-   * where it stopped. */
+   * where it stopped. Copied the same way `facts` is, and for the same reason:
+   * what is written down beside an offset has to describe the reading as it
+   * stood at that offset, however long the write takes to happen. */
   get held(): FoldState {
     return {
-      ...(this.#apiError === undefined ? {} : { api_error: this.#apiError }),
+      ...(this.#apiError === undefined ? {} : { api_error: { ...this.#apiError } }),
       ...(this.#lastUserInputAt === undefined ? {} : { last_user_input_at: this.#lastUserInputAt }),
       ...(this.#model === undefined ? {} : { model: this.#model }),
       ...(this.#effort === undefined ? {} : { effort: this.#effort }),
-      files: [...this.#files],
-      todos: [...this.#todos],
-      teammates: [...this.#teammates],
-      background: [...this.#background],
-      workflows: [...this.#workflows],
-      agents: [...this.#agents],
+      files: Array.from(this.#files, ([key, each]) => [key, { ...each }]),
+      todos: Array.from(this.#todos, ([key, each]) => [key, todoCopy(each)]),
+      teammates: Array.from(this.#teammates, ([key, each]) => [key, teammateCopy(each)]),
+      background: Array.from(this.#background, ([key, each]) => [key, { ...each }]),
+      workflows: Array.from(this.#workflows, ([key, each]) => [key, workflowCopy(each)]),
+      agents: Array.from(this.#agents, ([key, each]) => [key, nodeCopy(each)]),
       calls: [...this.#calls],
     };
   }
@@ -700,11 +711,33 @@ export class TranscriptFold {
         ),
       });
     }
-    return { teammates, agents: [...this.#agents.values()], workflows: [] };
+    return { teammates, agents: Array.from(this.#agents.values(), nodeCopy), workflows: [] };
   }
 }
 
 type Mutable<T> = { -readonly [K in keyof T]: T[K] };
+
+/** The copies `facts` and `held` hand out: each element as far down as it
+ * holds anything the fold could write to or a reader could write through. */
+function todoCopy(todo: SessionTodo): SessionTodo {
+  return { ...todo, blocked_by: [...todo.blocked_by], blocks: [...todo.blocks] };
+}
+
+function workflowCopy(workflow: SessionWorkflowStatus): SessionWorkflowStatus {
+  return {
+    ...workflow,
+    phases: workflow.phases.map((phase) => ({ ...phase })),
+    agents: workflow.agents.map((agent) => ({ ...agent })),
+  };
+}
+
+function nodeCopy(node: AgentTreeNode): AgentTreeNode {
+  return { ...node, children: node.children.map(nodeCopy) };
+}
+
+function teammateCopy(teammate: Teammate): Teammate {
+  return { ...teammate, status: { ...teammate.status } };
+}
 
 /** A teammate as the fold holds it: what the contract states about it, and the
  * two facts only the tree needs. */

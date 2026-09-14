@@ -203,8 +203,18 @@ export class SessionStatus implements UpstreamResource {
   private async value(topic: string): Promise<unknown> {
     if (topic === "session.errors") {
       // Every session's fold, so the list is of the transcripts as they read
-      // rather than of the ones that happen to have been read by now.
-      await Promise.all(this.deps.sessions().map((sid) => this.deps.ready(sid)));
+      // rather than of the ones that happen to have been read by now. A
+      // session that arrived while the others were being read is on the list
+      // too, and its fold has not been waited on — so the wait runs again for
+      // as long as the list holds a session the last wait did not cover
+      // (DR-0015 §2.5).
+      let waited = new Set<Sid>();
+      for (;;) {
+        const sessions = this.deps.sessions();
+        if (sessions.every((sid) => waited.has(sid))) break;
+        waited = new Set(sessions);
+        await Promise.all(sessions.map((sid) => this.deps.ready(sid)));
+      }
       return this.errors();
     }
     const sid = topicParam(topic);

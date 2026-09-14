@@ -71,7 +71,7 @@ class Supervised {
   child: Child | undefined;
   wanted = true;
   loop: Promise<void> = Promise.resolve();
-  readonly #waiting: ((child: Child) => void)[] = [];
+  readonly #waiting: { arrived(child: Child): void; abandoned(cause: CommandError): void }[] = [];
   constructor(readonly target: Target) {}
 
   /** The restart loop spawns on its own turn of the event loop, so a caller
@@ -80,13 +80,22 @@ class Supervised {
    * is not there and answered as though it had. */
   took(child: Child): void {
     this.child = child;
-    for (const waiting of this.#waiting.splice(0)) waiting(child);
+    for (const waiting of this.#waiting.splice(0)) waiting.arrived(child);
+  }
+
+  /** The loop ended without spawning. Whoever was waiting for the child it
+   * would have started is told so, rather than left waiting for a turn the
+   * loop is not going to take (DR-0015 §2.5). */
+  abandoned(cause: CommandError): void {
+    for (const waiting of this.#waiting.splice(0)) waiting.abandoned(cause);
   }
 
   next(): Promise<Child> {
     const child = this.child;
     if (child !== undefined) return Promise.resolve(child);
-    return new Promise((resolve) => this.#waiting.push(resolve));
+    return new Promise((resolve, reject) =>
+      this.#waiting.push({ arrived: resolve, abandoned: reject }),
+    );
   }
 }
 
@@ -315,10 +324,37 @@ export class Supervisor {
         `${dir} の instance は既に動いています (pid ${String(unit.child.pid)})`,
       );
     }
+    // The socket answers until the children are down, so a start can arrive
+    // while this supervisor is leaving. The loop would not spawn for it, and
+    // the caller is told that rather than waiting for a child that is not
+    // coming.
+    if (this.#leaving) throw this.#departing(unit);
     unit.wanted = true;
     this.#keep(unit);
     await this.#serving(unit);
     return await statusOf(unit.target);
+  }
+
+  #departing(unit: Supervised): CommandError {
+    return new CommandError(
+      "instance_unreachable",
+      `supervisor が停止中のため ${unit.target.dir} の instance は起動しません`,
+    );
+  }
+
+  /** Whether what a start was asked for still holds (DR-0015 §2.5). A stop of
+   * this supervisor, or of this one instance, may have arrived while the start
+   * waited; the child going, or never coming, is then the answer to that and
+   * not a start that failed. */
+  #overtaken(unit: Supervised): CommandError | undefined {
+    if (this.#leaving) return this.#departing(unit);
+    if (!unit.wanted) {
+      return new CommandError(
+        "instance_unreachable",
+        `${unit.target.dir} の instance は起動を待つ間に停止か解除を求められました`,
+      );
+    }
+    return undefined;
   }
 
   /** Stop one child, and leave it stopped.
@@ -377,6 +413,9 @@ export class Supervisor {
     const unit = this.#units.get(dir);
     if (unit === undefined) throw new CommandError("not_found", `${dir} は見ていません`);
     unit.wanted = false;
+    // A loop waiting out a backoff for this unit has nothing to wake for, and
+    // a start waiting on that loop is answered when it ends.
+    for (const cancel of new Set(this.#waits)) cancel();
     this.#units.delete(dir);
     this.#log({ event: "released", dir, pid: unit.child?.pid ?? null });
     return { dir, removed: true };
@@ -387,24 +426,36 @@ export class Supervisor {
   #keep(unit: Supervised): void {
     unit.loop = unit.loop.then(async () => {
       let wait = this.#backoff.minMs;
-      while (unit.wanted && !this.#leaving) {
-        const startedAt = Date.now();
-        prepareFor(unit.target);
-        const child = this.#spawn(unit.target.dir, this.#env);
-        unit.took(child);
-        this.#log({ event: "started", dir: unit.target.dir, pid: child.pid });
-        const code = await child.exited;
-        unit.child = undefined;
-        if (!unit.wanted || this.#leaving) {
-          this.#log({ event: "stopped", dir: unit.target.dir, code });
-          return;
+      try {
+        while (unit.wanted && !this.#leaving) {
+          const startedAt = Date.now();
+          prepareFor(unit.target);
+          const child = this.#spawn(unit.target.dir, this.#env);
+          unit.took(child);
+          this.#log({ event: "started", dir: unit.target.dir, pid: child.pid });
+          const code = await child.exited;
+          unit.child = undefined;
+          if (!unit.wanted || this.#leaving) {
+            this.#log({ event: "stopped", dir: unit.target.dir, code });
+            return;
+          }
+          // A child that stayed up is a run that ended, not a start that failed,
+          // so the next attempt begins at the short wait again.
+          wait = Date.now() - startedAt >= this.#backoff.steadyMs ? this.#backoff.minMs : wait;
+          this.#log({ event: "restarting", dir: unit.target.dir, code, in_ms: wait });
+          await this.#pause(wait);
+          wait = Math.min(wait * 2, this.#backoff.maxMs);
         }
-        // A child that stayed up is a run that ended, not a start that failed,
-        // so the next attempt begins at the short wait again.
-        wait = Date.now() - startedAt >= this.#backoff.steadyMs ? this.#backoff.minMs : wait;
-        this.#log({ event: "restarting", dir: unit.target.dir, code, in_ms: wait });
-        await this.#pause(wait);
-        wait = Math.min(wait * 2, this.#backoff.maxMs);
+      } finally {
+        // However the loop ended, a start that was waiting for its next child
+        // is told there is none coming.
+        unit.abandoned(
+          this.#overtaken(unit) ??
+            new CommandError(
+              "internal_error",
+              `${unit.target.dir} の instance は起動されませんでした`,
+            ),
+        );
       }
     });
   }
@@ -418,16 +469,24 @@ export class Supervisor {
     // watch cannot attach to a directory that is not there yet: waiting for the
     // socket before the child exists is waiting on nothing but the deadline.
     const child = await unit.next();
-    const gone = child.exited.then(
-      (code) => new CommandError("internal_error", `起動に失敗しました (exit ${String(code)})`),
-    );
     const outcome = await Promise.race([
       awaitSocket(unit.target.paths, this.#startTimeoutMs).then(() => undefined),
-      gone,
+      child.exited,
     ]);
-    if (outcome instanceof CommandError) throw outcome;
+    // What the child did is read against what is wanted of it now, not against
+    // what was wanted when the start was asked (DR-0015 §2.5): a child that
+    // went because a stop arrived in the meantime did not fail to start.
+    if (outcome !== undefined) {
+      throw (
+        this.#overtaken(unit) ??
+        new CommandError("internal_error", `起動に失敗しました (exit ${String(outcome)})`)
+      );
+    }
     if (!rowFor(unit.target).running) {
-      throw new CommandError("internal_error", `${unit.target.dir} の instance が起動しません`);
+      throw (
+        this.#overtaken(unit) ??
+        new CommandError("internal_error", `${unit.target.dir} の instance が起動しません`)
+      );
     }
   }
 

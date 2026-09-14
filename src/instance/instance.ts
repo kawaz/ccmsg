@@ -189,6 +189,13 @@ export async function start(options: StartOptions = {}): Promise<StartOutcome> {
   }
 
   const log = new Log(paths.logFile, options.echoLog ?? true);
+  // Named outside the attempt so that a failure part way can put down what the
+  // steps before it raised (DR-0015 §2.5): a WebSocket bound for the mesh and
+  // the mesh itself exist before the instance does, and an instance exists
+  // before it listens.
+  let mesh: Mesh | undefined;
+  let wiring: MeshWiring | undefined;
+  let instance: Instance | undefined;
   try {
     // 3. the config. A broken one ends the start rather than turning the
     // setting it carried silently off (DR-0004).
@@ -214,10 +221,10 @@ export async function start(options: StartOptions = {}): Promise<StartOutcome> {
     // to be asked of the network to settle it (DESIGN §7.1). The WebSocket is still
     // bound here and handed over, because the instance does not exist yet and
     // a peer may dial the moment the address is up.
-    const mesh = meshFor(id, config, log, options.meshTiming);
-    const wiring = mesh === undefined ? undefined : await bindForMesh(config, mesh);
+    mesh = meshFor(id, config, log, options.meshTiming);
+    wiring = mesh === undefined ? undefined : await bindForMesh(config, mesh);
     // 6-8 are the instance's own construction and listen.
-    const instance = new Instance(
+    instance = new Instance(
       paths,
       config,
       id,
@@ -234,6 +241,20 @@ export async function start(options: StartOptions = {}): Promise<StartOutcome> {
     return instance;
   } catch (cause) {
     log.write("startup failed", { error: String(cause) });
+    // What was raised is put down before the config home is let go of: an
+    // instance owns everything it was handed and takes the stop order; before
+    // there is one, the listener and the mesh are the only things up.
+    try {
+      if (instance !== undefined) {
+        await instance.stop();
+      } else {
+        mesh?.stop();
+        await wiring?.ws.close();
+      }
+    } catch (fault) {
+      log.write("startup cleanup failed", { error: String(fault) });
+    }
+    await log.flush();
     lock.release();
     throw cause;
   }
@@ -349,9 +370,6 @@ export class Instance {
   readonly #conns: ConnRegistry;
   /** The mesh, on an instance configured for one (DESIGN §7). */
   readonly #mesh: Mesh | undefined;
-  /** The WebSocket listener, when it had to be bound before this instance
-   * existed so that self-identification could reach it. */
-  readonly #boundWs: Listener | undefined;
   readonly #transport = new Transport();
   readonly #topics: Topics;
   readonly #sessions: Sessions;
@@ -380,6 +398,14 @@ export class Instance {
   /** Set the moment shutdown starts, which is the re-entry guard of DESIGN §8.5 step
    * 1: a request arriving after it is refused rather than half-served. */
   #stopping = false;
+  /** The requests the guard let through and that have not been answered yet.
+   *
+   * A request past the door may be waiting on a peer or on WebCrypto, and the
+   * write it ends with is not on any chain until that wait is over — so a
+   * flush that waited only for what had been asked for would let it land after
+   * the lock is gone, on a file a successor has already read (DR-0015 §2.5).
+   * The stop order waits for these first. */
+  readonly #inFlight = new Set<Promise<unknown>>();
   #stopped: Promise<void> | undefined;
   /** The link state the last `net_online` announced, so the event marks a
    * change rather than repeating what every client already holds. */
@@ -412,7 +438,10 @@ export class Instance {
       return parsed === undefined ? [] : [parsed];
     });
     this.#mesh = wiring?.mesh;
-    this.#boundWs = wiring?.ws;
+    // Already listening — it had to be, for self-identification to reach it —
+    // and this instance's from here on, so the stop order reaches it whether
+    // or not the start got as far as the other listeners.
+    if (wiring !== undefined) this.#transport.add(wiring.ws);
     // Every capability rests on an upstream, so what is configured is what
     // this instance can name. A client is told before it subscribes, rather
     // than being refused when it does.
@@ -669,9 +698,15 @@ export class Instance {
     // its editor names and which files outside them its transcript named.
     const files = new Containment({
       roots: async (sid): Promise<SessionRoots | undefined> => {
+        const known = this.#sessions.where(sid);
+        if (known.root === undefined && known.cwd === undefined) return undefined;
+        await this.#transcripts.ready(sid);
+        // Asked again once the transcript is read (DR-0015 §2.5): the session
+        // may have greeted afresh, or gone, while it was — and the folders the
+        // fold names are judged against where the session works now, not
+        // against where it worked when the op arrived.
         const where = this.#sessions.where(sid);
         if (where.root === undefined && where.cwd === undefined) return undefined;
-        await this.#transcripts.ready(sid);
         const status = await sessionStatusOf(sid, this.#transcripts.facts(sid), where);
         return {
           ...where,
@@ -740,22 +775,22 @@ export class Instance {
         // address is what says the caller is local (DR-0001 §2.2).
         handle: (frame, conn) => {
           const admin = adminRequestOf(frame);
-          if (admin !== undefined) {
-            return handleAdmin(
+          if (admin === undefined) return this.handle(frame, conn);
+          if (this.#stopping) return Promise.resolve(this.#refused(admin));
+          return this.#admit(() =>
+            handleAdmin(
               { auth: this.#auth, ...(this.#mesh === undefined ? {} : { mesh: this.#mesh }) },
               admin,
-            );
-          }
-          return this.handle(frame, conn);
+            ),
+          );
         },
       }),
     );
     // The address clients use, moved onto this process once it is accepting.
     publishSocket(this.paths);
-    if (this.#boundWs !== undefined) {
-      // Already listening: it had to be, for self-identification to reach it.
-      this.#transport.add(this.#boundWs);
-    } else if (this.config.entry !== undefined) {
+    // An instance with a mesh was handed its WebSocket, bound before it
+    // existed and held since construction; one without binds its own here.
+    if (this.#mesh === undefined && this.config.entry !== undefined) {
       this.#transport.add(
         serveWs({
           hostname: this.config.entry.host,
@@ -789,7 +824,16 @@ export class Instance {
    * gateway's webhook is the one such route this instance answers itself; the
    * mesh's two are answered before this is asked, because they are served
    * before anything is proven and this instance's own routes are not. */
-  async route(request: Request, source?: string): Promise<Response | undefined> {
+  route(request: Request, source?: string): Promise<Response | undefined> {
+    // The same guard as `handle`: a request let past it would run to a write
+    // the stop order has already settled without.
+    if (this.#stopping) {
+      return Promise.resolve(new Response(`${this.self} is shutting down`, { status: 503 }));
+    }
+    return this.#admit(() => this.#route(request, source));
+  }
+
+  async #route(request: Request, source: string | undefined): Promise<Response | undefined> {
     // The person's authentication comes first: it is the one route reached
     // before anything is proven, and the gateway's webhook carries its own
     // secret and cannot be confused with it (DR-0001 §2.7).
@@ -899,10 +943,28 @@ export class Instance {
 
   /** One frame, from either transport. The re-entry guard of DESIGN §8.5 step 1 sits
    * here because this is the single door every request comes through. */
-  async handle(frame: unknown, conn: Requester): Promise<DispatchResult> {
-    if (this.#stopping) {
-      return failure(requestIdOf(frame), "bad_request", `${this.self} is shutting down`);
-    }
+  handle(frame: unknown, conn: Requester): Promise<DispatchResult> {
+    if (this.#stopping) return Promise.resolve(this.#refused(frame));
+    return this.#admit(() => this.#handle(frame, conn));
+  }
+
+  #refused(frame: unknown): DispatchResult {
+    return failure(requestIdOf(frame), "bad_request", `${this.self} is shutting down`);
+  }
+
+  /** Run one request that the guard let through, and hold it in the set the
+   * stop order waits on. The set is kept here rather than at each door so that
+   * every door — the frame, the HTTP route, the administrative frame — is
+   * counted the same way, and one added later cannot be left out. */
+  #admit<T>(work: () => Promise<T>): Promise<T> {
+    const running = work();
+    this.#inFlight.add(running);
+    return running.finally(() => {
+      this.#inFlight.delete(running);
+    });
+  }
+
+  async #handle(frame: unknown, conn: Requester): Promise<DispatchResult> {
     // A frame that is not an op: the mesh handshake's own traffic, which the
     // op vocabulary has no name for (contract, `Plane`). It is taken here
     // because this is the one door, and it decides nothing — the judgement is
@@ -1019,6 +1081,17 @@ export class Instance {
     // The mesh's links and its timers, let go here for the same reason: they
     // are this instance's and do not outlive it (DESIGN §7).
     this.#mesh?.stop();
+    // What the guard had already let through is answered before anything is
+    // settled or told: the answers go to connections that are still open, and
+    // the writes those requests end with are asked for before the flush below
+    // looks. After the mesh has let go, so a request forwarded to a peer that
+    // is not answering is not what this stop waits on.
+    await Promise.allSettled(this.#inFlight);
+    // A request answered during that wait may have subscribed, or taken a hold,
+    // after the watches were stopped (DR-0015 §2.5). Nothing has been admitted
+    // since, so stopping them again leaves nothing running.
+    for (const conn of this.#conns) this.#topics.dropAll(conn);
+    this.#transcripts.stopAll();
     // 3. tell the connections, while they can still be told
     const restarting: RestartingEvent = { ev: "restarting", instance: this.self };
     for (const conn of this.#conns) conn.send(restarting);

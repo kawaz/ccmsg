@@ -10,6 +10,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import type { Dirent } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { basename, dirname, join, relative } from "node:path";
 import type {
   DirEntry,
@@ -64,6 +65,7 @@ export function fileHandlers(paths: Containment) {
     role: input.role,
     sid: input.identity?.sid,
   });
+  const writes = new Writes();
 
   return {
     "dir.list": async (input: HandlerInput): Promise<DirListResult> => {
@@ -107,7 +109,7 @@ export function fileHandlers(paths: Containment) {
       // replaced; the folder itself is made, since a repository that has never
       // had one is exactly where the first note goes (DR-0019 §2.1).
       await mkdir(dirname(at.real), { recursive: true });
-      await create(at.real, args.content);
+      await writes.to(at.real, () => create(at.real, args.content));
       return { sid: args.sid, path: at.path };
     },
 
@@ -118,23 +120,29 @@ export function fileHandlers(paths: Containment) {
       if (!(await isDirectory(parent))) {
         throw new OpError("not_found", `${args.path} has no folder to be created in`);
       }
-      await create(at.real, args.content);
+      await writes.to(at.real, () => create(at.real, args.content));
       return { sid: args.sid, path: at.path };
     },
 
     "file.edit": async (input: HandlerInput): Promise<FileEditResult> => {
       const args = input.args as unknown as FileEditArgs;
       const at = await paths.locate(args, viewer(input));
-      const before = await existing(at);
-      if (!before.isFile()) throw new OpError("not_found", `${args.path} is not a file`);
-      if (isBinary(await bytesOf(at.real, SNIFF))) {
-        throw new OpError("not_a_text_file", `${args.path} holds binary content`);
-      }
-      if (mtimeOf(before) !== args.expected_mtime_at || before.size !== args.expected_size) {
-        throw new OpError("file_conflict", `${args.path} changed since it was read`);
-      }
-      await replace(at.real, args.content);
-      const after = await stat(at.real);
+      // The token is held against the file inside the write chain, so what it
+      // is compared with is the file no other write of this instance can be
+      // changing meanwhile: two edits carrying the same token are answered one
+      // after the other, and the second sees the first's file and is refused.
+      const after = await writes.to(at.real, async () => {
+        const before = await existing(at);
+        if (!before.isFile()) throw new OpError("not_found", `${args.path} is not a file`);
+        if (isBinary(await bytesOf(at.real, SNIFF))) {
+          throw new OpError("not_a_text_file", `${args.path} holds binary content`);
+        }
+        if (mtimeOf(before) !== args.expected_mtime_at || before.size !== args.expected_size) {
+          throw new OpError("file_conflict", `${args.path} changed since it was read`);
+        }
+        await replace(at.real, args.content);
+        return stat(at.real);
+      });
       return {
         sid: args.sid,
         path: at.path,
@@ -260,11 +268,39 @@ async function create(path: string, content: string): Promise<void> {
   }
 }
 
+/** The writes of this instance, one file at a time.
+ *
+ * Writes to one path are chained rather than started side by side: an edit
+ * reads the file, holds its token against it and replaces it, and that is one
+ * step no other write to the same path may fall between. Paths do not wait on
+ * each other, having nothing in common. A chain is kept only while something is
+ * on it, so the map holds the paths being written and not every path ever
+ * written. */
+class Writes {
+  readonly #chains = new Map<string, Promise<void>>();
+
+  to<T>(path: string, write: () => Promise<T>): Promise<T> {
+    const result = (this.#chains.get(path) ?? Promise.resolve()).then(write);
+    // The chain carries the order, not the outcome: a write that failed is
+    // answered to its own caller, and the ones behind it still go.
+    const settled = result.then(
+      () => {},
+      () => {},
+    );
+    this.#chains.set(path, settled);
+    void settled.then(() => {
+      if (this.#chains.get(path) === settled) this.#chains.delete(path);
+    });
+    return result;
+  }
+}
+
 /** Replace a file's content whole. The write lands beside it and is renamed
  * over it, so a reader sees either the old file or the new one and never a
- * half-written one. */
+ * half-written one. The name it lands under is unique to this write, so two
+ * writes beside one file never share a staging file. */
 async function replace(path: string, content: string): Promise<void> {
-  const temporary = `${path}.ccmsg-${process.pid}-${Date.now()}`;
+  const temporary = `${path}.ccmsg-${randomUUID()}`;
   await writeFile(temporary, content);
   try {
     await rename(temporary, path);

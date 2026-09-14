@@ -50,6 +50,13 @@ export class TranscriptTail {
   #watcher: FSWatcher | undefined;
   #timer: ReturnType<typeof setInterval> | undefined;
   #reading: Promise<void> = Promise.resolve();
+  /** Which run of the tail a reading belongs to. `stop` moves it, and a reading
+   * that finds it moved after an await is one nobody wants any more: it neither
+   * states what it read nor moves the offset (DR-0015 §2.5). A stop does not
+   * wait for the reading to notice — the reading stops itself at its next
+   * await, and everything it would have said is said by the tail that follows
+   * the file next. */
+  #run = 0;
   /** Just past the last complete line consumed. A record still being written
    * leaves the offset before it, so the next read takes it whole rather than
    * having to hold half of it — which also keeps a character split across two
@@ -90,7 +97,11 @@ export class TranscriptTail {
    * says (CT-Q8). */
   async start(from = 0): Promise<void> {
     if (this.running) return;
-    await this.#catchUp(from);
+    const run = this.#run;
+    await this.#catchUp(from, run);
+    // Stopped while the file was being read: the watch would be the only thing
+    // left of a reading nobody wants, so it is not put on.
+    if (run !== this.#run) return;
     try {
       this.#watcher = watch(this.path, () => void this.refresh());
     } catch {
@@ -102,6 +113,7 @@ export class TranscriptTail {
   }
 
   stop(): void {
+    this.#run += 1;
     this.#watcher?.close();
     this.#watcher = undefined;
     if (this.#timer !== undefined) clearInterval(this.#timer);
@@ -112,21 +124,26 @@ export class TranscriptTail {
    * than overlapped, so a watch event and a poll arriving together cannot
    * interleave their reads of the same file. */
   refresh(): Promise<void> {
-    this.#reading = this.#reading.then(() => this.#read());
+    const run = this.#run;
+    this.#reading = this.#reading.then(() => this.#read(run));
     return this.#reading;
   }
 
   /** The file as it already stands, read to the end it had when this began.
    * What is written while it runs is left to the first append, so the size a
    * subscription opens on and the first frame after it meet exactly. */
-  async #catchUp(from: number): Promise<void> {
+  async #catchUp(from: number, run: number): Promise<void> {
     this.#offset = from;
-    this.#size = await this.#stat(from);
-    await this.#consume(this.#size, this.deps.onExisting);
+    const size = await this.#stat(from);
+    if (run !== this.#run) return;
+    this.#size = size;
+    await this.#consume(size, this.deps.onExisting, run);
   }
 
-  async #read(): Promise<void> {
+  async #read(run: number): Promise<void> {
+    if (run !== this.#run) return;
     const size = await this.#stat(this.#offset);
+    if (run !== this.#run) return;
     if (size < this.#offset) {
       // Shorter than what was already consumed: the file was replaced, so what
       // was folded out of it describes nothing, and reading resumes from its
@@ -135,27 +152,28 @@ export class TranscriptTail {
       this.deps.onTruncated();
     }
     this.#size = size;
-    await this.#consume(size, this.deps.onAppended);
+    await this.#consume(size, this.deps.onAppended, run);
   }
 
   /** Everything up to `size`, in reads of a fixed size with the loop handed
    * back between them. A record still being written ends the pass: it is left
    * for the read that finds its end. */
-  async #consume(size: number, state: (read: Appended) => void): Promise<void> {
+  async #consume(size: number, state: (read: Appended) => void, run: number): Promise<void> {
     while (this.#offset < size) {
       // A record longer than one read is taken in one piece rather than in
       // halves, so the window grows until it holds a whole one.
       let to = Math.min(this.#offset + READ_CHUNK_BYTES, size);
       let complete = whole(await this.#slice(this.#offset, to));
-      while (complete.byteLength === 0 && to < size) {
+      while (complete.byteLength === 0 && to < size && run === this.#run) {
         to = Math.min(to + READ_CHUNK_BYTES, size);
         complete = whole(await this.#slice(this.#offset, to));
       }
-      if (complete.byteLength === 0) return;
+      if (run !== this.#run || complete.byteLength === 0) return;
       const start = this.#offset;
       this.#offset = start + complete.byteLength;
       state({ lines: split(complete), start, end: this.#offset, size });
       if (this.#offset < size) await breathe();
+      if (run !== this.#run) return;
     }
   }
 

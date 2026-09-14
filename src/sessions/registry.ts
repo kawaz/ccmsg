@@ -225,6 +225,19 @@ export class Sessions implements UpstreamResource {
    * says what changed since the last one went out. */
   readonly #sentPeers = new Elements();
   readonly #sentAgents = new Elements();
+  /** The connections whose greeting has been accepted and not yet answered.
+   *
+   * A connection greets once, and the identity that says it has greeted is
+   * settled by the reply (DESIGN §2.1). A greeting that waits on a read before
+   * it can be answered leaves a window between the two, and a second greeting
+   * on the same connection arriving in that window would find it still
+   * anonymous. So the claim is taken here, in the same synchronous step that
+   * judges the greeting, and what is held is a token of the greeting that took
+   * it — so that on the far side of the wait the greeting can tell whether the
+   * claim is still its own (DR-0015 §2.5). A greeting that fails gives the
+   * claim back, since a refused greeting must not leave the connection unable
+   * to greet at all. */
+  readonly #greeting = new WeakMap<Requester, object>();
 
   constructor(private readonly deps: SessionsDeps) {
     this.#harness = ownSessions(
@@ -268,8 +281,19 @@ export class Sessions implements UpstreamResource {
    * arrived under is the one whose schema asks for one. */
   helloSession = async (input: HandlerInput): Promise<HelloResult> => {
     const args = input.args as unknown as HelloSessionArgs;
-    this.#greetable(input, args.protocol_version);
-    await this.register(args.sid, args);
+    const claim = this.#greetable(input, args.protocol_version);
+    try {
+      await this.register(args.sid, args);
+    } catch (cause) {
+      this.#withdraw(input.conn, claim);
+      throw cause;
+    }
+    // The claim was this greeting's before the read; the session it just
+    // registered stands only if it still is.
+    if (this.#greeting.get(input.conn) !== claim) {
+      this.release(args.sid);
+      throw new OpError("bad_request", "a connection greets once, and this one already has");
+    }
     input.conn.onClose(() => this.release(args.sid));
     return this.#greeted(input);
   };
@@ -290,29 +314,48 @@ export class Sessions implements UpstreamResource {
    * that answers with a promise. */
   helloInstance = (input: HandlerInput): Promise<HelloResult> => {
     const args = input.args as unknown as HelloInstanceArgs;
-    this.#greetable(input, args.protocol_version);
+    const claim = this.#greetable(input, args.protocol_version);
     const mesh = this.deps.mesh;
     if (mesh === undefined) {
+      this.#withdraw(input.conn, claim);
       throw new OpError(
         "capability_unavailable",
         "this instance has no mesh, so no peer connection can be proven",
       );
     }
-    return mesh.greet(input.conn, args.mesh).then(() => this.#greeted(input));
+    return mesh.greet(input.conn, args.mesh).then(
+      () => this.#greeted(input),
+      (cause: unknown) => {
+        this.#withdraw(input.conn, claim);
+        throw cause;
+      },
+    );
   };
 
-  /** What each of the three greetings checks before it settles anything.
+  /** What each of the three greetings checks before it settles anything, and
+   * the claim it takes on the connection once it has passed.
    *
    * A role is set once and fixed for the connection's life (contract, `Role`),
    * so a second greeting is not a re-identification: it is a request to be
-   * somebody else on a connection that already is somebody. */
-  #greetable(input: HandlerInput, protocolVersion: number): void {
-    if (input.conn.identity.state === "settled") {
+   * somebody else on a connection that already is somebody — whether that
+   * somebody has been settled by a reply already, or is about to be by the
+   * greeting that holds the claim. */
+  #greetable(input: HandlerInput, protocolVersion: number): object {
+    if (input.conn.identity.state === "settled" || this.#greeting.has(input.conn)) {
       throw new OpError("bad_request", "a connection greets once, and this one already has");
     }
     if (protocolVersion !== PROTOCOL_VERSION) {
       throw new OpError("bad_request", `this instance speaks protocol ${PROTOCOL_VERSION}`);
     }
+    const claim = {};
+    this.#greeting.set(input.conn, claim);
+    return claim;
+  }
+
+  /** Give a claim back, for a greeting that was accepted and then could not be
+   * answered. Only the greeting that holds it can give it back. */
+  #withdraw(conn: Requester, claim: object): void {
+    if (this.#greeting.get(conn) === claim) this.#greeting.delete(conn);
   }
 
   /** What every greeting answers, once whatever had to be settled has been. */

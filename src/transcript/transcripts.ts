@@ -1,4 +1,5 @@
 import type { InstanceId, Sid } from "@ccmsg/protocol";
+import { CONFIRM_POLL_MS } from "../sessions/harness.ts";
 import { topicParam, type TopicValue, type UpstreamResource } from "../topics/index.ts";
 import type { FoldCache } from "./cache.ts";
 import { NO_FACTS, type TranscriptFacts, TranscriptFold } from "./fold.ts";
@@ -135,7 +136,7 @@ export class Transcripts implements UpstreamResource {
     held.holds -= 1;
     if (held.holds > 0) return;
     this.#followed.delete(sid);
-    held.tail?.stop();
+    this.#let(held);
     void this.#remember(held);
     // What the fold held goes with it: the values it derived describe a file
     // this instance is no longer reading, and stating them from memory would
@@ -149,31 +150,37 @@ export class Transcripts implements UpstreamResource {
     const followed = new Map(this.#followed);
     this.#followed.clear();
     for (const [sid, entry] of followed) {
-      entry.tail?.stop();
+      this.#let(entry);
       void this.#remember(entry);
       this.deps.onFacts(sid);
     }
   }
 
-  /** Find the file, take up whatever reading of it was left behind, and read
-   * the rest of it.
+  /** Find the file and read it, or — for a session whose file is not there to
+   * be found — finish with nothing and look again.
+   *
+   * The entry stays either way, because the holds on it do: a hold is a
+   * promise to release, and an entry taken out from under its holders would
+   * have their releases land on whatever entry the next hold made under the
+   * same sid, stopping a tail somebody else is still reading. What `ready`
+   * waits on is the reading as it stands, so a session with no file yet answers
+   * as one that has said nothing, and the subscriber begins at the first thing
+   * appended after one appears.
    *
    * Every await here is a window in which the last hold may be released, so
    * what was true before each one is asked again after it (DR-0015 §2.5): a
    * reading nobody wants any more stops where it is, rather than going on to
    * put a watch on a file and states about it into a session that has since
    * been opened afresh. */
-  async #open(sid: Sid, followed: Followed): Promise<void> {
+  async #open(sid: Sid, followed: Followed, appeared = false): Promise<void> {
+    const path = await this.#find(sid);
+    if (!this.#holds(sid, followed)) return;
+    if (path === undefined) {
+      this.#lookAgain(sid, followed, true);
+      return;
+    }
+    followed.path = path;
     try {
-      const path = await this.deps.pathOf(sid);
-      if (!this.#holds(sid, followed)) return;
-      if (path === undefined) {
-        // Nothing to follow. The entry goes rather than standing as a session
-        // with an empty fold, so a later hold looks for the file again.
-        this.#followed.delete(sid);
-        return;
-      }
-      followed.path = path;
       const kept = await this.deps.cache?.read(path);
       if (!this.#holds(sid, followed)) return;
       let settled = false;
@@ -188,9 +195,16 @@ export class Transcripts implements UpstreamResource {
       }
       const tail = new TranscriptTail(path, {
         onExisting: (read) => {
-          // What was already in the file: it settles what the fold says and
-          // opens the reading that classifies what comes next, and it is not an
-          // append, so nothing is published for it.
+          // What was already in the file. To a reading that found no file the
+          // first time it looked, this is what was appended since — the
+          // subscriber opened on nothing, and these are the frames after it.
+          // To any other it settles what the fold says and opens the reading
+          // that classifies what comes next, and it is not an append, so
+          // nothing is published for it.
+          if (appeared) {
+            this.#appended(sid, followed, read);
+            return;
+          }
           this.#keep(followed, read);
           if (foldAll(followed.fold, read.lines)) settled = true;
         },
@@ -216,12 +230,52 @@ export class Transcripts implements UpstreamResource {
       // way, and only a reading that settled something is news to the domain.
       if (settled) this.deps.onFacts(sid);
     } catch {
-      // The reading could not be made. The entry goes rather than standing as
-      // one whose `ready` will never settle, since every later hold would join
-      // the same failure instead of trying the file again.
-      if (this.#followed.get(sid) === followed) this.#followed.delete(sid);
+      // The reading could not be made. What it was taken up from goes, since
+      // an entry this build read back but could not restore would fail the
+      // same way every time it was read; the file itself is then read again
+      // from its beginning, and a failure that came from the entry is gone
+      // with it. The fold is emptied of whatever the failed reading put there,
+      // and the tail is stopped rather than left reading for nobody.
       followed.tail?.stop();
+      followed.tail = undefined;
+      followed.path = undefined;
+      followed.fold.reset();
+      this.#reset(followed);
+      void this.deps.cache?.drop(path);
+      if (this.#holds(sid, followed)) this.#lookAgain(sid, followed, false);
     }
+  }
+
+  /** Where the session's transcript is, or nothing for now. A lookup that
+   * fails says the same as one that finds nothing: the file is not there to be
+   * read, and it will be looked for again. */
+  async #find(sid: Sid): Promise<string | undefined> {
+    try {
+      return await this.deps.pathOf(sid);
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** The file is not there to be read. It is looked for again at the pace the
+   * tail confirms a file at (DESIGN §4.2), for as long as something holds the
+   * session: the wait for a file that has not been written is what a tail on
+   * an absent file covers with its poll, and a session whose file this cannot
+   * yet name is covered the same way, one level up. What the next look opens
+   * is what `ready` waits on from then on, so whoever states a value derived
+   * from the file waits for the whole of it. */
+  #lookAgain(sid: Sid, followed: Followed, appeared: boolean): void {
+    followed.timer = setTimeout(() => {
+      followed.timer = undefined;
+      followed.ready = this.#open(sid, followed, appeared);
+    }, this.deps.pollMs ?? CONFIRM_POLL_MS);
+  }
+
+  /** Let go of what an entry runs: the tail, or the wait for a file. */
+  #let(followed: Followed): void {
+    followed.tail?.stop();
+    if (followed.timer !== undefined) clearTimeout(followed.timer);
+    followed.timer = undefined;
   }
 
   /** Whether this is still the reading that session is being followed by. A
@@ -299,10 +353,12 @@ interface Followed {
   reading: Classification;
   /** The end of what has been read, which is what a subscription opens on. */
   readonly recent: Item[];
-  /** Settled once the file has been found and read. */
+  /** Settled once the file has been looked for and, where found, read. */
   ready: Promise<void>;
   path?: string;
   tail?: TranscriptTail;
+  /** The next look for a file that was not there, while nothing is read. */
+  timer?: ReturnType<typeof setTimeout>;
 }
 
 function foldAll(fold: TranscriptFold, lines: readonly string[]): boolean {
