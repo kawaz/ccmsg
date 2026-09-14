@@ -156,46 +156,79 @@ export class Transcripts implements UpstreamResource {
   }
 
   /** Find the file, take up whatever reading of it was left behind, and read
-   * the rest of it. */
+   * the rest of it.
+   *
+   * Every await here is a window in which the last hold may be released, so
+   * what was true before each one is asked again after it (DR-0015 §2.5): a
+   * reading nobody wants any more stops where it is, rather than going on to
+   * put a watch on a file and states about it into a session that has since
+   * been opened afresh. */
   async #open(sid: Sid, followed: Followed): Promise<void> {
-    const path = await this.deps.pathOf(sid);
-    if (path === undefined) {
-      // Nothing to follow. The entry goes rather than standing as a session
-      // with an empty fold, so a later hold looks for the file again.
+    try {
+      const path = await this.deps.pathOf(sid);
+      if (!this.#holds(sid, followed)) return;
+      if (path === undefined) {
+        // Nothing to follow. The entry goes rather than standing as a session
+        // with an empty fold, so a later hold looks for the file again.
+        this.#followed.delete(sid);
+        return;
+      }
+      followed.path = path;
+      const kept = await this.deps.cache?.read(path);
+      if (!this.#holds(sid, followed)) return;
+      let settled = false;
+      if (kept !== undefined) {
+        followed.fold.restore(kept.fold);
+        followed.recent.push(...kept.items);
+        // The reading resumes as the same reading: the turn it had reached and
+        // the calls it was still waiting on are taken up with the items they
+        // belong to, so a result answered now names the call a reader holds.
+        followed.reading.restore(kept.reading, followed.recent);
+        settled = true;
+      }
+      const tail = new TranscriptTail(path, {
+        onExisting: (read) => {
+          // What was already in the file: it settles what the fold says and
+          // opens the reading that classifies what comes next, and it is not an
+          // append, so nothing is published for it.
+          this.#keep(followed, read);
+          if (foldAll(followed.fold, read.lines)) settled = true;
+        },
+        onAppended: (appended) => this.#appended(sid, followed, appended),
+        onTruncated: () => {
+          followed.fold.reset();
+          this.#reset(followed);
+          void this.deps.cache?.drop(path);
+          this.deps.onFacts(sid);
+        },
+        ...(this.deps.pollMs === undefined ? {} : { pollMs: this.deps.pollMs }),
+      });
+      followed.tail = tail;
+      await tail.start(kept?.offset ?? 0);
+      if (!this.#holds(sid, followed)) {
+        // Released while the file was being read: the watch this just put on it
+        // is the only thing left of the reading, and it goes with it.
+        tail.stop();
+        return;
+      }
+      await this.#remember(followed);
+      // A file that said nothing says nothing: the reading is finished either
+      // way, and only a reading that settled something is news to the domain.
+      if (settled) this.deps.onFacts(sid);
+    } catch {
+      // The reading could not be made. The entry goes rather than standing as
+      // one whose `ready` will never settle, since every later hold would join
+      // the same failure instead of trying the file again.
       if (this.#followed.get(sid) === followed) this.#followed.delete(sid);
-      return;
+      followed.tail?.stop();
     }
-    followed.path = path;
-    const kept = await this.deps.cache?.read(path);
-    let settled = false;
-    if (kept !== undefined) {
-      followed.fold.restore(kept.fold);
-      followed.recent.push(...kept.items);
-      settled = true;
-    }
-    const tail = new TranscriptTail(path, {
-      onExisting: (read) => {
-        // What was already in the file: it settles what the fold says and opens
-        // the reading that classifies what comes next, and it is not an append,
-        // so nothing is published for it.
-        this.#keep(sid, read);
-        if (foldAll(followed.fold, read.lines)) settled = true;
-      },
-      onAppended: (appended) => this.#appended(sid, followed.fold, appended),
-      onTruncated: () => {
-        followed.fold.reset();
-        this.#reset(sid);
-        void this.deps.cache?.drop(path);
-        this.deps.onFacts(sid);
-      },
-      ...(this.deps.pollMs === undefined ? {} : { pollMs: this.deps.pollMs }),
-    });
-    followed.tail = tail;
-    await tail.start(kept?.offset ?? 0);
-    await this.#remember(followed);
-    // A file that said nothing says nothing: the reading is finished either
-    // way, and only a reading that settled something is news to the domain.
-    if (settled) this.deps.onFacts(sid);
+  }
+
+  /** Whether this is still the reading that session is being followed by. A
+   * release during an await takes the entry out, and a hold after it puts a
+   * different one in; neither is this one. */
+  #holds(sid: Sid, followed: Followed): boolean {
+    return this.#followed.get(sid) === followed;
   }
 
   /** Write down where the reading has reached, so the next one starts there. */
@@ -203,7 +236,13 @@ export class Transcripts implements UpstreamResource {
     const path = followed.path;
     const tail = followed.tail;
     if (path === undefined || tail === undefined) return;
-    await this.deps.cache?.save(path, tail.offset, followed.fold.held, followed.recent);
+    await this.deps.cache?.save(
+      path,
+      tail.offset,
+      followed.fold.held,
+      followed.reading.held,
+      followed.recent,
+    );
   }
 
   /** The one pass over what was appended: the lines go to the fold, to the
@@ -215,8 +254,8 @@ export class Transcripts implements UpstreamResource {
    * now was made in bytes that went past long ago, and a reading started when
    * somebody subscribed would not know it. What the memory holds is bounded —
    * the calls still outstanding, and the items of the opening frame. */
-  #appended(sid: Sid, fold: TranscriptFold, appended: Appended): void {
-    const changed = foldAll(fold, appended.lines);
+  #appended(sid: Sid, followed: Followed, appended: Appended): void {
+    const changed = foldAll(followed.fold, appended.lines);
     this.deps.publish(`transcript:${sid}`, {
       sid,
       lines: [...appended.lines],
@@ -224,7 +263,7 @@ export class Transcripts implements UpstreamResource {
       end: appended.end,
       size: appended.size,
     });
-    const items = this.#keep(sid, appended);
+    const items = this.#keep(followed, appended);
     // A record still being written was not read, so there is nothing to say
     // about it yet; a chunk whose records were all the interface's own
     // bookkeeping says nothing either.
@@ -236,9 +275,7 @@ export class Transcripts implements UpstreamResource {
    * subscription to open on. A result that fills in a call already handed over
    * is not sent again: the call named nothing to wait for and the result names
    * the call, so a reader ties the two together from what it already has. */
-  #keep(sid: Sid, chunk: Appended): readonly Item[] {
-    const followed = this.#followed.get(sid);
-    if (followed === undefined) return [];
+  #keep(followed: Followed, chunk: Appended): readonly Item[] {
     const items = followed.reading.readAll(positioned(chunk.lines, chunk.start));
     followed.recent.push(...items);
     if (followed.recent.length > ITEMS_SNAPSHOT) {
@@ -249,9 +286,7 @@ export class Transcripts implements UpstreamResource {
 
   /** The file is not the one that was being read, so neither the reading nor
    * what it produced describes it. */
-  #reset(sid: Sid): void {
-    const followed = this.#followed.get(sid);
-    if (followed === undefined) return;
+  #reset(followed: Followed): void {
     followed.reading = new Classification();
     followed.recent.length = 0;
   }

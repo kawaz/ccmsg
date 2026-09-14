@@ -1,4 +1,4 @@
-export { classify, Classification } from "./classify.ts";
+export { classify, Classification, type ClassificationState } from "./classify.ts";
 export { document, type DumpView } from "./document.ts";
 export { fields, type Item } from "./item.ts";
 export { ledger } from "./ids.ts";

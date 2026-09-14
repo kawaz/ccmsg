@@ -969,6 +969,8 @@ describe("the fold reads the whole transcript", () => {
 });
 
 describe("a reading is taken up where the last one left off", () => {
+  const ITEMS_TOPIC = `transcript.items:${SID}`;
+
   /** A cache directory, and the fold domain that reads through it. */
   function cached(): { cache: FoldCache; dir: string } {
     const dir = mkdtempSync(join(tmpdir(), "ccmsg-fold-cache-"));
@@ -976,12 +978,12 @@ describe("a reading is taken up where the last one left off", () => {
     return { cache: new FoldCache(dir), dir };
   }
 
-  function domainOver(path: string, cache: FoldCache) {
+  function domainOver(path: string, cache: FoldCache, published: Published[] = []) {
     const transcripts = new Transcripts({
       self: SELF,
       pathOf: async () => path,
       cache,
-      publish: () => {},
+      publish: (topic, data) => published.push({ topic, data: data as Record<string, unknown> }),
       onFacts: () => {},
       pollMs: POLL_MS,
     });
@@ -999,6 +1001,7 @@ describe("a reading is taken up where the last one left off", () => {
       dev: known.dev,
       ino: known.ino,
       offset,
+      reading: { turn: 0, subject: "main", calls: [] },
       fold: {
         last_user_input_at: 4242,
         files: [],
@@ -1072,6 +1075,123 @@ describe("a reading is taken up where the last one left off", () => {
     expect(transcripts.facts(SID).last_user_input_at).toBe(NOW);
   });
 
+  test("a hold released while the file is being found leaves nothing behind", async () => {
+    // Every await in the opening is a window the last hold can be released in:
+    // a view switched away from, a connection closed during a cold fold. What
+    // is opened for a want that is gone must not go on watching the file, and
+    // must not put what it read into the session opened after it.
+    const file = transcript([prompt("the first thing typed")]);
+    const published: Published[] = [];
+    let open: (() => void) | undefined;
+    const found = new Promise<void>((release) => {
+      open = release;
+    });
+    const transcripts = new Transcripts({
+      self: SELF,
+      pathOf: async () => {
+        await found;
+        return file.path;
+      },
+      publish: (topic, data) => published.push({ topic, data: data as Record<string, unknown> }),
+      onFacts: () => {},
+      pollMs: POLL_MS,
+    });
+    running.push(transcripts);
+
+    transcripts.hold(SID);
+    transcripts.release(SID);
+    transcripts.hold(SID);
+    open?.();
+    await transcripts.ready(SID);
+    await settled(() => transcripts.following(SID));
+
+    const opened = (await transcripts.snapshot(ITEMS_TOPIC))[0]?.data as {
+      items: Record<string, unknown>[];
+    };
+    // One reading of one record, not two readings of it into one list.
+    expect(opened.items).toHaveLength(1);
+
+    transcripts.release(SID);
+    published.splice(0);
+    file.append(answer(1));
+    await Bun.sleep(POLL_MS * 6);
+    // Nothing is following, so nothing is read and nothing is published.
+    expect(published).toEqual([]);
+  });
+
+  test("a cache of a shape this build cannot read is read past, not fallen over", async () => {
+    // The same answer a file of garbage gets. A reading that threw would leave
+    // the session unopenable for as long as the instance runs, since every
+    // later hold joins the same opening.
+    const file = transcript([prompt("the first thing typed")]);
+    const { cache, dir } = cached();
+    const entry = planted(file.path, FOLD_CACHE_VERSION) as Record<string, unknown>;
+    const fold = entry["fold"] as Record<string, unknown>;
+    await plant(dir, file.path, { ...entry, fold: { ...fold, files: [42] } });
+
+    const transcripts = domainOver(file.path, cache);
+    transcripts.hold(SID);
+    await transcripts.ready(SID);
+    expect(transcripts.facts(SID).last_user_input_at).toBe(NOW);
+    expect(transcripts.following(SID)).toBe(true);
+  });
+
+  test("a reading taken up again answers the next record as one reading would", async () => {
+    // The turn it had reached and the calls it was waiting on come back with
+    // the items: a result whose call is in the cache names that call, and the
+    // turns go on from where they stopped rather than from zero.
+    const file = transcript([
+      prompt("the first thing typed"),
+      {
+        type: "assistant",
+        uuid: "a1",
+        timestamp: at(1),
+        message: {
+          model: "claude-fable-5",
+          content: [{ type: "tool_use", id: "t-a1", name: "Bash", input: { command: "ls" } }],
+        },
+      },
+    ]);
+    const { cache } = cached();
+
+    const first = domainOver(file.path, cache);
+    first.hold(SID);
+    await first.ready(SID);
+    const before = (await first.snapshot(ITEMS_TOPIC))[0]?.data as {
+      items: Record<string, unknown>[];
+    };
+    const turn = before.items.at(-1)?.["turn"];
+    first.release(SID);
+    await settled(() => !first.following(SID));
+
+    const published: Published[] = [];
+    const second = domainOver(file.path, cache, published);
+    second.hold(SID);
+    await second.ready(SID);
+    appendFileSync(
+      file.path,
+      jsonl([
+        {
+          type: "user",
+          uuid: "u2",
+          timestamp: at(2),
+          message: { role: "user", content: [{ type: "tool_result", tool_use_id: "t-a1" }] },
+          toolUseResult: { stdout: "x\n" },
+        },
+      ]),
+    );
+    await settled(() => published.some((frame) => frame.topic === ITEMS_TOPIC));
+    const after = (await second.snapshot(ITEMS_TOPIC))[0]?.data as {
+      items: Record<string, unknown>[];
+    };
+    const result = after.items.at(-1);
+    // The call is known, so the result is that tool's and names the call item.
+    expect(result?.["type"]).toBe("tool.Bash");
+    expect(result?.["parent_item"]).toBe("a1:0");
+    // And the turn did not start over.
+    expect(result?.["turn"]).toBe(turn);
+  });
+
   test("the version stands for the sources it is read back by", async () => {
     // Raising it is what makes a kept answer unreadable to a build that would
     // no longer derive it, so the sources that decide that answer are hashed
@@ -1084,12 +1204,18 @@ describe("a reading is taken up where the last one left off", () => {
       "src/transcript/items/item.ts",
       "src/transcript/items/record.ts",
       "src/transcript/items/tools.ts",
-      "src/transcript/items/ids.ts",
+      // What the entry itself is, where a record is cut out of the file, and
+      // how much of the reading is kept: each decides what a kept answer means
+      // as much as the folding does. `ids.ts` is not among them — nothing that
+      // reads through the cache imports it.
+      "src/transcript/cache.ts",
+      "src/transcript/tail.ts",
+      "src/transcript/transcripts.ts",
     ];
     for (const source of sources) digest.update(await Bun.file(source).text());
     expect([FOLD_CACHE_VERSION, digest.digest("hex").slice(0, 16)]).toEqual([
-      1,
-      "d8a1f06cec5e1bfa",
+      2,
+      "49d1d6485db21a2c",
     ]);
   });
 });
@@ -1434,7 +1560,7 @@ describe("the transcript.items topic (§3.6)", () => {
     await settled(() => transcripts.following(SID));
 
     writeFileSync(file.path, jsonl([spoke("u9", "a fresh start", 2)]));
-    await settled(() => itemsOf(published).length > 0);
+    await settled(() => published.some((frame) => frame.topic === ITEMS_TOPIC));
     expect(itemsOf(published).map((item) => item["id"])).toEqual(["u9:0"]);
     const opened = (await transcripts.snapshot(ITEMS_TOPIC))[0]?.data as {
       items: Record<string, unknown>[];

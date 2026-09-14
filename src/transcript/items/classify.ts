@@ -97,6 +97,27 @@ type Draft = Record<string, unknown> & {
   at: number;
 };
 
+/** Everything a reading carries from one record to the next, as data.
+ *
+ * The items already handed over are not here — a reader holds those — but what
+ * decides how the next record reads is: which turn the file is in, which slash
+ * command output belongs to, whose file it is, and the calls still waiting for
+ * an answer. A reading taken up from this answers the next record exactly as
+ * the reading that produced it would have.
+ *
+ * The outstanding calls name their items by id rather than carrying them: the
+ * items are what a reader already holds, and naming them is what lets a result
+ * point back at the call in the very list the reader has. */
+export interface ClassificationState {
+  readonly turn: number;
+  readonly slash?: string;
+  readonly subject: TranscriptSubject;
+  readonly calls: readonly (readonly [
+    string,
+    { readonly tool: string; readonly message?: string; readonly name: string },
+  ])[];
+}
+
 /** A whole transcript read as items, in the order the file holds them.
  *
  * The file is read through once and the links are filled in as the answers
@@ -142,6 +163,62 @@ export class Classification {
 
   constructor(subject: TranscriptSubject = "main") {
     this.#subject = subject;
+  }
+
+  /** What this reading would carry into the next record. */
+  get held(): ClassificationState {
+    const calls: ClassificationState["calls"] = [...this.#calls].map(([id, call]) => [
+      id,
+      {
+        tool: call.tool.id,
+        name: call.name,
+        ...optional("message", call.message?.id),
+      },
+    ]);
+    return {
+      turn: this.#turn,
+      subject: this.#subject,
+      calls,
+      ...optional("slash", this.#slash),
+    };
+  }
+
+  /** Take up a reading somebody else left off.
+   *
+   * `known` is the items that reading handed over and this one still holds, so
+   * an outstanding call is matched back to the item a reader has rather than to
+   * a copy of it: what the answer writes into the call then lands where the
+   * reader will look for it. A call whose item the reader no longer holds is
+   * kept by name and id alone — the result still says which tool answered and
+   * which item it belongs to, and there is no item left to write into. */
+  restore(state: ClassificationState, known: Iterable<Item>): void {
+    this.#items = [];
+    this.#calls.clear();
+    this.#turn = state.turn;
+    this.#subject = state.subject;
+    this.#slash = state.slash;
+    const held = new Map<string, Draft>();
+    for (const item of known) {
+      const draft = item as unknown as Draft;
+      if (typeof draft.id === "string") held.set(draft.id, draft);
+    }
+    const detached = (id: string): Draft =>
+      held.get(id) ??
+      ({
+        id,
+        uuid: "",
+        subject: this.#subject,
+        source: { offset: 0, bytes: 0 },
+        type: "",
+        at: 0,
+      } as Draft);
+    for (const [id, call] of state.calls) {
+      this.#calls.set(id, {
+        tool: detached(call.tool),
+        name: call.name,
+        ...optional("message", call.message === undefined ? undefined : detached(call.message)),
+      });
+    }
   }
 
   /** The records of one chunk as the items they were read as, oldest first.
