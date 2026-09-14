@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
-import { chmodSync, unlinkSync } from "node:fs";
-import { readdir, readFile } from "node:fs/promises";
+import { unlinkSync } from "node:fs";
+import { chmod, readdir, readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { type InboxMessage, renderDirectDelivery, type Sid } from "@ccmsg/protocol";
 import { HARNESS, HARNESSES } from "../harness/index.ts";
@@ -63,6 +63,15 @@ export const DIRECT_ACK_MS = 2_000;
  * answer. Nothing measured stands behind the number itself. */
 export const DIRECT_STATUS_MS = 250;
 
+/** How long reading `sessions/` has to answer which file names this session.
+ *
+ * The other two budgets cover what the route does after the target is found,
+ * and none of them covers the finding: a directory of small JSON files on the
+ * local disk answers in a moment, and a read that has not come back by now is
+ * one route (a) is better off not waiting for. Route (b) carries the message
+ * either way (DESIGN §6.5). */
+export const DIRECT_SCAN_MS = 1_000;
+
 /** What the receiving session says about a message it did not simply take
  * (harness 2.1.263, `peer_message_status`).
  *
@@ -105,7 +114,7 @@ class StatusInbox {
    * bound. Binding fails on a directory we cannot write, which costs the
    * route its status channel and nothing else: the message still goes, and
    * what the session says about it is simply not heard. */
-  address(): string | undefined {
+  async address(): Promise<string | undefined> {
     if (this.#server !== undefined) return `uds:${this.#path}`;
     try {
       this.#server = Bun.listen({
@@ -125,7 +134,7 @@ class StatusInbox {
     // Same-uid by construction (A2 / A4), and stated rather than left to the
     // umask: what can be written here is what a session is told about.
     try {
-      chmodSync(this.#path, 0o600);
+      await chmod(this.#path, 0o600);
     } catch {
       // The socket is bound and usable; a mode we could not set is not a
       // reason to give up the channel.
@@ -211,6 +220,8 @@ export interface SocketRouteOptions {
   readonly ackMs?: number;
   /** How long a receipt has to arrive before the message counts as taken. */
   readonly statusMs?: number;
+  /** How long reading `sessions/` has to name the target. */
+  readonly scanMs?: number;
 }
 
 /** Route (a) against the harness's messaging socket (DESIGN §6.5).
@@ -228,6 +239,7 @@ export class ClaudeCodeSocketRoute implements DirectRoute {
   readonly #sessionsDir: string;
   readonly #ackMs: number;
   readonly #statusMs: number;
+  readonly #scanMs: number;
   /** One status inbox per directory sessions' sockets live in. A host has one
    * such directory in practice; the map is what keeps that from being an
    * assumption. */
@@ -237,6 +249,7 @@ export class ClaudeCodeSocketRoute implements DirectRoute {
     this.#sessionsDir = join(options.configHome, "sessions");
     this.#ackMs = options.ackMs ?? DIRECT_ACK_MS;
     this.#statusMs = options.statusMs ?? DIRECT_STATUS_MS;
+    this.#scanMs = options.scanMs ?? DIRECT_SCAN_MS;
   }
 
   /** One send, and what the session made of it.
@@ -253,8 +266,8 @@ export class ClaudeCodeSocketRoute implements DirectRoute {
     if (target === undefined) return "unavailable";
     const token = await this.#token(target.pid);
     if (token === undefined) return "unavailable";
-    const inbox = this.#inbox(target.socketPath);
-    const from = inbox?.address();
+    const inbox = await this.#inbox(target.socketPath);
+    const from = await inbox?.address();
     const watching = inbox === undefined ? undefined : inbox.status(message.mid, this.#statusMs);
     const written = await write(target.socketPath, frames(sid, token, message, from), this.#ackMs);
     if (written !== "delivered") return written;
@@ -270,12 +283,12 @@ export class ClaudeCodeSocketRoute implements DirectRoute {
   /** The receipt channel for a target, bound beside its own socket. Absent
    * when nothing could be bound there, which leaves the route working and its
    * refusals unheard. */
-  #inbox(socketPath: string): StatusInbox | undefined {
+  async #inbox(socketPath: string): Promise<StatusInbox | undefined> {
     const directory = dirname(socketPath);
     const held = this.#inboxes.get(directory);
     if (held !== undefined) return held;
     const inbox = new StatusInbox(directory);
-    if (inbox.address() === undefined) return undefined;
+    if ((await inbox.address()) === undefined) return undefined;
     this.#inboxes.set(directory, inbox);
     return inbox;
   }
@@ -283,15 +296,9 @@ export class ClaudeCodeSocketRoute implements DirectRoute {
   /** The state file naming this session, if it names a socket of a generation
    * we speak (DESIGN §6.5 conditions 1). */
   async #target(sid: Sid): Promise<HarnessTarget | undefined> {
-    let names: string[];
-    try {
-      names = await readdir(this.#sessionsDir);
-    } catch {
-      return undefined;
-    }
-    for (const name of names) {
-      if (!/^\d+\.json$/.test(name)) continue;
-      const row = await readJson(join(this.#sessionsDir, name));
+    const rows = await this.#rows(/^\d+\.json$/);
+    if (rows === undefined) return undefined;
+    for (const row of rows) {
       if (row === undefined || row["sessionId"] !== sid) continue;
       const pid = row["pid"];
       const socketPath = row["messagingSocketPath"];
@@ -311,20 +318,45 @@ export class ClaudeCodeSocketRoute implements DirectRoute {
    * against a running harness, and a name we cannot rebuild is still a name we
    * can recognise. */
   async #token(pid: number): Promise<string | undefined> {
-    const key = new RegExp(`^${pid}\\.[0-9a-f]+\\.key$`);
+    const rows = await this.#rows(new RegExp(`^${pid}\\.[0-9a-f]+\\.key$`));
+    if (rows === undefined) return undefined;
+    for (const document of rows) {
+      const token = document?.["peerToken"];
+      if (typeof token === "string" && token !== "") return token;
+    }
+    return undefined;
+  }
+
+  /** The files of `sessions/` whose names this pattern admits, read at once and
+   * answered in the order the directory listed them.
+   *
+   * At once because the files are independent and what is being looked for is
+   * one of them: read in turn, the search costs the sum of every file and
+   * grows with the number of sessions on the host, and a `message.send` waits
+   * out the lot (DR-0015). The order is kept because it is what decides the
+   * answer — the first name that matches is the one the caller takes.
+   *
+   * Nothing when the directory cannot be read, and nothing when the reads have
+   * not finished inside `DIRECT_SCAN_MS`: both are route (a) not applying, and
+   * route (b) carries the message. */
+  async #rows(pattern: RegExp): Promise<(Record<string, unknown> | undefined)[] | undefined> {
     let names: string[];
     try {
       names = await readdir(this.#sessionsDir);
     } catch {
       return undefined;
     }
-    for (const name of names) {
-      if (!key.test(name)) continue;
-      const document = await readJson(join(this.#sessionsDir, name));
-      const token = document?.["peerToken"];
-      if (typeof token === "string" && token !== "") return token;
+    const wanted = names.filter((name) => pattern.test(name));
+    const late = Promise.withResolvers<undefined>();
+    const deadline = setTimeout(() => late.resolve(undefined), this.#scanMs);
+    try {
+      return await Promise.race([
+        Promise.all(wanted.map((name) => readJson(join(this.#sessionsDir, name)))),
+        late.promise,
+      ]);
+    } finally {
+      clearTimeout(deadline);
     }
-    return undefined;
   }
 }
 

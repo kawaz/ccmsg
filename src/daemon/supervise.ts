@@ -275,18 +275,26 @@ export class Supervisor {
       }
       return await op(unit);
     }
-    const answers: (T | { dir: string; error: { code: string; msg: string } })[] = [];
     // Taken as a list first: each step below waits, and a request arriving in
     // between may add or remove one — what `--all` answers about is the set as
     // it stood when it was asked.
     const units = Array.from(this.#units.values());
-    for (const unit of units) {
-      try {
-        answers.push(await op(unit));
-      } catch (cause) {
-        if (!(cause instanceof CommandError)) throw cause;
-        answers.push({ dir: unit.target.dir, error: { code: cause.code, msg: cause.message } });
+    // Every config home at once. Each is a child process of its own, and a
+    // start that waits on one of them serving is not a reason the next one has
+    // not been asked to start yet (DR-0015). The answers are still the units in
+    // the order they were taken, because that is the list the caller asked
+    // about.
+    const settled = await Promise.allSettled(units.map((unit) => op(unit)));
+    const answers: (T | { dir: string; error: { code: string; msg: string } })[] = [];
+    for (const [index, outcome] of settled.entries()) {
+      if (outcome.status === "fulfilled") {
+        answers.push(outcome.value);
+        continue;
       }
+      const cause: unknown = outcome.reason;
+      if (!(cause instanceof CommandError)) throw cause;
+      const unit = units[index] as Supervised;
+      answers.push({ dir: unit.target.dir, error: { code: cause.code, msg: cause.message } });
     }
     return answers;
   }

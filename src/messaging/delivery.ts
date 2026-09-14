@@ -143,7 +143,7 @@ export class Delivery implements UpstreamResource {
     if (direct === "refused") {
       // Turned away for now, which is neither delivered nor undeliverable: it
       // waits in the inbox and is offered again (DESIGN §6.8).
-      this.#hold(to, message);
+      await this.#hold(to, message);
       return { delivered: false, reason: "throttled" };
     }
 
@@ -160,11 +160,11 @@ export class Delivery implements UpstreamResource {
       // The session is listening but is behind on what it has already been
       // offered, which is the same standing as route (a) turning the message
       // away: it waits in the inbox and is offered again (DESIGN §6.8).
-      this.#hold(to, message);
+      await this.#hold(to, message);
       return { delivered: false, reason: "throttled" };
     }
 
-    const { evicted } = this.#hold(to, message);
+    const { evicted } = await this.#hold(to, message);
     return this.#undelivered(to, evicted ? "inbox_full" : this.#reason(state));
   };
 
@@ -173,9 +173,9 @@ export class Delivery implements UpstreamResource {
    * Stated before it is held, so that a message dropped to make room for it
    * reads in the order the two happened: a removal of something the watcher
    * has, rather than of something it is about to be told about. */
-  #hold(to: Sid, message: InboxMessage): { evicted: boolean } {
+  async #hold(to: Sid, message: InboxMessage): Promise<{ evicted: boolean }> {
     this.#watchers(to, [message]);
-    return this.deps.inbox.hold(to, message);
+    return await this.deps.inbox.hold(to, message);
   }
 
   /** What is waiting, as somebody looking at it from outside reads it.
@@ -247,11 +247,18 @@ export class Delivery implements UpstreamResource {
    * nothing waiting are not asked about, so the cost of a change nobody is owed
    * anything after is one map read. */
   retry = async (): Promise<void> => {
+    const offers: Promise<void>[] = [];
     for (const sid of this.deps.inbox.sids()) {
       const state = this.deps.sessions.classify(sid);
       if (state === undefined || state === "paused" || state === "disappeared") continue;
-      await this.#offer(sid);
+      // One session at a time within its own offer, every session at once
+      // across them: a session that is slow to answer, or that never does
+      // before its deadline, is not a reason the next session waits (DR-0015).
+      // The order within a session is what `#offer` holds to, and it guards
+      // itself per sid.
+      offers.push(this.#offer(sid));
     }
+    await Promise.all(offers);
   };
 
   /** Hand a session what it is owed, oldest first, over route (a).
@@ -275,7 +282,7 @@ export class Delivery implements UpstreamResource {
         // delivered, and a daemon killed here must not offer those again.
         if (outcome !== "delivered") break;
         this.#claimed.get(to)?.delete(message.mid);
-        this.deps.inbox.delivered(to, [message.mid]);
+        await this.deps.inbox.delivered(to, [message.mid]);
       }
     } finally {
       this.#claimed.delete(to);
@@ -324,10 +331,20 @@ export class Delivery implements UpstreamResource {
     const held = this.deps.inbox
       .undelivered(sid)
       .filter((message) => claimed?.has(message.mid) !== true);
-    this.deps.inbox.delivered(
-      sid,
-      held.map((message) => message.mid),
-    );
+    // The messages leave the inbox here, in memory, and the lines saying so go
+    // behind whatever the file already owes (DR-0015): the frame carrying them
+    // is queued on the connection before this returns, so what the session has
+    // been handed is settled whether or not the line has landed yet.
+    void this.deps.inbox
+      .delivered(
+        sid,
+        held.map((message) => message.mid),
+      )
+      .catch(() => {
+        // A line that could not be written costs a message being offered again
+        // on the next run, which is what the inbox does about anything it is
+        // unsure of.
+      });
     return [{ instance: this.deps.self, data: held }];
   }
 
