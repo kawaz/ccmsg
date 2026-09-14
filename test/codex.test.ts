@@ -140,7 +140,7 @@ describe("config", () => {
 });
 
 describe("transcripts", () => {
-  test("a rollout is found by the thread its name carries", () => {
+  test("a rollout is found by the thread its name carries", async () => {
     const home = codexHome();
     const file = rollout(
       home,
@@ -153,7 +153,9 @@ describe("transcripts", () => {
       announced: () => undefined,
     });
     expect(files.path("01a089f0-5415-7b91-8400-39f3f40b408d" as Sid)).toBe(file);
-    expect(files.all().map((each) => each.sid)).toEqual(["01a089f0-5415-7b91-8400-39f3f40b408d"]);
+    expect((await files.all()).map((each) => each.sid)).toEqual([
+      "01a089f0-5415-7b91-8400-39f3f40b408d",
+    ]);
   });
 
   test("a reverted thread's new rollout still names the same session", () => {
@@ -171,7 +173,7 @@ describe("transcripts", () => {
     expect(files.path("01a089f0-5415-7b91-8400-39f3f40b408d" as Sid)).toBe(file);
   });
 
-  test("what is not a rollout is not a transcript", () => {
+  test("what is not a rollout is not a transcript", async () => {
     const home = codexHome();
     rollout(home, "2026/09/10", "notes.jsonl");
     rollout(home, "2026/09/10", "01a089f0-5415-7b91-8400-39f3f40b408d.jsonl");
@@ -180,10 +182,10 @@ describe("transcripts", () => {
       configHome: home,
       announced: () => undefined,
     });
-    expect(files.all()).toEqual([]);
+    expect(await files.all()).toEqual([]);
   });
 
-  test("Claude Code's own tree is untouched by any of this", () => {
+  test("Claude Code's own tree is untouched by any of this", async () => {
     const home = temp("ccmsg-claude-home-");
     const dir = join(home, "projects", "-Users-someone-repo");
     mkdirSync(dir, { recursive: true });
@@ -193,7 +195,7 @@ describe("transcripts", () => {
       configHome: home,
       announced: () => undefined,
     });
-    expect(files.all()[0]?.project).toBe("-Users-someone-repo");
+    expect((await files.all())[0]?.project).toBe("-Users-someone-repo");
   });
 });
 

@@ -49,7 +49,7 @@ export async function forkOrigin(
 
   const dir = dirname(file);
   let best: { sid: Sid; copied: number } | undefined;
-  for (const candidate of files.all()) {
+  for (const candidate of await files.all()) {
     if (candidate.file === file || dirname(candidate.file) !== dir) continue;
     const theirs = await recordIds(candidate.file);
     if (theirs === undefined || theirs[0] !== head) continue;

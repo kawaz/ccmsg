@@ -1,5 +1,5 @@
-import { readdirSync, statSync } from "node:fs";
-import { readdir, readFile } from "node:fs/promises";
+import { readdirSync, type Stats, statSync } from "node:fs";
+import { readdir, readFile, stat } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import type { Sid, TranscriptSubject } from "@ccmsg/protocol";
 import { type Harness, HARNESS } from "../harness/index.ts";
@@ -196,15 +196,15 @@ export class TranscriptFiles {
    * The one enumeration a search and a fork sweep both start from. It states
    * the file and what a `stat` already said about it, so neither has to stat
    * again to decide whether to open it. */
-  all(): TranscriptFile[] {
+  async all(): Promise<TranscriptFile[]> {
     const layout = LAYOUTS[this.deps.harness];
     const found: TranscriptFile[] = [];
-    for (const dir of directories(this.#root(), layout.depth)) {
-      for (const entry of names(dir)) {
+    for (const dir of await walked(this.#root(), layout.depth)) {
+      for (const entry of await listed(dir)) {
         const sid = layout.sidOf(entry);
         if (sid === undefined) continue;
         const file = join(dir, entry);
-        const known = statOf(file);
+        const known = await stated(file);
         if (known === undefined) continue;
         found.push({
           sid,
@@ -261,7 +261,27 @@ export class TranscriptFiles {
  *
  * Names are read rather than dates computed: what is there is what the harness
  * wrote, and a tree with a directory nobody expected is one whose files are
- * still found. */
+ * still found.
+ *
+ * There are two of this walk, and of the two readings below it, because the
+ * two callers are not alike: `all()` runs from an op and reads the tree
+ * without holding the instance, while `path()` also runs from a subscription
+ * being opened, which states its value in the turn it is opened in and so
+ * cannot wait (DESIGN §6.2). The one that cannot wait is the one CT-Q8 and the
+ * issue `fold-from-head-with-versioned-cache` settle, and the two become one
+ * reading again when they do. */
+async function walked(root: string, depth: number): Promise<string[]> {
+  let level = [root];
+  for (let step = 0; step < depth; step += 1) {
+    const below: string[] = [];
+    for (const dir of level) {
+      for (const entry of await listed(dir)) below.push(join(dir, entry));
+    }
+    level = below;
+  }
+  return level;
+}
+
 function directories(root: string, depth: number): string[] {
   let level = [root];
   for (let step = 0; step < depth; step += 1) {
@@ -311,11 +331,28 @@ function existing(file: string): string {
   return file;
 }
 
+async function listed(dir: string): Promise<string[]> {
+  try {
+    return await readdir(dir);
+  } catch {
+    return [];
+  }
+}
+
 function names(dir: string): string[] {
   try {
     return readdirSync(dir);
   } catch {
     return [];
+  }
+}
+
+async function stated(file: string): Promise<Stats | undefined> {
+  try {
+    const known = await stat(file);
+    return known.isFile() ? known : undefined;
+  } catch {
+    return undefined;
   }
 }
 

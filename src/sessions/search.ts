@@ -76,7 +76,7 @@ export async function search(
   const hits: SessionSearchHit[] = [];
   let budget = SCAN_BUDGET_BYTES;
   let truncated = false;
-  for (const candidate of deps.files.all()) {
+  for (const candidate of await deps.files.all()) {
     if (sid !== undefined && !candidate.sid.toLowerCase().includes(sid)) continue;
     if (candidate.updated_at < since) continue;
     if (!looksLike(candidate.project, cwdWords)) continue;
