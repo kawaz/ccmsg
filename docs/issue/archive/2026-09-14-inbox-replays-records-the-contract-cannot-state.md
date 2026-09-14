@@ -1,6 +1,6 @@
 ---
 title: inbox が起動時に読み戻した保持レコードを契約で検証せず、人向け view の frame が webui で弾かれる
-status: open
+status: resolved
 category: bug
 created: 2026-09-14T13:41:07+09:00
 last_read:
@@ -9,10 +9,10 @@ wip_entered:
 blocked_entered:
 pending_entered:
 discarded_entered:
-resolved_entered:
+resolved_entered: 2026-09-14T13:47:17+09:00
 discard_reason:
 pending_reason:
-close_reason:
+close_reason: ["implemented:commit 9163cb56, test/delivery.test.ts","done:保持期限は契約の7日で妥当(9/7→9/14は期限直前)、DESIGN §6.7によりdaemon側の値決め直しは追加なし"]
 blocked_by:
 origin: 自リポ TODO
 ---
