@@ -68,13 +68,13 @@ describe("the handshake (§3.1)", () => {
     const instance = await serving();
     expect((await handshake(instance)).status).toBe(401);
     expect((await handshake(instance, { protocols: ["ccmsg.token.nobodys"] })).status).toBe(401);
-    const token = personToken(instance);
+    const token = await personToken(instance);
     const accepted = await handshake(instance, { protocols: [`ccmsg.token.${token}`] });
     expect(accepted.status).toBe(101);
     // The handshake echoes what it selected: a browser fails a connection whose
     // reply names none of what it asked for.
     expect(accepted.headers.get("sec-websocket-protocol")).toBe(`ccmsg.token.${token}`);
-    const client = await connectWs(instance.http[0] ?? "", personToken(instance));
+    const client = await connectWs(instance.http[0] ?? "", await personToken(instance));
     clients.push(client);
     client.send({ op: "hello.user", request_id: "1", protocol_version: PROTOCOL_VERSION });
     expect(await client.next()).toMatchObject({ ok: true, request_id: "1" });
@@ -82,7 +82,7 @@ describe("the handshake (§3.1)", () => {
 
   test("the greeting says when the connection's authorization runs out", async () => {
     const instance = await serving();
-    const client = await connectWs(instance.http[0] ?? "", personToken(instance));
+    const client = await connectWs(instance.http[0] ?? "", await personToken(instance));
     clients.push(client);
     client.send({ op: "hello.user", request_id: "1", protocol_version: PROTOCOL_VERSION });
     const reply = (await client.next()) as { auth_expires_at?: number };
@@ -91,14 +91,14 @@ describe("the handshake (§3.1)", () => {
 });
 
 /** An access token for a person, as `/auth/assert` would have answered with. */
-function personToken(instance: Instance): string {
-  return instance.auth.mint("test-person").session.access.value;
+async function personToken(instance: Instance): Promise<string> {
+  return (await instance.auth.mint("test-person")).session.access.value;
 }
 
 describe("the entry is matched at the end of the path (DR-0001 §2.7)", () => {
   test("a proxy's prefix reaches the same door, and a near miss does not", async () => {
     const instance = await serving();
-    const protocols = [`ccmsg.token.${personToken(instance)}`];
+    const protocols = [`ccmsg.token.${await personToken(instance)}`];
     expect((await handshake(instance, { path: "/personal/ws", protocols })).status).toBe(101);
     expect((await handshake(instance, { path: "/a/b/ws", protocols })).status).toBe(101);
     expect((await handshake(instance, { path: "/notws", protocols })).status).toBe(404);
@@ -122,7 +122,7 @@ describe("who may reach the entry (§3.1)", () => {
     // anonymous connection it is.
     const instance = await serving();
     expect((await handshake(instance, { origin: "http://ui.example" })).status).toBe(401);
-    const protocols = [`ccmsg.token.${personToken(instance)}`];
+    const protocols = [`ccmsg.token.${await personToken(instance)}`];
     expect(
       (await handshake(instance, { origin: "http://elsewhere.example", protocols })).status,
     ).toBe(101);
@@ -149,7 +149,7 @@ describe("who may reach the entry (§3.1)", () => {
 
   test("the address this host connects from is admitted when it is listed", async () => {
     const instance = await serving({ source_ips: ["127.0.0.1"] });
-    const protocols = [`ccmsg.token.${personToken(instance)}`];
+    const protocols = [`ccmsg.token.${await personToken(instance)}`];
     expect((await handshake(instance, { protocols })).status).toBe(101);
   });
 });

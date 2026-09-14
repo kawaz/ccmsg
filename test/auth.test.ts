@@ -174,7 +174,7 @@ describe("registering a passkey (§2.2)", () => {
     // not, and nothing else on the line says which is which.
     await registered(at, { backup: { eligible: true, state: true } });
     await registered(at, { backup: { eligible: false, state: false } });
-    const answer = handleAdmin(
+    const answer = await handleAdmin(
       { auth: at.instance.auth },
       {
         admin: "passkey_list",
@@ -263,7 +263,7 @@ describe("authenticating and the tokens that follow (§2.4, §2.5)", () => {
     // The registration URL is what tells this instance which relying party its
     // pages belong to, and every `/auth/*` answer is bounded by that (§2.3).
     at.instance.auth.issue({ endpoint: servedAt(at) });
-    const first = at.instance.auth.mint("someone");
+    const first = await at.instance.auth.mint("someone");
     const name = cookieName(at.instance.self, "someone");
     const zero = `${name}=${first.refresh.value}`;
 
@@ -303,7 +303,7 @@ describe("authenticating and the tokens that follow (§2.4, §2.5)", () => {
       unit: "unit",
     });
     auth.issue({});
-    const minted = auth.mint("someone");
+    const minted = await auth.mint("someone");
     const name = cookieName(self, "someone");
 
     const refresh = async (value: string, body: unknown) =>
@@ -430,7 +430,7 @@ describe("removing a person (§2.6)", () => {
     await client.next();
 
     const gone = Promise.withResolvers<void>();
-    const closed = at.instance.auth.remove(issued.sub);
+    const closed = await at.instance.auth.remove(issued.sub);
     expect(closed.closed).toBeGreaterThan(0);
     expect(at.instance.auth.list()).toEqual([]);
     // The token is no longer admitted, which is what the closed connection
@@ -447,7 +447,7 @@ describe("removing a person (§2.6)", () => {
 });
 
 describe("the access token is the family's, shared by the person's pages (§2.4)", () => {
-  test("rotation keeps the standing access token until it is half spent", () => {
+  test("rotation keeps the standing access token until it is half spent", async () => {
     // A clock rather than a wait: what decides this is hours of TTL.
     let now = 1_000_000;
     const dir = mkdtempSync(join(tmpdir(), "ccmsg-auth-share-"));
@@ -459,14 +459,14 @@ describe("the access token is the family's, shared by the person's pages (§2.4)
       unit: "unit",
       now: () => now,
     });
-    const minted = auth.mint("someone");
+    const minted = await auth.mint("someone");
 
     // Two loads in a row, as two tabs would do: the refresh cookie turns over
     // each time, the token the open pages hold does not.
     now += PREVIOUS_GRACE_MS + 1;
-    const one = auth.rotate(minted.refresh.value);
+    const one = await auth.rotate(minted.refresh.value);
     now += PREVIOUS_GRACE_MS + 1;
-    const two = auth.rotate(one.refresh.value);
+    const two = await auth.rotate(one.refresh.value);
     expect(one.access.value).toBe(minted.session.access.value);
     expect(two.access.value).toBe(minted.session.access.value);
     expect(two.refresh.value).not.toBe(one.refresh.value);
@@ -474,7 +474,7 @@ describe("the access token is the family's, shared by the person's pages (§2.4)
 
     // Past the threshold the family mints, and the pages renew together.
     now += ACCESS_TTL_MS - ACCESS_KEEP_MS;
-    const three = auth.rotate(two.refresh.value);
+    const three = await auth.rotate(two.refresh.value);
     expect(three.access.value).not.toBe(minted.session.access.value);
     expect(three.access.expires_at).toBe(now + ACCESS_TTL_MS);
     expect(auth.admits(minted.session.access.value)).toBeUndefined();
@@ -482,7 +482,7 @@ describe("the access token is the family's, shared by the person's pages (§2.4)
 });
 
 describe("a token reused after its grace fails the family (§2.4)", () => {
-  test("what the family remembers outlives the instance that rotated it", () => {
+  test("what the family remembers outlives the instance that rotated it", async () => {
     // The digests travel with the family, so an instance that restarts — or a
     // peer the reused value is presented to — still recognises it (M4).
     const dir = mkdtempSync(join(tmpdir(), "ccmsg-auth-retired-"));
@@ -496,20 +496,20 @@ describe("a token reused after its grace fails the family (§2.4)", () => {
       ...deps,
       records: new AuthRecords({ dir, self, publish: () => {} }),
     });
-    const zero = before.mint("someone").refresh.value;
-    const one = before.rotate(zero);
-    const two = before.rotate(one.refresh.value);
+    const zero = (await before.mint("someone")).refresh.value;
+    const one = await before.rotate(zero);
+    const two = await before.rotate(one.refresh.value);
     const [family] = new AuthRecords({ dir, self, publish: () => {} }).families();
     expect((family?.body.retired ?? []).length).toBe(2);
 
     // A fresh domain over the same records: nothing of the rotation is left in
     // memory, and the value from two generations back is still recognised.
     const after = new Auth({ ...deps, records: new AuthRecords({ dir, self, publish: () => {} }) });
-    expect(() => after.rotate(zero)).toThrow();
+    await expect(after.rotate(zero)).rejects.toThrow();
     expect(after.admits(two.access.value)).toBeUndefined();
   });
 
-  test("the generation the family still remembers is what reuse is caught by", () => {
+  test("the generation the family still remembers is what reuse is caught by", async () => {
     // Against the domain rather than a listener, because what decides this is a
     // clock: the grace on the previous generation is a minute, and a test that
     // waited it out would be a test about waiting.
@@ -522,15 +522,15 @@ describe("a token reused after its grace fails the family (§2.4)", () => {
       unit: "unit",
       now: () => now,
     });
-    const zero = auth.mint("someone").refresh.value;
-    const one = auth.rotate(zero);
+    const zero = (await auth.mint("someone")).refresh.value;
+    const one = await auth.rotate(zero);
 
     // Inside the grace it is the retry it looks like, answered with the pair
     // the caller missed.
-    expect(auth.rotate(zero).refresh.value).toBe(one.refresh.value);
+    expect((await auth.rotate(zero)).refresh.value).toBe(one.refresh.value);
 
     now += PREVIOUS_GRACE_MS + 1;
-    expect(() => auth.rotate(zero)).toThrow();
+    await expect(auth.rotate(zero)).rejects.toThrow();
     // The family went with it, so the value that was standing is gone too.
     expect(auth.admits(one.access.value)).toBeUndefined();
   });
@@ -773,7 +773,7 @@ describe("the registration URL runs out (§2.2)", () => {
     expect(() => auth.resolveRegistration(later, second.code)).toThrow(/期限切れ|再発行/);
   });
 
-  test("the default subject is read from the records, not from a counter", () => {
+  test("the default subject is read from the records, not from a counter", async () => {
     const dir = mkdtempSync(join(tmpdir(), "ccmsg-auth-sub-"));
     const records = new AuthRecords({ dir, self: "0".repeat(32), publish: () => {} });
     const deps = {
@@ -782,7 +782,7 @@ describe("the registration URL runs out (§2.2)", () => {
       endpoint: () => "http://ui.example/" as const,
       unit: "unit",
     };
-    records.write("credential/unit-3/abc", {
+    await records.write("credential/unit-3/abc", {
       kind: "credential",
       sub: "unit-3",
       credential_id: "abc",
@@ -801,8 +801,8 @@ describe("the registration URL runs out (§2.2)", () => {
 describe("extending a connection (§2.5)", () => {
   test("a token of one's own extends it, and somebody else's does not", async () => {
     const at = await serving();
-    const mine = at.instance.auth.mint("me");
-    const theirs = at.instance.auth.mint("them");
+    const mine = await at.instance.auth.mint("me");
+    const theirs = await at.instance.auth.mint("them");
     const client = await connectWs(at.instance.http[0] ?? "", mine.session.access.value);
     clients.push(client);
     client.send({ op: "hello.user", request_id: "1", protocol_version: PROTOCOL_VERSION });
@@ -832,7 +832,7 @@ describe("extending a connection (§2.5)", () => {
     // it really arrives on — the timer the connection was held with.
     let now = Date.now();
     const at = await serving({ now: () => now });
-    const minted = at.instance.auth.mint("brief");
+    const minted = await at.instance.auth.mint("brief");
     // Almost the whole life of the token has passed by the time the handshake
     // happens, so the connection is held with a deadline moments away.
     now = minted.session.access.expires_at - 60;
@@ -849,7 +849,7 @@ describe("extending a connection (§2.5)", () => {
 });
 
 describe("what a peer's records may and may not do (§2.4, §2.6)", () => {
-  test("a peer cannot write a family this instance minted, nor revive a removal", () => {
+  test("a peer cannot write a family this instance minted, nor revive a removal", async () => {
     const dir = mkdtempSync(join(tmpdir(), "ccmsg-auth-merge-"));
     const self = "0".repeat(32);
     const records = new AuthRecords({ dir, self, publish: () => {} });
@@ -859,22 +859,24 @@ describe("what a peer's records may and may not do (§2.4, §2.6)", () => {
       endpoint: () => undefined,
       unit: "unit",
     });
-    const minted = auth.mint("someone");
+    const minted = await auth.mint("someone");
     const [family] = records.families();
-    records.fail(family?.key ?? "");
+    await records.fail(family?.key ?? "");
     expect(auth.admits(minted.session.access.value)).toBeUndefined();
 
     // The copy a peer still holds is older state about a family it may not
     // write, and taking it would undo the failure (M2).
     expect(
-      records.merge([
-        { key: family?.key ?? "", updated_at: Date.now() + 60_000, body: family?.body as never },
-      ]).changed,
+      (
+        await records.merge([
+          { key: family?.key ?? "", updated_at: Date.now() + 60_000, body: family?.body as never },
+        ])
+      ).changed,
     ).toBe(0);
     expect(auth.admits(minted.session.access.value)).toBeUndefined();
 
     // A removal that arrived from a peer refuses the credential here too.
-    records.write("credential/gone/abc", {
+    await records.write("credential/gone/abc", {
       kind: "credential",
       sub: "gone",
       credential_id: "abc",
@@ -883,7 +885,7 @@ describe("what a peer's records may and may not do (§2.4, §2.6)", () => {
       endpoint: "http://ui.example/",
       registered_at: 1,
     });
-    const removal = records.merge([
+    const removal = await records.merge([
       {
         key: "credential/gone",
         updated_at: Date.now(),
@@ -894,21 +896,23 @@ describe("what a peer's records may and may not do (§2.4, §2.6)", () => {
     expect(records.credentials()).toEqual([]);
     // And nothing brings it back.
     expect(
-      records.merge([
-        {
-          key: "credential/gone/abc",
-          updated_at: Date.now() + 60_000,
-          body: {
-            kind: "credential",
-            sub: "gone",
-            credential_id: "abc",
-            public_key: "k",
-            user_handle: "u",
-            endpoint: "http://ui.example/",
-            registered_at: 1,
+      (
+        await records.merge([
+          {
+            key: "credential/gone/abc",
+            updated_at: Date.now() + 60_000,
+            body: {
+              kind: "credential",
+              sub: "gone",
+              credential_id: "abc",
+              public_key: "k",
+              user_handle: "u",
+              endpoint: "http://ui.example/",
+              registered_at: 1,
+            },
           },
-        },
-      ]).changed,
+        ])
+      ).changed,
     ).toBe(0);
   });
 });

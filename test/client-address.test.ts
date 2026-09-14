@@ -199,7 +199,7 @@ describe("what the instance keeps (DR-0001 §2.2)", () => {
     // A registration URL is what makes this instance's own origin one it
     // serves, which `/auth/*` is compared against before anything else (§2.3).
     at.instance.auth.issue({ endpoint: `http://127.0.0.1:${String(at.port)}/` });
-    const minted = at.instance.auth.mint("someone");
+    const minted = await at.instance.auth.mint("someone");
     const answered = await refresh(at, minted.refresh.value, {
       source: "127.0.0.1",
       header: "203.0.113.7",
@@ -213,7 +213,7 @@ describe("what the instance keeps (DR-0001 §2.2)", () => {
     // A registration URL is what makes this instance's own origin one it
     // serves, which `/auth/*` is compared against before anything else (§2.3).
     at.instance.auth.issue({ endpoint: `http://127.0.0.1:${String(at.port)}/` });
-    const minted = at.instance.auth.mint("someone");
+    const minted = await at.instance.auth.mint("someone");
     const answered = await refresh(at, minted.refresh.value, {
       source: "127.0.0.1",
       header: "203.0.113.7",

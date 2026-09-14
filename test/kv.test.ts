@@ -230,14 +230,14 @@ describe("watching a namespace (`kv:<ns>`, element)", () => {
 });
 
 describe("the store on its own", () => {
-  test("a namespace's file is read the first time it is touched", () => {
+  test("a namespace's file is read the first time it is touched", async () => {
     const { state } = disposable();
     const dir = join(state, "kv");
     const published: { topic: string; data: unknown }[] = [];
     const store = new KvStore(dir, SELF, (topic, data) => {
       published.push({ topic, data });
     });
-    store.write({ ns: "theme", key: "default", value: "one" }, 5);
+    await store.write({ ns: "theme", key: "default", value: "one" }, 5);
     expect(published).toEqual([
       { topic: "kv:theme", data: { entries: [{ key: "default", value: "one", updated_at: 5 }] } },
     ]);

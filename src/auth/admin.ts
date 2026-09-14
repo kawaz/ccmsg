@@ -51,7 +51,10 @@ export interface Administered {
 }
 
 /** Run one administrative request. */
-export function handleAdmin(at: Administered, request: AdminRequest): DispatchResult {
+export async function handleAdmin(
+  at: Administered,
+  request: AdminRequest,
+): Promise<DispatchResult> {
   const auth = at.auth;
   try {
     switch (request.admin) {
@@ -77,7 +80,7 @@ export function handleAdmin(at: Administered, request: AdminRequest): DispatchRe
       case "passkey_list":
         return reply(request.request_id, { credentials: auth.list() });
       case "passkey_remove": {
-        const { closed } = auth.remove(request.sub);
+        const { closed } = await auth.remove(request.sub);
         return reply(request.request_id, { sub: request.sub, closed });
       }
     }

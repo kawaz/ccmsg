@@ -1,5 +1,6 @@
-import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { readFileSync } from "node:fs";
+import { mkdir, rename, unlink, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import type {
   AuthRecord,
   AuthTombstone,
@@ -83,6 +84,9 @@ export class AuthRecords {
   readonly #records = new Map<string, AuthRecord>();
   #loaded = false;
 
+  /** The writes already asked for, as one chain. */
+  #writing: Promise<void> = Promise.resolve();
+
   constructor(private readonly deps: RecordsDeps) {}
 
   #now(): Timestamp {
@@ -135,13 +139,19 @@ export class AuthRecords {
    * millisecond, which a rotation and the mint before it easily do, must not
    * silently drop the second. So the instant is moved past what is held rather
    * than compared against it. */
-  write(key: string, body: AuthRecord["body"], now: Timestamp = this.#now()): boolean {
+  async write(
+    key: string,
+    body: AuthRecord["body"],
+    now: Timestamp = this.#now(),
+  ): Promise<boolean> {
     this.#load();
     const held = this.#records.get(key);
     const at = held === undefined ? now : Math.max(now, held.updated_at + 1);
     const record: AuthRecord = { key, updated_at: at, body };
     if (!this.accept(record)) return false;
-    this.#persist();
+    // Handed to the peers once it is written down, so no peer holds a record
+    // this instance would not have after a restart.
+    await this.#persist();
     this.deps.publish([record]);
     return true;
   }
@@ -156,7 +166,7 @@ export class AuthRecords {
    * This instance is its only writer, so a copy coming back is a copy of an
    * older state — which is exactly what a failed family looks like from a peer
    * that has not heard yet, and taking it would undo the failure. */
-  merge(records: readonly AuthRecord[]): { changed: number; removed: Subject[] } {
+  async merge(records: readonly AuthRecord[]): Promise<{ changed: number; removed: Subject[] }> {
     let changed = 0;
     const removed: Subject[] = [];
     for (const record of records) {
@@ -165,7 +175,7 @@ export class AuthRecords {
       changed += 1;
       if (record.body.kind === "tombstone") removed.push(record.body.sub);
     }
-    if (changed > 0) this.#persist();
+    if (changed > 0) await this.#persist();
     return { changed, removed };
   }
 
@@ -175,7 +185,7 @@ export class AuthRecords {
    * lengths of time. A family expires with its refresh token, so the mark over
    * it only has to outlive the longest one; a credential has no expiry of its
    * own, so the mark over it has none either (DR-0001 §2.6). */
-  remove(sub: Subject): AuthRecord[] {
+  async remove(sub: Subject): Promise<AuthRecord[]> {
     const at = this.#now();
     const credential: AuthTombstone = { kind: "tombstone", sub, deleted_at: at };
     const family: AuthTombstone = {
@@ -189,7 +199,7 @@ export class AuthRecords {
       { key: familyPrefix(sub), updated_at: at, body: family },
     ];
     for (const mark of marks) this.accept(mark);
-    this.#persist();
+    await this.#persist();
     this.deps.publish(marks);
     return marks;
   }
@@ -275,12 +285,12 @@ export class AuthRecords {
    * the key, which is exactly what a revoked family needs. It is kept for the
    * same seven days a removal's is: past the longest refresh token, there is
    * nothing left for a returning peer to revive. */
-  fail(key: string): void {
+  async fail(key: string): Promise<void> {
     this.#load();
     const held = this.#records.get(key);
     if (held === undefined || held.body.kind !== "token_family") return;
     const at = this.#now();
-    this.write(key, {
+    await this.write(key, {
       kind: "tombstone",
       sub: held.body.sub,
       deleted_at: at,
@@ -356,21 +366,34 @@ export class AuthRecords {
     this.#expire();
   }
 
-  #persist(): void {
+  /** The set as it stands, written whole.
+   *
+   * The body is taken here, before anything is awaited, so what is written is
+   * the set as it was when the change was answered; the writes are chained so
+   * that two of them cannot be racing for one file and the older land last
+   * (DR-0015). */
+  #persist(): Promise<void> {
     this.#expire();
-    mkdirSync(this.deps.dir, { recursive: true, mode: 0o700 });
-    const file = this.#file();
-    const temporary = `${file}.ccmsg-${String(process.pid)}-${String(Date.now())}`;
-    // The set holds tokens, so the file is the instance's own to read: it is
-    // created with the mode rather than fixed afterwards, so there is no
-    // instant at which it stands readable by anyone else.
-    writeFileSync(temporary, JSON.stringify([...this.#records.values()]), { mode: 0o600 });
-    try {
-      renameSync(temporary, file);
-    } catch (cause) {
-      unlinkSync(temporary);
-      throw cause;
-    }
+    const body = JSON.stringify([...this.#records.values()]);
+    const written = this.#writing.then(async () => {
+      await mkdir(this.deps.dir, { recursive: true, mode: 0o700 });
+      const file = this.#file();
+      const temporary = `${file}.ccmsg-${String(process.pid)}-${String(Date.now())}`;
+      // The set holds tokens, so the file is the instance's own to read: it is
+      // created with the mode rather than fixed afterwards, so there is no
+      // instant at which it stands readable by anyone else.
+      await writeFile(temporary, body, { mode: 0o600 });
+      try {
+        await rename(temporary, file);
+      } catch (cause) {
+        await unlink(temporary);
+        throw cause;
+      }
+    });
+    // The chain carries the order, not the outcome: a write that failed is
+    // answered to its own caller, and the ones behind it still go.
+    this.#writing = written.catch(() => {});
+    return written;
   }
 
   #file(): string {
@@ -381,11 +404,6 @@ export class AuthRecords {
 /** Where the records live under a state directory. */
 export function recordsDir(stateDir: string): string {
   return join(stateDir, AUTH_DIR);
-}
-
-/** The parent of a path, made when a caller wants to write into it. */
-export function ensureDir(file: string): void {
-  mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
 }
 
 /** Whether an instance is the one allowed to write this family (DR-0001 §2.4). */

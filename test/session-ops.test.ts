@@ -18,7 +18,6 @@ import {
   elapsedSeconds,
   hostProcessDeps,
   lastLivePath,
-  LastLiveStore,
   type ProcessDeps,
   sessionCapabilities,
   sessionHandlers,
@@ -261,17 +260,25 @@ function ops(
   // `last_live` is read as the domain is constructed (§8.3 step 4), so a test
   // that wants an entry in it writes the file first.
   if (over.lastLive !== undefined) {
-    const store = new LastLiveStore(lastLivePath(stateDir), SELF);
-    for (const sid of over.lastLive) {
-      store.record({
-        sid,
-        instance: SELF,
-        repo: "someone/a-repo",
-        ws: "main",
-        cwd: CWD,
-        last_seen_at: Date.now(),
-      });
-    }
+    // Written here rather than through the store, because what the domain
+    // reads at startup is the file: the store's own writes land behind the
+    // call that asked for them (DR-0015), and a fixture stating the file
+    // states exactly what step 4 will find.
+    mkdirSync(stateDir, { recursive: true });
+    writeFileSync(
+      lastLivePath(stateDir),
+      `${JSON.stringify({
+        version: 1,
+        sessions: over.lastLive.map((sid) => ({
+          sid,
+          instance: SELF,
+          repo: "someone/a-repo",
+          ws: "main",
+          cwd: CWD,
+          last_seen_at: Date.now(),
+        })),
+      })}\n`,
+    );
   }
   const domain = new Sessions({
     harness: "claude",

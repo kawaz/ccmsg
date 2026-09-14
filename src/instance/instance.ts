@@ -438,7 +438,10 @@ export class Instance {
       // what this instance writes travels as its own (DR-0001 §2.6).
       element: (_topic, _instance, data) => {
         const stated = (data as { records?: AuthRecord[] } | undefined)?.records;
-        if (Array.isArray(stated)) this.#auth.merge(stated);
+        // Folded in as it arrives: the element callback is not what the peer
+        // waits on, and the set is written down before the removals in it are
+        // acted on (DR-0015).
+        if (Array.isArray(stated)) void this.#auth.merge(stated);
       },
       // The mesh view is this instance's own, so the topic that carries it is
       // restated when that view moves (DESIGN §7.5).
@@ -714,11 +717,9 @@ export class Instance {
         handle: (frame, conn) => {
           const admin = adminRequestOf(frame);
           if (admin !== undefined) {
-            return Promise.resolve(
-              handleAdmin(
-                { auth: this.#auth, ...(this.#mesh === undefined ? {} : { mesh: this.#mesh }) },
-                admin,
-              ),
+            return handleAdmin(
+              { auth: this.#auth, ...(this.#mesh === undefined ? {} : { mesh: this.#mesh }) },
+              admin,
             );
           }
           return this.handle(frame, conn);

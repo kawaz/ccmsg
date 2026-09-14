@@ -220,8 +220,8 @@ async function startWith(
  * A WebSocket handshake presents one (DR-0001 §2.5), and a test has no browser
  * and no authenticator — so it asks the instance for a session directly, which
  * is what `/auth/assert` would have answered. */
-function personToken(instance: Instance): string {
-  return instance.auth.mint("test-person").session.access.value;
+async function personToken(instance: Instance): Promise<string> {
+  return (await instance.auth.mint("test-person")).session.access.value;
 }
 
 /** The upstream section of an instance wired to a gateway both ways. */
@@ -235,7 +235,7 @@ function wiredTo(gatewayUrl: string) {
 
 /** Greet as a person and subscribe, returning the reply to the subscribe. */
 async function subscribe(started: Started, topic: string): Promise<LineClient> {
-  const client = await connectWs(started.address, personToken(started.instance));
+  const client = await connectWs(started.address, await personToken(started.instance));
   clients.push(client);
   client.send({ op: "hello.user", request_id: "h", protocol_version: PROTOCOL_VERSION });
   await client.next();
@@ -592,7 +592,7 @@ describe("who may post, and what an instance without a gateway has (§3.1, §5.2
 
   test("with no gateway configured there is no route and no capability", async () => {
     const started = await startWith();
-    const client = await connectWs(started.address, personToken(started.instance));
+    const client = await connectWs(started.address, await personToken(started.instance));
     clients.push(client);
     client.send({ op: "hello.user", request_id: "h", protocol_version: PROTOCOL_VERSION });
     const hello = await client.next();
@@ -621,7 +621,7 @@ describe("who may post, and what an instance without a gateway has (§3.1, §5.2
       // the three capabilities together.
       [asked, ["llm_status", "llm_usage", "llm_stats"]],
     ] as const) {
-      const client = await connectWs(started.address, personToken(started.instance));
+      const client = await connectWs(started.address, await personToken(started.instance));
       clients.push(client);
       client.send({
         op: "hello.user",

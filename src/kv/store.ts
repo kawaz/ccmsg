@@ -1,4 +1,5 @@
-import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
+import { mkdir, rename, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type {
   KvDeleteArgs,
@@ -32,6 +33,9 @@ export const KV_DIR = "kv";
 export class KvStore implements UpstreamResource {
   readonly #namespaces = new Map<string, Map<string, Held>>();
 
+  /** Per namespace, the writes already asked for, as one chain. */
+  readonly #writing = new Map<string, Promise<void>>();
+
   constructor(
     private readonly dir: string,
     private readonly self: InstanceId,
@@ -54,7 +58,7 @@ export class KvStore implements UpstreamResource {
    * was unreachable must not displace what was written since. The answer is
    * what the key carries now — equal to what the caller stated when its write
    * stands, and later than it when an existing value did. */
-  write(args: KvWriteArgs, now: Timestamp = Date.now()): KvWriteResult {
+  async write(args: KvWriteArgs, now: Timestamp = Date.now()): Promise<KvWriteResult> {
     const entries = this.#load(args.ns);
     const updatedAt = args.updated_at ?? now;
     const held = entries.get(args.key);
@@ -65,7 +69,9 @@ export class KvStore implements UpstreamResource {
       return { updated_at: held.updated_at };
     }
     entries.set(args.key, { value: args.value, updated_at: updatedAt });
-    this.#persist(args.ns, entries);
+    // Told to the subscribers once it is written down, so nobody is holding a
+    // value this instance would not have after a restart.
+    await this.#persist(args.ns, entries);
     this.publish(`kv:${args.ns}`, {
       entries: [{ key: args.key, value: args.value, updated_at: updatedAt }],
     });
@@ -75,14 +81,14 @@ export class KvStore implements UpstreamResource {
   /** A key that was not there is no error: the caller wanted the namespace
    * without it, and it is. The removal is still announced, because a subscriber
    * that has the entry has to be told it is gone. */
-  delete(args: KvDeleteArgs, now: Timestamp = Date.now()): KvDeleteResult {
+  async delete(args: KvDeleteArgs, now: Timestamp = Date.now()): Promise<KvDeleteResult> {
     const entries = this.#load(args.ns);
     const before = entries.get(args.key);
     // A removal older than what the key holds undoes nothing, which is the
     // same rule a write is held to.
     if (before !== undefined && before.updated_at > now) return {};
     entries.set(args.key, { updated_at: now, deleted: true });
-    this.#persist(args.ns, entries);
+    await this.#persist(args.ns, entries);
     // A removal is announced only when something was there to remove: a
     // subscriber holding no entry has nothing to be told is gone.
     if (before !== undefined && before.deleted !== true) {
@@ -148,19 +154,36 @@ export class KvStore implements UpstreamResource {
     return forget(entries, now);
   }
 
-  #persist(ns: string, entries: Map<string, Held>): void {
-    mkdirSync(this.dir, { recursive: true });
+  /** The namespace as it stands, written whole.
+   *
+   * The body is taken here, before anything is awaited, so what is written is
+   * the namespace as it was when the write was answered. Writes to one
+   * namespace are chained rather than started side by side: two of them would
+   * otherwise be racing for one file, and the older could land last (DR-0015).
+   * Namespaces do not wait on each other, having nothing in common but this
+   * directory. */
+  #persist(ns: string, entries: Map<string, Held>): Promise<void> {
     const file = this.#file(ns);
     const body: Record<string, Held> = {};
     for (const [key, held] of entries) body[key] = held;
-    const temporary = `${file}.ccmsg-${process.pid}-${Date.now()}`;
-    writeFileSync(temporary, JSON.stringify(body));
-    try {
-      renameSync(temporary, file);
-    } catch (cause) {
-      unlinkSync(temporary);
-      throw cause;
-    }
+    const written = (this.#writing.get(ns) ?? Promise.resolve()).then(async () => {
+      await mkdir(this.dir, { recursive: true });
+      const temporary = `${file}.ccmsg-${process.pid}-${Date.now()}`;
+      await writeFile(temporary, JSON.stringify(body));
+      try {
+        await rename(temporary, file);
+      } catch (cause) {
+        await unlink(temporary);
+        throw cause;
+      }
+    });
+    // The chain carries the order, not the outcome: a write that failed is
+    // answered to its own caller, and the ones behind it still go.
+    this.#writing.set(
+      ns,
+      written.catch(() => {}),
+    );
+    return written;
   }
 
   /** The namespace's file. A namespace is an identifier, so its name is a file
@@ -188,9 +211,9 @@ export function kvHandlers(store: KvStore) {
   return {
     "kv.read": (input: HandlerInput): KvReadResult =>
       store.read(input.args as unknown as KvReadArgs),
-    "kv.write": (input: HandlerInput): KvWriteResult =>
+    "kv.write": (input: HandlerInput): Promise<KvWriteResult> =>
       store.write(input.args as unknown as KvWriteArgs),
-    "kv.delete": (input: HandlerInput): KvDeleteResult =>
+    "kv.delete": (input: HandlerInput): Promise<KvDeleteResult> =>
       store.delete(input.args as unknown as KvDeleteArgs),
   };
 }

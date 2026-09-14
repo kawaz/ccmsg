@@ -316,8 +316,8 @@ export class Auth {
   }
 
   /** Remove one person: the tombstones, and every connection they hold. */
-  remove(sub: Subject): { records: AuthRecord[]; closed: number } {
-    const records = this.deps.records.remove(sub);
+  async remove(sub: Subject): Promise<{ records: AuthRecord[]; closed: number }> {
+    const records = await this.deps.records.remove(sub);
     return { records, closed: this.disconnect(sub) };
   }
 
@@ -340,8 +340,8 @@ export class Auth {
   }
 
   /** Take what a peer wrote on `auth.records`, and act on the removals in it. */
-  merge(records: readonly AuthRecord[]): void {
-    const { removed } = this.deps.records.merge(records);
+  async merge(records: readonly AuthRecord[]): Promise<void> {
+    const { removed } = await this.deps.records.merge(records);
     for (const sub of removed) this.disconnect(sub);
   }
 
@@ -479,7 +479,7 @@ export class Auth {
       ...(from.ip === undefined ? {} : { registered_ip: from.ip }),
       ...(from.userAgent === undefined ? {} : { registered_user_agent: from.userAgent }),
     };
-    this.deps.records.write(credentialKey(claims.sub, verified.credentialId), record, at);
+    await this.deps.records.write(credentialKey(claims.sub, verified.credentialId), record, at);
     return this.mint(claims.sub);
   }
 
@@ -589,7 +589,7 @@ export class Auth {
     );
     await this.#spendAnywhere(args.challenge);
     const at = this.#now();
-    this.deps.records.write(
+    await this.deps.records.write(
       credentialKey(record.sub, record.credential_id),
       {
         ...record,
@@ -654,7 +654,7 @@ export class Auth {
   // --- tokens (DR-0001 §2.4) ---
 
   /** Make a family for this person, minted by this instance. */
-  mint(sub: Subject): MintedSession {
+  async mint(sub: Subject): Promise<MintedSession> {
     const at = this.#now();
     const family: TokenFamily = {
       kind: "token_family",
@@ -664,7 +664,7 @@ export class Auth {
       refresh: { value: token(), expires_at: at + REFRESH_TTL_MS },
     };
     const id = randomBytes(8).toString("hex");
-    this.deps.records.write(familyKey(sub, id), family, at);
+    await this.deps.records.write(familyKey(sub, id), family, at);
     return { session: { sub, access: family.access }, refresh: family.refresh };
   }
 
@@ -698,7 +698,7 @@ export class Auth {
       } satisfies AuthRotateArgs)) as AuthRotateResult;
       return { session: { sub: answer.sub, access: answer.access }, refresh: answer.refresh };
     }
-    const rotated = this.rotate(value, from);
+    const rotated = await this.rotate(value, from);
     return { session: { sub: rotated.sub, access: rotated.access }, refresh: rotated.refresh };
   }
 
@@ -714,7 +714,7 @@ export class Auth {
     const owner = this.deps.records.owning(value, digestOf(value));
     if (owner === undefined) return;
     if (owner.body.iss === this.deps.self) {
-      this.#failReused(value);
+      await this.#failReused(value);
       return;
     }
     try {
@@ -730,10 +730,10 @@ export class Auth {
 
   /** Rotate a family this instance minted. The one writer's own operation, and
    * what `auth.rotate` runs on its behalf. */
-  rotate(value: Base64Url, from: RefreshFrom = {}): AuthRotateResult {
+  async rotate(value: Base64Url, from: RefreshFrom = {}): Promise<AuthRotateResult> {
     const held = this.deps.records.byRefresh(value);
     if (held === undefined) {
-      this.#failReused(value);
+      await this.#failReused(value);
       throw new OpError("auth_invalid", "この refresh token は使えません");
     }
     if (held.body.iss !== this.deps.self) {
@@ -777,7 +777,7 @@ export class Auth {
       // holds wherever the reused value is presented (contract, `TokenFamily`).
       retired: retire(held.body, at),
     };
-    this.deps.records.write(held.key, rotated, at);
+    await this.deps.records.write(held.key, rotated, at);
     return { sub: rotated.sub, access: rotated.access, refresh: rotated.refresh };
   }
 
@@ -789,7 +789,7 @@ export class Auth {
    * before it past its grace, and any generation this instance rotated away
    * while it has been running. A value older than what any of those covers
    * matches nothing and is refused as a stranger. */
-  #failReused(value: Base64Url): void {
+  async #failReused(value: Base64Url): Promise<void> {
     const digest = digestOf(value);
     const now = this.#now();
     for (const held of this.deps.records.families()) {
@@ -805,7 +805,7 @@ export class Auth {
       this.deps.log?.("a refresh token was reused after it was rotated away", {
         sub: held.body.sub,
       });
-      this.deps.records.fail(held.key);
+      await this.deps.records.fail(held.key);
       // The tokens are gone, and so is what they were holding open: a
       // connection that outlived the family it was admitted on would be the
       // stolen token still working.
@@ -932,7 +932,7 @@ export function authHandlers(auth: Auth) {
       // the URL and the count of tries against it (DR-0001 §2.2).
       return { kind: "register", claims: auth.resolveRegistration(args.token, args.code) };
     },
-    "auth.rotate": (input: HandlerInput): AuthRotateResult => {
+    "auth.rotate": (input: HandlerInput): Promise<AuthRotateResult> => {
       const args = input.args as unknown as AuthRotateArgs;
       // The receiving instance's account of the person, taken as stated: it is
       // the only one that saw them, and `last_refresh` is a hint nothing is

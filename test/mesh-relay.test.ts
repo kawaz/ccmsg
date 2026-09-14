@@ -689,7 +689,7 @@ describe("the credentials and tokens the mesh shares (DR-0001 §2.6)", () => {
   test("a record written on one instance authenticates at the other", async () => {
     const { a, b } = await pair();
     // What a registration would have left behind, written where it happened.
-    const minted = a.auth.mint("someone");
+    const minted = await a.auth.mint("someone");
     await eventually(() => b.auth.admits(minted.session.access.value) !== undefined);
     expect(b.auth.admits(minted.session.access.value)?.sub).toBe("someone");
 
@@ -704,7 +704,7 @@ describe("the credentials and tokens the mesh shares (DR-0001 §2.6)", () => {
 
   test("a rotation is carried to the instance that minted the family", async () => {
     const { a, b } = await pair();
-    const minted = a.auth.mint("someone");
+    const minted = await a.auth.mint("someone");
     await eventually(() => b.auth.records.byRefresh(minted.refresh.value) !== undefined);
 
     // B holds the family but may not write it, so it asks A — the single
@@ -730,9 +730,9 @@ describe("the credentials and tokens the mesh shares (DR-0001 §2.6)", () => {
 
   test("a removal travels, and refuses the credential everywhere", async () => {
     const { a, b } = await pair();
-    const minted = a.auth.mint("goes-away");
+    const minted = await a.auth.mint("goes-away");
     await eventually(() => b.auth.admits(minted.session.access.value) !== undefined);
-    a.auth.remove("goes-away");
+    await a.auth.remove("goes-away");
     await eventually(() => b.auth.records.removed("goes-away"));
     expect(b.auth.admits(minted.session.access.value)).toBeUndefined();
   });
@@ -808,7 +808,7 @@ describe("registering at one instance with another's URL (DR-0001 §2.6)", () =>
 describe("a token reused at another instance (DR-0001 §2.4)", () => {
   test("the instance that minted the family is the one that fails it", async () => {
     const { a, b } = await pair();
-    const minted = a.auth.mint("someone");
+    const minted = await a.auth.mint("someone");
     // Twice, so the value the family started with is past the grace the
     // generation before the standing one gets: what is left of it is the digest
     // the family carries.
