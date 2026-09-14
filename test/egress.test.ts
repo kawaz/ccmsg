@@ -47,9 +47,9 @@ function delivered(conn: TestConn): Record<string, unknown>[] {
 }
 
 describe("a value stated faster than it can be read (§6.4)", () => {
-  test("a second of restatement leaves one frame per period, and the last value is one of them", () => {
+  test("a second of restatement leaves one frame per period, and the last value is one of them", async () => {
     const { time, hub, conn } = rig();
-    hub.subscribe(conn, PEERS);
+    await hub.subscribe(conn, PEERS);
 
     // A second of the storm the incident was: one statement per millisecond.
     for (let ms = 0; ms < 1000; ms += 1) {
@@ -66,9 +66,9 @@ describe("a value stated faster than it can be read (§6.4)", () => {
     expect(latest(frames)).toBe(999);
   });
 
-  test("the value that arrives is always the latest, never one already superseded", () => {
+  test("the value that arrives is always the latest, never one already superseded", async () => {
     const { time, hub, conn } = rig();
-    hub.subscribe(conn, PEERS);
+    await hub.subscribe(conn, PEERS);
 
     hub.publish(PEERS, { instances: [], at: 1 });
     time.advance(1);
@@ -79,9 +79,9 @@ describe("a value stated faster than it can be read (§6.4)", () => {
     expect(delivered(conn).map((frame) => (frame["data"] as { at: number }).at)).toEqual([1, 3]);
   });
 
-  test("one instance's value does not fold onto another's", () => {
+  test("one instance's value does not fold onto another's", async () => {
     const { time, hub, conn } = rig();
-    hub.subscribe(conn, PEERS);
+    await hub.subscribe(conn, PEERS);
     // The first frame goes out at once, so both of the ones under test are
     // gathered by the same flush.
     hub.publish(PEERS, { instances: [], at: 0 });
@@ -94,9 +94,9 @@ describe("a value stated faster than it can be read (§6.4)", () => {
     expect(gathered.map((frame) => frame["instance"])).toEqual([SELF, OTHER_INSTANCE]);
   });
 
-  test("nothing is armed while a terminal is quiet", () => {
+  test("nothing is armed while a terminal is quiet", async () => {
     const { time, hub, conn } = rig();
-    hub.subscribe(conn, PEERS);
+    await hub.subscribe(conn, PEERS);
 
     hub.publish(PEERS, { instances: [], at: 1 });
     expect(time.pending).toBe(0);
@@ -105,9 +105,9 @@ describe("a value stated faster than it can be read (§6.4)", () => {
 });
 
 describe("what happened, as against what is (§6.4)", () => {
-  test("occurrences are all delivered, in the order they were raised", () => {
+  test("occurrences are all delivered, in the order they were raised", async () => {
     const { time, hub, conn } = rig();
-    hub.subscribe(conn, NOTIFY);
+    await hub.subscribe(conn, NOTIFY);
 
     for (let n = 0; n < 50; n += 1) hub.publish(NOTIFY, { n });
     time.advance(FLUSH_PERIOD_MS);
@@ -117,10 +117,10 @@ describe("what happened, as against what is (§6.4)", () => {
     );
   });
 
-  test("occurrences keep their order among the values folded beside them", () => {
+  test("occurrences keep their order among the values folded beside them", async () => {
     const { time, hub, conn } = rig();
-    hub.subscribe(conn, NOTIFY);
-    hub.subscribe(conn, PEERS);
+    await hub.subscribe(conn, NOTIFY);
+    await hub.subscribe(conn, PEERS);
     hub.publish(NOTIFY, { n: 0 });
 
     hub.publish(PEERS, { instances: [], at: 1 });
@@ -135,9 +135,9 @@ describe("what happened, as against what is (§6.4)", () => {
     expect(delivered(conn).slice(1)[0]?.["data"]).toEqual({ instances: [], at: 2 });
   });
 
-  test("past the limit the frame is refused, and the queue below it is untouched", () => {
+  test("past the limit the frame is refused, and the queue below it is untouched", async () => {
     const { time, hub, conn } = rig();
-    hub.subscribe(conn, NOTIFY);
+    await hub.subscribe(conn, NOTIFY);
     hub.publish(NOTIFY, { n: -1 });
 
     const outcomes = new Set<string>();
@@ -150,18 +150,18 @@ describe("what happened, as against what is (§6.4)", () => {
     expect((dataOf(carried[carried.length - 1]) as { n: number }).n).toBe(QUEUE_LIMIT - 1);
   });
 
-  test("a flush makes room again", () => {
+  test("a flush makes room again", async () => {
     const { time, hub, conn } = rig();
-    hub.subscribe(conn, NOTIFY);
+    await hub.subscribe(conn, NOTIFY);
     for (let n = 0; n < QUEUE_LIMIT + 1; n += 1) hub.publish(NOTIFY, { n });
     time.advance(FLUSH_PERIOD_MS);
 
     expect(hub.publish(NOTIFY, { n: "after" })).toBe("ok");
   });
 
-  test("the op that raised the notification is the one told", () => {
+  test("the op that raised the notification is the one told", async () => {
     const { time, hub, conn } = rig();
-    hub.subscribe(conn, NOTIFY);
+    await hub.subscribe(conn, NOTIFY);
     const notify = new Notify({
       self: SELF,
       label: (sid) => sid,
@@ -200,9 +200,9 @@ describe("what happened, as against what is (§6.4)", () => {
 });
 
 describe("a relayed value goes through the same layer (§7.4, §6.4)", () => {
-  test("a peer restating itself leaves one frame per period, carrying its latest", () => {
+  test("a peer restating itself leaves one frame per period, carrying its latest", async () => {
     const { time, hub, conn } = rig();
-    hub.subscribe(conn, PEERS);
+    await hub.subscribe(conn, PEERS);
     const relay = new Relay({
       publish: (topic, data, instance) => {
         hub.publish(topic, data, instance);

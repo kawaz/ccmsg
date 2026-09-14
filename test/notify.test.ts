@@ -71,10 +71,10 @@ function received(conn: TestConn): Notification[] {
 }
 
 describe("notify.send reaches whoever is watching", () => {
-  test("the notification names the session and the label the instance resolved", () => {
+  test("the notification names the session and the label the instance resolved", async () => {
     const { topics, send } = rig();
     const watcher = connAs("user");
-    topics.subscribe(watcher, "notify");
+    await topics.subscribe(watcher, "notify");
     watcher.flush();
 
     send(connAs("session", SID), { text: "見てほしい" });
@@ -84,10 +84,10 @@ describe("notify.send reaches whoever is watching", () => {
     ]);
   });
 
-  test("`sid` names the session it is about, and the caller is meant without it", () => {
+  test("`sid` names the session it is about, and the caller is meant without it", async () => {
     const { topics, send } = rig();
     const watcher = connAs("user");
-    topics.subscribe(watcher, "notify");
+    await topics.subscribe(watcher, "notify");
     watcher.flush();
 
     send(connAs("session", SID), { text: "自分のこと" });
@@ -99,10 +99,10 @@ describe("notify.send reaches whoever is watching", () => {
     ]);
   });
 
-  test("what it answers travels with it, so a reader holding both knows they are one thing", () => {
+  test("what it answers travels with it, so a reader holding both knows they are one thing", async () => {
     const { topics, send } = rig();
     const watcher = connAs("user");
-    topics.subscribe(watcher, "notify");
+    await topics.subscribe(watcher, "notify");
     watcher.flush();
 
     send(connAs("session", SID), { text: "答えました", reply_to: `${SELF}/7` });
@@ -116,25 +116,25 @@ describe("notify.send reaches whoever is watching", () => {
     expect(() => send(person, { text: "誰の話か分からない" })).toThrow(OpError);
   });
 
-  test("nothing is held: a connection that subscribes after it gets no snapshot", () => {
+  test("nothing is held: a connection that subscribes after it gets no snapshot", async () => {
     const { topics, send } = rig();
     const early = connAs("user");
-    topics.subscribe(early, "notify");
+    await topics.subscribe(early, "notify");
     early.flush();
     send(connAs("session", SID), { text: "一度きり" });
 
     const late = new TestConn({ state: "settled", role: "user" });
-    topics.subscribe(late, "notify");
+    await topics.subscribe(late, "notify");
     late.flush();
 
     expect(received(early)).toHaveLength(1);
     expect(received(late)).toEqual([]);
   });
 
-  test("the same line twice is two occurrences, not one repeated value", () => {
+  test("the same line twice is two occurrences, not one repeated value", async () => {
     const { topics, send } = rig();
     const watcher = connAs("user");
-    topics.subscribe(watcher, "notify");
+    await topics.subscribe(watcher, "notify");
     watcher.flush();
 
     send(connAs("session", SID), { text: "同じ" });
@@ -145,10 +145,10 @@ describe("notify.send reaches whoever is watching", () => {
 });
 
 describe("say.post says who spoke", () => {
-  test("the text reaches the watchers and the session is left unread", () => {
+  test("the text reaches the watchers and the session is left unread", async () => {
     const { topics, notify, post } = rig();
     const watcher = connAs("user");
-    topics.subscribe(watcher, "notify");
+    await topics.subscribe(watcher, "notify");
     watcher.flush();
 
     const result = post(connAs("session", SID), "喋りました");
@@ -182,10 +182,10 @@ describe("say.post says who spoke", () => {
 });
 
 describe("what goes on the wire is the contract's own shape", () => {
-  test("every frame and every result passes the contract's validator", () => {
+  test("every frame and every result passes the contract's validator", async () => {
     const { topics, send, post } = rig();
     const watcher = connAs("user");
-    topics.subscribe(watcher, "notify");
+    await topics.subscribe(watcher, "notify");
     watcher.flush();
 
     send(connAs("session", SID), { text: "通知" });

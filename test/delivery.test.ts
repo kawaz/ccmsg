@@ -142,7 +142,7 @@ class ScriptedDirectRoute implements DirectRoute {
   readonly carried: InboxMessage[] = [];
   /** Run while a send is in flight, so a test can have something else happen
    * partway through an offer. */
-  during: ((message: InboxMessage) => void) | undefined;
+  during: ((message: InboxMessage) => void | Promise<void>) | undefined;
 
   constructor(private readonly outcomes: DirectOutcome[]) {}
 
@@ -151,7 +151,7 @@ class ScriptedDirectRoute implements DirectRoute {
     // A real send gives up the turn on a socket; this gives it up on nothing,
     // which is what lets a subscribe land in the middle of an offer.
     await Promise.resolve();
-    this.during?.(message);
+    void this.during?.(message);
     return this.outcomes.shift() ?? "unavailable";
   }
 
@@ -215,18 +215,18 @@ function rig(
  * Its snapshot is dropped unless a test asks to keep it: every subscribe
  * answers one, and a test about what arrives afterwards is about the frames
  * after that one. */
-function listening(topics: Topics, sid: Sid, keepSnapshot = false): TestConn {
+async function listening(topics: Topics, sid: Sid, keepSnapshot = false): Promise<TestConn> {
   const conn = connAs("session", sid);
-  expect(topics.subscribe(conn, "inbox")).toBe("ok");
+  expect(await topics.subscribe(conn, "inbox")).toBe("ok");
   conn.flush();
   if (!keepSnapshot) conn.sent.splice(0);
   return conn;
 }
 
 /** A person watching, whose subscription is a view rather than a delivery. */
-function watching(topics: Topics, keepSnapshot = false): TestConn {
+async function watching(topics: Topics, keepSnapshot = false): Promise<TestConn> {
   const conn = new TestConn({ state: "settled", role: "user" });
-  expect(topics.subscribe(conn, "inbox")).toBe("ok");
+  expect(await topics.subscribe(conn, "inbox")).toBe("ok");
   conn.flush();
   if (!keepSnapshot) conn.sent.splice(0);
   return conn;
@@ -255,7 +255,7 @@ describe("delivery", () => {
     const { sessions, topics, inbox, send } = rig();
     sessions.live(SID);
     sessions.live(OTHER_SID);
-    const recipient = listening(topics, OTHER_SID);
+    const recipient = await listening(topics, OTHER_SID);
 
     const result = await send(connAs("session", SID), OTHER_SID);
 
@@ -273,7 +273,7 @@ describe("delivery", () => {
   test("the person at the web UI is a sender in their own right", async () => {
     const { sessions, topics, send } = rig();
     sessions.live(OTHER_SID);
-    const recipient = listening(topics, OTHER_SID);
+    const recipient = await listening(topics, OTHER_SID);
 
     // A person greets with a role and no sid, which is what tells them apart
     // from a session: the sender is the literal rather than a missing id.
@@ -292,8 +292,8 @@ describe("delivery", () => {
     sessions.live(SID);
     sessions.live(OTHER_SID);
     sessions.live(THIRD_SID);
-    const recipient = listening(topics, OTHER_SID);
-    const bystander = listening(topics, THIRD_SID);
+    const recipient = await listening(topics, OTHER_SID);
+    const bystander = await listening(topics, THIRD_SID);
 
     await send(connAs("session", SID), OTHER_SID);
 
@@ -310,21 +310,21 @@ describe("delivery", () => {
     expect(result.delivered).toBe(false);
     expect(inbox.undelivered(OTHER_SID)).toHaveLength(1);
 
-    const recipient = listening(topics, OTHER_SID, true);
+    const recipient = await listening(topics, OTHER_SID, true);
     const frames = inboxFrames(recipient);
     expect(frames).toHaveLength(1);
     expect(frames[0]?.["snapshot"]).toBe(true);
     expect(messagesOf(frames[0])[0]?.text).toBe("held");
     // Delivered is delivered: a second subscriber does not receive it again.
     expect(inbox.undelivered(OTHER_SID)).toEqual([]);
-    expect(messagesOf(inboxFrames(listening(topics, OTHER_SID, true))[0])).toEqual([]);
+    expect(messagesOf(inboxFrames(await listening(topics, OTHER_SID, true))[0])).toEqual([]);
   });
 
   test("a person sees what is waiting, named by who it is for", async () => {
     const { sessions, topics, inbox, send } = rig();
     sessions.live(SID);
     sessions.live(OTHER_SID);
-    const watcher = watching(topics);
+    const watcher = await watching(topics);
 
     const result = await send(connAs("session", SID), OTHER_SID);
 
@@ -347,7 +347,7 @@ describe("delivery", () => {
     await send(connAs("session", SID), OTHER_SID, "for one");
     await send(connAs("session", SID), THIRD_SID, "for another");
 
-    const watcher = watching(topics, true);
+    const watcher = await watching(topics, true);
 
     const carried = messagesOf(inboxFrames(watcher)[0]);
     expect(carried.map((message) => [message.to, message.text])).toEqual([
@@ -362,7 +362,7 @@ describe("delivery", () => {
     const { sessions, topics, send } = rig();
     sessions.live(SID);
     sessions.live(OTHER_SID);
-    const recipient = listening(topics, OTHER_SID);
+    const recipient = await listening(topics, OTHER_SID);
 
     await send(connAs("session", SID), OTHER_SID);
 
@@ -374,11 +374,11 @@ describe("delivery", () => {
     sessions.live(SID);
     sessions.live(OTHER_SID);
     sessions.live(THIRD_SID);
-    const watcher = watching(topics);
+    const watcher = await watching(topics);
 
     // Delivered: the session takes what was waiting for it.
     await send(connAs("session", SID), OTHER_SID, "waited");
-    listening(topics, OTHER_SID);
+    await listening(topics, OTHER_SID);
     // Dropped: the oldest goes to make room for a newer one.
     for (let n = 0; n <= INBOX_MAX_PER_SID; n += 1) {
       await send(connAs("session", SID), THIRD_SID, `n${n}`);
@@ -423,7 +423,7 @@ describe("delivery", () => {
     });
 
     expect(inbox.undelivered(OTHER_SID).map((message) => message.text)).toEqual(["current"]);
-    const view = watching(topics, true);
+    const view = await watching(topics, true);
     const frames = inboxFrames(view);
     expect(frames).toHaveLength(1);
     expect(validationErrors(TOPIC_SCHEMAS.inbox, frames[0] as object)).toEqual([]);
@@ -436,8 +436,8 @@ describe("delivery", () => {
     const { sessions, topics, send } = rig();
     sessions.live(SID);
     sessions.live(OTHER_SID);
-    listening(topics, OTHER_SID);
-    const watcher = watching(topics);
+    await listening(topics, OTHER_SID);
+    const watcher = await watching(topics);
 
     await send(connAs("session", SID), OTHER_SID, "straight through");
 
@@ -729,7 +729,7 @@ describe("the inbox on disk (§3.6 / §4.3)", () => {
     const first = rig({ dir });
     first.sessions.live(SID);
     first.sessions.live(OTHER_SID);
-    const listener = listening(first.topics, THIRD_SID);
+    const listener = await listening(first.topics, THIRD_SID);
     first.sessions.live(THIRD_SID);
     await first.send(connAs("session", SID), OTHER_SID, "waiting for it");
     await first.send(connAs("session", SID), THIRD_SID, "handed over");
@@ -860,9 +860,9 @@ describe("what is held is offered again when the session can take it", () => {
     await send(sender, OTHER_SID, "second");
 
     let snapshot: InboxMessage[] = [];
-    route.during = () => {
+    route.during = async () => {
       if (snapshot.length > 0 || route.carried.length !== 3) return;
-      snapshot = messagesOf(inboxFrames(listening(topics, OTHER_SID, true))[0]);
+      snapshot = messagesOf(inboxFrames(await listening(topics, OTHER_SID, true))[0]);
     };
     await delivery.retry();
 

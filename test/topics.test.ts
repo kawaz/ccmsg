@@ -54,12 +54,12 @@ function allowedRole(kind: TopicKind) {
 }
 
 describe("the subscription is the whole of what a topic holds (§6.1)", () => {
-  test("subscribing hands over the current value once, marked as a snapshot", () => {
+  test("subscribing hands over the current value once, marked as a snapshot", async () => {
     const hub = topics();
     owner(hub, "kv", [{ instance: SELF, data: ENTRIES }]);
     const conn = connAs("user");
 
-    expect(hub.subscribe(conn, KV)).toBe("ok");
+    expect(await hub.subscribe(conn, KV)).toBe("ok");
     // Queued behind the reply, as the driver releases it.
     expect(conn.topics()).toEqual([]);
     conn.flush();
@@ -69,14 +69,14 @@ describe("the subscription is the whole of what a topic holds (§6.1)", () => {
     ]);
   });
 
-  test("the frames it produces are the frames the contract describes", () => {
+  test("the frames it produces are the frames the contract describes", async () => {
     const hub = topics();
     owner(hub, "kv", [{ instance: SELF, data: ENTRIES }]);
     const conn = connAs("user");
-    hub.subscribe(conn, KV);
+    await hub.subscribe(conn, KV);
     hub.publish(KV, ENTRIES);
     const second = connAs("user");
-    hub.subscribe(second, KV);
+    await hub.subscribe(second, KV);
     second.flush();
 
     for (const frame of [...conn.topics(), ...second.topics()]) {
@@ -88,12 +88,12 @@ describe("the subscription is the whole of what a topic holds (§6.1)", () => {
     expect(second.topics()[0]?.["snapshot"]).toBe(true);
   });
 
-  test("a change reaches every subscriber of that topic and no other", () => {
+  test("a change reaches every subscriber of that topic and no other", async () => {
     const hub = topics();
     const here = connAs("user");
     const elsewhere = connAs("user");
-    hub.subscribe(here, "notify");
-    hub.subscribe(elsewhere, "instances");
+    await hub.subscribe(here, "notify");
+    await hub.subscribe(elsewhere, "instances");
 
     hub.publish("notify", NOTIFICATION);
 
@@ -117,10 +117,10 @@ const REPLACING = (kind: TopicKind) =>
   topicGranularity(kind) === "whole" || topicGranularity(kind) === "per_instance_whole";
 
 describe("suppression is one implementation, and it is every topic's (M5)", () => {
-  test("the same value twice is pushed once", () => {
+  test("the same value twice is pushed once", async () => {
     const hub = topics();
     const conn = connAs("user");
-    hub.subscribe(conn, PEERS);
+    await hub.subscribe(conn, PEERS);
 
     hub.publish(PEERS, PEER_LIST);
     hub.publish(PEERS, { ...PEER_LIST });
@@ -128,10 +128,10 @@ describe("suppression is one implementation, and it is every topic's (M5)", () =
     expect(conn.topics()).toHaveLength(1);
   });
 
-  test("a value that differs is pushed, and repeating it is suppressed again", () => {
+  test("a value that differs is pushed, and repeating it is suppressed again", async () => {
     const hub = topics();
     const conn = connAs("user");
-    hub.subscribe(conn, PEERS);
+    await hub.subscribe(conn, PEERS);
 
     hub.publish(PEERS, { count: 1 });
     hub.publish(PEERS, { count: 2 });
@@ -140,19 +140,19 @@ describe("suppression is one implementation, and it is every topic's (M5)", () =
     expect(conn.topics().map((frame) => frame["data"])).toEqual([{ count: 1 }, { count: 2 }]);
   });
 
-  test("every topic whose frames replace the value is suppressed, not a chosen few", () => {
+  test("every topic whose frames replace the value is suppressed, not a chosen few", async () => {
     for (const kind of (Object.keys(TOPIC_ATTRIBUTES) as TopicKind[]).filter(REPLACING)) {
       const hub = topics();
       const conn = connAs(allowedRole(kind));
       const name = topicName(kind);
-      expect([kind, hub.subscribe(conn, name)]).toEqual([kind, "ok"]);
+      expect([kind, await hub.subscribe(conn, name)]).toEqual([kind, "ok"]);
       hub.publish(name, { same: true });
       hub.publish(name, { same: true });
       expect([kind, conn.topics().length]).toEqual([kind, 1]);
     }
   });
 
-  test("a topic whose frames are deltas repeats them, because a repeat is a second one", () => {
+  test("a topic whose frames are deltas repeats them, because a repeat is a second one", async () => {
     // The same message offered to a session twice is two offers, and the
     // second is the one that reaches a session that was not listening for the
     // first. Suppressing it would drop the delivery, not a duplicate.
@@ -162,17 +162,17 @@ describe("suppression is one implementation, and it is every topic's (M5)", () =
       const hub = topics();
       const conn = connAs(allowedRole(kind));
       const name = topicName(kind);
-      expect([kind, hub.subscribe(conn, name)]).toEqual([kind, "ok"]);
+      expect([kind, await hub.subscribe(conn, name)]).toEqual([kind, "ok"]);
       hub.publish(name, { same: true });
       hub.publish(name, { same: true });
       expect([kind, conn.topics().length]).toEqual([kind, 2]);
     }
   });
 
-  test("one instance repeating itself does not hide another instance's value", () => {
+  test("one instance repeating itself does not hide another instance's value", async () => {
     const hub = topics();
     const conn = connAs("user");
-    hub.subscribe(conn, "instances");
+    await hub.subscribe(conn, "instances");
 
     hub.publish("instances", { count: 1 }, SELF);
     hub.publish("instances", { count: 1 }, OTHER_INSTANCE);
@@ -183,19 +183,19 @@ describe("suppression is one implementation, and it is every topic's (M5)", () =
     expect(conn.topics().map((frame) => frame["instance"])).toEqual([SELF, OTHER_INSTANCE]);
   });
 
-  test("a later subscriber is handed every instance's share as a snapshot", () => {
+  test("a later subscriber is handed every instance's share as a snapshot", async () => {
     const hub = topics();
     owner(hub, "instances", [
       { instance: SELF, data: { count: 1 } },
       { instance: OTHER_INSTANCE, data: { count: 2 } },
     ]);
     const first = connAs("user");
-    hub.subscribe(first, "instances");
+    await hub.subscribe(first, "instances");
     hub.publish("instances", { count: 1 }, SELF);
     hub.publish("instances", { count: 2 }, OTHER_INSTANCE);
 
     const later = connAs("user");
-    hub.subscribe(later, "instances");
+    await hub.subscribe(later, "instances");
     later.flush();
 
     expect(later.topics()).toEqual([
@@ -212,38 +212,38 @@ describe("suppression is one implementation, and it is every topic's (M5)", () =
 });
 
 describe("the current value comes from whoever owns it (§3.3)", () => {
-  test("a topic whose frames are elements snapshots the whole of them", () => {
+  test("a topic whose frames are elements snapshots the whole of them", async () => {
     const hub = topics();
     const whole = { entries: [{ key: "a" }, { key: "b" }] };
     owner(hub, "kv", [{ instance: SELF, data: whole }]);
     const conn = connAs("user");
-    hub.subscribe(conn, KV);
+    await hub.subscribe(conn, KV);
     // One element went past as a change; the current value is every element,
     // which is a thing only the owner can state.
     hub.publish(KV, { entries: [{ key: "b" }] });
 
     const later = connAs("user");
-    hub.subscribe(later, KV);
+    await hub.subscribe(later, KV);
     later.flush();
     expect(later.topics()).toEqual([
       { ev: "topic", topic: KV, snapshot: true, instance: SELF, data: whole },
     ]);
   });
 
-  test("the owner is asked at each subscription, not once", () => {
+  test("the owner is asked at each subscription, not once", async () => {
     const hub = topics();
     const { state } = owner(hub, "kv", [{ instance: SELF, data: ENTRIES }]);
-    hub.subscribe(connAs("user"), KV);
-    hub.subscribe(connAs("user"), KV);
+    await hub.subscribe(connAs("user"), KV);
+    await hub.subscribe(connAs("user"), KV);
     expect(state.asked).toEqual([KV, KV]);
   });
 
-  test("with no owner attached the subscription still stands, with no snapshot", () => {
+  test("with no owner attached the subscription still stands, with no snapshot", async () => {
     // Where a topic's values are not implemented yet, subscribing is still
     // what a subscriber does: it hears whatever is published from then on.
     const hub = topics();
     const conn = connAs("user");
-    expect(hub.subscribe(conn, KV)).toBe("ok");
+    expect(await hub.subscribe(conn, KV)).toBe("ok");
     conn.flush();
     expect(conn.topics()).toEqual([]);
 
@@ -253,10 +253,10 @@ describe("the current value comes from whoever owns it (§3.3)", () => {
 });
 
 describe("a topic with nothing to hold (§6.2, granularity event)", () => {
-  test("the same notification twice arrives twice", () => {
+  test("the same notification twice arrives twice", async () => {
     const hub = topics();
     const conn = connAs("user");
-    hub.subscribe(conn, "notify");
+    await hub.subscribe(conn, "notify");
 
     hub.publish("notify", NOTIFICATION);
     hub.publish("notify", { ...NOTIFICATION });
@@ -267,14 +267,14 @@ describe("a topic with nothing to hold (§6.2, granularity event)", () => {
     expect(conn.topics()).toHaveLength(2);
   });
 
-  test("a later subscriber gets no snapshot, only what happens next", () => {
+  test("a later subscriber gets no snapshot, only what happens next", async () => {
     const hub = topics();
     // Its owner has no value to state, which is what `event` means.
     owner(hub, "notify");
     hub.publish("notify", NOTIFICATION);
 
     const conn = connAs("user");
-    hub.subscribe(conn, "notify");
+    await hub.subscribe(conn, "notify");
     conn.flush();
     expect(conn.topics()).toEqual([]);
 
@@ -284,10 +284,10 @@ describe("a topic with nothing to hold (§6.2, granularity event)", () => {
     ]);
   });
 
-  test("its frames are still the frames the contract describes", () => {
+  test("its frames are still the frames the contract describes", async () => {
     const hub = topics();
     const conn = connAs("user");
-    hub.subscribe(conn, "notify");
+    await hub.subscribe(conn, "notify");
     hub.publish("notify", NOTIFICATION);
     for (const frame of conn.topics()) {
       expect(validationErrors(TOPIC_SCHEMAS.notify, frame)).toEqual([]);
@@ -296,10 +296,10 @@ describe("a topic with nothing to hold (§6.2, granularity event)", () => {
 });
 
 describe("a subscription ends with its connection (§6.3)", () => {
-  test("closing the connection drops the subscription and what follows it", () => {
+  test("closing the connection drops the subscription and what follows it", async () => {
     const hub = topics();
     const conn = connAs("user");
-    hub.subscribe(conn, KV);
+    await hub.subscribe(conn, KV);
     expect(hub.subscriberCount(KV)).toBe(1);
 
     conn.close();
@@ -309,7 +309,7 @@ describe("a subscription ends with its connection (§6.3)", () => {
     expect(conn.topics()).toHaveLength(0);
   });
 
-  test("one close listener per connection, however often it subscribes", () => {
+  test("one close listener per connection, however often it subscribes", async () => {
     // A client moving between views subscribes and unsubscribes for as long as
     // it is connected. A listener registered per subscription is held until the
     // connection closes, so the connection accrues one for every move it makes.
@@ -317,23 +317,23 @@ describe("a subscription ends with its connection (§6.3)", () => {
     const conn = connAs("user");
 
     for (let round = 0; round < 50; round++) {
-      hub.subscribe(conn, KV);
+      await hub.subscribe(conn, KV);
       hub.unsubscribe(conn, KV);
     }
-    hub.subscribe(conn, `transcript:${SID}`);
+    await hub.subscribe(conn, `transcript:${SID}`);
 
     expect(conn.listenerCount).toBe(1);
     // And the one listener still releases everything the connection holds.
-    hub.subscribe(conn, KV);
+    await hub.subscribe(conn, KV);
     conn.close();
     expect(hub.subscriberCount(KV)).toBe(0);
     expect(hub.subscriberCount(`transcript:${SID}`)).toBe(0);
   });
 
-  test("unsubscribing stops the frames, and repeating it changes nothing", () => {
+  test("unsubscribing stops the frames, and repeating it changes nothing", async () => {
     const hub = topics();
     const conn = connAs("user");
-    hub.subscribe(conn, KV);
+    await hub.subscribe(conn, KV);
 
     expect(hub.unsubscribe(conn, KV)).toBe("ok");
     expect(hub.unsubscribe(conn, KV)).toBe("ok");
@@ -351,13 +351,13 @@ describe("subscription is what drives the resource behind a topic (§6.3)", () =
 
   const TRANSCRIPT = `transcript:${SID}`;
 
-  test("the first subscriber starts it and the last one to leave stops it", () => {
+  test("the first subscriber starts it and the last one to leave stops it", async () => {
     const { hub, started, stopped } = counting();
     const first = connAs("user");
     const second = connAs("user");
 
-    hub.subscribe(first, TRANSCRIPT);
-    hub.subscribe(second, TRANSCRIPT);
+    await hub.subscribe(first, TRANSCRIPT);
+    await hub.subscribe(second, TRANSCRIPT);
     expect([started, stopped]).toEqual([[TRANSCRIPT], []]);
 
     hub.unsubscribe(first, TRANSCRIPT);
@@ -366,46 +366,46 @@ describe("subscription is what drives the resource behind a topic (§6.3)", () =
     expect(stopped).toEqual([TRANSCRIPT]);
   });
 
-  test("the resource is per topic name, not per kind", () => {
+  test("the resource is per topic name, not per kind", async () => {
     const { hub, started } = counting();
-    hub.subscribe(connAs("user"), TRANSCRIPT);
-    hub.subscribe(connAs("user"), `transcript:${OTHER_SID}`);
+    await hub.subscribe(connAs("user"), TRANSCRIPT);
+    await hub.subscribe(connAs("user"), `transcript:${OTHER_SID}`);
     expect(started).toHaveLength(2);
   });
 
-  test("the first frame after it starts again is not taken for a repeat", () => {
+  test("the first frame after it starts again is not taken for a repeat", async () => {
     const { hub } = counting();
     const first = connAs("user");
-    hub.subscribe(first, TRANSCRIPT);
+    await hub.subscribe(first, TRANSCRIPT);
     hub.publish(TRANSCRIPT, { at: 1 });
     first.close();
 
     // What was sent before the resource stopped is no longer something the
     // next frame can repeat, so suppression does not reach across the gap.
     const later = connAs("user");
-    hub.subscribe(later, TRANSCRIPT);
+    await hub.subscribe(later, TRANSCRIPT);
     hub.publish(TRANSCRIPT, { at: 1 });
     expect(later.topics()).toHaveLength(1);
   });
 });
 
 describe("who may hear a topic (§11.2)", () => {
-  test("a user-only topic does not reach a session", () => {
+  test("a user-only topic does not reach a session", async () => {
     const hub = topics();
     const session = connAs("session");
-    expect(hub.subscribe(session, "agents")).toBe("forbidden");
+    expect(await hub.subscribe(session, "agents")).toBe("forbidden");
 
     hub.publish("agents", { agents: [] });
     expect(session.topics()).toEqual([]);
   });
 
-  test("every topic refuses the roles its row leaves out, swept over the table", () => {
+  test("every topic refuses the roles its row leaves out, swept over the table", async () => {
     for (const kind of Object.keys(TOPIC_ATTRIBUTES) as TopicKind[]) {
       const roles: readonly Role[] = TOPIC_ATTRIBUTES[kind].roles;
       const outside = (["session", "user"] as const).filter((role) => !roles.includes(role));
       for (const role of outside) {
         const hub = topics();
-        expect([kind, role, hub.subscribe(connAs(role), topicName(kind))]).toEqual([
+        expect([kind, role, await hub.subscribe(connAs(role), topicName(kind))]).toEqual([
           kind,
           role,
           "forbidden",
@@ -414,20 +414,20 @@ describe("who may hear a topic (§11.2)", () => {
     }
   });
 
-  test("a topic naming a capability the instance lacks is refused", () => {
+  test("a topic naming a capability the instance lacks is refused", async () => {
     const hub = topics(new Set<Capability>());
-    expect(hub.subscribe(connAs("user"), "llm.status")).toBe("capability_unavailable");
-    expect(topics().subscribe(connAs("user"), "llm.status")).toBe("ok");
+    expect(await hub.subscribe(connAs("user"), "llm.status")).toBe("capability_unavailable");
+    expect(await topics().subscribe(connAs("user"), "llm.status")).toBe("ok");
   });
 
-  test("a name outside the contract is unknown", () => {
+  test("a name outside the contract is unknown", async () => {
     const hub = topics();
-    expect(hub.subscribe(connAs("user"), "no_such_topic")).toBe("topic_unknown");
+    expect(await hub.subscribe(connAs("user"), "no_such_topic")).toBe("topic_unknown");
     expect(hub.unsubscribe(connAs("user"), "no_such_topic")).toBe("topic_unknown");
   });
 
-  test("an anonymous connection subscribes to nothing", () => {
-    expect(topics().subscribe(new TestConn(), "notify")).toBe("forbidden");
+  test("an anonymous connection subscribes to nothing", async () => {
+    expect(await topics().subscribe(new TestConn(), "notify")).toBe("forbidden");
   });
 });
 
