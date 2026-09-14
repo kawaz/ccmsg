@@ -363,6 +363,11 @@ export class Instance {
   readonly #direct: DirectRoute;
   readonly #notify: Notify;
   readonly #translate: Translate | undefined;
+  /** Everything that writes to the state directory as it changes rather than
+   * at exit (DESIGN §2.5). A stop waits for what they have asked for before it
+   * lets go of the config home, so a successor reads what this instance last
+   * said (DESIGN §8.5 step 4). */
+  readonly #persisted: { flush(): Promise<void> }[] = [];
   /** The person's authentication: who may open a connection, and the records
    * that say so (DR-0001). */
   readonly #auth: Auth;
@@ -440,8 +445,17 @@ export class Instance {
         const stated = (data as { records?: AuthRecord[] } | undefined)?.records;
         // Folded in as it arrives: the element callback is not what the peer
         // waits on, and the set is written down before the removals in it are
-        // acted on (DR-0015).
-        if (Array.isArray(stated)) void this.#auth.merge(stated);
+        // acted on (DR-0015). A set that could not be written is said here and
+        // nowhere else — there is no caller to answer, and the records come
+        // back from the peers that also hold them.
+        if (Array.isArray(stated)) {
+          void this.#auth.merge(stated).catch((cause: unknown) => {
+            this.log.write("auth records merge failed", {
+              instance: this.self,
+              cause: String(cause),
+            });
+          });
+        }
       },
       // The mesh view is this instance's own, so the topic that carries it is
       // restated when that view moves (DESIGN §7.5).
@@ -552,6 +566,7 @@ export class Instance {
 
     const inbox = new Inbox(inboxPath(paths.stateDir));
     inbox.load();
+    this.#persisted.push(inbox);
     // Route (a) is the harness's own way in (DESIGN §6.5): Claude Code's messaging
     // socket, Codex's thread queue. Which one an instance speaks follows the
     // config home it answers for (DESIGN §4.1), and the flag turns the route off for
@@ -605,6 +620,7 @@ export class Instance {
     const kv = new KvStore(join(paths.stateDir, KV_DIR), this.self, (topic, data) => {
       this.#topics.publish(topic, data);
     });
+    this.#persisted.push(kv);
     this.#topics.attach("kv", kv);
 
     // The credentials, tokens and removals the mesh shares (DR-0001 §2.6).
@@ -618,6 +634,7 @@ export class Instance {
         this.#topics.publish("auth.records", { records: written });
       },
     });
+    this.#persisted.push(records);
     this.#auth = new Auth({
       self: this.self,
       records,
@@ -998,11 +1015,16 @@ export class Instance {
     // 3. tell the connections, while they can still be told
     const restarting: RestartingEvent = { ev: "restarting", instance: this.self };
     for (const conn of this.#conns) conn.send(restarting);
-    // 4. settle what is persisted. `last_live` and the inbox are written as
-    // they change rather than at exit, so there is nothing held back but the
-    // writes already asked for, and those are waited on at the end of this
-    // (DESIGN §2.5).
+    // 4. settle what is persisted. `last_live`, the inbox, the store and the
+    // records are written as they change rather than at exit (DESIGN §2.5), so
+    // what is held back is only what has been asked for and has not landed —
+    // and it has to land before the lock goes, since a successor reads these
+    // files as it starts.
     this.log.write("stopping", { instance: this.self });
+    await Promise.allSettled([
+      this.#sessions.flush(),
+      ...this.#persisted.map((held) => held.flush()),
+    ]);
     // 5. let the resources go, the unix socket last. Closing takes the path
     // this process bound, and only that one: the stable address is a symlink
     // nothing here touches, because a successor may have already pointed it at
@@ -1018,15 +1040,13 @@ export class Instance {
     } finally {
       // The pid and lock are the observable proof that this process is still
       // leaving. Released only after every listener has finished closing, so a
-      // client cannot mistake an unreachable socket for a completed stop.
+      // client cannot mistake an unreachable socket for a completed stop — and
+      // after the log's own last lines, this one included, are on disk: what a
+      // reader wants from the log of a stopped instance is how it ended.
       remove(this.paths.pidFile);
+      await this.log.flush();
       this.lock.release();
     }
-    // Everything this stop wrote, on disk before the process is free to leave:
-    // what a reader wants from the log of a stopped instance is its last line,
-    // and what its successor reads is the list of sessions as it last stood.
-    await this.#sessions.flush();
-    await this.log.flush();
   }
 }
 

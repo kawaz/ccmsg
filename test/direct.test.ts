@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
@@ -192,6 +192,54 @@ async function received(harness: FakeHarness, lines = 2): Promise<Record<string,
 }
 
 describe("route (a) over the messaging socket (§4.1)", () => {
+  test("two sends into one directory bind one receipt socket, and letting go takes it", async () => {
+    // Both sessions' sockets live in one directory, so both sends want the
+    // same receipt channel. Binding waits, so a channel bound per send would
+    // leave one of them listening on a socket the route no longer holds — and
+    // a bound socket nothing closes keeps the process alive past a stop.
+    const configHome = mkdtempSync(join(tmpdir(), "ccmsg-direct-"));
+    dirs.push(configHome);
+    const sessionsDir = join(configHome, "sessions");
+    mkdirSync(sessionsDir);
+    const socketDir = mkdtempSync(join(tmpdir(), "ccs-"));
+    dirs.push(socketDir);
+    const sids = [SID, OTHER_SID];
+    for (const [index, sid] of sids.entries()) {
+      const pid = PID + index;
+      const socketPath = join(socketDir, `${pid}.sock`);
+      writeFileSync(
+        join(sessionsDir, `${pid}.json`),
+        JSON.stringify({
+          sessionId: sid,
+          pid,
+          messagingSocketPath: socketPath,
+          peerProtocol: PEER_PROTOCOL,
+        }),
+      );
+      writeFileSync(
+        join(sessionsDir, `${pid}.${"ab".repeat(32)}.key`),
+        JSON.stringify({ peerToken: TOKEN }),
+        { mode: 0o600 },
+      );
+      const harness = new FakeHarness(socketPath, undefined);
+      harnesses.push(harness);
+      harness.listen();
+    }
+    const route = new ClaudeCodeSocketRoute({ configHome });
+    routes.push(route);
+
+    const outcomes = await Promise.all(sids.map((sid) => route.send(sid, message())));
+    expect(outcomes).toEqual(["delivered", "delivered"]);
+    // The route's own socket is named after this process and is not one of the
+    // two the fake harnesses are listening on.
+    const ours = (): string[] =>
+      readdirSync(socketDir).filter((name) => name.startsWith(`${process.pid}-`));
+    expect(ours()).toHaveLength(1);
+
+    route.close();
+    expect(ours()).toEqual([]);
+  });
+
   test("the message reaches the socket the state file names", async () => {
     const { configHome, harness, socketPath } = rig();
     const route = new ClaudeCodeSocketRoute({ configHome });

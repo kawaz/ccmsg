@@ -135,6 +135,12 @@ export class KvStore implements UpstreamResource {
     return [{ instance: this.self, data: { entries } }];
   }
 
+  /** Settle once every write asked for so far has landed. What a stop waits on
+   * before it lets go of the config home (DESIGN §8.5 step 4). */
+  async flush(): Promise<void> {
+    await Promise.allSettled(this.#writing.values());
+  }
+
   /** What the namespace holds, dropping the removals nothing can still be
    * carrying an older write for. A name this store read no file for is a
    * namespace with nothing in it. */

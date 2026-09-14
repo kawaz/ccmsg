@@ -110,8 +110,14 @@ export class Inbox {
     // Awaited rather than left to land: what the sender is told is that the
     // message is held, and it is not held until the line is on disk.
     await this.#append({ v: "add", sid, message });
-    if (held.length <= INBOX_MAX_PER_SID) return { evicted: false };
-    const oldest = held.shift();
+    // What is over the limit is what the session holds now, not what it held
+    // when the line was written: a delivery or an expiry for this session
+    // leaves a different list in its place while the append is in flight, and
+    // deciding against the list from before would drop a message out of one
+    // nobody is holding and tell a watcher a delivered message was dropped.
+    const standing = this.#held.get(sid) ?? [];
+    if (standing.length <= INBOX_MAX_PER_SID) return { evicted: false };
+    const oldest = standing.shift();
     if (oldest !== undefined) {
       await this.#append({ v: "dropped", sid, mid: oldest.mid });
       this.#onRemoved?.(oldest.mid, "dropped");

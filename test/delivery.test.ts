@@ -6,6 +6,7 @@ import {
   INBOX_MAX_PER_SID,
   INBOX_RETENTION_MS,
   type InboxMessage,
+  type InboxRemovedReason,
   type MessageSendResult,
   OP_SCHEMAS,
   type PeerInfo,
@@ -467,6 +468,41 @@ describe("why a message is waiting (§4.2)", () => {
     const held = inbox.undelivered(OTHER_SID);
     expect(held).toHaveLength(INBOX_MAX_PER_SID);
     expect(held[0]?.text).toBe("n1");
+  });
+
+  test("a message leaving while an arrival is being written decides against what is held now", async () => {
+    // The two cross: the line for the arriving message is in flight when the
+    // oldest message reaches its session. What is over the limit afterwards is
+    // what the session holds then, so nothing is evicted out of a list that is
+    // no longer full and no watcher hears that a delivered message was
+    // dropped.
+    const dir = stateDir();
+    const inbox = new Inbox(inboxPath(dir));
+    const removed: [string, InboxRemovedReason][] = [];
+    inbox.onRemoved((mid, reason) => removed.push([mid, reason]));
+    const message = (n: number): InboxMessage => ({
+      mid: `${SELF}/${n}`,
+      from: SID,
+      from_label: SID,
+      text: `n${n}`,
+      sent_at: Date.now(),
+    });
+    for (let n = 1; n <= INBOX_MAX_PER_SID; n += 1) await inbox.hold(OTHER_SID, message(n));
+
+    const arriving = inbox.hold(OTHER_SID, message(INBOX_MAX_PER_SID + 1));
+    await inbox.delivered(OTHER_SID, [`${SELF}/1`]);
+    const outcome = await arriving;
+
+    expect(outcome.evicted).toBe(false);
+    const held = inbox.undelivered(OTHER_SID);
+    expect(held).toHaveLength(INBOX_MAX_PER_SID);
+    expect(held[0]?.text).toBe("n2");
+    expect(removed).toEqual([[`${SELF}/1`, "delivered"]]);
+
+    // And a restart replays a session holding no more than the cap.
+    const again = new Inbox(inboxPath(dir));
+    again.load();
+    expect(again.undelivered(OTHER_SID).length).toBeLessThanOrEqual(INBOX_MAX_PER_SID);
   });
 
   test("throttled is route (a)'s alone, so the flag being off never yields it", async () => {

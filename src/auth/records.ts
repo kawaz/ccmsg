@@ -334,6 +334,12 @@ export class AuthRecords {
     }
   }
 
+  /** Settle once every write asked for so far has landed. What a stop waits on
+   * before it lets go of the config home (DESIGN §8.5 step 4). */
+  async flush(): Promise<void> {
+    await this.#writing;
+  }
+
   /** The file, read as this is built — before the instance is accepting
    * anything, so nobody is waiting on it (DR-0015). Reading it when the first
    * authentication asked would put the read inside the turn that answers it,

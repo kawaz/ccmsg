@@ -242,8 +242,21 @@ export class ClaudeCodeSocketRoute implements DirectRoute {
   readonly #scanMs: number;
   /** One status inbox per directory sessions' sockets live in. A host has one
    * such directory in practice; the map is what keeps that from being an
-   * assumption. */
-  readonly #inboxes = new Map<string, StatusInbox>();
+   * assumption.
+   *
+   * The binding rather than the bound socket, because binding waits: two sends
+   * to sessions of the same directory run side by side, and a map holding only
+   * finished inboxes would have both of them bind one, with the loser left
+   * listening on a socket nothing can close. */
+  readonly #inboxes = new Map<string, Promise<StatusInbox | undefined>>();
+
+  /** The channels that finished binding, so letting the route go takes their
+   * sockets down in the same turn rather than one after it. */
+  readonly #bound = new Set<StatusInbox>();
+
+  /** Whether the route has been let go. A binding that finishes after that has
+   * nobody to close it later, so it closes itself. */
+  #closed = false;
 
   constructor(options: SocketRouteOptions) {
     this.#sessionsDir = join(options.configHome, "sessions");
@@ -276,7 +289,12 @@ export class ClaudeCodeSocketRoute implements DirectRoute {
   }
 
   close(): void {
-    for (const inbox of this.#inboxes.values()) inbox.close();
+    // A binding still in flight closes itself when it lands, which is what
+    // `#closed` is read for; what is already bound goes now, so the sockets are
+    // gone by the time this returns.
+    this.#closed = true;
+    for (const inbox of this.#bound) inbox.close();
+    this.#bound.clear();
     this.#inboxes.clear();
   }
 
@@ -286,10 +304,25 @@ export class ClaudeCodeSocketRoute implements DirectRoute {
   async #inbox(socketPath: string): Promise<StatusInbox | undefined> {
     const directory = dirname(socketPath);
     const held = this.#inboxes.get(directory);
-    if (held !== undefined) return held;
-    const inbox = new StatusInbox(directory);
-    if ((await inbox.address()) === undefined) return undefined;
-    this.#inboxes.set(directory, inbox);
+    if (held !== undefined) return await held;
+    const opening = (async (): Promise<StatusInbox | undefined> => {
+      const inbox = new StatusInbox(directory);
+      if ((await inbox.address()) === undefined) return undefined;
+      if (this.#closed) {
+        inbox.close();
+        return undefined;
+      }
+      this.#bound.add(inbox);
+      return inbox;
+    })();
+    this.#inboxes.set(directory, opening);
+    const inbox = await opening;
+    // Nothing bound is not remembered: the directory may be writable by the
+    // time the next message goes that way, and a failure kept here would be
+    // the route without its receipts for the life of the instance.
+    if (inbox === undefined && this.#inboxes.get(directory) === opening) {
+      this.#inboxes.delete(directory);
+    }
     return inbox;
   }
 

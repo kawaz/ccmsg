@@ -230,7 +230,7 @@ describe("watching a namespace (`kv:<ns>`, element)", () => {
 });
 
 describe("the store on its own", () => {
-  test("a namespace's file is read the first time it is touched", async () => {
+  test("a namespace's file is read as the store is built", async () => {
     const { state } = disposable();
     const dir = join(state, "kv");
     const published: { topic: string; data: unknown }[] = [];
