@@ -171,8 +171,9 @@ export class HarnessSessions implements OwnSessions {
    * here too: a pid from a poll that has not run is a number belonging to
    * nobody.
    *
-   * Read in place because the directory is a handful of small files of this
-   * uid's own config home (M6) — a syscall or two per session, not a wait. */
+   * Read in place because the answer may not depend on anybody waiting: what
+   * this states is that a session exists, and a reading that could be waited
+   * for would make it something the callers above cannot ask (DESIGN §4.2). */
   scan(): ReadonlyMap<Sid, AgentInfo> {
     const rows = new Map<Sid, AgentInfo>();
     const names = this.#watch.names().filter((name) => STATE_FILE.test(name));
@@ -248,9 +249,8 @@ class DirectoryWatch {
     this.#timer = undefined;
   }
 
-  /** What is in the directory now. Read in place because it is a handful of
-   * small entries of this uid's own config home (M6) — a syscall or two, not a
-   * wait. */
+  /** What is in the directory now, read in place for the reason `scan()` is:
+   * it is the same answer, and the callers above it cannot wait for one. */
   names(): string[] {
     try {
       return readdirSync(this.dir);

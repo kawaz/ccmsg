@@ -179,7 +179,7 @@
 **3. topic の値を作る経路 (`sessions/workspace.ts` 4 件 + `sessions/harness.ts` 2 件 + `sessions/registry.ts` 3 件 + `sessions/last-live.ts` 3 件、計 12 件)**
 `sessionStatusOf()` は async 化済み。`UpstreamResource.snapshot` は `readonly TopicValue[] | Promise<readonly TopicValue[]>` を返す形になり、`Topics.subscribe` が await するので、購読の開始応答は値が揃ってから返る (CT-Q8)。`sessions/workspace.ts` 4 件も済。残るのは `sessions/harness.ts` 2 件 + `sessions/registry.ts` 3 件 + `sessions/last-live.ts` 3 件である。`hello.session` の `ownTranscript()` は単独で async 化できる。
 
-**`sessions/harness.ts` の `scan()` は別 issue に切る。** `scan()` を async にすると `Sessions.classify()` → `inputs()` → `#own()` が async になり、`message.send` の配送判定と `last_live` の再計算、`peers` / `agents` の行の組み立てまで連鎖する。`scan()` 自身のコメントが「どちらも promise を返すと意味が変わる」と述べており、`fold-from-head-with-versioned-cache` の範囲を超える設計判断が要る (読む量は config home の `sessions/` の小さい JSON 数個で、transcript 系の (C) とは桁が違う)。
+**`sessions/harness.ts` の `scan()` は別 issue に切る。** `scan()` を async にすると `Sessions.classify()` → `inputs()` → `#own()` が async になり、`message.send` の配送判定と `last_live` の再計算、`peers` / `agents` の行の組み立てまで連鎖する。`scan()` 自身のコメントが「どちらも promise を返すと意味が変わる」と述べており、`fold-from-head-with-versioned-cache` の範囲を超える設計判断が要る。据え置きの根拠は**この意味論だけ**である — 「セッションが存在する」が購読者の有無に依存しない、という同期契約をどう保ったまま非同期化するかの設計が要る。読む量の小ささは根拠にしない (DR-0015 §3 が量での線引きを採らない)。
 
 **0. 前提: 並行に走ることを当てにできる**
 受信側に接続ごとの直列化が無い (`transport/driver.ts:33` の `void handle(...)`) ので、ハンドラを async にすれば、その await 中に同じ接続の他の op が実際に進む。つまり async 化の効果は「待ち時間が要求ごとに分かれる」ではなく「他の要求が本当に並行に答えられるようになる」である。逆に言えば、同期のまま残した 1 箇所が instance 全体を止め続けるので、経路のどこか 1 つに同期 fs が残ると、その経路を async 化した効果は消える。ハンドラ単位ではなく、入口から fs 呼び出しまでの経路を丸ごと直す必要がある。
