@@ -122,9 +122,11 @@ export function sessionHandlers(deps: SessionOpsDeps) {
      * cycle, happen where the config is read. */
     "dump.presets.read": (): DumpPresetsReadResult => ({ presets: [...deps.presets] }),
 
-    "session.fork.origin.read": (input: HandlerInput): SessionForkOriginReadResult => {
+    "session.fork.origin.read": async (
+      input: HandlerInput,
+    ): Promise<SessionForkOriginReadResult> => {
       const args = input.args as unknown as SessionForkOriginReadArgs;
-      const origin = forkOrigin(args.sid, deps.files);
+      const origin = await forkOrigin(args.sid, deps.files);
       return origin === undefined ? {} : { origin };
     },
 
@@ -135,7 +137,7 @@ export function sessionHandlers(deps: SessionOpsDeps) {
       return { removed: deps.forget(args.sid) };
     },
 
-    "transcript.read": (input: HandlerInput): TranscriptReadResult => {
+    "transcript.read": async (input: HandlerInput): Promise<TranscriptReadResult> => {
       const args = input.args as unknown as TranscriptReadArgs;
       if (!sees(args.sid, viewer(input))) {
         // The role sets the visible range, not the permission (DESIGN §2.2): outside
@@ -144,8 +146,8 @@ export function sessionHandlers(deps: SessionOpsDeps) {
         // the caller was not entitled to ask.
         throw new OpError("not_found", `no transcript is known for ${args.sid}`);
       }
-      const file = deps.files.locate(args.sid, args);
-      return readSlice(args.sid, file, args.before, args.max_bytes);
+      const file = await deps.files.locate(args.sid, args);
+      return await readSlice(args.sid, file, args.before, args.max_bytes);
     },
 
     /** The same transcript, as the items it was read into.
@@ -153,12 +155,12 @@ export function sessionHandlers(deps: SessionOpsDeps) {
      * The role narrows it the way it narrows the raw read: what a role may see
      * is one rule whatever is being read, and a caller that cannot see a
      * session cannot see it in either vocabulary. */
-    "transcript.items.read": (input: HandlerInput): TranscriptItemsReadResult => {
+    "transcript.items.read": async (input: HandlerInput): Promise<TranscriptItemsReadResult> => {
       const args = input.args as unknown as TranscriptItemsReadArgs;
       if (!sees(args.sid, viewer(input))) {
         throw new OpError("not_found", `no transcript is known for ${args.sid}`);
       }
-      return itemsRead(args, { files: deps.files, presets: deps.presets });
+      return await itemsRead(args, { files: deps.files, presets: deps.presets });
     },
   };
 }

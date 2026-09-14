@@ -1,4 +1,5 @@
-import { realpathSync, statSync } from "node:fs";
+import type { Stats } from "node:fs";
+import { realpath, stat } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import {
   type AgentInfo,
@@ -265,10 +266,10 @@ export class Sessions implements UpstreamResource {
    * can speak about, and where everything this instance knows about where that
    * session lives comes from. The greeting names its sid because the op it
    * arrived under is the one whose schema asks for one. */
-  helloSession = (input: HandlerInput): HelloResult => {
+  helloSession = async (input: HandlerInput): Promise<HelloResult> => {
     const args = input.args as unknown as HelloSessionArgs;
     this.#greetable(input, args.protocol_version);
-    this.register(args.sid, args);
+    await this.register(args.sid, args);
     input.conn.onClose(() => this.release(args.sid));
     return this.#greeted(input);
   };
@@ -616,15 +617,15 @@ export class Sessions implements UpstreamResource {
    * silence for a retraction would let each of them erase what the last one
    * knew, and the session would be described by whichever process spoke most
    * recently rather than by everything it has said. */
-  private register(sid: Sid, args: HelloSessionArgs): void {
-    const now = Date.now();
+  private async register(sid: Sid, args: HelloSessionArgs): Promise<void> {
+    const stated = await metaOf(this.deps, args, (refused) => {
+      this.deps.log?.("transcript_path not taken", { sid, path: args.transcript_path, refused });
+    });
+    // Read after the path has been settled, so that what this writes is built
+    // on the session as it stands now rather than as it stood before.
     const held = this.#connected.get(sid);
-    const meta = {
-      ...this.#stated.get(sid),
-      ...metaOf(this.deps, args, (refused) => {
-        this.deps.log?.("transcript_path not taken", { sid, path: args.transcript_path, refused });
-      }),
-    };
+    const now = Date.now();
+    const meta = { ...this.#stated.get(sid), ...stated };
     this.#connected.set(sid, {
       sid,
       connected_at: held?.connected_at ?? now,
@@ -848,17 +849,17 @@ export class Sessions implements UpstreamResource {
  * simply does not act on a description it cannot stand behind. Why a path was
  * not taken is told to `refused`, which is the operator's answer to a field
  * that is simply absent from what `peers` says. */
-function metaOf(
+async function metaOf(
   deps: Pick<SessionsDeps, "configHome" | "harness">,
   args: HelloSessionArgs,
   refused: (reason: string) => void,
-): SessionMeta {
+): Promise<SessionMeta> {
   const meta: Record<string, string> = {};
   for (const field of META_FIELDS) {
     const value = args[field];
     if (value === undefined) continue;
     if (field === "transcript_path") {
-      const taken = ownTranscript(value, deps);
+      const taken = await ownTranscript(value, deps);
       if (typeof taken === "string") meta[field] = taken;
       else refused(taken.refused);
       continue;
@@ -891,25 +892,34 @@ function metaOf(
  * comparison is between two paths resolved by one rule. The config home is not
  * treated that way — an instance answers for a home it is running out of, and
  * one that is not there names no tree to be inside of. */
-function ownTranscript(
+async function ownTranscript(
   named: string,
   deps: Pick<SessionsDeps, "configHome" | "harness">,
-): string | Refused {
+): Promise<string | Refused> {
   if (!isAbsolute(named)) return { refused: "not an absolute path" };
   let tree: string | undefined;
   try {
-    const home = realpathSync(deps.configHome);
-    tree = resolveAsFarAsItGoes(join(home, HARNESS[deps.harness].transcripts));
+    const home = await realpath(deps.configHome);
+    tree = await resolveAsFarAsItGoes(join(home, HARNESS[deps.harness].transcripts));
   } catch {
     return { refused: "the config home is not there" };
   }
-  const settled = resolveAsFarAsItGoes(named);
+  const settled = await resolveAsFarAsItGoes(named);
   if (tree === undefined || settled === undefined || !within(settled, tree)) {
     return { refused: "outside this config home's transcript tree" };
   }
-  const stat = statSync(settled, { throwIfNoEntry: false });
-  if (stat !== undefined && !stat.isFile()) return { refused: "not a file" };
+  const known = await stated(settled);
+  if (known !== undefined && !known.isFile()) return { refused: "not a file" };
   return settled;
+}
+
+/** What is at a path, or nothing where there is nothing at it. */
+async function stated(path: string): Promise<Stats | undefined> {
+  try {
+    return await stat(path);
+  } catch {
+    return undefined;
+  }
 }
 
 /** Why a stated path was not taken, in the words the log states it in. */
@@ -924,12 +934,12 @@ interface Refused {
  * kept as it was spelled. The result is compared against the tree as a whole,
  * which is what makes a `..` among the unwritten segments land wherever it
  * actually points rather than pass for being spelled inside. */
-function resolveAsFarAsItGoes(path: string): string | undefined {
+async function resolveAsFarAsItGoes(path: string): Promise<string | undefined> {
   const unwritten: string[] = [];
   let at = path;
   for (;;) {
     try {
-      return join(realpathSync(at), ...unwritten);
+      return join(await realpath(at), ...unwritten);
     } catch {
       const parent = dirname(at);
       // The root itself always resolves, so this is a path that named

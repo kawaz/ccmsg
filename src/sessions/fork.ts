@@ -1,7 +1,8 @@
-import { readFileSync, statSync } from "node:fs";
+import { readFile, stat } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { ForkOrigin, Sid } from "@ccmsg/protocol";
 import { readRecord, type TranscriptFiles } from "../transcript/index.ts";
+import { breathe, due } from "../transcript/scan.ts";
 
 /** How large a transcript may be and still be swept.
  *
@@ -36,9 +37,12 @@ const SWEEP_MAX_BYTES = 64 * 1024 * 1024;
  * Absent covers a session that is no fork, one whose ancestor file is gone,
  * and that undecidable pair. Nothing left on disk tells them apart, and none
  * of them has a seam to place. */
-export function forkOrigin(sid: Sid, files: TranscriptFiles): ForkOrigin | undefined {
+export async function forkOrigin(
+  sid: Sid,
+  files: TranscriptFiles,
+): Promise<ForkOrigin | undefined> {
   const file = files.session(sid);
-  const ours = recordIds(file);
+  const ours = await recordIds(file);
   const head = ours?.[0];
   if (ours === undefined || head === undefined) return undefined;
   const mine = new Set(ours);
@@ -47,7 +51,7 @@ export function forkOrigin(sid: Sid, files: TranscriptFiles): ForkOrigin | undef
   let best: { sid: Sid; copied: number } | undefined;
   for (const candidate of files.all()) {
     if (candidate.file === file || dirname(candidate.file) !== dir) continue;
-    const theirs = recordIds(candidate.file);
+    const theirs = await recordIds(candidate.file);
     if (theirs === undefined || theirs[0] !== head) continue;
     const copied = run(ours, new Set(theirs));
     const back = run(theirs, mine);
@@ -55,7 +59,7 @@ export function forkOrigin(sid: Sid, files: TranscriptFiles): ForkOrigin | undef
     // than their copy; an equal one says the records cannot tell, and creation
     // order is what is left.
     if (copied === 0 || back > copied) continue;
-    if (back === copied && !older(candidate.file, file)) continue;
+    if (back === copied && !(await older(candidate.file, file))) continue;
     // Sibling forks of one ancestor share a prefix too, so several files can
     // match; the longest run is the nearest ancestor and the true seam.
     if (best === undefined || copied > best.copied) best = { sid: candidate.sid, copied };
@@ -81,28 +85,31 @@ function run(ids: readonly string[], other: ReadonlySet<string>): number {
  * A creation time of zero is a filesystem that does not record one, which is
  * not an ancient file: two of those are simply not ordered, and the pair they
  * belong to gets no answer. */
-function older(candidate: string, file: string): boolean {
-  const theirs = bornAt(candidate);
-  const ours = bornAt(file);
+async function older(candidate: string, file: string): Promise<boolean> {
+  const theirs = await bornAt(candidate);
+  const ours = await bornAt(file);
   if (theirs === undefined || ours === undefined) return false;
   return theirs < ours;
 }
 
 /** Every record id in a file, in order. Undefined for a file too large to
  * sweep or one that could not be read. */
-function recordIds(file: string): string[] | undefined {
+async function recordIds(file: string): Promise<string[] | undefined> {
   let text: string;
   try {
-    if (statSync(file).size > SWEEP_MAX_BYTES) return undefined;
-    text = readFileSync(file, "utf8");
+    if ((await stat(file)).size > SWEEP_MAX_BYTES) return undefined;
+    text = await readFile(file, "utf8");
   } catch {
     return undefined;
   }
   const ids: string[] = [];
+  let read = 0;
   for (const line of text.split("\n")) {
     // Most of a transcript's bytes sit in a handful of very large records, and
     // parsing one to learn it carries no id is the cost this avoids.
     if (line === "" || !line.includes('"uuid"')) continue;
+    read += 1;
+    if (due(read)) await breathe();
     const uuid = readRecord(line)?.uuid;
     if (uuid !== undefined) ids.push(uuid);
   }
@@ -117,9 +124,9 @@ function recordIds(file: string): string[] | undefined {
  * millisecond the contract states instants in either — two transcripts written
  * moments apart share one, and the whole use of this value is telling which
  * came first. */
-function bornAt(file: string): number | undefined {
+async function bornAt(file: string): Promise<number | undefined> {
   try {
-    const born = statSync(file).birthtimeMs;
+    const born = (await stat(file)).birthtimeMs;
     return born > 0 ? born : undefined;
   } catch {
     return undefined;

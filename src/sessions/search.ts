@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { parse, sep } from "node:path";
 import type {
   InstanceId,
@@ -9,6 +9,7 @@ import type {
 } from "@ccmsg/protocol";
 import { OpError } from "../dispatch/index.ts";
 import { readRecord, type TranscriptFile, type TranscriptFiles } from "../transcript/index.ts";
+import { breathe, due } from "../transcript/scan.ts";
 
 /** What one search may read, and what it may answer with.
  *
@@ -57,7 +58,10 @@ export interface SearchDeps {
  * directory listing and a `stat` already say — the session id, the working
  * directory as the project directory spells it, when the file was last touched
  * — and only what survives that is read. */
-export function search(args: SessionSearchArgs, deps: SearchDeps): SessionSearchResult {
+export async function search(
+  args: SessionSearchArgs,
+  deps: SearchDeps,
+): Promise<SessionSearchResult> {
   if ((args.config_dirs ?? [deps.configHome]).every((dir) => dir !== deps.configHome)) {
     // Every config home the caller named is one this instance does not know,
     // which the contract says to ignore — leaving nothing to search.
@@ -84,7 +88,7 @@ export function search(args: SessionSearchArgs, deps: SearchDeps): SessionSearch
       break;
     }
     budget -= candidate.size;
-    const hit = read(candidate, clauses, wanted, deps);
+    const hit = await read(candidate, clauses, wanted, deps);
     // The working directory the project directory only approximates: a hit is
     // kept when the transcript's own `cwd` holds every word asked for.
     if (hit !== undefined && holds(hit.cwd, cwdWords)) hits.push(hit);
@@ -169,15 +173,15 @@ function compile(args: SessionSearchArgs): { clauses: Clause[]; budgets: Budget[
  * The pass is one: the records that carry the query also carry the working
  * directory, the title and what the session last ran as, so a hit is built
  * from the reading that decided it rather than from a second one. */
-function read(
+async function read(
   candidate: TranscriptFile,
   clauses: readonly Clause[],
   wanted: { user: boolean; agent: boolean },
   deps: SearchDeps,
-): SessionSearchHit | undefined {
+): Promise<SessionSearchHit | undefined> {
   let text: string;
   try {
-    text = readFileSync(candidate.file, "utf8");
+    text = await readFile(candidate.file, "utf8");
   } catch {
     // Gone since it was listed, which is a session that ended mid-search.
     return undefined;
@@ -188,8 +192,13 @@ function read(
   let model: string | undefined;
   let effort: string | undefined;
   let createdAt: number | undefined;
+  let read = 0;
   for (const line of text.split("\n")) {
     if (line === "") continue;
+    read += 1;
+    // The file arrived in one `await` and reading it is CPU from here on, so
+    // the pass hands the loop back as it goes rather than at the file's end.
+    if (due(read)) await breathe();
     const record = readRecord(line);
     if (record === undefined) continue;
     cwd ??= record.cwd;

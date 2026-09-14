@@ -167,8 +167,8 @@ function writeState(dir: string, pid: number, sid: Sid, extra: Record<string, un
 
 /** A greeting that states one thing about itself and nothing else, for the
  * cases about what the instance does with that one field. */
-function greetWith(domain: Sessions, meta: Record<string, string>, sid: Sid = SID) {
-  void domain.helloSession({
+async function greetWith(domain: Sessions, meta: Record<string, string>, sid: Sid = SID) {
+  await domain.helloSession({
     op: "hello.session",
     conn: greeting(),
     args: {
@@ -268,10 +268,22 @@ function declareStopping(domain: Sessions, conn: TestConn, sid: Sid = SID) {
   });
 }
 
-function helloFrom(domain: Sessions, conn: TestConn, sid: Sid = SID): HelloResult {
-  // A session's greeting is answered without waiting for anything; only a
-  // peer's is a promise (mesh-peer-auth §5).
-  return domain.helloSession({
+/** What a call refused with, for the greetings that are turned away. A refusal
+ * is a rejected promise now that a greeting reads the filesystem, so it is
+ * caught rather than thrown past the case. */
+async function refusalOf(call: () => Promise<unknown>): Promise<unknown> {
+  try {
+    await call();
+  } catch (cause) {
+    return cause;
+  }
+  return undefined;
+}
+
+async function helloFrom(domain: Sessions, conn: TestConn, sid: Sid = SID): Promise<HelloResult> {
+  // A greeting settles the transcript path it was given against this config
+  // home, which is a read of the filesystem, so the answer is a promise.
+  return (await domain.helloSession({
     op: "hello.session",
     conn,
     args: {
@@ -281,7 +293,7 @@ function helloFrom(domain: Sessions, conn: TestConn, sid: Sid = SID): HelloResul
       sid,
       ...meta(),
     },
-  }) as HelloResult;
+  })) as HelloResult;
 }
 
 /** What a session states about itself when it greets — the contract's shared
@@ -319,9 +331,9 @@ const agentsOf = (frames: Published[]) => frames.filter((frame) => frame.topic =
 const isLost = (row: { readonly state?: string }): boolean => !isLive(row as { state?: never });
 
 describe("hello", () => {
-  test("answers the contract's own result, naming only this instance", () => {
+  test("answers the contract's own result, naming only this instance", async () => {
     const { domain } = sessions();
-    const result = helloFrom(domain, greeting());
+    const result = await helloFrom(domain, greeting());
     expect(
       validationErrors(OP_SCHEMAS["hello.session"].response, {
         ok: true,
@@ -333,15 +345,15 @@ describe("hello", () => {
     expect(result.instance).toBe(SELF);
   });
 
-  test("names the terminal gateway when this instance is configured with one", () => {
+  test("names the terminal gateway when this instance is configured with one", async () => {
     const { domain } = sessions({ terminalGateway: "https://terminals.example/gw" });
-    const result = helloFrom(domain, greeting());
+    const result = await helloFrom(domain, greeting());
     expect(result.terminal_gateway).toBe("https://terminals.example/gw");
   });
 
-  test("leaves the terminal gateway out when this instance has none configured", () => {
+  test("leaves the terminal gateway out when this instance has none configured", async () => {
     const { domain } = sessions();
-    const result = helloFrom(domain, greeting());
+    const result = await helloFrom(domain, greeting());
     expect(result.terminal_gateway).toBeUndefined();
   });
 
@@ -378,16 +390,16 @@ describe("hello", () => {
     expect(domain.peerRows().filter(isLive)).toEqual([]);
   });
 
-  test("a connection greets once, and a second greeting is refused", () => {
+  test("a connection greets once, and a second greeting is refused", async () => {
     // The role is set by `hello` and fixed for the connection's life (contract,
     // `Role`), so a second greeting is a request to become somebody else on a
     // connection that already is somebody.
     const { domain } = sessions();
     const conn = greeting();
-    helloFrom(domain, conn);
+    await helloFrom(domain, conn);
     // What the driver does when the reply goes out.
     conn.identity = { state: "settled", role: "session", sid: SID };
-    expect(() => helloFrom(domain, conn)).toThrow(OpError);
+    expect(await refusalOf(() => helloFrom(domain, conn))).toBeInstanceOf(OpError);
   });
 
   test("a transcript under another config home is named, not read (M6)", () => {
@@ -416,37 +428,37 @@ describe("hello", () => {
     expect(context.domain.peerRows().filter(isLive)[0]?.transcript_path).toBeUndefined();
   });
 
-  test("a transcript inside projects/ is taken before anything is written to it", () => {
+  test("a transcript inside projects/ is taken before anything is written to it", async () => {
     // The greeting a session-start hook makes: the harness has not created the
     // file yet, and the path is still inside the tree this instance reads. The
     // boundary is where the file goes, not whether it is there — nothing is
     // read early by taking it, since the tail is what opens it.
     const context = sessions();
     const unwritten = join(context.root, "projects", "a", "not-yet.jsonl");
-    greetWith(context.domain, { transcript_path: unwritten });
+    await greetWith(context.domain, { transcript_path: unwritten });
     expect(context.domain.transcriptPath(SID)).toBe(
       join(realpathSync(join(context.root, "projects", "a")), "not-yet.jsonl"),
     );
   });
 
-  test("nor does the directory it goes in have to exist yet", () => {
+  test("nor does the directory it goes in have to exist yet", async () => {
     // What a session-start hook actually names: at that instant the harness has
     // made neither the file nor the per-project directory it goes in.
     const context = sessions();
     const unwritten = join(context.root, "projects", "-not-created-yet", "b.jsonl");
-    greetWith(context.domain, { transcript_path: unwritten });
+    await greetWith(context.domain, { transcript_path: unwritten });
     expect(context.domain.transcriptPath(SID)).toBe(
       join(realpathSync(join(context.root, "projects")), "-not-created-yet", "b.jsonl"),
     );
   });
 
-  test("nor does projects/ itself have to exist yet", () => {
+  test("nor does projects/ itself have to exist yet", async () => {
     // A config home whose first session is greeting: the harness has written
     // nothing under it, so the tree the boundary is drawn around is a name and
     // not yet a directory. It is still the boundary.
     const context = sessions();
     rmSync(join(context.root, "projects"), { recursive: true, force: true });
-    greetWith(context.domain, {
+    await greetWith(context.domain, {
       transcript_path: join(context.root, "projects", "a", "b.jsonl"),
     });
     expect(context.domain.transcriptPath(SID)).toBe(
@@ -454,13 +466,13 @@ describe("hello", () => {
     );
   });
 
-  test("a path that is not taken says in the log why", () => {
+  test("a path that is not taken says in the log why", async () => {
     // The greeting is answered `ok` and the field is simply absent from what
     // `peers` says, so where the reason is is the daemon's log.
     const context = sessions();
     const elsewhere = mkdtempSync(join(tmpdir(), "ccmsg-other-home-"));
     homes.push(elsewhere);
-    greetWith(context.domain, { transcript_path: join(elsewhere, "b.jsonl") });
+    await greetWith(context.domain, { transcript_path: join(elsewhere, "b.jsonl") });
     expect(context.domain.transcriptPath(SID)).toBeUndefined();
     expect(context.logged).toContainEqual({
       message: "transcript_path not taken",
@@ -472,24 +484,28 @@ describe("hello", () => {
     });
   });
 
-  test("an unwritten path that climbs back out of the tree is refused", () => {
+  test("an unwritten path that climbs back out of the tree is refused", async () => {
     const context = sessions();
     // Spelled inside `projects/` and pointing outside it. Nothing along the
     // way exists, so what settles it is where the whole path lands.
-    greetWith(context.domain, {
+    await greetWith(context.domain, {
       transcript_path: join(context.root, "projects", "nope", "..", "..", "..", "b.jsonl"),
     });
     expect(context.domain.transcriptPath(SID)).toBeUndefined();
   });
 
-  test("a later greeting that says less does not take back what an earlier one said", () => {
+  test("a later greeting that says less does not take back what an earlier one said", async () => {
     // The three processes of one session: the hook that knows the transcript,
     // a `post` that knows only where it runs, and a hook again. None of them
     // knows every field, so silence is "unchanged" rather than "withdrawn".
     const context = sessions();
-    greetWith(context.domain, { transcript_path: transcriptPath, repo: "a-repo", ws: "main" });
+    await greetWith(context.domain, {
+      transcript_path: transcriptPath,
+      repo: "a-repo",
+      ws: "main",
+    });
 
-    greetWith(context.domain, { cwd: "/somewhere/else" });
+    await greetWith(context.domain, { cwd: "/somewhere/else" });
 
     expect(context.domain.transcriptPath(SID)).toBe(transcriptPath);
     expect(context.domain.peerRows().filter(isLive)[0]).toMatchObject({
@@ -499,11 +515,11 @@ describe("hello", () => {
     });
   });
 
-  test("a field a greeting does name is the one that changes", () => {
+  test("a field a greeting does name is the one that changes", async () => {
     const context = sessions();
-    greetWith(context.domain, { repo: "a-repo", ws: "main", title: "the first title" });
+    await greetWith(context.domain, { repo: "a-repo", ws: "main", title: "the first title" });
 
-    greetWith(context.domain, { title: "renamed" });
+    await greetWith(context.domain, { title: "renamed" });
 
     expect(context.domain.peerRows().filter(isLive)[0]).toMatchObject({
       repo: "a-repo",
@@ -512,33 +528,33 @@ describe("hello", () => {
     });
   });
 
-  test("a path outside projects/ is left unstated whether or not it is there", () => {
+  test("a path outside projects/ is left unstated whether or not it is there", async () => {
     const context = sessions();
     const elsewhere = mkdtempSync(join(tmpdir(), "ccmsg-other-home-"));
     homes.push(elsewhere);
-    greetWith(context.domain, { transcript_path: join(elsewhere, "not-yet.jsonl") });
+    await greetWith(context.domain, { transcript_path: join(elsewhere, "not-yet.jsonl") });
     expect(context.domain.transcriptPath(SID)).toBeUndefined();
   });
 
-  test("a directory that links out of the tree resolves out of it and is refused", () => {
+  test("a directory that links out of the tree resolves out of it and is refused", async () => {
     const context = sessions();
     const elsewhere = mkdtempSync(join(tmpdir(), "ccmsg-other-home-"));
     homes.push(elsewhere);
     // A link sitting inside `projects/` is spelled inside it and is not: what
     // is compared is where the path resolves to.
     symlinkSync(elsewhere, join(context.root, "projects", "out"));
-    greetWith(context.domain, {
+    await greetWith(context.domain, {
       transcript_path: join(context.root, "projects", "out", "b.jsonl"),
     });
     expect(context.domain.transcriptPath(SID)).toBeUndefined();
   });
 
-  test("every request restamps the session's last activity", () => {
+  test("every request restamps the session's last activity", async () => {
     // `last_activity_at` is the most recent request on any of the session's
     // connections, which is a different question from when a person last spoke
     // to it (§5.3).
     const { domain } = sessions();
-    helloFrom(domain, greeting());
+    await helloFrom(domain, greeting());
     const greeted = domain.peerRows().filter(isLive)[0]?.last_activity_at ?? 0;
     domain.touch(SID, greeted + 5_000);
     expect(domain.peerRows().filter(isLive)[0]?.last_activity_at).toBe(greeted + 5_000);
@@ -547,21 +563,22 @@ describe("hello", () => {
     expect(domain.peerRows().filter(isLive)).toHaveLength(1);
   });
 
-  test("a greeting announcing another generation is refused", () => {
+  test("a greeting announcing another generation is refused", async () => {
     const { domain } = sessions();
     expect(
-      () =>
-        void domain.helloSession({
+      await refusalOf(() =>
+        domain.helloSession({
           op: "hello.session",
           conn: greeting(),
           args: { op: "hello.session", request_id: "1", protocol_version: 99, sid: SID },
-        }),
-    ).toThrow();
+        } as unknown as Parameters<typeof domain.helloSession>[0]),
+      ),
+    ).toBeInstanceOf(OpError);
   });
 
-  test("what the greeting said about the session is what peers repeats", () => {
+  test("what the greeting said about the session is what peers repeats", async () => {
     const { domain } = sessions();
-    helloFrom(domain, greeting());
+    await helloFrom(domain, greeting());
     const peer = domain.peerRows().filter(isLive)[0];
     // Where it lives and what it calls itself. What it runs as (model, effort)
     // belongs to `last_live` alone, where a resume reads it.
@@ -569,24 +586,24 @@ describe("hello", () => {
     expect(peer).toMatchObject(shown);
   });
 
-  test("a peer carries what the gateway last saw run for it", () => {
+  test("a peer carries what the gateway last saw run for it", async () => {
     const seen = NOW - 1_000;
     const { domain } = sessions({
       gateway: { activeAt: (sid) => (sid === SID ? seen : undefined) },
     });
-    helloFrom(domain, greeting());
+    await helloFrom(domain, greeting());
     expect(domain.peerRows().filter(isLive)[0]?.gateway_active_at).toBe(seen);
   });
 
-  test("an instance with no gateway shows the peer without the mark, not as quiet", () => {
+  test("an instance with no gateway shows the peer without the mark, not as quiet", async () => {
     const { domain } = sessions();
-    helloFrom(domain, greeting());
+    await helloFrom(domain, greeting());
     expect(domain.peerRows().filter(isLive)[0]?.gateway_active_at).toBeUndefined();
   });
 
-  test("a session that named none of it is shown without it, never with a guess", () => {
+  test("a session that named none of it is shown without it, never with a guess", async () => {
     const { domain } = sessions();
-    void domain.helloSession({
+    await domain.helloSession({
       op: "hello.session",
       conn: greeting(),
       args: {
@@ -602,10 +619,10 @@ describe("hello", () => {
     expect(peer?.branch).toBeUndefined();
   });
 
-  test("a session that greeted is a peer, and stops being one when it closes", () => {
+  test("a session that greeted is a peer, and stops being one when it closes", async () => {
     const { domain } = sessions();
     const conn = greeting();
-    helloFrom(domain, conn);
+    await helloFrom(domain, conn);
     expect(
       domain
         .peerRows()
@@ -675,14 +692,14 @@ describe("the harness's sessions directory", () => {
     expect(restarted.peerRows(NOW).filter(isLost)).toEqual([]);
   });
 
-  test("what it greeted with stays on the row after the connection goes", () => {
+  test("what it greeted with stays on the row after the connection goes", async () => {
     // The words outlive the process that said them for as long as the harness
     // names the session, so the row a restart-less departure leaves is the one
     // the greeting described rather than a bare sid.
     const context = sessions();
     writeState(context.sessionsDir, process.pid, SID);
     const conn = greeting();
-    helloFrom(context.domain, conn);
+    await helloFrom(context.domain, conn);
     conn.close();
 
     expect(context.domain.peerRows(NOW).filter(isLive)[0]).toMatchObject({
@@ -693,14 +710,14 @@ describe("the harness's sessions directory", () => {
     });
   });
 
-  test("a session still in the directory is not written down as gone when its connection closes", () => {
+  test("a session still in the directory is not written down as gone when its connection closes", async () => {
     const context = sessions();
     writeState(context.sessionsDir, process.pid, SID);
     // A greeting that closes at once is what a command-line client is: it
     // greets, says its piece and goes, while the session it spoke for carries
     // on. What is gone is a connection, not a session.
     const conn = greeting();
-    helloFrom(context.domain, conn);
+    await helloFrom(context.domain, conn);
     conn.close();
 
     expect(context.domain.classify(SID)).toBe("live_unmanaged");
@@ -734,7 +751,7 @@ describe("the harness's sessions directory", () => {
 
   test("the payloads pass the contract's own validators", async () => {
     const context = sessions();
-    helloFrom(context.domain, greeting());
+    await helloFrom(context.domain, greeting());
     context.domain.start("agents");
     writeState(context.sessionsDir, process.pid, OTHER_SID, { name: "a title" });
     await context.until(() => context.domain.agentRows().length === 1);
@@ -840,11 +857,11 @@ describe("the harness's sessions directory", () => {
     expect(context.domain.watching).toBe(false);
   });
 
-  test("a subscriber's snapshot is the current value, per topic", () => {
+  test("a subscriber's snapshot is the current value, per topic", async () => {
     const context = sessions();
     const hub = new Topics(SELF, new Set(), undefined, unthrottled());
     hub.attach("peers", context.domain);
-    helloFrom(context.domain, greeting());
+    await helloFrom(context.domain, greeting());
 
     const user = connAs("user");
     hub.subscribe(user, "peers");
@@ -863,15 +880,15 @@ describe("a frame carries the rows that changed", () => {
     return (frame?.data as { peers: (PeerInfo & { removed?: true })[] } | undefined)?.peers ?? [];
   }
 
-  test("a session whose inference just ran is one row, not the list restated", () => {
+  test("a session whose inference just ran is one row, not the list restated", async () => {
     let seen = NOW;
     const { domain, published } = sessions({
       gateway: { activeAt: (sid) => (sid === OTHER_SID ? seen : undefined) },
     });
     // Two sessions, so a frame naming one of them is telling the two apart
     // rather than having only one to name.
-    helloFrom(domain, greeting(), SID);
-    helloFrom(domain, greeting(), OTHER_SID);
+    await helloFrom(domain, greeting(), SID);
+    await helloFrom(domain, greeting(), OTHER_SID);
     domain.snapshot("peers");
 
     published.length = 0;
@@ -889,13 +906,13 @@ describe("a frame carries the rows that changed", () => {
     expect(stated(published)[0]?.gateway_active_at).toBe(NOW + 1_000);
   });
 
-  test("a clock that moved is that row restated, and nothing else is read for it", () => {
+  test("a clock that moved is that row restated, and nothing else is read for it", async () => {
     let seen = NOW;
     const { domain, published } = sessions({
       gateway: { activeAt: (sid) => (sid === SID ? seen : undefined) },
     });
-    helloFrom(domain, greeting(), SID);
-    helloFrom(domain, greeting(), OTHER_SID);
+    await helloFrom(domain, greeting(), SID);
+    await helloFrom(domain, greeting(), OTHER_SID);
     domain.snapshot("peers");
 
     published.length = 0;
@@ -906,11 +923,11 @@ describe("a frame carries the rows that changed", () => {
     expect(stated(published)[0]).toMatchObject({ sid: SID, gateway_active_at: NOW + 1_000 });
   });
 
-  test("a clock that did not move says nothing, and an unknown session has no row to state", () => {
+  test("a clock that did not move says nothing, and an unknown session has no row to state", async () => {
     const { domain, published } = sessions({
       gateway: { activeAt: (sid) => (sid === SID ? NOW : undefined) },
     });
-    helloFrom(domain, greeting(), SID);
+    await helloFrom(domain, greeting(), SID);
     domain.snapshot("peers");
 
     published.length = 0;
@@ -922,9 +939,9 @@ describe("a frame carries the rows that changed", () => {
     expect(peersOf(published)).toEqual([]);
   });
 
-  test("a recompute that found nothing different says nothing", () => {
+  test("a recompute that found nothing different says nothing", async () => {
     const { domain, published } = sessions();
-    helloFrom(domain, greeting());
+    await helloFrom(domain, greeting());
     domain.snapshot("peers");
 
     published.length = 0;
@@ -933,10 +950,10 @@ describe("a frame carries the rows that changed", () => {
     expect(peersOf(published)).toEqual([]);
   });
 
-  test("a session that goes stays as the same row, and a forgotten one leaves as a removal", () => {
+  test("a session that goes stays as the same row, and a forgotten one leaves as a removal", async () => {
     const context = sessions();
     const conn = greeting();
-    helloFrom(context.domain, conn, SID);
+    await helloFrom(context.domain, conn, SID);
     context.domain.snapshot("peers");
 
     // Gone from the connections is an update of the row it already had: the
@@ -955,13 +972,13 @@ describe("a frame carries the rows that changed", () => {
     ]);
   });
 
-  test("the opening frame carries every row, connected and lost alike", () => {
+  test("the opening frame carries every row, connected and lost alike", async () => {
     const context = sessions();
     const conn = greeting();
-    helloFrom(context.domain, conn, SID);
+    await helloFrom(context.domain, conn, SID);
     declareStopping(context.domain, conn);
     conn.close();
-    helloFrom(context.domain, greeting(), OTHER_SID);
+    await helloFrom(context.domain, greeting(), OTHER_SID);
 
     const snapshot = context.domain.snapshot("peers")[0];
     const rows = (snapshot?.data as { peers: PeerInfo[] } | undefined)?.peers ?? [];
@@ -969,10 +986,10 @@ describe("a frame carries the rows that changed", () => {
     expect(rows.find((row) => row.sid === SID)?.state).toBe("paused");
   });
 
-  test("what the opening frame stated is what the next difference is taken against", () => {
+  test("what the opening frame stated is what the next difference is taken against", async () => {
     const context = sessions();
     const conn = greeting();
-    helloFrom(context.domain, conn, SID);
+    await helloFrom(context.domain, conn, SID);
     declareStopping(context.domain, conn);
     conn.close();
 
@@ -995,9 +1012,9 @@ describe("the classification on the wire", () => {
   test("every row of both lists states its state and whether it is pinned", async () => {
     const context = sessions();
     const connected = greeting();
-    helloFrom(context.domain, connected);
+    await helloFrom(context.domain, connected);
     const gone = greeting();
-    helloFrom(context.domain, gone, OTHER_SID);
+    await helloFrom(context.domain, gone, OTHER_SID);
     gone.close();
     context.domain.start("peers");
     writeState(context.sessionsDir, process.pid, SID, {
@@ -1015,10 +1032,10 @@ describe("the classification on the wire", () => {
     expect(rows.filter(isLost)[0]?.state).toBe("disappeared");
   });
 
-  test("a session that said it was stopping travels as paused, with when it said so", () => {
+  test("a session that said it was stopping travels as paused, with when it said so", async () => {
     const context = sessions();
     const conn = greeting();
-    helloFrom(context.domain, conn);
+    await helloFrom(context.domain, conn);
     // The declaration comes first and the departure second, which is the order
     // the two are one event in (contract, `session.stopping`).
     const declared = declareStopping(context.domain, conn);
@@ -1028,29 +1045,29 @@ describe("the classification on the wire", () => {
     expect(entry?.stopped_at).toBe(declared.stopped_at);
   });
 
-  test("a session that just went away is Disappeared, not Paused", () => {
+  test("a session that just went away is Disappeared, not Paused", async () => {
     const context = sessions();
     const conn = greeting();
-    helloFrom(context.domain, conn);
+    await helloFrom(context.domain, conn);
     conn.close();
     const entry = context.domain.peerRows().filter(isLost)[0];
     expect(entry?.state).toBe("disappeared");
     expect(entry?.stopped_at).toBeUndefined();
   });
 
-  test("a session that said it was stopping and carried on is still live", () => {
+  test("a session that said it was stopping and carried on is still live", async () => {
     const context = sessions();
     const conn = greeting();
-    helloFrom(context.domain, conn);
+    await helloFrom(context.domain, conn);
     declareStopping(context.domain, conn);
     expect(context.domain.classify(SID)).toBe("live");
     expect(context.domain.peerRows().filter(isLost)).toEqual([]);
   });
 
-  test("what the session ran as follows it into last_live", () => {
+  test("what the session ran as follows it into last_live", async () => {
     const context = sessions();
     const conn = greeting();
-    helloFrom(context.domain, conn);
+    await helloFrom(context.domain, conn);
     conn.close();
     const greeted = meta();
     expect(context.domain.peerRows().filter(isLost)[0]).toMatchObject({
@@ -1061,13 +1078,13 @@ describe("the classification on the wire", () => {
     });
   });
 
-  test("what it ran as is the transcript's last turn, not what it greeted as", () => {
+  test("what it ran as is the transcript's last turn, not what it greeted as", async () => {
     // The greeting names one instant; `/model` moves the session afterwards
     // without greeting again, so a resume reads the transcript.
     const facts: TranscriptFacts = { ...NO_FACTS, model: "claude-opus-5", effort: "xhigh" };
     const context = sessions({ transcript: { facts: () => facts } });
     const conn = greeting();
-    helloFrom(context.domain, conn);
+    await helloFrom(context.domain, conn);
     conn.close();
     expect(context.domain.peerRows().filter(isLost)[0]).toMatchObject({
       model: "claude-opus-5",
@@ -1075,10 +1092,10 @@ describe("the classification on the wire", () => {
     });
   });
 
-  test("a transcript nothing has read leaves the greeting standing", () => {
+  test("a transcript nothing has read leaves the greeting standing", async () => {
     const context = sessions({ transcript: { facts: () => NO_FACTS } });
     const conn = greeting();
-    helloFrom(context.domain, conn);
+    await helloFrom(context.domain, conn);
     conn.close();
     const greeted = meta();
     expect(context.domain.peerRows().filter(isLost)[0]).toMatchObject({
@@ -1092,7 +1109,7 @@ describe("last_live", () => {
   test("a session that greeted and went away survives a restart as Disappeared", async () => {
     const context = sessions();
     const conn = greeting();
-    helloFrom(context.domain, conn);
+    await helloFrom(context.domain, conn);
     conn.close();
     expect(context.domain.classify(SID)).toBe("disappeared");
 
@@ -1102,18 +1119,18 @@ describe("last_live", () => {
     const restarted = restart(context);
     expect(restarted.classify(SID)).toBe("disappeared");
     // And it leaves the list the moment the session registers again.
-    helloFrom(restarted, greeting());
+    await helloFrom(restarted, greeting());
     expect(restarted.peerRows().filter(isLost)).toEqual([]);
   });
 
-  test("an entry goes when the harness names its session again, greeting or no greeting", () => {
+  test("an entry goes when the harness names its session again, greeting or no greeting", async () => {
     // Resuming a session gives it a new process and a new state file, and
     // nothing about that is a greeting. One session must not stand in both
     // lists, so what takes it off `last_live` is being live again rather than
     // the particular way it said so.
     const context = sessions();
     const conn = greeting();
-    helloFrom(context.domain, conn);
+    await helloFrom(context.domain, conn);
     conn.close();
     expect(
       context.domain
@@ -1222,7 +1239,7 @@ describe("last_live", () => {
   test("nothing but the three kinds of §3.6 is written, across a restart", async () => {
     const context = sessions();
     const conn = greeting();
-    helloFrom(context.domain, conn);
+    await helloFrom(context.domain, conn);
     conn.close();
     context.domain.start("peers");
     context.domain.stop("peers");
@@ -1249,11 +1266,11 @@ describe("the inputs of §5.1", () => {
     expect(context.domain.classify(OTHER_SID)).toBeUndefined();
   });
 
-  test("a session that greeted keeps the gateway's word after it disconnects", () => {
+  test("a session that greeted keeps the gateway's word after it disconnects", async () => {
     const seen = Date.now() - 1_000;
     const context = sessions({ gateway: { activeAt: () => seen } });
     const conn = greeting();
-    helloFrom(context.domain, conn);
+    await helloFrom(context.domain, conn);
 
     expect(context.domain.inputs(SID).gateway_active_at).toBe(seen);
     // Gone from the connections but remembered in `last_live`, which is still
@@ -1414,7 +1431,7 @@ describe("what a session said about itself when it greeted", () => {
     writeState(context.sessionsDir, process.pid, SID);
     context.domain.start("peers");
     const conn = greeting();
-    helloFrom(context.domain, conn, SID);
+    await helloFrom(context.domain, conn, SID);
 
     // A session-start hook greets and leaves, and every client process of a
     // session comes and goes. Neither is the session ending.

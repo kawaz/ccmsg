@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import type {
   DumpPreset,
   TranscriptItemsReadArgs,
@@ -8,15 +8,14 @@ import { OpError } from "../dispatch/index.ts";
 import type { TranscriptFiles } from "../transcript/index.ts";
 import {
   bounded,
-  classify,
   type Item,
   ledger,
-  located,
   select,
   selection,
   within,
 } from "../transcript/items/index.ts";
 import { READ_LIMIT } from "../transcript/read.ts";
+import { classified } from "../transcript/scan.ts";
 
 /** How many items one read may carry.
  *
@@ -52,23 +51,26 @@ export interface ItemsReadDeps {
  * is. That is what makes a link answerable: a result inside the range whose
  * call fell before it still names the call, and the caller can ask for the
  * call by the id it was given. */
-export function itemsRead(
+export async function itemsRead(
   args: TranscriptItemsReadArgs,
   deps: ItemsReadDeps,
-): TranscriptItemsReadResult {
+): Promise<TranscriptItemsReadResult> {
   bounded(args);
-  const file = deps.files.locate(
+  const file = await deps.files.locate(
     args.sid,
     args.agent_id === undefined ? {} : { agent_id: args.agent_id },
   );
   let text: string;
   try {
-    text = readFileSync(file, "utf8");
+    text = await readFile(file, "utf8");
   } catch {
     throw new OpError("not_found", `the transcript of ${args.sid} could not be read`);
   }
   const keep = selection(args.types === undefined ? {} : { types: args.types }, deps.presets);
-  const { items } = select(within(classify(located(text), deps.files.subjectOf(file)), args), keep);
+  const { items } = select(
+    within(await classified(text, await deps.files.subjectOf(file)), args),
+    keep,
+  );
   const page = paged(items, args.limit, backwards(args));
   return {
     items: page.items,

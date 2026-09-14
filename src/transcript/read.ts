@@ -1,4 +1,4 @@
-import { closeSync, openSync, readSync, statSync } from "node:fs";
+import { open, stat } from "node:fs/promises";
 import type { TranscriptReadResult, Sid } from "@ccmsg/protocol";
 import { OpError } from "../dispatch/index.ts";
 
@@ -20,15 +20,15 @@ export const READ_LIMIT = 512 * 1024;
  *
  * The offsets are the ones the `transcript` topic's frames carry, so what a
  * client reads and what arrives live stitch together without overlap. */
-export function readSlice(
+export async function readSlice(
   sid: Sid,
   file: string,
   before?: number,
   maxBytes?: number,
-): TranscriptReadResult {
+): Promise<TranscriptReadResult> {
   let size: number;
   try {
-    size = statSync(file).size;
+    size = (await stat(file)).size;
   } catch {
     throw new OpError("not_found", `the transcript of ${sid} could not be read`);
   }
@@ -45,7 +45,7 @@ export function readSlice(
   // arithmetic puts them — inside a character as readily as before one — and
   // decoding first would turn those bytes into replacement characters of a
   // different length, moving every offset derived from them.
-  const bytes = slice(file, probe, until);
+  const bytes = await slice(file, probe, until);
   // What of the read is whole records: everything up to the last newline. A
   // record the writer has not finished ends the file without one.
   const lastNewline = bytes.lastIndexOf(NEWLINE);
@@ -69,14 +69,14 @@ const NEWLINE = 0x0a;
 
 /** The bytes in a range. A range that reads short — the file was truncated
  * between the stat and the read — yields what was actually there. */
-function slice(file: string, from: number, to: number): Buffer {
+async function slice(file: string, from: number, to: number): Promise<Buffer> {
   if (to <= from) return Buffer.alloc(0);
-  const handle = openSync(file, "r");
+  const handle = await open(file, "r");
   try {
     const buffer = Buffer.alloc(to - from);
-    const read = readSync(handle, buffer, 0, buffer.length, from);
-    return buffer.subarray(0, read);
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, from);
+    return buffer.subarray(0, bytesRead);
   } finally {
-    closeSync(handle);
+    await handle.close();
   }
 }

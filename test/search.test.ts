@@ -55,12 +55,12 @@ function ask(args: Partial<SessionSearchArgs>, deps: ReturnType<typeof home>["de
 }
 
 describe("what a regular-expression query may cost (§5)", () => {
-  test("a clause longer than the cap is refused rather than compiled", () => {
+  test("a clause longer than the cap is refused rather than compiled", async () => {
     const { deps } = home({ [SID]: ["anything"] });
 
     let refused: unknown;
     try {
-      ask({ query: "a".repeat(1001), regex: true }, deps);
+      await ask({ query: "a".repeat(1001), regex: true }, deps);
     } catch (cause) {
       refused = cause;
     }
@@ -68,10 +68,12 @@ describe("what a regular-expression query may cost (§5)", () => {
     expect((refused as OpError).code).toBe("invalid_args");
     // The cap is on the clause, not on the query: as many clauses as a caller
     // likes, each within it.
-    expect(ask({ query: `${"a".repeat(1000)}\nb`, regex: true }, deps).truncated).toBe(false);
+    expect((await ask({ query: `${"a".repeat(1000)}\nb`, regex: true }, deps)).truncated).toBe(
+      false,
+    );
   });
 
-  test("a clause that backtracks without end is cut off and the answer says so", () => {
+  test("a clause that backtracks without end is cut off and the answer says so", async () => {
     // The classic catastrophic pattern, over records built to defeat it: every
     // record costs it time exponential in their length, so it cannot finish and
     // the budget is the only thing that ends it.
@@ -79,7 +81,7 @@ describe("what a regular-expression query may cost (§5)", () => {
     const { deps } = home({ [SID]: said, [OTHER_SID]: said });
 
     const started = performance.now();
-    const result = ask({ query: "^(a+)+$", regex: true }, deps);
+    const result = await ask({ query: "^(a+)+$", regex: true }, deps);
     const spent = performance.now() - started;
 
     expect(result.truncated).toBe(true);
@@ -88,22 +90,22 @@ describe("what a regular-expression query may cost (§5)", () => {
     expect(spent).toBeLessThan(20_000);
   }, 30_000);
 
-  test("a well-formed clause is answered whole, and says nothing was left out", () => {
+  test("a well-formed clause is answered whole, and says nothing was left out", async () => {
     // The other side of the budget: it must not cut off an honest query. These
     // are the same records the catastrophic clause could not finish.
     const said = Array.from({ length: 40 }, () => `${"a".repeat(40)}!`);
     const { deps } = home({ [SID]: [...said, "the needle is here"], [OTHER_SID]: said });
 
-    const result = ask({ query: "needle", regex: true }, deps);
+    const result = await ask({ query: "needle", regex: true }, deps);
 
     expect(result.truncated).toBe(false);
     expect(result.hits.map((hit) => hit.sid)).toEqual([SID]);
   });
 
-  test("a query of terms is not budgeted, since substring matching is linear", () => {
+  test("a query of terms is not budgeted, since substring matching is linear", async () => {
     const { deps } = home({ [SID]: ["the needle is here"], [OTHER_SID]: ["straw"] });
 
-    const result = ask({ query: "needle" }, deps);
+    const result = await ask({ query: "needle" }, deps);
 
     expect(result.truncated).toBe(false);
     expect(result.hits.map((hit) => hit.sid)).toEqual([SID]);

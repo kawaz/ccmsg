@@ -1,4 +1,5 @@
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { readdirSync, statSync } from "node:fs";
+import { readdir, readFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import type { Sid, TranscriptSubject } from "@ccmsg/protocol";
 import { type Harness, HARNESS } from "../harness/index.ts";
@@ -114,7 +115,7 @@ export class TranscriptFiles {
    * `agent_id` and `teammate` are two ways of naming the same kind of file and
    * cannot be combined — a request carrying both names two files and is a
    * caller's mistake rather than a choice this makes for them. */
-  locate(sid: Sid, names: AgentNames = {}): string {
+  async locate(sid: Sid, names: AgentNames = {}): Promise<string> {
     const file = this.session(sid);
     if (names.agent_id !== undefined && names.teammate !== undefined) {
       throw new OpError("invalid_args", "agent_id and teammate name two different transcripts");
@@ -129,7 +130,7 @@ export class TranscriptFiles {
     if (names.agent_id !== undefined) {
       return existing(join(under, `agent-${name(names.agent_id, AGENT_ID, "agent_id")}${SUFFIX}`));
     }
-    return this.teammate(under, name(names.teammate ?? "", TEAMMATE, "teammate"));
+    return await this.teammate(under, name(names.teammate ?? "", TEAMMATE, "teammate"));
   }
 
   /** Which standing a transcript was written from, which every item read out
@@ -148,13 +149,13 @@ export class TranscriptFiles {
    * nothing goes on standing, nobody is addressed by name — so a teammate read
    * as one loses a name it might have been drawn under, where the reverse would
    * have a reader write back to something that is already gone. */
-  subjectOf(file: string): TranscriptSubject {
+  async subjectOf(file: string): Promise<TranscriptSubject> {
     const name = basename(file);
     if (!name.startsWith(AGENT_PREFIX) || !name.endsWith(SUFFIX)) return "main";
     let note: unknown;
     try {
       note = JSON.parse(
-        readFileSync(join(dirname(file), `${name.slice(0, -SUFFIX.length)}.meta.json`), "utf8"),
+        await readFile(join(dirname(file), `${name.slice(0, -SUFFIX.length)}.meta.json`), "utf8"),
       );
     } catch {
       return "sub";
@@ -168,10 +169,10 @@ export class TranscriptFiles {
    * The name a teammate carries in conversation is not its filename, so the
    * directory's own records are read for it rather than the name being
    * substituted into a path. */
-  private teammate(under: string, wanted: string): string {
+  private async teammate(under: string, wanted: string): Promise<string> {
     let names: string[];
     try {
-      names = readdirSync(under);
+      names = await readdir(under);
     } catch {
       throw new OpError("not_found", `no agent has run under this session`);
     }
@@ -179,7 +180,7 @@ export class TranscriptFiles {
       if (!each.endsWith(".meta.json")) continue;
       let document: unknown;
       try {
-        document = JSON.parse(readFileSync(join(under, each), "utf8"));
+        document = JSON.parse(await readFile(join(under, each), "utf8"));
       } catch {
         continue;
       }
@@ -203,8 +204,8 @@ export class TranscriptFiles {
         const sid = layout.sidOf(entry);
         if (sid === undefined) continue;
         const file = join(dir, entry);
-        const stat = statOf(file);
-        if (stat === undefined) continue;
+        const known = statOf(file);
+        if (known === undefined) continue;
         found.push({
           sid,
           file,
@@ -213,9 +214,9 @@ export class TranscriptFiles {
           // a session ran narrows nothing, and the transcript's own `cwd`
           // decides as it already does.
           ...(this.deps.harness === "claude" ? { project: basename(dir) } : {}),
-          size: stat.size,
-          created_at: Math.round(stat.birthtimeMs || stat.ctimeMs),
-          updated_at: Math.round(stat.mtimeMs),
+          size: known.size,
+          created_at: Math.round(known.birthtimeMs || known.ctimeMs),
+          updated_at: Math.round(known.mtimeMs),
         });
       }
     }
@@ -320,8 +321,8 @@ function names(dir: string): string[] {
 
 function statOf(file: string) {
   try {
-    const stat = statSync(file);
-    return stat.isFile() ? stat : undefined;
+    const known = statSync(file);
+    return known.isFile() ? known : undefined;
   } catch {
     return undefined;
   }

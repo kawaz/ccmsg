@@ -449,7 +449,7 @@ describe("one fold, and only one (M5)", () => {
 });
 
 describe("what the fold settles reaches the sessions domain (§5.1)", () => {
-  test("the api error classifies, and the human input orders", () => {
+  test("the api error classifies, and the human input orders", async () => {
     const root = mkdtempSync(join(tmpdir(), "ccmsg-transcript-sessions-"));
     roots.push(root);
     const facts: TranscriptFacts = {
@@ -475,7 +475,7 @@ describe("what the fold settles reaches the sessions domain (§5.1)", () => {
     writeFileSync(join(root, "projects", "t.jsonl"), "");
     const transcript = realpathSync(join(root, "projects", "t.jsonl"));
     const conn = greeting();
-    void sessions.helloSession({
+    await sessions.helloSession({
       conn,
       args: {
         protocol_version: PROTOCOL_VERSION,
@@ -966,25 +966,25 @@ describe("reading a slice by byte offset (§3.3)", () => {
     { type: "user", message: { role: "user", content: "三行目、絵文字も 🎉 です" } },
   ];
 
-  test("paging backwards through multibyte records reaches the beginning without overlap", () => {
+  test("paging backwards through multibyte records reaches the beginning without overlap", async () => {
     const file = transcript(ROWS);
     const whole = jsonl(ROWS);
     const size = Buffer.byteLength(whole);
     const lines = whole.split("\n").slice(0, -1);
 
-    const tail = readSlice(SID, file.path, undefined, Buffer.byteLength(`${lines[2]}\n`));
+    const tail = await readSlice(SID, file.path, undefined, Buffer.byteLength(`${lines[2]}\n`));
     expect(tail.lines).toEqual([lines[2]]);
     expect(tail.end).toBe(size);
     // The record before it ends where this slice starts, in bytes.
     expect(tail.start).toBe(Buffer.byteLength(`${lines[0]}\n${lines[1]}\n`));
 
-    const earlier = readSlice(SID, file.path, tail.start);
+    const earlier = await readSlice(SID, file.path, tail.start);
     expect(earlier.lines).toEqual([lines[0], lines[1]]);
     expect(earlier.start).toBe(0);
     expect(earlier.end).toBe(tail.start);
   });
 
-  test("a slice whose probe byte falls inside a character still starts where it says", () => {
+  test("a slice whose probe byte falls inside a character still starts where it says", async () => {
     const file = transcript(ROWS);
     const whole = jsonl(ROWS);
     const lines = whole.split("\n").slice(0, -1);
@@ -994,17 +994,17 @@ describe("reading a slice by byte offset (§3.3)", () => {
     // multibyte character, not a boundary.
     const want = Buffer.byteLength(whole) - firstTwo + 8;
 
-    const slice = readSlice(SID, file.path, undefined, want);
+    const slice = await readSlice(SID, file.path, undefined, want);
 
     expect(slice.lines).toEqual([lines[2]]);
     // The offsets are the ones the file actually has: reading from `start`
     // again yields the same records, which it cannot do if `start` was
     // computed from replacement characters of a different length.
     expect(slice.start).toBe(firstTwo);
-    expect(readSlice(SID, file.path, undefined, Buffer.byteLength(whole) - firstTwo).lines).toEqual(
-      [lines[2]],
-    );
-    expect(readSlice(SID, file.path, slice.start).lines).toEqual([lines[0], lines[1]]);
+    expect(
+      (await readSlice(SID, file.path, undefined, Buffer.byteLength(whole) - firstTwo)).lines,
+    ).toEqual([lines[2]]);
+    expect((await readSlice(SID, file.path, slice.start)).lines).toEqual([lines[0], lines[1]]);
   });
 });
 
@@ -1017,7 +1017,7 @@ describe("where a sid's transcript is (§5.1)", () => {
     return root;
   }
 
-  test("what the session announced is what is read", () => {
+  test("what the session announced is what is read", async () => {
     const root = configHome();
     const announced = join(root, "projects", "a-project", `${SID}.jsonl`);
     writeFileSync(announced, "");
@@ -1029,7 +1029,7 @@ describe("where a sid's transcript is (§5.1)", () => {
     expect(files.path(SID)).toBe(announced);
   });
 
-  test("a sid nobody announced is found by the name the file carries", () => {
+  test("a sid nobody announced is found by the name the file carries", async () => {
     const root = configHome();
     const written = join(root, "projects", "a-project", `${SID}.jsonl`);
     writeFileSync(written, "");
@@ -1041,7 +1041,7 @@ describe("where a sid's transcript is (§5.1)", () => {
     expect(files.path(SID)).toBe(written);
   });
 
-  test("a sid with no file under this config home has none", () => {
+  test("a sid with no file under this config home has none", async () => {
     const files = new TranscriptFiles({
       harness: "claude",
       configHome: configHome(),
@@ -1077,29 +1077,29 @@ describe("which standing a transcript was written from (§3.6)", () => {
     };
   }
 
-  test("a session's own transcript is read from the session", () => {
+  test("a session's own transcript is read from the session", async () => {
     const { files } = written();
-    expect(files.subjectOf(files.session(SID))).toBe("main");
+    expect(await files.subjectOf(files.session(SID))).toBe("main");
   });
 
-  test("an agent the harness noted as a teammate is read as one", () => {
+  test("an agent the harness noted as a teammate is read as one", async () => {
     const { files, agent } = written({ name: "counter", taskKind: "in_process_teammate" });
-    expect(files.subjectOf(agent)).toBe("team");
+    expect(await files.subjectOf(agent)).toBe("team");
   });
 
-  test("an agent noted without that kind of task is an errand", () => {
+  test("an agent noted without that kind of task is an errand", async () => {
     const { files, agent } = written({ name: "counter", agentType: "general-purpose" });
-    expect(files.subjectOf(agent)).toBe("sub");
+    expect(await files.subjectOf(agent)).toBe("sub");
   });
 
-  test("an agent the harness noted nothing readable about is an errand", () => {
+  test("an agent the harness noted nothing readable about is an errand", async () => {
     // The standing that claims the least: nothing goes on standing and nobody
     // is addressed by name, so a reader is not left writing back to something
     // that has already finished.
     const { files, agent } = written();
-    expect(files.subjectOf(agent)).toBe("sub");
+    expect(await files.subjectOf(agent)).toBe("sub");
     writeFileSync(`${agent.slice(0, -".jsonl".length)}.meta.json`, "{ half a note");
-    expect(files.subjectOf(agent)).toBe("sub");
+    expect(await files.subjectOf(agent)).toBe("sub");
   });
 });
 
@@ -1203,7 +1203,7 @@ describe("the transcript.items topic (§3.6)", () => {
     await settled(() => itemsOf(published).length >= 3);
     for (const item of itemsOf(published)) {
       const source = item["source"] as { offset: number; bytes: number };
-      const read = readSlice(SID, file.path, source.offset + source.bytes, source.bytes);
+      const read = await readSlice(SID, file.path, source.offset + source.bytes, source.bytes);
       // The address is the record's, not the item's: several items out of one
       // record share it, and what comes back is the record whole.
       expect(read.lines).toHaveLength(1);

@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type {
   DumpPreset,
@@ -12,16 +12,15 @@ import type {
 import { OpError } from "../dispatch/index.ts";
 import {
   bounded,
-  classify,
   document as render,
   type Item,
   ledger,
-  located,
   select,
   selection,
   within,
 } from "../transcript/items/index.ts";
 import type { TranscriptFiles } from "../transcript/index.ts";
+import { classified } from "../transcript/scan.ts";
 
 /** Where dumps land: one directory under this instance's own state, named
  * after the config home it answers for like every other per-instance path
@@ -54,16 +53,19 @@ export interface DumpDeps {
  * `message.user.in` is the brief its parent gave it — so one selection carries
  * unchanged down a chain of agents, which is what makes the ledger's agent ids
  * a way to descend rather than just a list. */
-export function dumpWrite(args: SessionDumpWriteArgs, deps: DumpDeps): SessionDumpWriteResult {
+export async function dumpWrite(
+  args: SessionDumpWriteArgs,
+  deps: DumpDeps,
+): Promise<SessionDumpWriteResult> {
   bounded(args);
   const preset = presetFor(args.preset, deps.presets);
-  const file = deps.files.locate(
+  const file = await deps.files.locate(
     args.sid,
     args.agent_id === undefined ? {} : { agent_id: args.agent_id },
   );
   let text: string;
   try {
-    text = readFileSync(file, "utf8");
+    text = await readFile(file, "utf8");
   } catch {
     throw new OpError("not_found", `the transcript of ${args.sid} could not be read`);
   }
@@ -80,7 +82,7 @@ export function dumpWrite(args: SessionDumpWriteArgs, deps: DumpDeps): SessionDu
     deps.presets,
   );
   const { items, entries } = select(
-    within(classify(located(text), deps.files.subjectOf(file)), args),
+    within(await classified(text, await deps.files.subjectOf(file)), args),
     keep,
   );
   const ids = ledger(items);
@@ -111,10 +113,10 @@ export function dumpWrite(args: SessionDumpWriteArgs, deps: DumpDeps): SessionDu
             ...(args.until_uuid === undefined ? {} : { until: args.until_uuid }),
           });
   const dir = join(deps.stateDir, DUMPS);
-  mkdirSync(dir, { recursive: true });
+  await mkdir(dir, { recursive: true });
   const named = args.agent_id === undefined ? args.sid : `${args.sid}-agent-${args.agent_id}`;
   const path = join(dir, `${named}-${written_at}${suffix(format)}`);
-  writeFileSync(path, body);
+  await writeFile(path, body);
   // What is counted is the selection, whatever the file ended up holding: that
   // is what the caller asked for and what it reads the answer against, and a
   // count that moved with the rendering would answer a different question each
