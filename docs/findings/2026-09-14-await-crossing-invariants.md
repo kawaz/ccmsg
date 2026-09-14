@@ -374,4 +374,6 @@
 | `delivery.ts:226` | mesh 転送の応答 body を形検査せず `MessageSendResult` として返す | 状態が残らず 1 リクエスト分の誤答に留まる。peer は認証済み instance で信頼境界の内側。#3 と同じ形にするかは契約 validator の適用範囲の判断 |
 | `direct.ts:283,284` | `StatusInbox` が close 後に `address()` で再 bind しうる (closed 状態を持たない) | 現状の呼び出し経路では発火しない — `close()` は macrotask 起点、283 は settled promise の microtask hop のみ。ただしそれを保証する不変条件がコードに書かれていないので、`StatusInbox` に closed 状態を持たせるのが筋 |
 
+停止の in-flight 待ちに上限 (`IN_FLIGHT_STOP_MS` 5 秒) を置いたぶん、#6 の窓は完全には閉じていない。上限を超えて置いていった op は自力で走り続け、その先の `records.json` などへの書き込みは flush より後、lock を手放した後に着地しうる — これは #6 が消そうとした症状そのものである。上限は「1 本の長い要求が supervisor の graceful 段の予算を使い切り、flush と listener close のぶんが無くなる」ことを防ぐために置いたもので、2 つの危険のどちらを取るかの交換であって、両方を消すものではない。置いていったものは `stop_left_behind` の 1 行に名前と件数で残るので、実際にこれが起きたかどうかはログから言える。完全に消すには op 側に打ち切りを持たせる (停止が宣言されたら走行中の op が自分で諦め、書く前に降りる) 必要があり、それは待ち時間の調整ではなく op ごとの中断点の設計なので、本 issue の範囲では扱っていない。
+
 `src/auth/auth.ts` の `register` が issuer の返した `claims.endpoint` を `stated.endpoint` (WebAuthn origin 検証に使った値) と突き合わせていない点も #3 の検査中に見つかったが、形の検査とは別の論点 (`rp_id` と同じ扱いにするかの判断) なので触っていない。
