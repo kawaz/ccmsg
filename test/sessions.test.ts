@@ -1089,13 +1089,16 @@ describe("the classification on the wire", () => {
 });
 
 describe("last_live", () => {
-  test("a session that greeted and went away survives a restart as Disappeared", () => {
+  test("a session that greeted and went away survives a restart as Disappeared", async () => {
     const context = sessions();
     const conn = greeting();
     helloFrom(context.domain, conn);
     conn.close();
     expect(context.domain.classify(SID)).toBe("disappeared");
 
+    // What a restart reads is the file, so the writes the going produced have
+    // to have landed before one stands in for a restart.
+    await context.domain.flush();
     const restarted = restart(context);
     expect(restarted.classify(SID)).toBe("disappeared");
     // And it leaves the list the moment the session registers again.
@@ -1216,7 +1219,7 @@ describe("last_live", () => {
     expect(validationErrors(TOPIC_SCHEMAS.peers, frame("peers", payload))).toEqual([]);
   });
 
-  test("nothing but the three kinds of §3.6 is written, across a restart", () => {
+  test("nothing but the three kinds of §3.6 is written, across a restart", async () => {
     const context = sessions();
     const conn = greeting();
     helloFrom(context.domain, conn);
@@ -1224,9 +1227,11 @@ describe("last_live", () => {
     context.domain.start("peers");
     context.domain.stop("peers");
 
+    await context.domain.flush();
     const restarted = restart(context);
     restarted.start("peers");
     restarted.stop("peers");
+    await restarted.flush();
     expect(readdirSync(context.stateDir)).toEqual(["last-live.json"]);
   });
 });

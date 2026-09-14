@@ -243,6 +243,13 @@ export class Sessions implements UpstreamResource {
     this.#reclaim(this.#live);
   }
 
+  /** Settle the list of lost sessions on disk. The writes happen as sessions
+   * come and go (DR-0015); this is for whoever has to see the file as it stands
+   * rather than as it was a moment ago — a stop, or a reader of the file. */
+  async flush(): Promise<void> {
+    await this.#lastLive.flush();
+  }
+
   /** Drop the `last_live` entry of every session that is live, which is what
    * keeps one session off both lists.
    *

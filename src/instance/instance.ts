@@ -998,8 +998,9 @@ export class Instance {
     const restarting: RestartingEvent = { ev: "restarting", instance: this.self };
     for (const conn of this.#conns) conn.send(restarting);
     // 4. settle what is persisted. `last_live` and the inbox are written as
-    // they change rather than at exit, so there is nothing held back to flush;
-    // the log's writer is synchronous for the same reason (DESIGN §2.5).
+    // they change rather than at exit, so there is nothing held back but the
+    // writes already asked for, and those are waited on at the end of this
+    // (DESIGN §2.5).
     this.log.write("stopping", { instance: this.self });
     // 5. let the resources go, the unix socket last. Closing takes the path
     // this process bound, and only that one: the stable address is a symlink
@@ -1020,6 +1021,11 @@ export class Instance {
       remove(this.paths.pidFile);
       this.lock.release();
     }
+    // Everything this stop wrote, on disk before the process is free to leave:
+    // what a reader wants from the log of a stopped instance is its last line,
+    // and what its successor reads is the list of sessions as it last stood.
+    await this.#sessions.flush();
+    await this.log.flush();
   }
 }
 

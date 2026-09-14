@@ -1,11 +1,5 @@
-import {
-  appendFileSync,
-  mkdirSync,
-  readFileSync,
-  renameSync,
-  unlinkSync,
-  writeFileSync,
-} from "node:fs";
+import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { appendFile, mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import {
   INBOX_MAX_PER_SID,
@@ -44,6 +38,9 @@ type Record_ =
  * open handle and makes "what is undelivered right now" one replay. */
 export class Inbox {
   readonly #held = new Map<Sid, InboxMessage[]>();
+
+  /** The appends already asked for, as one chain. */
+  #written: Promise<void> = Promise.resolve();
 
   /** Told whenever a message leaves, and why. Every way out passes through
    * here — handed over, timed out, dropped for a newer one — so whoever states
@@ -101,16 +98,22 @@ export class Inbox {
    * Answers whether the oldest was dropped to make room, which is the whole of
    * `inbox_full`: the message is held either way, and what the sender is told
    * differs because something of theirs is now gone. */
-  hold(sid: Sid, message: InboxMessage, now: Timestamp = Date.now()): { evicted: boolean } {
+  async hold(
+    sid: Sid,
+    message: InboxMessage,
+    now: Timestamp = Date.now(),
+  ): Promise<{ evicted: boolean }> {
     this.#expire(now, sid);
     const held = this.#held.get(sid) ?? [];
     this.#held.set(sid, held);
     held.push(message);
-    this.#append({ v: "add", sid, message });
+    // Awaited rather than left to land: what the sender is told is that the
+    // message is held, and it is not held until the line is on disk.
+    await this.#append({ v: "add", sid, message });
     if (held.length <= INBOX_MAX_PER_SID) return { evicted: false };
     const oldest = held.shift();
     if (oldest !== undefined) {
-      this.#append({ v: "dropped", sid, mid: oldest.mid });
+      await this.#append({ v: "dropped", sid, mid: oldest.mid });
       this.#onRemoved?.(oldest.mid, "dropped");
     }
     return { evicted: true };
@@ -118,17 +121,24 @@ export class Inbox {
 
   /** Note that messages reached their session, which is what takes them out of
    * the inbox (DESIGN §6.7). */
-  delivered(sid: Sid, mids: readonly string[]): void {
+  async delivered(sid: Sid, mids: readonly string[]): Promise<void> {
     const held = this.#held.get(sid);
     if (held === undefined || mids.length === 0) return;
     const gone = new Set(mids);
     const left = held.filter((message) => !gone.has(message.mid));
     if (left.length === 0) this.#held.delete(sid);
     else this.#held.set(sid, left);
+    const written: Promise<void>[] = [];
     for (const mid of mids) {
-      this.#append({ v: "delivered", sid, mid });
+      written.push(this.#append({ v: "delivered", sid, mid }));
       this.#onRemoved?.(mid, "delivered");
     }
+    await Promise.all(written);
+  }
+
+  /** Settle once every line asked for so far is on disk. */
+  async flush(): Promise<void> {
+    await this.#written;
   }
 
   /** Every session something is waiting for. What reads it is the offer of
@@ -183,9 +193,23 @@ export class Inbox {
     }
   }
 
-  #append(record: Record_): void {
-    mkdirSync(dirname(this.file), { recursive: true });
-    appendFileSync(this.file, `${JSON.stringify(record)}\n`);
+  /** One line, behind the lines asked for before it.
+   *
+   * A message arriving is an ordinary event of a running instance, so the
+   * append does not hold the instance still while it lands (DR-0015). The
+   * chain is what keeps the file in the order the verbs happened: a delivery
+   * written before the add it answers would replay as a message nobody was
+   * ever holding. */
+  #append(record: Record_): Promise<void> {
+    const written = this.#written.then(async () => {
+      await mkdir(dirname(this.file), { recursive: true });
+      await appendFile(this.file, `${JSON.stringify(record)}\n`);
+    });
+    // The chain carries the order, not the outcome: a line that could not be
+    // written is answered to whoever asked for it, and the ones behind it still
+    // go.
+    this.#written = written.catch(() => {});
+    return written;
   }
 
   #compact(): void {

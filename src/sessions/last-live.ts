@@ -1,4 +1,5 @@
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
+import { mkdir, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import {
   LAST_LIVE_RETENTION_MS,
@@ -52,6 +53,9 @@ const VERSION = 1;
  * classification is derived from them at read time, never written (M4). */
 export class LastLiveStore {
   #entries = new Map<Sid, StoredEntry>();
+
+  /** The writes already asked for, as one chain. */
+  #written: Promise<void> = Promise.resolve();
 
   /** `id` is this instance's own: every entry this store holds is by
    * definition an observation *this* instance made, so `instance` is forced
@@ -114,6 +118,12 @@ export class LastLiveStore {
     return true;
   }
 
+  /** Settle once every write asked for so far has landed. What a stop waits on,
+   * and what a reader of the file has to wait for to see the last change. */
+  async flush(): Promise<void> {
+    await this.#written;
+  }
+
   #prune(now: Timestamp): boolean {
     let dropped = false;
     for (const [sid, entry] of this.#entries) {
@@ -125,13 +135,26 @@ export class LastLiveStore {
   }
 
   /** Written whole through a temporary file, so a daemon killed mid-write
-   * leaves the previous list rather than half of this one. */
+   * leaves the previous list rather than half of this one.
+   *
+   * A session appearing or going is an ordinary event of a running instance, so
+   * the write does not hold it still (DR-0015). The body is taken here, before
+   * anything is awaited, and each write is chained onto the one before it: what
+   * lands last is what the list said last, and two of them cannot be sharing
+   * one temporary file. */
   #save(): void {
     const document: Document = { version: VERSION, sessions: [...this.#entries.values()] };
     const temporary = `${this.file}.${process.pid}.tmp`;
-    mkdirSync(dirname(this.file), { recursive: true });
-    writeFileSync(temporary, `${JSON.stringify(document)}\n`);
-    renameSync(temporary, this.file);
+    this.#written = this.#written.then(async () => {
+      try {
+        await mkdir(dirname(this.file), { recursive: true });
+        await writeFile(temporary, `${JSON.stringify(document)}\n`);
+        await rename(temporary, this.file);
+      } catch {
+        // A list that could not be written costs the Paused and Disappeared
+        // rows of the next run, and nothing of this one.
+      }
+    });
   }
 }
 
