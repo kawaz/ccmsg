@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { type Sid, TOPIC_SCHEMAS, validationErrors } from "@ccmsg/protocol";
 import { SessionStatus } from "../src/sessions/index.ts";
 import { Topics } from "../src/topics/index.ts";
-import { Transcripts } from "../src/transcript/index.ts";
+import { NO_FACTS, Transcripts } from "../src/transcript/index.ts";
 import { connAs, OTHER_SID, SELF, SID } from "./frames.ts";
 import { unthrottled } from "./clock.ts";
 
@@ -229,3 +229,50 @@ describe("the tails run while somebody is listening (§6.3)", () => {
     expect(folds.following(SID)).toBe(false);
   });
 });
+
+describe("only the most recent reading states a value", () => {
+  test("a pass overtaken while it waits publishes nothing", async () => {
+    // Stating a value waits on a reading, and two readings started in either
+    // order can finish in either order. The pass that read the later facts is
+    // the one entitled to speak; an older one catching up afterwards would
+    // leave the subscriber holding what the session has stopped saying.
+    const published: Published[] = [];
+    const gates: (() => void)[] = [];
+    let said = "old";
+    const status = new SessionStatus({
+      self: SELF,
+      sessions: () => [SID],
+      facts: () => ({ ...NO_FACTS, todos: [todo(said)] }),
+      where: () => ({}),
+      hold: () => {},
+      release: () => {},
+      ready: () =>
+        new Promise<void>((open) => {
+          gates.push(open);
+        }),
+      publish: (topic, data) => published.push({ topic, data: data as Record<string, unknown> }),
+    });
+    status.start(STATUS);
+    await Bun.sleep(0);
+
+    said = "new";
+    void status.refresh();
+    await Bun.sleep(0);
+    expect(gates).toHaveLength(2);
+
+    // The later pass finishes first, and then the earlier one catches up.
+    gates[1]?.();
+    await Bun.sleep(0);
+    gates[0]?.();
+    await Bun.sleep(0);
+
+    const subjects = published.map(
+      (frame) => (frame.data["todos"] as { subject: string }[])[0]?.subject,
+    );
+    expect(subjects).toEqual(["new"]);
+  });
+});
+
+function todo(subject: string) {
+  return { id: "t1", subject, status: "in_progress", blocked_by: [], blocks: [] };
+}

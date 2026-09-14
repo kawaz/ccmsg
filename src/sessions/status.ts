@@ -120,6 +120,15 @@ export class SessionStatus implements UpstreamResource {
    * convergence happens once rather than in the middle of itself. */
   #converging = false;
   #pending = false;
+  /** Which pass is the one entitled to state a value.
+   *
+   * Stating one waits on a reading, and two readings started in either order
+   * can finish in either order — so the later pass read the later facts, and
+   * the earlier one must not publish behind it. Every pass takes a number and
+   * gives up the moment a later one has taken a higher one: what a subscriber
+   * is told is what the most recent reading said, and never what an older one
+   * caught up to saying (DR-0015 §2.5). */
+  #stating = 0;
 
   constructor(private readonly deps: SessionStatusDeps) {}
 
@@ -161,8 +170,12 @@ export class SessionStatus implements UpstreamResource {
     // The topics as they stand now: stating one waits on a reading, and a
     // subscription arriving during that wait must not be iterated into.
     const stating = [...this.#wanted];
+    this.#stating += 1;
+    const mine = this.#stating;
     for (const topic of stating) {
       const data = await this.value(topic);
+      // A later pass has read later facts; this one has nothing to add.
+      if (mine !== this.#stating) return;
       if (data !== undefined) this.deps.publish(topic, data);
     }
   }
