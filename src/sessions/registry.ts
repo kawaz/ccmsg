@@ -30,6 +30,7 @@ import { AGENT_ROWS, Elements, type TopicValue, type UpstreamResource } from "..
 import { type OwnSessions, ownSessions } from "./harness.ts";
 import { LastLiveStore, type StoredEntry } from "./last-live.ts";
 import { duplicated, type ObservedRun, runsOf, statedTerminalId } from "./runs.ts";
+import { StartCache, type StartReader } from "./starts.ts";
 import { TerminalCache, type TerminalReader } from "./terminals.ts";
 
 /** What the harness says at one instant: the rows it reports, and which
@@ -125,6 +126,12 @@ export interface SessionsDeps {
    * host where no process's environment can be read, where every row's
    * terminal stays unknown — which is a state the classification has. */
   readonly terminals?: TerminalReader;
+  /** When a process started, as the host states it. What tells a state file
+   * left behind by a killed session from one whose process is running: a pid
+   * the OS has since handed to something else would otherwise stand as a
+   * second run of that session. Absent on a host where no process's start can
+   * be read, where every state file is taken at its word. */
+  readonly starts?: StartReader;
   /** The mesh, on an instance that has one. It answers the one greeting this
    * domain cannot judge: a peer's, whose claim is settled by an exchange of its
    * own rather than by anything a session says (DESIGN §7.2). */
@@ -233,6 +240,7 @@ export class Sessions implements UpstreamResource {
   readonly #connected = new Map<Sid, Connected>();
   readonly #harness: OwnSessions;
   readonly #terminals: TerminalCache | undefined;
+  readonly #starts: StartCache | undefined;
   readonly #lastLive: LastLiveStore;
   /** Sessions seen live since the last recompute, kept so the moment one stops
    * being live is what writes its `last_live` entry. */
@@ -303,6 +311,8 @@ export class Sessions implements UpstreamResource {
       deps.terminals === undefined
         ? undefined
         : new TerminalCache(deps.terminals, () => this.changed());
+    this.#starts =
+      deps.starts === undefined ? undefined : new StartCache(deps.starts, () => this.changed());
     this.#live = this.#liveNow(Date.now(), this.#own());
     this.#reclaim(this.#live);
   }
@@ -451,7 +461,21 @@ export class Sessions implements UpstreamResource {
    * question, and a caller answering several about the same instant passes the
    * result on rather than reading again. */
   #own(): Own {
-    const scanned = this.#harness.rows();
+    const reported = this.#harness.rows();
+    let scanned = reported;
+    const starts = this.#starts;
+    if (starts !== undefined) {
+      starts.observe(scanned.keys());
+      // A state file whose pid the OS has handed to something else names no
+      // run: counting it would make the session it names look like one two
+      // processes are running, which freezes its fold and refuses every send
+      // with nothing a person can do about it.
+      const own = new Map<number, AgentInfo>();
+      for (const [pid, row] of scanned) {
+        if (starts.own(pid, row.started_at)) own.set(pid, row);
+      }
+      scanned = own;
+    }
     const terminals = this.#terminals;
     let rows = scanned;
     if (terminals !== undefined) {
@@ -486,7 +510,12 @@ export class Sessions implements UpstreamResource {
       if (held === undefined) bySid.set(row.sid, [row]);
       else held.push(row);
     }
-    return { rows, bySid, present: this.#harness.present() };
+    // A harness that reports rows says which sessions exist through them, so a
+    // row dropped above takes its session with it unless another row names it.
+    // One that reports none says so another way — Codex's lock names a thread
+    // and no process — and there is nothing there to have dropped.
+    const present = reported.size === 0 ? this.#harness.present() : new Set(bySid.keys());
+    return { rows, bySid, present };
   }
 
   /** Every run of one session this instance can see, as the row states them.

@@ -40,6 +40,18 @@ export const LIVENESS_POLL_MS = 200;
 export const STARTED_BEFORE_TOLERANCE_MS = 120_000;
 export const STARTED_AFTER_TOLERANCE_MS = 5_000;
 
+/** Whether a process that began at `started` is the one a row stating
+ * `startedAt` was written for, within the tolerances above.
+ *
+ * The one comparison, in one place: the ops that signal a process make it
+ * before they act, and the reading of the harness's directory makes it before
+ * it calls a state file's pid a run (`StartCache`). Two spellings of it would
+ * be two answers about the same pid. */
+export function sameProcess(started: Timestamp, startedAt: Timestamp): boolean {
+  const after = started - startedAt;
+  return after <= STARTED_AFTER_TOLERANCE_MS && -after <= STARTED_BEFORE_TOLERANCE_MS;
+}
+
 /** What acting on a session's process needs from the world around it.
  *
  * Every effect is injectable because the alternative is a test that signals
@@ -262,8 +274,7 @@ export class SessionProcesses {
       return true;
     }
     if (started === undefined) return true;
-    const after = started - startedAt;
-    return after <= STARTED_AFTER_TOLERANCE_MS && -after <= STARTED_BEFORE_TOLERANCE_MS;
+    return sameProcess(started, startedAt);
   }
 
   /** Send one signal. Answers whether the process was already gone, which is
@@ -375,7 +386,7 @@ function hostEnvironment(pid: number): Promise<string> {
  *
  * The format is `[[dd-]hh:]mm:ss`, and its resolution is the second, which is
  * why the guard that compares it allows for one. */
-async function hostStarted(pid: number): Promise<Timestamp | undefined> {
+export async function hostStarted(pid: number): Promise<Timestamp | undefined> {
   const elapsed = elapsedSeconds((await run(["ps", "-p", String(pid), "-o", "etime="])).trim());
   return elapsed === undefined ? undefined : Date.now() - elapsed * 1000;
 }

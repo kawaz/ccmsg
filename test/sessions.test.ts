@@ -35,6 +35,8 @@ import {
   runsOf,
   Sessions,
   SessionProcesses,
+  StartCache,
+  type StartReader,
   hostTerminalReader,
   type TerminalReader,
   type TranscriptSource,
@@ -207,6 +209,7 @@ function sessions(
      * says of it rather than about the facts it carries. */
     fold?: TranscriptSource;
     launches?: LaunchSource;
+    starts?: StartReader;
     terminalGateway?: string;
   } = {},
 ) {
@@ -247,6 +250,7 @@ function sessions(
         }),
     ...(overrides.fold === undefined ? {} : { transcript: overrides.fold }),
     ...(overrides.launches === undefined ? {} : { launches: overrides.launches }),
+    ...(overrides.starts === undefined ? {} : { starts: overrides.starts }),
     ...(overrides.terminalGateway === undefined
       ? {}
       : { terminalGateway: overrides.terminalGateway }),
@@ -1408,6 +1412,27 @@ describe("a session two processes are running", () => {
     expect(context.domain.row(SID)?.session_status).toBe("ready");
   });
 
+  test("the connection that named a run goes with that run, not with the others", async () => {
+    const context = withFold();
+    const second = await child({});
+    writeState(context.sessionsDir, process.pid, SID);
+    writeState(context.sessionsDir, second, SID);
+    const first = greeting();
+    await helloFrom(context.domain, first, SID, { pid: process.pid });
+    const other = greeting();
+    await helloFrom(context.domain, other, SID, { pid: second });
+    expect(context.domain.row(SID)?.runs.every((run) => run.connected)).toBe(true);
+
+    // One of the two clients went. What it spoke for is that run alone: the
+    // session still holds the other connection, and the run that lost its own
+    // is the one that stops being connected.
+    first.close();
+
+    const runs = context.domain.row(SID)?.runs ?? [];
+    expect(runs.find((run) => run.pid === process.pid)?.connected).toBe(false);
+    expect(runs.find((run) => run.pid === second)?.connected).toBe(true);
+  });
+
   test("a kill that named no run is refused, and one that named a pid is not", async () => {
     const context = withFold();
     const second = await child({});
@@ -1455,6 +1480,87 @@ describe("a session two processes are running", () => {
     const refused = await processes.kill(SID, false, 999_999).catch((cause: unknown) => cause);
     expect(refused).toMatchObject({ code: "session_not_found" });
     expect(signalled).toEqual([]);
+  });
+});
+
+describe("a state file whose pid belongs to somebody else", () => {
+  /** A domain that reads when a process started, as the host does. */
+  function withStarts(started: (pid: number) => Promise<number | undefined>) {
+    return sessions({ pollMs: 600_000, starts: started });
+  }
+
+  test("is no run of the session it names, so the session is not duplicated", async () => {
+    // A session killed outright leaves its file behind, and the pid it holds is
+    // one the OS may since have handed to something else. Counted as a run,
+    // that file is a second process running the session — which freezes the
+    // fold and refuses every send, with nothing a person can do about it.
+    const second = await child({});
+    const context = withStarts(async (pid) =>
+      // The stranger began long after the row was written; the real one began
+      // when the row says.
+      pid === second ? Date.now() : STARTED_AT,
+    );
+    writeState(context.sessionsDir, process.pid, SID);
+    writeState(context.sessionsDir, second, SID);
+
+    await context.until(() => context.domain.row(SID)?.runs.length === 1);
+    const row = context.domain.row(SID) as PeerInfo;
+    expect(row.runs.map((run) => run.pid)).toEqual([process.pid]);
+    expect(liveness(row, Date.now())).toBe("alive");
+    expect(row.session_status).not.toBe("frozen");
+    expect(context.domain.duplicated(SID)).toBe(false);
+    // It is not a process of this session at all, so it is off `agents` too.
+    expect(context.domain.agentRows().map((each) => each.pid)).toEqual([process.pid]);
+  });
+
+  /** One cache, one reader, and the read landing as an event rather than after
+   * a length of time: the callback the cache calls when a read finishes is what
+   * says it has. */
+  function reading(started: StartReader) {
+    let landed: () => void = () => {};
+    const read = new Promise<void>((done) => {
+      landed = done;
+    });
+    return { cache: new StartCache(started, () => landed()), read };
+  }
+
+  test("a pid not read yet is its row's own, and one read as a stranger is not", async () => {
+    const { cache, read } = reading(async () => Date.now());
+    cache.observe([7]);
+    // Asking is a child and takes milliseconds; a row unread in the meantime
+    // stands, or every session that has just started would be invisible.
+    expect(cache.own(7, STARTED_AT)).toBe(true);
+
+    await read;
+    expect(cache.own(7, STARTED_AT)).toBe(false);
+    // The same pid, for a row that says when that process actually began.
+    expect(cache.own(7, Date.now())).toBe(true);
+  });
+
+  test("a host that cannot say when a process started leaves the row standing", async () => {
+    // Refusing on such a host would empty the list of every session on it,
+    // which is a certain harm against the rare one the check guards.
+    const { cache, read } = reading(async () => undefined);
+    cache.observe([7]);
+    await read;
+    expect(cache.own(7, STARTED_AT)).toBe(true);
+  });
+
+  test("a pid the scan no longer holds is read afresh when it comes back", async () => {
+    const asked: number[] = [];
+    const { cache, read } = reading(async (pid) => {
+      asked.push(pid);
+      return Date.now();
+    });
+    cache.observe([7]);
+    await read;
+    expect(asked).toEqual([7]);
+
+    cache.observe([]);
+    cache.observe([7]);
+    // What ran under that number before says nothing about what runs under it
+    // now, so it is asked again rather than answered from memory.
+    expect(asked).toEqual([7, 7]);
   });
 });
 

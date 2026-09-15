@@ -42,6 +42,7 @@ import {
 import { Inbox } from "../messaging/inbox.ts";
 import {
   hostProcessDeps,
+  hostStarted,
   hostTerminalReader,
   sessionCapabilities,
   sessionHandlers,
@@ -546,6 +547,10 @@ export class Instance {
       publish: (topic, data) => {
         this.#topics.publish(topic, data);
       },
+      // Asked when a session is first followed, so one that was already being
+      // run twice is never read once before the next recompute freezes it. The
+      // sessions domain is built below and this is called long after.
+      duplicated: (sid) => this.#sessions.duplicated(sid),
       onFacts: () => {
         this.#sessions.refresh();
       },
@@ -569,6 +574,7 @@ export class Instance {
       transcript: this.#transcripts,
       gateway: this.#gateway,
       terminals: hostTerminalReader(),
+      starts: hostStarted,
       ...(config.upstream.terminal_gateway === undefined
         ? {}
         : { terminalGateway: config.upstream.terminal_gateway }),

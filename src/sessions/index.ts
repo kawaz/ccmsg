@@ -7,9 +7,11 @@ export {
   elapsedSeconds,
   GRACE_MS,
   hostProcessDeps,
+  hostStarted,
   hostTerminalReader,
   LIVENESS_POLL_MS,
   parseEnvironment,
+  sameProcess,
   type ProcessDeps,
   SECOND_SIGNAL_AFTER_MS,
   SessionProcesses,
@@ -22,5 +24,6 @@ export * from "./registry.ts";
 export { duplicated, type ObservedRun, runsOf, statedTerminalId } from "./runs.ts";
 export { search, type SearchDeps } from "./search.ts";
 export * from "./status.ts";
+export { StartCache, type StartReader } from "./starts.ts";
 export { TerminalCache, type TerminalReader } from "./terminals.ts";
 export { workspaceFolders } from "./workspace.ts";

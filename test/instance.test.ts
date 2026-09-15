@@ -757,7 +757,11 @@ describe("what a run leaves behind (M4)", () => {
         sessionId: SID,
         cwd,
         kind: "interactive",
-        startedAt: 1_757_000_000_000,
+        // The process this file names is this test's own, so what it says it
+        // started at has to be when that process did: a row whose pid belongs
+        // to a process that began somewhere else is not a run of anything
+        // (`StartCache`).
+        startedAt: Date.now(),
       }),
     );
 
@@ -845,7 +849,7 @@ describe("a session that never greeted this instance", () => {
         sessionId: sid,
         cwd: "/repos/a-repo/main",
         kind: "interactive",
-        startedAt: 1_757_000_000_000,
+        startedAt: Date.now(),
         name: "a-repo@main",
         messagingSocketPath: socketPath,
         peerProtocol: 1,

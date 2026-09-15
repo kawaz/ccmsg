@@ -253,7 +253,7 @@ describe("ccmsg peers / ccmsg agents", () => {
         pid: process.pid,
         cwd: "/tmp",
         kind: "interactive",
-        startedAt: 1,
+        startedAt: Date.now(),
         name: "繋いでいない方",
       }),
     );
