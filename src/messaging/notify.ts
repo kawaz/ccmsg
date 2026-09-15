@@ -25,6 +25,11 @@ export interface NotifyDeps {
   /** The one way a value reaches subscribers (DESIGN §6.1). No `to`: a notification is
    * for whoever is watching, not for one session. */
   readonly publish: (topic: string, data: unknown, instance: InstanceId) => PublishOutcome;
+  /** Whether two or more processes are running one session. A notification
+   * about such a session is refused rather than shown: what it would say about
+   * the session is read from a transcript neither run's reading describes
+   * (DR-0001 §3). */
+  readonly duplicated: (sid: Sid) => boolean;
 }
 
 /** The `notify` topic and the three ops that speak on it.
@@ -52,7 +57,14 @@ export class Notify implements UpstreamResource {
     // What it answers travels with it: a notification is shown while the
     // session's own account of the same answer is still being written, and the
     // `mid` is what tells a reader holding both that they are one thing.
-    this.#announce(args.sid ?? this.#caller(input), args.text, Date.now(), args.reply_to);
+    const sid = args.sid ?? this.#caller(input);
+    if (this.deps.duplicated(sid)) {
+      throw new OpError(
+        "session_duplicated",
+        `${sid} is being run by more than one process, so what this would say about it is not settled`,
+      );
+    }
+    this.#announce(sid, args.text, Date.now(), args.reply_to);
     return {};
   };
 

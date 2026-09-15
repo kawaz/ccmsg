@@ -634,6 +634,7 @@ export class Instance {
       self: this.self,
       label: (sid) => sessionLabel(this.#sessions, sid),
       publish: (topic, data, instance) => this.#topics.publish(topic, data, instance),
+      duplicated: (sid) => this.#sessions.duplicated(sid),
     });
 
     this.#instances = new Instances({
@@ -733,17 +734,18 @@ export class Instance {
       "session.stopping": this.#sessions.stopping,
       ...topicHandlers(this.#topics),
       ...messagingHandlers(this.#delivery, this.#notify),
-      ...fileHandlers(files),
+      ...fileHandlers(files, (sid) => this.#sessions.duplicated(sid)),
       ...sessionHandlers({
         self: this.self,
         configHome: paths.configHome,
         stateDir: paths.stateDir,
         files: transcriptFiles,
         processes: new SessionProcesses(
-          hostProcessDeps(() => this.#sessions.rowsNow(), config.upstream.terminal_gateway),
+          hostProcessDeps((sid) => this.#sessions.runsNow(sid), config.upstream.terminal_gateway),
         ),
         forget: (sid) => this.#sessions.forget(sid),
         presets: config.dump.presets,
+        duplicated: (sid) => this.#sessions.duplicated(sid),
       }),
       // The sandbox ops answer only where an origin is configured. Without one
       // there is nothing to serve a minted URL, and dispatch already refuses
@@ -1089,7 +1091,7 @@ export class Instance {
   #owner(fields: Record<string, unknown>): InstanceId | undefined {
     const sid = fields["sid"];
     if (typeof sid !== "string" || this.#mesh === undefined) return undefined;
-    if (this.#sessions.classify(sid as Sid) !== undefined) return undefined;
+    if (this.#sessions.row(sid as Sid) !== undefined) return undefined;
     return this.#mesh.ownerOf(sid as Sid);
   }
 

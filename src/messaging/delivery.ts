@@ -10,13 +10,11 @@ import type {
   Mid,
   PeerInfo,
   Sender,
-  SessionState,
   Sid,
   Timestamp,
   UndeliveredReason,
 } from "@ccmsg/protocol";
-import { USER_SENDER } from "@ccmsg/protocol";
-import { isLive } from "../sessions/classify.ts";
+import { liveness, USER_SENDER } from "@ccmsg/protocol";
 import {
   type DispatchResult,
   type HandlerInput,
@@ -41,7 +39,10 @@ const INBOX = "inbox";
  * sessions are around — neither is asked of anything else, which is what keeps
  * the reasons of DESIGN §6.6 from growing a source per reason. */
 export interface SessionLookup {
-  classify(sid: Sid): SessionState | undefined;
+  /** The row for one session, or nothing for a sid this instance has no row
+   * for. Where a session stands is read off it by the contract's `liveness`,
+   * so an instance and a client answer that question the same way. */
+  row(sid: Sid): PeerInfo | undefined;
   peerRows(): PeerInfo[];
 }
 
@@ -124,11 +125,22 @@ export class Delivery implements UpstreamResource {
   send = async (input: HandlerInput): Promise<MessageSendResult> => {
     const args = input.args as unknown as MessageSendArgs;
     const to = args.to;
-    const state = this.deps.sessions.classify(to);
-    if (state === undefined) {
+    const row = this.deps.sessions.row(to);
+    if (row === undefined) {
       const elsewhere = await this.#elsewhere(to, input);
       if (elsewhere !== undefined) return elsewhere;
       throw new OpError("session_not_found", `no session ${to}`);
+    }
+    if (row.runs.length >= 2) {
+      // Two processes are writing this session, so which of them would receive
+      // the message is not settled and what the transcript says of it cannot be
+      // trusted. Nothing is held for later: the draft is still with the caller,
+      // and a person decides which run to end before anything here resumes
+      // (contract, `session_duplicated`).
+      throw new OpError(
+        "session_duplicated",
+        `${to} is being run by ${row.runs.length} processes, so there is no one of them to hand this to`,
+      );
     }
     const message = this.#message(args, this.#sender(input));
 
@@ -165,7 +177,7 @@ export class Delivery implements UpstreamResource {
     }
 
     const { evicted } = await this.#hold(to, message);
-    return this.#undelivered(to, evicted ? "inbox_full" : this.#reason(state));
+    return this.#undelivered(to, evicted ? "inbox_full" : this.#reason(row));
   };
 
   /** Hold a message the session could not take, and say so to the watchers.
@@ -248,9 +260,15 @@ export class Delivery implements UpstreamResource {
    * anything after is one map read. */
   retry = async (): Promise<void> => {
     const offers: Promise<void>[] = [];
+    const now = Date.now();
     for (const sid of this.deps.inbox.sids()) {
-      const state = this.deps.sessions.classify(sid);
-      if (state === undefined || state === "paused" || state === "disappeared") continue;
+      const row = this.deps.sessions.row(sid);
+      if (row === undefined) continue;
+      const stands = liveness(row, now);
+      // A session two processes are running is not offered anything either:
+      // what it would be handed to is not settled, which is the same reason
+      // `send` refuses one (DR-0001 §3).
+      if (stands !== "alive") continue;
       // One session at a time within its own offer, every session at once
       // across them: a session that is slow to answer, or that never does
       // before its deadline, is not a reason the next session waits (DR-0015).
@@ -358,21 +376,20 @@ export class Delivery implements UpstreamResource {
     return rows;
   }
 
-  /** The reason a message is waiting, named from the classification alone
-   * (DESIGN §6.6). `preparing` is the live session with nowhere to put it: it is there,
-   * route (a) did not carry it, and nothing of its is listening yet.
+  /** The reason a message is waiting, named from where the session stands and
+   * nothing else (DESIGN §6.6). `preparing` is the running session with nowhere
+   * to put it: it is there, route (a) did not carry it, and nothing of its is
+   * listening yet.
    *
    * `instance_unreachable` is not here: it is the mesh's answer about an
-   * instance, and this instance holds every session it can classify. */
-  #reason(state: SessionState): UndeliveredReason {
-    switch (state) {
+   * instance, and this instance holds every session it has a row for. */
+  #reason(row: PeerInfo): UndeliveredReason {
+    switch (liveness(row, Date.now())) {
       case "paused":
         return "paused";
       case "disappeared":
         return "disappeared";
-      case "live":
-      case "live_unmanaged":
-      case "waiting":
+      default:
         return "preparing";
     }
   }
@@ -388,27 +405,28 @@ export class Delivery implements UpstreamResource {
       : { delivered: false, reason, candidates };
   }
 
-  /** Sessions live now in the repository the addressee belongs to (DESIGN §6.6).
+  /** Sessions running now in the repository the addressee belongs to (DESIGN §6.6).
    *
    * The rows are one list of sessions, connected and lost alike, so which of
-   * them can be written to is the classification — asked of the domain, the
-   * same way the addressee's own reason was, rather than read off a field of
-   * the row (M1).
+   * them can be written to is read off each row by the contract's own
+   * `liveness` — the same rule the addressee's own reason was named by, and the
+   * same one a client applies to the rows it holds (DR-0001 §2). A session two
+   * processes are running is not among them: `duplicated` is not `alive`, and
+   * offering a sender somewhere its message would be refused is worse than
+   * offering nothing.
    *
    * The repository is `repo_root` as the session named it. A session that named
    * none is left out rather than matched on something derived from its `cwd`:
    * no primary source states that derivation, and the sessions domain does not
    * make one up either. */
   #candidates(to: Sid): CandidateSession[] {
+    const now = Date.now();
     const rows = this.deps.sessions.peerRows();
     const root = rows.find((row) => row.sid === to)?.repo_root;
     if (root === undefined) return [];
     return rows
       .filter(
-        (peer) =>
-          peer.sid !== to &&
-          peer.repo_root === root &&
-          isLive({ state: this.deps.sessions.classify(peer.sid) }),
+        (peer) => peer.sid !== to && peer.repo_root === root && liveness(peer, now) === "alive",
       )
       .map((peer) => ({
         sid: peer.sid,

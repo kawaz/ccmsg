@@ -1,5 +1,6 @@
-import type { AgentInfo, Sid, Timestamp } from "@ccmsg/protocol";
+import type { SessionRun, Sid, Timestamp } from "@ccmsg/protocol";
 import { OpError } from "../dispatch/index.ts";
+import { isHarness, launchedAs } from "../harness/index.ts";
 import type { TerminalReader } from "./terminals.ts";
 
 /** How long a child this instance runs to observe a process may take. A wedged
@@ -46,9 +47,9 @@ export const STARTED_AFTER_TOLERANCE_MS = 5_000;
  * and the liveness probe are the platform's, and the two readers are children.
  */
 export interface ProcessDeps {
-  /** The harness's sessions, read now rather than from a watch's cache. Only
+  /** The runs of one session, read now rather than from a watch's cache. Only
    * this instance's config home is ever read (M6). */
-  readonly rows: () => ReadonlyMap<Sid, AgentInfo>;
+  readonly runs: (sid: Sid) => readonly SessionRun[];
   /** What the process is running, as `ps` states argv. */
   readonly command: (pid: number) => Promise<string>;
   /** The process's own environment, as the platform exposes it. */
@@ -86,44 +87,82 @@ export function terminalOf(env: Record<string, string>): Terminal | undefined {
 
 /** The ops that act on the process behind a session.
  *
- * The subject is always resolved sid → pid here, at the moment of acting: a
- * pid a caller asserted would be a weaker basis for killing something, and a
- * pid resolved seconds ago may since have been recycled. What guards the
+ * The subject is resolved to a pid here, at the moment of acting, against the
+ * session's own runs: a pid resolved seconds ago may since have been recycled,
+ * and one a caller asserted is checked against what the session actually has
+ * rather than taken on trust (contract, `SessionKillArgs.pid`). What guards the
  * recycling is the same check for all three ops — a pid whose process is no
  * longer the harness is one this instance does not act on, and says so as the
  * session not being there. */
 export class SessionProcesses {
   constructor(private readonly deps: ProcessDeps) {}
 
+  /** The run of a session a caller named, or its only one.
+   *
+   * A session with two runs cannot be resolved from the sid alone, and the ops
+   * that could act on either of them differ in what they can say about it: a
+   * kill is refused with `ambiguous_run` so a person picks one from
+   * `peers.runs`, while reading an environment or typing a rename has no such
+   * code to answer with and takes the run that started first — a deterministic
+   * choice rather than whichever file was read last (DR-0001 §3).
+   *
+   * A run with no pid is not one of these: nothing in this contract can signal
+   * a run known only by its connection. */
+  #run(sid: Sid, wanted: number | undefined, ambiguous: boolean): SessionRun {
+    const runs = this.deps
+      .runs(sid)
+      // A pid at or below 1 is refused before it reaches a signal: 0 addresses
+      // this process's own group and a negative number a whole group, so a
+      // corrupted row must not be able to reach either.
+      .filter((run) => run.pid !== undefined && Number.isInteger(run.pid) && run.pid > 1)
+      .sort((a, b) => (a.started_at ?? 0) - (b.started_at ?? 0));
+    if (wanted !== undefined) {
+      const named = runs.find((run) => run.pid === wanted);
+      if (named === undefined) {
+        throw new OpError("session_not_found", `${wanted} is no run of ${sid}`);
+      }
+      return named;
+    }
+    if (ambiguous && runs.length >= 2) {
+      throw new OpError(
+        "ambiguous_run",
+        `${sid} has ${runs.length} runs, so name the pid of the one to act on`,
+      );
+    }
+    const only = runs[0];
+    if (only === undefined) {
+      throw new OpError("session_not_found", `${sid} is no session of this instance`);
+    }
+    return only;
+  }
+
   /** The pid behind a session, checked to still be that session's.
    *
-   * A row this instance's config home does not hold is a session not found,
+   * A session this instance's config home does not hold is a session not found,
    * whether it belongs to another config home or to nothing: this instance
    * answers for one config home (M6), and a pid read from anywhere else is a
    * number it has no business signalling. */
-  async pid(sid: Sid): Promise<number> {
-    const rows = this.deps.rows();
-    const row = rows.get(sid);
-    // A pid at or below 1 is refused before it reaches a signal: 0 addresses
-    // this process's own group and a negative number a whole group, so a
-    // corrupted row must not be able to reach either.
-    if (row === undefined || !Number.isInteger(row.pid) || row.pid <= 1) {
-      throw new OpError("session_not_found", `${sid} is no session of this instance`);
-    }
-    if (!(await this.isHarness(row.pid))) {
+  async pid(sid: Sid, wanted?: number, ambiguous = false): Promise<number> {
+    const run = this.#run(sid, wanted, ambiguous);
+    const pid = run.pid as number;
+    if (!(await this.isHarness(pid))) {
       throw new OpError("session_not_found", `the process of ${sid} is gone`);
     }
-    if (!(await this.isSameProcess(row.pid, row.started_at))) {
+    if (run.started_at !== undefined && !(await this.isSameProcess(pid, run.started_at))) {
       throw new OpError("session_not_found", `the process of ${sid} is gone`);
     }
-    return row.pid;
+    return pid;
   }
 
-  /** End the process behind a session. `terminated` reports whether it was
-   * seen to go, which is false rather than an error when the signals were
-   * delivered and the process was still there. */
-  async kill(sid: Sid, force = false): Promise<{ terminated: boolean }> {
-    const pid = await this.pid(sid);
+  /** End one run of a session. `terminated` reports whether it was seen to go,
+   * which is false rather than an error when the signals were delivered and the
+   * process was still there.
+   *
+   * The pid, where the caller named one, is looked for among the session's own
+   * runs before anything is signalled: a pid the caller got wrong ends nothing
+   * rather than ending whatever the OS has since given that number to. */
+  async kill(sid: Sid, force = false, wanted?: number): Promise<{ terminated: boolean }> {
+    const pid = await this.pid(sid, wanted, true);
     const first = force ? "SIGKILL" : "SIGTERM";
     if (this.send(pid, first)) return { terminated: true };
     let waited = 0;
@@ -198,7 +237,7 @@ export class SessionProcesses {
       // every caller: there is no process of this session to act on.
       return false;
     }
-    return executable(command) === HARNESS;
+    return isHarness(launchedAs(command));
   }
 
   /** Whether the process running under the pid now is the one the row was
@@ -238,16 +277,6 @@ export class SessionProcesses {
       throw cause;
     }
   }
-}
-
-/** The command a session runs as. */
-const HARNESS = "claude";
-
-/** The last segment of the first word of a command line: what the process was
- * launched as, however it was found on the path. */
-function executable(command: string): string {
-  const argv0 = command.trimStart().split(/\s/, 1)[0] ?? "";
-  return argv0.slice(argv0.lastIndexOf("/") + 1);
 }
 
 /** The pid is gone. The one signalling failure that means the caller's goal
@@ -373,11 +402,11 @@ export function hostTerminalReader(): TerminalReader {
 
 /** The effects as this host provides them. */
 export function hostProcessDeps(
-  rows: () => ReadonlyMap<Sid, AgentInfo>,
+  runs: (sid: Sid) => readonly SessionRun[],
   terminalCommand?: string,
 ): ProcessDeps {
   return {
-    rows,
+    runs,
     command: (pid) => run(["ps", "-p", String(pid), "-o", "command="]),
     environment: hostEnvironment,
     started: hostStarted,

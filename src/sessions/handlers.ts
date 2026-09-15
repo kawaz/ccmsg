@@ -29,6 +29,7 @@ import { dumpWrite } from "./dump.ts";
 import { forkOrigin } from "./fork.ts";
 import { itemsRead } from "./items.ts";
 import type { SessionProcesses } from "./processes.ts";
+import { statedTerminalId } from "./runs.ts";
 import { search } from "./search.ts";
 
 /** The two capabilities of the session ops, present only where what they rest
@@ -64,6 +65,10 @@ export interface SessionOpsDeps {
   readonly forget: (sid: Sid) => boolean;
   /** The named selections this instance is configured with (DESIGN §2.5). */
   readonly presets: readonly DumpPreset[];
+  /** Whether two or more processes are running one session, which is what a
+   * dump of it is refused for: a transcript two runs are writing reads as
+   * neither of them (DR-0001 §3). */
+  readonly duplicated: (sid: Sid) => boolean;
 }
 
 /** The ops that observe and operate on sessions.
@@ -79,7 +84,7 @@ export function sessionHandlers(deps: SessionOpsDeps) {
   return {
     "session.kill": async (input: HandlerInput): Promise<SessionKillResult> => {
       const args = input.args as unknown as SessionKillArgs;
-      return await deps.processes.kill(args.sid, args.force === true);
+      return await deps.processes.kill(args.sid, args.force === true, args.pid);
     },
 
     "session.rename": async (input: HandlerInput): Promise<SessionRenameResult> => {
@@ -90,7 +95,10 @@ export function sessionHandlers(deps: SessionOpsDeps) {
       // its own rather than a character appended to the line: the terminal
       // drains what was typed before the submit reaches it.
       await deps.processes.type(terminal, [`text:/rename ${title}`, "key:Enter"]);
-      return { terminal_id: terminal.id, instance: deps.self, title };
+      // The handle is stated with the scheme that says how it is opened, which
+      // is what every other statement of a terminal carries (contract,
+      // `terminalUrl`); the bare handle is what was typed into.
+      return { terminal_id: statedTerminalId(terminal.id), instance: deps.self, title };
     },
 
     "session.env.read": async (input: HandlerInput): Promise<SessionEnvReadResult> => {
@@ -106,13 +114,16 @@ export function sessionHandlers(deps: SessionOpsDeps) {
         files: deps.files,
       }),
 
-    "session.dump.write": (input: HandlerInput) =>
-      dumpWrite(input.args as unknown as SessionDumpWriteArgs, {
+    "session.dump.write": (input: HandlerInput) => {
+      const args = input.args as unknown as SessionDumpWriteArgs;
+      refuseDuplicated(args.sid, deps.duplicated);
+      return dumpWrite(args, {
         self: deps.self,
         stateDir: deps.stateDir,
         files: deps.files,
         presets: deps.presets,
-      }),
+      });
+    },
 
     /** Which selections a dump may be asked for by name.
      *
@@ -163,6 +174,19 @@ export function sessionHandlers(deps: SessionOpsDeps) {
       return await itemsRead(args, { files: deps.files, presets: deps.presets });
     },
   };
+}
+
+/** Refuse a call that names a session two or more processes are running.
+ *
+ * Nothing is held back for later: what the caller wanted is still theirs, and a
+ * person decides which run to end before anything here resumes (contract,
+ * `session_duplicated`). */
+export function refuseDuplicated(sid: Sid, duplicated: (sid: Sid) => boolean): void {
+  if (!duplicated(sid)) return;
+  throw new OpError(
+    "session_duplicated",
+    `${sid} is being run by more than one process, so what this would act on is not settled`,
+  );
 }
 
 /** A title fit to be typed.

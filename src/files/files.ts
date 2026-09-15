@@ -32,6 +32,7 @@ import type {
   FileStatEntry,
   FileWriteArgs,
   FileWriteResult,
+  Sid,
   Timestamp,
 } from "@ccmsg/protocol";
 import { type HandlerInput, OpError } from "../dispatch/index.ts";
@@ -60,14 +61,14 @@ const FIND_VISITS = 20_000;
  * the kind implies. The decision is `Containment`'s, and what it needs of the
  * caller — the role dispatch states for a `scope: "role"` op, and the session
  * the connection speaks for — is handed over unread. */
-export function fileHandlers(paths: Containment) {
+export function fileHandlers(paths: Containment, duplicated: (sid: Sid) => boolean) {
   const viewer = (input: HandlerInput): Viewer => ({
     role: input.role,
     sid: input.identity?.sid,
   });
   const writes = new Writes();
 
-  return {
+  const handlers = {
     "dir.list": async (input: HandlerInput): Promise<DirListResult> => {
       const args = input.args as unknown as DirListArgs;
       const at = await paths.root(args, viewer(input));
@@ -198,6 +199,27 @@ export function fileHandlers(paths: Containment) {
       return { results };
     },
   };
+
+  // Every one of them names the session whose files are being reached, and
+  // every one of them is refused while two processes are running it: the tree
+  // a caller means is the one that session sees, and which of two runs that is
+  // is not settled (DR-0001 §3). Applied once here rather than at the head of
+  // eight bodies, so an op added later cannot be the one that forgot.
+  return Object.fromEntries(
+    Object.entries(handlers).map(([op, handler]) => [
+      op,
+      (input: HandlerInput) => {
+        const sid = (input.args as unknown as { sid: Sid }).sid;
+        if (duplicated(sid)) {
+          throw new OpError(
+            "session_duplicated",
+            `${sid} is being run by more than one process, so which of them this names is not settled`,
+          );
+        }
+        return handler(input);
+      },
+    ]),
+  ) as typeof handlers;
 }
 
 /** The file a located path names, or the contract's word for "not there". */
