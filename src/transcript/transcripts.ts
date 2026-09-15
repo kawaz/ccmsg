@@ -103,11 +103,10 @@ export class Transcripts implements UpstreamResource {
    * count of processes rather than anything about the reading and belongs to
    * whoever holds the runs.
    *
-   * A session nothing is following stands at `absent` for the same reason one
-   * whose file is not there does: there is no fold here to read, and the two
-   * are one answer to the client's question of whether the status is worth
-   * reading. Following starts when something wants the fold, which is the
-   * subscription driving the resource (DESIGN §6.3). */
+   * A session nothing is following stands at `absent`, which is the same thing
+   * that word says of a session with no transcript yet: nothing is folded here.
+   * Following starts when something wants the fold, which is the subscription
+   * driving the resource (DESIGN §6.3). */
   standing(sid: Sid): SessionStatusStanding {
     return this.#followed.get(sid)?.standing ?? "absent";
   }
