@@ -179,7 +179,7 @@ DR-0001 is the source of truth. What is here is only where it joins the other la
 
 ## 4. Sessions and their runs
 
-A session and a run of it are two things (DR-0001). The session is the transcript and the folded state, and it is one whether nothing or two processes are running it; a run is the process — what a signal reaches, what a terminal shows, what a connection speaks over. `peers` is a list of the first and `agents` a list of the second, and the daemon states what it observed of each rather than a word summing them up. Where a session stands (alive / duplicated / paused / disappeared), whether anything can reach it, and whether a person has to answer something are read off those observations by the contract's own `liveness` / `reachable` / `waiting`, so an instance and a client answer the question with one implementation instead of two.
+A session and a run of it are two things (contract DR-0001). The session is the transcript and the folded state, and it is one whether nothing or two processes are running it; a run is the process — what a signal reaches, what a terminal shows, what a connection speaks over. `peers` is a list of the first and `agents` a list of the second, and the daemon states what it observed of each rather than a word summing them up. Where a session stands (alive / duplicated / paused / disappeared), whether anything can reach it, and whether a person has to answer something are read off those observations by the contract's own `liveness` / `reachable` / `waiting`, so an instance and a client answer the question with one implementation instead of two.
 
 ### 4.1 Harnesses
 
