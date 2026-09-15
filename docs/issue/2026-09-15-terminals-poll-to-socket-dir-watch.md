@@ -38,6 +38,10 @@ v1.1.0 で入れた `terminals` topic は購読中 `hyoui list --format=jsonl` �
 - [ ] 端末の出入りが watch のイベントで 1 秒以内に `terminals` に反映される (test: socket ファイルの作成 / 削除を模擬)
 - [ ] 変化が無い時の `hyoui list` 実行回数が 5 秒間隔より減っている (test: 30 秒で N 回以下)
 
+## 訂正 (kawaz 2026-09-15): polling 自体が不要
+
+必要性から整理すると周期 polling は要らない。要るのは (1) `/terminals` を開いた時と socket dir の出入りイベント時の `hyoui list` 1 回、(2) セッション画面の端末タブを開いた時の `hyoui status <id>` 1 回 (id は既知)、(3) セッション一覧の「起動中」の導出は socket dir のイベント時の list で足りる (`agents` の変化は既に watch 済み)。`child_state` の遷移は socket の消滅か、その端末を見ている時の status で分かる。バックオフ付き確認 poll も不要。`terminals` topic の実装は「購読開始時に 1 回 + socket dir の watch で再取得」に縮める。
+
 ## 関連
 
 - `src/terminals/terminals.ts`、`src/sessions/harness.ts` の `DirectoryWatch`、reference `agent-runtime/event-driven-alternatives`
