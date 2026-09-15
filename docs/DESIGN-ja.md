@@ -139,7 +139,7 @@ auth records も同じ理屈で M4 の対象外である: credential は authent
 
 inbox と kv は M4 の例外ではなく、M4 の対象外である。M4 が禁じるのは**派生値**の永続化であり、未配送メッセージは派生値ではない。送信側の `message.send` は既に応答を返して終わっており、transcript にも upstream にも「まだ届いていない本文」はどこにも無い。daemon が失えば本文ごと消える。kv も同じ理屈で、テーマ等の保存値は daemon が失えばユーザの設定ごと消える (契約 kv.ts が instance 間ミラーと `updated_at` による決着を前提にしているのも、値がプロセスより長く生きることを前提にしているため)。
 
-room jsonl は無い (契約 §2.1 で会話ログの正本は transcript)。sandbox grant・購読状態・fold の途中結果・config dir の一覧はいずれも再構成できるので書かない (M4)。pid / socket / lock は資源ハンドルであって状態ではない。**instance id はその対極で、資源ハンドルではなく identity だから書く**: 発行したものすべて (`mid`、store の鍵、`last_live`、レコードの発行者) がこの値で引かれるので、プロセスや置き場所から導くと、導出元が変わった瞬間にそれらが一斉に指し先を失う。引っ越しは state ごと移すことであり、id が state と一緒に動くことがそれらを無効にしない唯一の形である (DR-0001 §2.1)。**mesh の署名鍵は書かない**: 接続 1 本ごとに生成して ack で捨てるエフェメラル鍵であり ([mesh-peer-auth](./design/mesh-peer-auth.md) §7)、メモリ上にしか存在しない。state dir に置くと保存場所と復旧手順という管理対象が生まれ、§1.1 に反する。
+room jsonl は無い (契約 §2.1 で会話ログの正本は transcript)。sandbox grant・購読状態・fold の途中結果・config dir の一覧はいずれも再構成できるので書かない (M4)。pid / socket / lock は資源ハンドルであって状態ではない。**instance id はその対極で、資源ハンドルではなく identity だから書く**: 発行したものすべて (`mid`、store の鍵、`last_live`、レコードの発行者) がこの値で引かれるので、プロセスや置き場所から導くと、導出元が変わった瞬間にそれらが一斉に指し先を失う。引っ越しは state ごと移すことであり、id が state と一緒に動くことがそれらを無効にしない唯一の形である (contract DR-0001 §2.1)。**mesh の署名鍵は書かない**: 接続 1 本ごとに生成して ack で捨てるエフェメラル鍵であり ([mesh-peer-auth](./design/mesh-peer-auth.md) §7)、メモリ上にしか存在しない。state dir に置くと保存場所と復旧手順という管理対象が生まれ、§1.1 に反する。
 
 ## 3. 認証と入口
 
@@ -153,9 +153,9 @@ greeting の応答は `upstream.terminal_gateway` が設定されている insta
 
 ### 3.2 前段 proxy と入口の照合
 
-**前段 proxy は operator が名指した相手だけを信じる。** `entry.trusted_proxies` に CIDR でアドレス塊を書き、listener が観測した接続元がそこに含まれる時だけ `X-Forwarded-For` を読む。他に判断材料は無い: forwarded ヘッダを書くのは自分の前に居る誰かであり、ポートに届く者なら誰でも書けるので、**前段が誰かを config が言うまで、そのヘッダは見知らぬ相手の自己申告**である。信じる場合は右から読み、名指した proxy でない最初の値を採る (その右側は自分たちの hop が書いた値、左側は最外の proxy と話していた誰かが書ける値)。`source_ips` と別項目なのは問いが違うからで、あちらは「そもそも誰が接続してよいか」、こちらは「他人についての証言を誰から受け取るか」であり、proxy は「入って良い唯一の相手」でないまま入口に立つのが普通である。ここで復元するのは `registered_ip` / `last_used_ip` / `last_refresh.ip` に入る人の IP、つまり本人が自分のセッションを見分けるための **手がかり** で、認可には一切使わない (DR-0001 §2.2)。取り違えた時の実害は認可の面では小さく、手がかりとしては大きい: 偽装された IP が record に残ると、一覧を読む本人を自分から遠ざける手がかりになる。名指しの無い前段で生の接続元をそのまま使うのはこのためである。
+**前段 proxy は operator が名指した相手だけを信じる。** `entry.trusted_proxies` に CIDR でアドレス塊を書き、listener が観測した接続元がそこに含まれる時だけ `X-Forwarded-For` を読む。他に判断材料は無い: forwarded ヘッダを書くのは自分の前に居る誰かであり、ポートに届く者なら誰でも書けるので、**前段が誰かを config が言うまで、そのヘッダは見知らぬ相手の自己申告**である。信じる場合は右から読み、名指した proxy でない最初の値を採る (その右側は自分たちの hop が書いた値、左側は最外の proxy と話していた誰かが書ける値)。`source_ips` と別項目なのは問いが違うからで、あちらは「そもそも誰が接続してよいか」、こちらは「他人についての証言を誰から受け取るか」であり、proxy は「入って良い唯一の相手」でないまま入口に立つのが普通である。ここで復元するのは `registered_ip` / `last_used_ip` / `last_refresh.ip` に入る人の IP、つまり本人が自分のセッションを見分けるための **手がかり** で、認可には一切使わない (contract DR-0001 §2.2)。取り違えた時の実害は認可の面では小さく、手がかりとしては大きい: 偽装された IP が record に残ると、一覧を読む本人を自分から遠ざける手がかりになる。名指しの無い前段で生の接続元をそのまま使うのはこのためである。
 
-**人と gateway の入口 (`<endpoint>ws`、`<endpoint>auth/*`、`<endpoint>webhook/<source>`) はパスの末尾で照合し、prefix を問わない** (DR-0001 §2.7)。proxy は prefix を剥がさずそのまま渡してよく、別名の endpoint や、1 つの origin の裏に複数 instance を束ねる LB が自分の endpoint と無関係に成立する。**自分の endpoint のパス配下に固定するのは mesh の鍵 (`/mesh/jwk/<kid>`) だけ**である: 同じ origin に居る 2 つの instance が互いの鍵に答えないための境界がこの対応関係そのものだからで (mesh-peer-auth §6.3)、人の入口にはそのような鍵空間が無い。
+**人と gateway の入口 (`<endpoint>ws`、`<endpoint>auth/*`、`<endpoint>webhook/<source>`) はパスの末尾で照合し、prefix を問わない** (contract DR-0001 §2.7)。proxy は prefix を剥がさずそのまま渡してよく、別名の endpoint や、1 つの origin の裏に複数 instance を束ねる LB が自分の endpoint と無関係に成立する。**自分の endpoint のパス配下に固定するのは mesh の鍵 (`/mesh/jwk/<kid>`) だけ**である: 同じ origin に居る 2 つの instance が互いの鍵に答えないための境界がこの対応関係そのものだからで (mesh-peer-auth §6.3)、人の入口にはそのような鍵空間が無い。
 
 ### 3.3 人の認証 (passkey)
 
@@ -177,9 +177,9 @@ greeting の応答は `upstream.terminal_gateway` が設定されている insta
 
 **credential record / token family / tombstone は `auth.records` topic で複製する。** §7.4 の relay には乗らない — element 粒度なので「instance ごとの全体値」が無く、受け取る側が key で畳む。roles は `instance` だけで、relay が `caller` を付ける他の topic と違い**instance のまま購読する**: 人が読める場所に置けば token がそのまま漏れる。`passkey remove` は sub 単位の tombstone を打ち、tombstone はその key 配下への以後の書き込みを拒む (LWW の例外)。credential の tombstone に保持期限は無く、family のそれは 7 日。
 
-## 4. セッションの状態モデル
+## 4. セッションと run
 
-一覧の分類 (Pinned / Waiting / 生存 / 管理外 / Paused / Disappeared) は **daemon が導く**。webui が生の値を組み合わせて分類すると、instance ごとに解釈がずれる。
+セッションと、その run は別のものである (DR-0001)。セッションは transcript と畳んだ状態であって、走らせているプロセスが 0 個でも 2 個でも 1 つである。run はプロセスの側で、signal が届く先・端末が映しているもの・接続が話している相手がそれにあたる。`peers` は前者の一覧、`agents` は後者の一覧で、daemon は**それぞれについて観測したことを述べる**のであって、両方を要約した 1 語を述べるのではない。セッションがどこに立っているか (生存 / 重複 / Paused / Disappeared)・こちらから届く口があるか・人が答えるべきものがあるかは、その観測から契約自身の `liveness` / `reachable` / `waiting` が読む。instance も client も同じ実装を呼ぶので、同じ行が 2 通りに見えることが無い。
 
 ### 4.1 ハーネス
 
@@ -220,7 +220,7 @@ sid は両者とも harness 自身が名乗る値をそのまま使う。codex �
 
 **Codex の入力待ちは検出しない。** 承認や質問で止まっている thread は、`CODEX_HOME` の下にそう書かない: 承認・入力要求の event は rollout の永続化方針が "transient" として明示的に落とし、thread history が turn ごとに持つ status は `completed` / `interrupted` / `failed` / `inProgress` の 4 つで待ちと実行中を区別しない。知っているのは app-server で、`thread/status/changed` の `WaitingOnApproval` / `WaitingOnUserInput` がそれを名乗るが、これはファイルではなく購読の要る JSON-RPC 通知であり、§4.2 の入力 (自 config home のファイルと自分への接続) に無い種類の上流である。**足すかどうかは「何を増やしたくないか」の判断**なので、ここでは足さない。
 
-したがって Codex の thread は、承認待ちで止まっていても**生存 (管理外) のまま**であり、待ちに気づく口は ccmsg の外 (hyoui) にある。Claude Code だけが `waiting` を出す — 一覧の「待ち」欄が harness によって埋まったり埋まらなかったりするのは、この差がそのまま出たものである。
+したがって Codex の thread は、承認待ちで止まっていても**走ってはいるが `reachable` でないまま**であり、待ちに気づく口は ccmsg の外 (hyoui) にある。`agents.waiting_for` を埋めるのは Claude Code だけである — 一覧の「待ち」欄が harness によって埋まったり埋まらなかったりするのは、この差がそのまま出たものである。
 
 **hooks の trust**: Codex は一度人が確認した hook しか実行しない。`plugin install codex` は file を置き、trust が要ることを `needs` として答えるだけで、trust 自体は書かない (trust は「このプログラムを走らせてよいか」という問いで、代わりに答えるのは install の仕事ではない)。`hooks.json` は config home の持ち物なので**併合**し、uninstall では ccmsg が置いた entry だけを外す。
 
@@ -229,51 +229,59 @@ sid は両者とも harness 自身が名乗る値をそのまま使う。codex �
 | 入力 | 何が分かるか | 取り方 |
 |---|---|---|
 | 接続 | ccmsg と話しているか、いつ話したか | transport (イベント) |
-| harness 自身の一覧 (§4.1) | **セッションの存在**と、Claude Code ではさらに `waiting` (dialog)・messaging socket | 自 config home のみ (M6)。**判定が要る時にその場で読む** |
+| harness 自身の一覧 (§4.1) | **どのプロセスがどのセッションを走らせているか**と、Claude Code ではさらに `waiting_for` (dialog)・messaging socket | 自 config home のみ (M6)。**判定が要る時にその場で**、pid ごとに読む |
 | llm-gateway の request / response | **実際に推論が走っているか** (= 忙しさ) | webhook (push)。**この instance が知っている sid にだけ効く** |
 | `last_live` + `stopped_at` | 前回稼働中・意図して止めた | 自分が書いたファイル |
 | transcript の fold | API error で止まっているか、最後の人間入力 | tail |
 
-**`peers` は接続の有無で分かれない**。hello するのは `SessionStart` hook ひとつなので、instance が再起動すると**既に動いているセッションは二度と hello して来ない** — 接続を持つものだけを出すと、走っているセッションで埋まったホストが「稼働 0」に見える。`sessions/` が名乗るセッションは hello の有無に関わらず行であり、どちらなのかは行の `state` (§4.3) が言う。
+**`peers` は接続の有無で分かれない**。hello するのは `SessionStart` hook ひとつなので、instance が再起動すると**既に動いているセッションは二度と hello して来ない** — 接続を持つものだけを出すと、走っているセッションで埋まったホストが「稼働 0」に見える。`sessions/` が名乗るセッションは hello の有無に関わらず行であり、どちらなのかは行の `runs` と `stopped_at` (§4.3) が言う。
 
-**生存中と失われたセッションも 1 種類の行で運ぶ** (2 つの list ではない)。セッションの登録・消失は同一性を保ったままの `state` の更新であって、行が list を移ることではない。失われた行だけが持つ field (`last_seen_at` / `stopped_at` と、再開が何として再開すべきかの `model` / `effort`) は、接続由来の field が欠けた同じ行の上に載る。
+**生存中と失われたセッションも 1 種類の行で運ぶ** (2 つの list ではない)。セッションの登録・消失は同一性を保ったままの `runs` の更新であって、行が list を移ることではない。失われた行だけが持つ field (`last_seen_at` / `stopped_at` と、再開が何として再開すべきかの `model` / `effort`) は、接続由来の field が欠けた同じ行の上に載る。
 
 接続が無い行には、接続についての field (`connected_at` / `last_activity_at` / `client_version` / `protocol_version`) が無い。名乗った client が居ないので、世代は推測するのではなく言わない。hello が名乗った `repo` / `ws` 等は `sessions/` がその sid を名乗っている間は保持するので、hook の接続が閉じても行から消えない。
 
 **1 つのセッションが両方の list に載ることはない**。`last_live` の entry が外れる条件は「再び生存になったこと」であって hello ではない。resume は新しいプロセスと新しい状態ファイルを作るだけで、hello を伴うとは限らない。
 
-**分類の入力は購読に依存しない**。`sessions/` を「読むこと」と「監視すること」は別物で、§6.3 が購読に従属させるのは後者だけ。どのセッションが存在するかは instance 自身の事実なので、判定が要る瞬間 (message.send の宛先判定 / last_live の記録 / classify) にはその場でディレクトリを読む。監視と poll は「変化を購読者へ push する」ための資源であって、答えの取得経路ではない。混同すると、誰も購読していない間は生きているセッションが `session_not_found` になり、生きたままのセッションが last_live へ「消えた」と書かれる。
+**行が何から組まれるかは購読に依存しない**。`sessions/` を「読むこと」と「監視すること」は別物で、§6.3 が購読に従属させるのは後者だけ。どのセッションが存在するかは instance 自身の事実なので、判定が要る瞬間 (message.send の宛先判定 / last_live の記録 / 行の組み立て) にはその場でディレクトリを読む。監視と poll は「変化を購読者へ push する」ための資源であって、答えの取得経路ではない。混同すると、誰も購読していない間は生きているセッションが `session_not_found` になり、生きたままのセッションが last_live へ「消えた」と書かれる。
 
-**codex の入力待ちは分類の入力に無い** (§4.1)。承認で止まっている thread は生存のまま読まれる。
+**codex の入力待ちはここでの入力に無い** (§4.1)。承認で止まっている thread は走っているものとして読まれる。
 
-**codex のセッションは端末を名乗らない。** 分類の「管理外」は「生きているが、こちらから打ち込む手がかりが無い」の意味で (§4.3)、Codex の thread に端末として打ち込む道は無い。よって接続を持たない codex の生存セッションは `live_unmanaged` として読まれる。配送はこれとは別で、経路 (a) が thread の queue に載せる (§6.5)。
+**codex のセッションは端末も pid も名乗らない。** lock file が言うのは「その thread に生きた書き手が居る」ことだけで、それがどのプロセスかは何も言わない。よってそのセッションの行が持つのは **pid を持たない run 1 つ**である — 走ってはいるが、こちらから signal を送ることも打ち込むこともできない (`reachable` は false)。この種の run は 2 つあっても互いを区別できないので、**harness が「その thread は居る」と言うだけでセッションが重複になることは決して無い**。配送はこれとは別で、経路 (a) が thread の queue に載せる (§6.5)。
 
 **セッションの集合は自 config home の `sessions/` を監視して得る** (`claude agents` を子プロセスとして起こさない理由は DR-0009)。5 秒ごとの子プロセス起動は持たない (M3)。ファイル監視は取りこぼしうるので、低頻度の確認 poll を**併走**させる — 間隔の根拠は「監視が落とした変化を、利用者が気づく前に拾う」であって、取得の主経路ではない。
 
 `sessions/<pid>.json` は書き換えの途中で一時的に空または不完全な文書になりうる。その瞬間もファイルが存在するなら、daemon はそのファイルから最後に正常に読めた行を保持し、不完全な読み取りをセッション消滅として publish しない。完全な文書でプロセス不在と読めた時と、ファイル自体が消えた時は直ちに行を除く。監視は変化を知らせる資源であり、一時的な中間表現を現在値に昇格させる根拠ではない。
 
-**gateway のイベントは自分が知っている sid にだけ効かせる**。gateway は全 config home の上に立っていて、イベントは sid しか名乗らない。よって「gateway が見た」だけでは**この instance のセッションについての証拠にならない** — 別 config home の sid を live と分類し、`peers` に行を出し、`message.send` がこの instance に inbox を持たない宛先を受け付けてしまう。生存 (`gateway_active_at`) の入力として効かせるのは、**hello 済み (接続中または `last_live` に残っている) か、自 config home の `sessions/` が名乗っている sid だけ**。イベント自体は捨てず `llm.requests` topic には流す — あれは「この instance のセッション」ではなく「gateway が見ているもの」の写しだからである。
+**gateway のイベントは自分が知っている sid にだけ効かせる**。gateway は全 config home の上に立っていて、イベントは sid しか名乗らない。よって「gateway が見た」だけでは**この instance のセッションについての証拠にならない** — 別 config home の sid を live と分類し、`peers` に行を出し、`message.send` がこの instance に inbox を持たない宛先を受け付けてしまう。`gateway_active_at` として述べるのは、**hello 済み (接続中または `last_live` に残っている) か、自 config home の `sessions/` が名乗っている sid だけ**。イベント自体は捨てず `llm.requests` topic には流す — あれは「この instance のセッション」ではなく「gateway が見ているもの」の写しだからである。
 
-**生 status の使い道を絞る。** `sessions/<pid>.json` の status は「そのセッションが存在すること」と `waiting` (dialog が開いている) の判定にだけ使い、**Busy / Idle の判定には使わない**。忙しさの正本は gateway の request / response イベントで、実際に推論が走ったかを知っているのはそちらだけである。
+**生 status の使い道を絞る。** `sessions/<pid>.json` の status は「そのプロセスがそのセッションを走らせていること」と `waiting_for` (dialog が開いている) の判定にだけ使い、**Busy / Idle の判定には使わない**。忙しさの正本は gateway の request / response イベントで、実際に推論が走ったかを知っているのはそちらだけである。
 
-### 4.3 導出
+### 4.3 行が述べるものと、そこから読むもの
 
 ```
-Waiting      = 生 status が waiting (dialog)、または fold が API error で停止と判定
-Pinned       = 利用者が固定した (daemon は印を持つだけで、分類の根拠にしない)
-生存         = 接続がある / sessions/ にプロセスが居る / gateway に直近の活動がある
-生存 (管理外) = 生存だが ccmsg とも terminal とも繋がっていない
-Paused       = last_live にあり stopped_at がある
-Disappeared  = last_live にあり stopped_at が無い
+runs[]            = instance から見えている「このセッションを走らせているプロセス」1 つにつき 1 件
+                    {pid?, started_at?, terminal_id?, connected}
+session_status    = absent | folding | ready | frozen — このセッションの fold がどれだけのものか
+stopped_at        = 止まると言った時刻 (runs が空の間に意味を持つ)
+gateway_active_at = gateway が見た「最後に推論が走った時刻」
+pinned            = 人が固定した (持ち回るだけで、何かの根拠にはしない)
 ```
 
-**「管理外」は配送経路を見ない**。ここで言う「繋がっている」は「こちらから打ち込める口があるか」であって、message が届くかではない。経路 (a) は `sessions/` の messaging socket や Codex の thread queue に載せるので、管理外の行にも message は届く (§6.5) — 届くことと操作できることは別の問いで、後者だけが分類である。
+セッションの run は、観測できるようになる順に **3 つの出所**から来る: harness の状態ファイル (プロセスごとに 1 つなので、同じセッションを名乗る 2 ファイルは 2 つの run)、harness が書くより前に launcher が起こしたプロセス、そして接続である。**接続それ自体は 2 個目のプロセスではない**: 挨拶は自分が代弁する harness のプロセスを名乗り (`hello.session.pid`。hook や CLI が挨拶を運ぶ場合はその親の pid)、名乗った時はその run に接続を帰属させる。名乗らなかった時は、run が 1 つならその run に、複数あるならどれにも帰属させない — 帰属先の無い接続のために run を 1 つ作れば、在りもしない重複を報告することになる。観測が何も無く接続だけあるセッションは **pid を持たない run 1 つ**であり、そういう run に signal を送れないのもこれが理由である。
 
-「Busy と Idle を分けない」(issue session-list-sections) ので、**生存の中の忙しさは分類ではなく行の属性**として出す。忙しさは gateway のイベントから導き (§4.2)、並び順は最終活動時刻。分類の側は忙しさを見ないので、gateway が設定されていない instance でもセクション構成は成立する (行の属性が 1 つ欠けるだけ)。
+セッションがどこに立っているかは、その行に対する契約の `liveness` であり、こちらから操作できるかは `reachable` である。**そのどれも wire には出ない** (contract DR-0001 §2): instance も client も同じ実装 1 つを呼ぶので、同じ行が 2 通りに見えることが無い。
 
-「gateway に直近の活動がある」の「直近」は、gateway が最後に推論を見てから 5 分以内 (§1.3 の生存窓)。窓を出た観測は生存の根拠にならず、次に payload を組む時には行の属性 `gateway_active_at` からも消える。窓の判定は読む瞬間に行い、窓が閉じたことを知らせるタイマーは無い (§1.3)。
+**launcher が起こした run は、harness がそれにセッションを名付けるより前に `agents` に載る**。`sid` は無く、端末と起動時刻はある。両者を結ぶのはその pid を名乗る挨拶で、行は前後で同じ 1 行である — `agents` を `instance` + `pid` で照合するのはこのためである。launcher の外で始まったセッションは状態ファイルが現れた時に現れ、それより前に観測するものは無い。
 
-属性は分類ではないので、**gateway が同じ session を再び見ても出るのはその 1 行だけ**である。frame は変化した行を運ぶので (§6.2)、時計が進んだことはその行 1 つの更新として購読者に届き、他の行は送り直さない。sessions ドメイン全体の再計算を起こすのは**窓が開いた瞬間だけ**で (= 行がセクションを移り得る唯一の契機)、窓の中で再び見られた時は該当 sid の行を組み直して出すに留める — 推論は毎秒何度も観測されるので、1 属性のために「どのセッションが居るか」を読み直す仕事まで毎回払わない。推論をそのまま見たい client には gateway 自身の view である `llm.requests` がある。
+**1 つのセッションに 2 つの run があることは、解決せずそのまま出す。** harness は走っているセッションの resume を許すので、その瞬間から 2 つのプロセスが同じ transcript を書く: 読みは信用できず、offset は狂っている。よって `session_status` は `frozen` になり、fold の更新と transcript の追記の配送を止めて (§6)、**最後に信用できた値**を述べる。`message.send` / `notify.send` / `session.dump.write` と file・dir 系の op は `session_duplicated` で断り、何も預からない — 下書きは呼び出し側の手元にあるままである。`session.kill` は任意の `pid` を取り、run が 2 つ以上あって pid が名指されなければ `ambiguous_run` で断り、pid があればそのセッション自身の `runs` の pid と `started_at` に照合してから signal を送る。どちらかを止めることも、どちらが正しいかを決めることもここではしない。守るのは「重複を隠さないこと」と「壊れた読みを真実として述べないこと」の 2 つである。run が 2 つを下回ったら fold は先頭からやり直す — cache した offset は、2 人の書き手が既に動かした file の中の位置だからである。
+
+**`reachable` は配送経路を見ない**。run が reachable であるとは「こちらから打ち込める口があるか」であって、message が届くかではない。経路 (a) は `sessions/` の messaging socket や Codex の thread queue に載せるので、reachable でない行にも message は届く (§6.5) — 届くことと操作できることは別の問いである。
+
+「Busy と Idle を分けない」(issue session-list-sections) ので、**忙しさはセッションがどこに立っているかの一部ではなく、行の属性**として出す。忙しさは gateway のイベントから導き (§4.2)、並び順は最終活動時刻。`liveness` は忙しさを見ないので、gateway が設定されていない instance でもセクション構成は成立する (行の属性が 1 つ欠けるだけ)。
+
+gateway の活動の「直近」は、gateway が最後に推論を見てから 5 分以内 (契約の `GATEWAY_LIVE_WINDOW_MS`)。**プロセスが 1 つも残っていないのに推論が走り続けているセッションは生きている** — 要求は、それを打ち込んだ端末より長生きする — ので、この時刻は run が 0 の行にも載る。窓の判定は読む瞬間に行い、窓が閉じたことを知らせるタイマーは無い (§1.3)。
+
+**gateway が同じ session を再び見ても出るのはその 1 行だけ**である。frame は変化した行を運ぶので (§6.2)、時計が進んだことはその行 1 つの更新として購読者に届き、他の行は送り直さない。sessions ドメイン全体の再計算を起こすのは**窓が開いた瞬間だけ**で (= 行がセクションを移り得る唯一の契機)、窓の中で再び見られた時は該当 sid の行を組み直して出すに留める — 推論は毎秒何度も観測されるので、1 属性のために「どのセッションが居るか」を読み直す仕事まで毎回払わない。推論をそのまま見たい client には gateway 自身の view である `llm.requests` がある。
 
 ### 4.4 「最終活動時刻」の 2 種
 
@@ -398,11 +406,13 @@ M4 とも矛盾しない。M4 が禁じるのは派生値をディスクに置�
 
 `transcript.items:<sid>` は同じ追記をアイテムで運ぶ (§5.1)。snapshot は**末尾側のアイテム一定数**で、byte 側の snapshot が「どこから遡るか」を答えるのに対し、こちらは購読者が即描ける末尾そのものを答える (アイテムには「そこから遡る」ための座標が無く、遡るのは範囲指定の `transcript.items.read` の仕事である。snapshot の先頭アイテムを `until_id` に渡せばその手前が返り、以降は `prev` を渡し続けて遡れる)。件数で切るのは、これを養うのが file 全体の読みだからで、小さい record が並ぶ file では最初の frame が transcript と同じ大きさになってしまう。
 
-**transcript に依る購読は、transcript を読み終えてから答える。** 依るのは `transcript:<sid>` / `transcript.items:<sid>` / `session.status:<sid>` の 3 つで、size・読みの末尾・fold を述べるが、いずれも file 全体が言っていることであって一部が言っていることではない。file は**先頭から**読む。固定サイズの読みに切り、その合間にイベントループを返すので、1 人の購読者が待っている間に instance の他のものは待たない。述べるのは本当のことだけで、まだ読めていない宣言に対して「何も宣言されていない」を意味する値を送ることは無い。読みは file の発見も status が名指すパスの解決も含めて全て非同期である (DR-0015)。
+**transcript に依る購読は、transcript を読み終えてから答える。** 依るのは `transcript:<sid>` / `transcript.items:<sid>` / `session.status:<sid>` の 3 つで、size・読みの末尾・fold を述べるが、いずれも file 全体が言っていることであって一部が言っていることではない。どこまで進んだかはセッション自身の行が `session_status` として持つので (§4.3)、status を待っている client には「なぜまだ無いのか」が伝わる: instance が差し出せる fold をまだ持っていない間は `absent`、file を先頭から読んでいる間は `folding`、読み終われば `ready` である。file は**先頭から**読む。固定サイズの読みに切り、その合間にイベントループを返すので、1 人の購読者が待っている間に instance の他のものは待たない。述べるのは本当のことだけで、まだ読めていない宣言に対して「何も宣言されていない」を意味する値を送ることは無い。読みは file の発見も status が名指すパスの解決も含めて全て非同期である (DR-0015)。
 
 **読んだところまでは残し、次の読みはそこから続ける。** セッション毎に XDG cache 配下へ、fold が次の record へ持ち越すもの・読みの末尾のアイテム・その 2 つが説明する byte offset を、読み出した file の同一性と共に置く。次回はその offset から読む。file が置き換わった / 短くなった場合と、fold が別の答えを導く build が書いた entry (`FOLD_CACHE_VERSION`) は捨てて先頭から読み直す。ここにあるものは全て導き直せるので、cache が空になっても代償は 1 回の読みだけである。
 
 **この同一性判定が捉えないのは、同じ inode のまま元の長さ以上に書き直された file である。** offset より伸びた同一 inode は「追記された同じ file」と区別が付かず、読みは自分が読んでいない内容の record の途中から再開する。live の tail は縮む瞬間を見ているが、run の頭で entry を読むだけの側には見えない。これは**検出しない**。そのように書き直された transcript のセッションは、file が別物に置き換わるか entry の version が上がるまで、書き直し後の内容と古い読みが持っていたものを併せて述べる。
+
+**2 つのプロセスが書いている transcript は、そもそも読まない。** そのセッションの `runs` が 2 つ以上ある間は tail を止め、何も畳まず、どちらの transcript topic にも何も運ばない。`session_status` は `frozen` を言い、fold は最後に信用できた値を保つ (§4.3)。1 つに戻ったら、止まったところからではなく**先頭から**読み直し、cache した offset は捨てる — それは、2 人の書き手が既に動かした file の中の位置を名乗っているからである。run が 1 つも残っていないセッションは transcript をそのまま持っているので、他と同じに読む。
 
 fold を待つのは購読だけではない。**file 系 op の allowlist は同じ値**なので、transcript をまだ読んでいるセッションを名指す `file.read` も同じだけ待つ。理由も同じで、transcript の一部から作った allowlist はセッションが名指した範囲より狭いものを admit してしまうからである。
 
@@ -412,7 +422,7 @@ fold を待つのは購読だけではない。**file 系 op の allowlist は�
 
 **抑制がかかるのは全量置換の 2 粒度だけ** (`whole` / `per_instance_whole`)。同じ全量をもう一度送っても購読側は既に持っている値を持ち続けるので、送る意味が無い。
 
-**`peers` / `agents` は「新しいか」を行ごとに問う**。両者は要素粒度なので frame 単位の抑制は効かず、代わりに**直前に送った行と比べて違う行だけ**を frame にする。比べ方は同じで (直前に送った wire と比べる)、単位が値から要素に変わるだけなので、実装は topic の仕組みの側に 1 つだけ置く (M5)。何も違わなければ frame は出ない。行が消えたことは不在では言えないので、`{sid, instance, removed: true}` という印を付けた要素として出す。
+**`peers` / `agents` は「新しいか」を行ごとに問う**。両者は要素粒度なので frame 単位の抑制は効かず、代わりに**直前に送った行と比べて違う行だけ**を frame にする。比べ方は同じで (直前に送った wire と比べる)、単位が値から要素に変わるだけなので、実装は topic の仕組みの側に 1 つだけ置く (M5) — その topic の行を何の名前で照合するかを渡して呼ぶ。`peers` はセッションの一覧、`agents` はプロセスの一覧だからである。何も違わなければ frame は出ない。行が消えたことは不在では言えないので、印を付けた要素として出す — `peers` では `{sid, instance, removed: true}`、`agents` では `{pid, instance, removed: true}` である。後者がセッションでなくプロセスで照合するのは、そのセッション自体は別のプロセスが走らせたまま在り続けることが普通にあるからである。
 
 差分を取る相手は**購読者に送った内容**なので、購読開始時の snapshot frame (= 全行) もその基準を更新する。これをしないと、snapshot でしか渡していない行の消失が「前に送っていない行の消失」になり、誰にも届かない。
 
@@ -489,7 +499,7 @@ status socket の**置き場は state dir ではなく、宛先 socket と同じ
 
 ### 6.6 未配送の理由と、その判定元
 
-契約 §2.1 の未配送理由は、すべて §4 の状態モデルと経路の結果から導く。理由ごとに別の情報源を足さない。
+契約 §2.1 の未配送理由は、すべて**セッションがどこに立っているか** (§4.3) と経路の結果から導く。理由ごとに別の情報源を足さない。
 
 | `reason` | 判定 | 情報源 |
 |---|---|---|
@@ -545,7 +555,7 @@ mesh は専用の op を持たない。instance 同士のやり取りは `hello.
 
 **endpoint は instance の公開 base URL** (`https://h.example/personal/`、末尾 `/`、`http(s)://`) で、`<endpoint>ws` (https のまま HTTP upgrade する)・`<endpoint>mesh/*`・`<endpoint>auth/*`・`<endpoint>webhook/*` はその下の route であって endpoint の一部ではない (契約 `Endpoint`)。
 
-**config が持つのは mesh (全 instance の id と、それぞれどこで届くか) だけで、そのどれが自分かは自分の id の行である** (§8.2、DR-0001 §2.7)。proxy や別名の裏に居る instance の URL は、プロセスが自分の socket から読み取れる値ではなく、ネットワークに尋ねて分かる物でもない — deployment の事実なので、deployment の他の事柄と同じ場所に書く。
+**config が持つのは mesh (全 instance の id と、それぞれどこで届くか) だけで、そのどれが自分かは自分の id の行である** (§8.2、contract DR-0001 §2.7)。proxy や別名の裏に居る instance の URL は、プロセスが自分の socket から読み取れる値ではなく、ネットワークに尋ねて分かる物でもない — deployment の事実なので、deployment の他の事柄と同じ場所に書く。
 
 **mesh が名乗っていない instance は起動失敗**で、壊れた config と同じ扱いである (§8.3)。行が無い = address が無いということで、誰も dial できず handshake で何と名乗るかも決まらない。同じ address の行が 2 つあるのも同じ理由で拒否する — その address に dial した相手にはどちらにも届いてしまい、どちらを正式な名前とするか決められない。どちらもファイルを読む時点で検査する (§8.2)、何かを bind するより前である。
 
@@ -650,7 +660,7 @@ instance と監督者が読むのは `$CCMSG_STATE_DIR/config/` の方である:
 1. パス解決と state dir の作成
 2. 単一インスタンスの取得 (ロック)。先客がいれば何もせず終了。lock file が名乗る pid のプロセスが既に居なければ (signal 0 で確認) file を引き継いで取り直す
 3. config 読み込み。instance と監督者が読むのは state 側の `satisfied.json` (= 検証を通った値) だけである。編集用ファイルの検証は §8.2 の 1 本の処理が行い、通らなければ state を触らず、**前回適用した値で起動する** — state に何も無い初回だけ失敗する (DR-0004)。config が名指すものの解決はここで行い、解決できなければ起動を止める: gateway の webhook secret が読めない、translate helper が起動できない、はどちらも「設定したはずの機能」が黙って効かない状態そのものである
-4. **instance id を読む** (state に無ければここで生成する、§2.5)。id から導かれるものすべてより前に置く: `mid`・store の鍵・`last_live` はどれもこの id で引かれるので、id が無いうちに作ってよいものが 1 つも無い。`instances/` のどのファイルも名乗っていない config home を `ccmsg daemon run` で起こした場合も、初回の id はここで持つ (DR-0001 §2.1)
+4. **instance id を読む** (state に無ければここで生成する、§2.5)。id から導かれるものすべてより前に置く: `mid`・store の鍵・`last_live` はどれもこの id で引かれるので、id が無いうちに作ってよいものが 1 つも無い。`instances/` のどのファイルも名乗っていない config home を `ccmsg daemon run` で起こした場合も、初回の id はここで持つ (contract DR-0001 §2.1)
 5. **自分の endpoint** (§7.1)。設定を読んだ時点で分かっている (自分の id の行) ので、ここで決めることは無い。mesh を持つ構成では WS をこの時点で bind する: instance ができるより先に peer が dial してくる可能性があり、その間 listener が答えるのは mesh-peer-auth §6 の鍵の経路だけで、それ以外の要求は instance ができるまで断る。mesh を持たない構成は dial される側にならないので endpoint を持たず、`hello` でも名乗らない
 6. `last_live` と inbox の読み込み。4 の後に置くのは、どちらの entry も `instance` として instance id を持つから — id から導かれるものは id より前に存在しない
 7. listen。pid の記録 → socket dir の用意と、実 path のうち pid が既に死んでいるものの掃除 (ロックの引き継ぎと同じ判定) → UDS を `daemon.<pid>.sock` に bind → クライアントが使う安定 path `daemon.sock` を、accept 開始後に symlink を一時名で作って rename し atomic に差し替える (§8.5) → WS (mesh を持つ構成では 5 で bind 済みのものを組み込む。持たない構成で HTTP を持つなら、ここで bind する)
@@ -708,7 +718,7 @@ listen した path が stop で unlink されるのは Bun の挙動 (1.3.13 実
 | 契約の検証ロジック | A1。protocol リポの検証器を呼ぶ |
 | v1 との互換 | 新系は別 instance として横に立てる (DR-0032 §2.2)。両受けしない |
 
-**人の認証はここに入らない。** 「誰が来たか」には daemon 自身が passkey で答える (DR-0001、実装の接続点は §3.3)。前段 (proxy の forward auth / tunnel の identity) に寄せると、その構成が利用者ごとに違うぶん daemon が受け取る identity の形も揃わないためで、前段は透過でよい (DR-0001 §3)。権限分離を持たないこと (A4) とは両立する: daemon が持つのは「誰か」を確定するところまでで、確定した後の権限の境界は uid とファイル権限のままである。
+**人の認証はここに入らない。** 「誰が来たか」には daemon 自身が passkey で答える (DR-0001、実装の接続点は §3.3)。前段 (proxy の forward auth / tunnel の identity) に寄せると、その構成が利用者ごとに違うぶん daemon が受け取る identity の形も揃わないためで、前段は透過でよい (contract DR-0001 §3)。権限分離を持たないこと (A4) とは両立する: daemon が持つのは「誰か」を確定するところまでで、確定した後の権限の境界は uid とファイル権限のままである。
 
 ## 9. テスト方針
 
