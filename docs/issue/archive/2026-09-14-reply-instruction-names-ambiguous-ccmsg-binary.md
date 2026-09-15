@@ -1,6 +1,6 @@
 ---
 title: 直送メッセージの返信案内 `ccmsg reply <mid>` が、旧 plugin の `ccmsg` (r<N>m<M> 形式) と混同されて拒否される
-status: open
+status: resolved
 category: bug
 created: 2026-09-14T13:37:15+09:00
 last_read:
@@ -9,10 +9,10 @@ wip_entered:
 blocked_entered:
 pending_entered:
 discarded_entered:
-resolved_entered:
+resolved_entered: 2026-09-15T00:00:00+09:00
 discard_reason:
 pending_reason:
-close_reason:
+close_reason: ["done:v1.0.3 で src/plugin/skill.ts の SKILL 本文に「この ccmsg は command -v ccmsg が指す v2 CLI、旧 plugin claude-ccmsg の launcher (r<N>m<M> 形式) は別物」と明記。契約の案内行 (directDeliveryReplyLine) は変更なし。移行期限定の曖昧さで、旧 plugin の退役で消える"]
 blocked_by:
 origin: 別セッション (旧 plugin `claude-ccmsg` 0.152.x hook) からの報告
 ---
