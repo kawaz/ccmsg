@@ -31,6 +31,7 @@ origin: 自リポ TODO
 
 - [ ] hyoui 経由で起動した直後 (trust ダイアログで止まっている間) に `agents` に `sid` 無し・`terminal_id = hyoui:<id>` の行が載る
 - [ ] 挨拶か状態ファイルの出現で同じ行に `sid` が付く (行は移動しない)
+- [ ] `launches.tie` は挨拶の sid を無条件に信じない (その pid からの接続、または状態ファイルの sid と一致する時だけ結ぶ)。理由: 別セッションの Bash から `ccmsg post --sid B` を打つと `tie(pid_A, B)` になり、B に phantom run が生えて frozen になるため
 
 ## 関連
 
