@@ -1,6 +1,6 @@
 ---
 title: `terminals` topic の `hyoui list` 5 秒 polling を socket dir の watch + バックオフ確認 poll に置き換える
-status: open
+status: resolved
 category: task
 created: 2026-09-15T20:39:27+09:00
 last_read:
@@ -9,10 +9,10 @@ wip_entered:
 blocked_entered:
 pending_entered:
 discarded_entered:
-resolved_entered:
+resolved_entered: 2026-09-15T21:13:20+09:00
 discard_reason:
 pending_reason:
-close_reason:
+close_reason: ["done: terminals は socket dir の watch 駆動になり周期 poll を撤去、sessions/ の確認 poll も実測 (fs.watch の取りこぼしは「watch を張る瞬間と競合した変化」のみ、1% 未満) を根拠に撤去して張った直後の 1 回読み直しに置き換えた"]
 blocked_by:
 origin: 自リポ TODO
 ---
