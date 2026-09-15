@@ -306,6 +306,10 @@ describe("the plugin's files", () => {
     expect(frontmatter).toContain("description: ");
     // The one thing a session has to do with a message it receives.
     expect(skill).toContain("Reply with: ccmsg reply");
+    // Which `ccmsg` that line means, for a session that also has the older
+    // plugin's launcher within reach and would be refused by it.
+    expect(skill).toContain("command -v ccmsg");
+    expect(skill).toContain("claude-ccmsg");
   });
 
   test("the skill says how to hold a conversation, not only which command to run", async () => {

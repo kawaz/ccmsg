@@ -33,6 +33,10 @@ Reply with: ccmsg reply <mid> --to <sid> <text>
 **その行をそのまま実行する。** 宛先も、どのメッセージへの返事かも、その行が持っている。
 自分で \`post\` を組み立て直さない。\`--to\` の無い行は人からのメッセージで、返事は通知として届く。
 
+この行の \`ccmsg\` は \`command -v ccmsg\` が指す CLI のこと。旧 plugin \`claude-ccmsg\` の launcher
+(\`~/.claude*/plugins/cache/claude-ccmsg/…/bin/ccmsg\`) は \`reply\` に \`r<N>m<M>\` 形式を求める別物で、
+その行を渡しても拒否される。拒否されたら \`command -v ccmsg\` で何が先に来ているかを確かめる。
+
 ## 自分から声をかける
 
 \`\`\`
