@@ -35,6 +35,10 @@ test が hook script を実プロセス (`bun` の子) として起動してお�
 
 `test-integrity` rule: timeout 延長で通すのではなく、何を待っているか (プロセス起動) を確定し、test が待つ事象を明示する、または hook script の処理を関数として直接呼ぶ形に分けて、プロセス起動を伴う test は 1 本に絞る。
 
+## 同型の観測 (2026-09-15、load average 20)
+
+`test/terminals.test.ts` "the terminals of a host > are the manager's listing, in the contract's spelling" も全件走行で 5000.90 ms の timeout (単体は 10 pass)。どちらも子プロセス (hook script / fake hyoui) を起動する test で、負荷が高い時に起動が 5 秒を超える。issue の対象を「子プロセスを起動する test の timeout が起動時間と無関係な固定値」に広げる。
+
 ## 受け入れ条件
 
 - [ ] `just ci` を 5 回連続で pass
