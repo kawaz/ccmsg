@@ -1,6 +1,6 @@
 ---
 title: セッションの `cwd` を hook event の cwd から採ると Bash ツールの一時 cwd を拾う
-status: open
+status: resolved
 category: bug
 created: 2026-09-15T11:57:34+09:00
 last_read:
@@ -9,10 +9,10 @@ wip_entered:
 blocked_entered:
 pending_entered:
 discarded_entered:
-resolved_entered:
+resolved_entered: 2026-09-15T12:07:54+09:00
 discard_reason:
 pending_reason:
-close_reason:
+close_reason: ["done: v1.0.2 で所在 (cwd/repo/ws/repo_root) の出所を --cwd 明示 → CLAUDE_PROJECT_DIR → SessionStart hook の event cwd の3つに限定し、他コマンド (post/notify/stopping --hook/peers) は所在を名乗らないようにした (src/cli.ts sessionLocation(), src/harness/index.ts sessionProject())。実際に効いていた主経路は call() の process.cwd() で、hook event と併せて両方塞いだ。v1 は claude-ccmsg issue room-member-cwd-takes-bash-temporary-cwd に起票済み"]
 blocked_by:
 origin: emrd 統括セッション
 ---
