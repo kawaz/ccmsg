@@ -31,7 +31,7 @@ import {
   start,
 } from "../src/instance/index.ts";
 import { CodexQueueRoute } from "../src/messaging/index.ts";
-import { HOOKS_FILE, install, status, uninstall } from "../src/plugin/index.ts";
+import { codexPluginFiles, HOOKS_FILE, install, status, uninstall } from "../src/plugin/index.ts";
 import { Sessions } from "../src/sessions/index.ts";
 import { readRecord, TranscriptFiles, TranscriptFold } from "../src/transcript/index.ts";
 
@@ -42,6 +42,14 @@ function temp(prefix: string): string {
   const dir = mkdtempSync(join(tmpdir(), prefix));
   dirs.push(dir);
   return dir;
+}
+
+/** The hook Codex fires at the start of a thread, as the install would write
+ * it for a config home. */
+function sessionStart(configHome: string): string {
+  const script = codexPluginFiles(configHome).get(join("hooks", "session-start"));
+  if (script === undefined) throw new Error("the plugin has no session-start hook");
+  return script;
 }
 
 /** The row for one thread, or a failure naming the thread that has none. */
@@ -590,15 +598,26 @@ describe("which session a process is inside", () => {
     expect(script).toContain(`CODEX_HOME='${home}'`);
   });
 
+  test("a config home holding a quote is one word of the script, whatever is in it", () => {
+    // What the hook hands ccmsg is what the install decided rather than what it
+    // inherited, and a path is a path a person chose: the quoting is read here,
+    // where no shell has to be started to say what the script says.
+    const script = sessionStart("/homes/it's");
+    expect(script).toContain(`CODEX_HOME='/homes/it'\\''s'`);
+    expect(script).toContain("-u CLAUDE_CONFIG_DIR");
+    expect(script).toContain("-u CLAUDE_CODE_SESSION_ID");
+  });
+
   test("the hook script runs, names this config home and drops the other harness's", async () => {
-    // A path holding a quote is still one path to the shell, and what the hook
-    // hands ccmsg is what the install decided rather than what it inherited.
+    // The one test here that starts a process: what the script says is read as a
+    // string by the test above, and what a shell makes of it — a path holding a
+    // quote as one word, a variable dropped rather than passed on — is only
+    // answerable by running it. What is waited for is the child's own exit and
+    // the lines it wrote, so nothing here is an interval.
     const home = temp("ccmsg-codex-quote'-");
-    writeFileSync(join(home, "config.toml"), "");
-    const at = resolvePaths({ ...env(), CODEX_HOME: home });
-    await install(at, "codex", "9.9.9", () =>
-      Promise.resolve({ code: 0, stdout: "hooks stable true\n", stderr: "" }),
-    );
+    const hooks = temp("ccmsg-codex-hooks-");
+    const script = join(hooks, "session-start");
+    writeFileSync(script, sessionStart(home), { mode: 0o755 });
     const bin = temp("ccmsg-codex-bin-");
     writeFileSync(
       join(bin, "ccmsg"),
@@ -608,7 +627,7 @@ describe("which session a process is inside", () => {
       },
     );
     const ran = Bun.spawn({
-      cmd: [join(at.pluginsDir, "codex", "hooks", "session-start")],
+      cmd: [script],
       env: { PATH: bin, CLAUDE_CONFIG_DIR: "/homes/claude" },
       stdout: "pipe",
       stdin: "ignore",

@@ -11,7 +11,12 @@ import {
 } from "@ccmsg/protocol";
 import { OpError } from "../src/dispatch/index.ts";
 import { hostProcessDeps } from "../src/sessions/index.ts";
-import { hostTerminals, Terminals, terminalsOf } from "../src/terminals/index.ts";
+import {
+  hostTerminals,
+  type TerminalListing,
+  Terminals,
+  terminalsOf,
+} from "../src/terminals/index.ts";
 import { SELF } from "./frames.ts";
 
 /** One line of what the terminal manager prints, in its own spelling. */
@@ -88,6 +93,17 @@ async function refusalOf(call: () => unknown): Promise<string> {
 const LISTS = '#!/bin/sh\ntest "$2" = "--format=jsonl" || exit 64\n/bin/cat @LISTING@\n';
 const FAILS = '#!/bin/sh\necho "the manager is unwell" >&2\nexit 1\n';
 
+/** A listing of what the manager would have printed, without a manager.
+ *
+ * What the reading is about is the jsonl and what this instance makes of it,
+ * and running a process to produce a string this test already holds makes the
+ * reading wait on a process start — which is an interval of whatever else the
+ * host is doing, and nothing to do with terminals. Running the manager is its
+ * own test, below. */
+function listing(jsonl: () => string): TerminalListing {
+  return () => Promise.resolve(terminalsOf(SELF, jsonl()));
+}
+
 /** A `Terminals` with somewhere to publish, whose poll is never waited on: the
  * tests drive the reading themselves, which is what makes them say when a
  * reading happened rather than how long one takes. */
@@ -116,9 +132,7 @@ function rows(data: unknown): TerminalInfo[] {
 
 describe("the terminals of a host", () => {
   test("are the manager's listing, in the contract's spelling", async () => {
-    const hyoui = manager(LISTS);
-    hyoui.lines(`${line(CLAUDE)}\n${line(SHELL)}\n`);
-    const { terminals } = domain();
+    const { terminals } = domain(listing(() => `${line(CLAUDE)}\n${line(SHELL)}\n`));
     const [stated] = await terminals.snapshot();
     expect(rows(stated?.data)).toEqual([
       {
@@ -155,9 +169,7 @@ describe("the terminals of a host", () => {
   });
 
   test("say which of them a harness has just started in, by the contract's own derivation", async () => {
-    const hyoui = manager(LISTS);
-    hyoui.lines(`${line(CLAUDE)}\n${line(SHELL)}\n`);
-    const { terminals } = domain();
+    const { terminals } = domain(listing(() => `${line(CLAUDE)}\n${line(SHELL)}\n`));
     const [stated] = await terminals.snapshot();
     const listed = rows(stated?.data);
     // Nothing is on `agents` yet: the harness has not written its state file.
@@ -174,10 +186,9 @@ describe("the terminals of a host", () => {
   });
 
   test("are empty on a host that manages none", async () => {
-    manager(LISTS);
     const { terminals, published, logged } = domain();
-    // The directory on `PATH` holds the script, and the script is not there
-    // under the name the manager is asked for.
+    // Nothing on `PATH` is the manager, so nothing is ever started: this is
+    // the reading a host without one does, not one that waits on a process.
     process.env["PATH"] = mkdtempSync(join(tmpdir(), "ccmsg-terminals-none-"));
     homes.push(process.env["PATH"] as string);
     const [stated] = await terminals.snapshot();
@@ -188,14 +199,13 @@ describe("the terminals of a host", () => {
   });
 
   test("travel as a removal when one is closed", async () => {
-    const hyoui = manager(LISTS);
-    hyoui.lines(`${line(CLAUDE)}\n${line(SHELL)}\n`);
-    const { terminals, published } = domain();
+    let jsonl = `${line(CLAUDE)}\n${line(SHELL)}\n`;
+    const { terminals, published } = domain(listing(() => jsonl));
     // The reading the opening frame waits for is a change to whoever was
     // already subscribed, and goes out as one.
     await terminals.snapshot();
     expect(rows(published.splice(0)[0]?.data)).toHaveLength(2);
-    hyoui.lines(`${line(CLAUDE)}\n`);
+    jsonl = `${line(CLAUDE)}\n`;
     await terminals.read();
     expect(published).toHaveLength(1);
     // A removal is not a row of the list, which is why it is read as what a
@@ -211,12 +221,15 @@ describe("the terminals of a host", () => {
   });
 
   test("are left as they stand when the manager cannot be read", async () => {
-    const hyoui = manager(LISTS);
-    hyoui.lines(`${line(CLAUDE)}\n`);
-    const { terminals, published, logged } = domain();
+    let unwell = false;
+    const { terminals, published, logged } = domain(() =>
+      unwell
+        ? Promise.reject(new Error("the manager is unwell"))
+        : Promise.resolve(terminalsOf(SELF, `${line(CLAUDE)}\n`)),
+    );
     await terminals.snapshot();
     published.splice(0);
-    writeFileSync(join(process.env["PATH"] as string, "hyoui"), FAILS);
+    unwell = true;
     await terminals.read();
     // Nothing was published: a failed poll is not every terminal closing, and
     // the failure is said once rather than at every interval.
@@ -225,6 +238,28 @@ describe("the terminals of a host", () => {
     expect(logged).toEqual(["the terminal manager could not be read"]);
     const [stated] = await terminals.snapshot();
     expect(rows(stated?.data).map((row) => row.id)).toEqual(["hyoui:run-20107-ce44c928"]);
+  });
+
+  /** The one reading here that starts a process.
+   *
+   * What a host's own listing is is a command run through `PATH`, and that is
+   * worth one test; what the lines mean is every test above, where no process
+   * stands between the jsonl and the rows. Both readings here are waited for
+   * by the child's own exit — a listing that says the two things `hostTerminals`
+   * distinguishes, a host with no manager (above) and a manager that failed. */
+  test("are asked of the manager on PATH, and a manager that failed is not an answer", async () => {
+    const hyoui = manager(LISTS);
+    hyoui.lines(`${line(CLAUDE)}\n`);
+    const list = hostTerminals(SELF);
+
+    expect((await list()).map((row) => row.id)).toEqual(["hyoui:run-20107-ce44c928"]);
+
+    writeFileSync(join(process.env["PATH"] as string, "hyoui"), FAILS);
+    const failed = await list().then(
+      () => undefined,
+      (cause: unknown) => cause,
+    );
+    expect(failed).toBeInstanceOf(Error);
   });
 
   test("keep the newest reading when an older one lands after it", async () => {
