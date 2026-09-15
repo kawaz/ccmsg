@@ -15,7 +15,8 @@ import {
   type PeerElement,
   type PeerInfo,
   PROTOCOL_VERSION,
-  type SessionState,
+  type SessionRun,
+  type SessionStatusStanding,
   type SessionStoppingResult,
   type Sid,
   type Timestamp,
@@ -25,11 +26,10 @@ import { within } from "../files/index.ts";
 import { HARNESS, type Harness } from "../harness/index.ts";
 import { meshView } from "../mesh/instances.ts";
 import type { TranscriptFacts } from "../transcript/index.ts";
-import { Elements, type TopicValue, type UpstreamResource } from "../topics/index.ts";
-import { classify, type SessionInputs } from "./classify.ts";
-import { isWaiting, type OwnSessions, ownSessions } from "./harness.ts";
+import { AGENT_ROWS, Elements, type TopicValue, type UpstreamResource } from "../topics/index.ts";
+import { type OwnSessions, ownSessions } from "./harness.ts";
 import { LastLiveStore, type StoredEntry } from "./last-live.ts";
-import { stoppedOn } from "./status.ts";
+import { duplicated, type ObservedRun, runsOf, statedTerminalId } from "./runs.ts";
 import { TerminalCache, type TerminalReader } from "./terminals.ts";
 
 /** What the harness says at one instant: the rows it reports, and which
@@ -40,8 +40,35 @@ import { TerminalCache, type TerminalReader } from "./terminals.ts";
  * that reports a row per session and differ for one that reports none, which
  * is why the classification reads `present` and never the rows' keys. */
 interface Own {
-  readonly rows: ReadonlyMap<Sid, AgentInfo>;
+  /** One entry per process, keyed by pid: two of them may name one session
+   * (contract, `AgentInfo`). */
+  readonly rows: ReadonlyMap<number, AgentInfo>;
+  /** The same rows gathered by the session each one names, which is how a
+   * session's runs are found. */
+  readonly bySid: ReadonlyMap<Sid, readonly AgentInfo[]>;
   readonly present: ReadonlySet<Sid>;
+}
+
+/** One row of `agents` that no state file wrote: a process a launcher started,
+ * before the harness has named a session for it. */
+export interface LaunchedRun {
+  readonly pid: number;
+  readonly started_at: Timestamp;
+  readonly cwd: string;
+  readonly terminal_id?: string;
+  /** The session a greeting has tied this process to, once one has. */
+  readonly sid?: Sid;
+}
+
+/** The processes a launcher of this instance started, which are runs before
+ * anything else can see them (DR-0001 §4). Absent on an instance with no
+ * launcher, where every run is first seen in the harness's own directory. */
+export interface LaunchSource {
+  /** The ones still running, as they stand now. */
+  running(): readonly LaunchedRun[];
+  /** A greeting named the harness process it speaks for. Ties that process to
+   * the session, which is what turns a row with no `sid` into one with it. */
+  tie(pid: number, sid: Sid): void;
 }
 
 /** What the sessions domain needs from the instance around it. */
@@ -108,6 +135,9 @@ export interface SessionsDeps {
    * where to reach it in the same greeting. Absent on an instance with no
    * gateway configured. */
   readonly terminalGateway?: string;
+  /** The runs a launcher started, seen before the harness writes anything of
+   * its own (DR-0001 §4). Absent on an instance with no launcher. */
+  readonly launches?: LaunchSource;
 }
 
 /** What `hello` needs of the mesh: verify the greeting of a peer, and say which
@@ -125,6 +155,12 @@ type MeshClaim = HelloInstanceArgs["mesh"];
  * (DESIGN §2.3 — the current value lives with whoever owns it). */
 export interface TranscriptSource {
   facts(sid: Sid): TranscriptFacts;
+  /** What the fold is worth, which the row states as `session_status` —
+   * everything but `frozen`, which is a count of runs and is settled here. */
+  standing(sid: Sid): SessionStatusStanding;
+  /** Two or more processes are writing this session, or are no longer: while
+   * they are, nothing of the file is read (DR-0001 §3). */
+  duplicated(sid: Sid, now: boolean): void;
 }
 
 /** The gateway, as the sessions domain reads it: when it last saw inference
@@ -143,6 +179,11 @@ type SessionMeta = Pick<
   HelloSessionArgs,
   "repo" | "ws" | "cwd" | "transcript_path" | "repo_root" | "branch" | "title" | "model" | "effort"
 >;
+
+/** What a row of `agents` says a process is while only the launcher has seen
+ * it. `kind` is an open set, and no word of the harness's own is true of a
+ * process it has not written a file for. */
+const LAUNCHED = "launch";
 
 const META_FIELDS = [
   "repo",
@@ -169,6 +210,15 @@ interface Connected {
   last_activity_at: Timestamp;
   /** More than one client process of a session may hold a connection. */
   conns: number;
+  /** The harness processes the greetings on those connections named, counted
+   * so that the last connection speaking for a run is what takes it out.
+   *
+   * A greeting is usually carried by something standing in for the session — a
+   * hook, the CLI — which names the harness process it belongs to rather than
+   * itself (contract, `HelloSessionArgs.pid`). That is what says which run a
+   * connection belongs to, and a greeting that named none leaves the
+   * connection unattributed. */
+  readonly pids: Map<number, number>;
 }
 
 /** The sessions this instance can speak about, and the two topics that carry
@@ -224,7 +274,7 @@ export class Sessions implements UpstreamResource {
    * listening: it is handed every row as a snapshot, and every frame after it
    * says what changed since the last one went out. */
   readonly #sentPeers = new Elements();
-  readonly #sentAgents = new Elements();
+  readonly #sentAgents = new Elements(AGENT_ROWS);
   /** The connections whose greeting has been accepted and not yet answered.
    *
    * A connection greets once, and the identity that says it has greeted is
@@ -291,10 +341,10 @@ export class Sessions implements UpstreamResource {
     // The claim was this greeting's before the read; the session it just
     // registered stands only if it still is.
     if (this.#greeting.get(input.conn) !== claim) {
-      this.release(args.sid);
+      this.release(args.sid, args.pid);
       throw new OpError("bad_request", "a connection greets once, and this one already has");
     }
-    input.conn.onClose(() => this.release(args.sid));
+    input.conn.onClose(() => this.release(args.sid, args.pid));
     return this.#greeted(input);
   };
 
@@ -378,75 +428,103 @@ export class Sessions implements UpstreamResource {
     };
   }
 
-  /** Where a session stands (DESIGN §4.3). Undefined for a sid this instance has
-   * never seen live and does not hold in `last_live`. */
-  classify(
-    sid: Sid,
-    now: Timestamp = Date.now(),
-    own: Own = this.#own(),
-  ): SessionState | undefined {
-    return classify(this.inputs(sid, own), now);
+  /** The row for one session, or nothing for a sid this instance has never
+   * seen live and does not hold in `last_live`.
+   *
+   * Where a session stands is read off the row by the contract's own `liveness`
+   * rather than stated here (DR-0001 §2): an instance and a client that each
+   * wrote that arithmetic would show the same row two ways. */
+  row(sid: Sid, now: Timestamp = Date.now(), own: Own = this.#own()): PeerInfo | undefined {
+    return this.#peerRow(sid, now, own);
+  }
+
+  /** Whether two or more processes are running this session, which is what the
+   * ops that would act on it refuse with `session_duplicated` (DR-0001 §3).
+   *
+   * False for a sid this instance has no row for: what such a call meets is
+   * the session not being here, which is the answer its own op already has. */
+  duplicated(sid: Sid, own: Own = this.#own()): boolean {
+    return duplicated(this.#runs(sid, own));
   }
 
   /** The harness's sessions as they are at this instant. One read serves one
    * question, and a caller answering several about the same instant passes the
    * result on rather than reading again. */
   #own(): Own {
-    const rows = this.#harness.rows();
+    const scanned = this.#harness.rows();
     const terminals = this.#terminals;
-    if (terminals === undefined) return { rows, present: this.#harness.present() };
-    // What the scan found is what exists: a pid that has left it is one whose
-    // terminal is no longer anybody's, and one that has arrived is read once.
-    terminals.observe([...rows.values()].map((row) => row.pid));
-    const named = new Map<Sid, AgentInfo>();
-    for (const [sid, row] of rows) {
-      const terminal = terminals.get(row.pid);
-      named.set(
-        sid,
-        terminal === undefined
-          ? row
-          : {
-              ...row,
-              terminal_id: terminal.id,
-              ...(terminal.namespace === undefined
-                ? {}
-                : { terminal_namespace: terminal.namespace }),
-            },
-      );
+    let rows = scanned;
+    if (terminals !== undefined) {
+      // What the scan found is what exists: a pid that has left it is one whose
+      // terminal is no longer anybody's, and one that has arrived is read once.
+      terminals.observe(scanned.keys());
+      const named = new Map<number, AgentInfo>();
+      for (const [pid, row] of scanned) {
+        const terminal = terminals.get(pid);
+        named.set(
+          pid,
+          terminal === undefined
+            ? row
+            : {
+                ...row,
+                // The scheme is what tells a client how to open it, and the
+                // bare handle is what this instance types into (contract,
+                // `terminalUrl`).
+                terminal_id: statedTerminalId(terminal.id),
+                ...(terminal.namespace === undefined
+                  ? {}
+                  : { terminal_namespace: terminal.namespace }),
+              },
+        );
+      }
+      rows = named;
     }
-    return { rows: named, present: this.#harness.present() };
+    const bySid = new Map<Sid, AgentInfo[]>();
+    for (const row of rows.values()) {
+      if (row.sid === undefined) continue;
+      const held = bySid.get(row.sid);
+      if (held === undefined) bySid.set(row.sid, [row]);
+      else held.push(row);
+    }
+    return { rows, bySid, present: this.#harness.present() };
   }
 
-  /** Everything the classification of one session reads, exposed so the rule
-   * and its inputs can be tested apart from each other.
+  /** Every run of one session this instance can see, as the row states them.
    *
-   * The harness's rows are read here rather than taken from the watch. Which
-   * sessions the harness has is a fact about this config home, true whether or
-   * not anybody subscribed to hear about it (DESIGN §4.2) — the watch of DESIGN §6.3 exists
-   * to push a change to subscribers, and reading its cache instead would make
-   * "a session exists" mean "somebody is listening", which is how a live
-   * session becomes `session_not_found` to a sender and how a session that is
-   * still running is written into `last_live` as gone. */
-  inputs(sid: Sid, own: Own = this.#own()): SessionInputs {
-    const row = own.rows.get(sid);
-    const present = own.present.has(sid);
-    const stored = this.#lastLive.get(sid);
-    const facts = this.deps.transcript?.facts(sid);
-    const gatewayActiveAt = this.#gatewayActiveAt(sid, present);
-    return {
-      connected: this.#connected.has(sid),
-      ...(gatewayActiveAt === undefined ? {} : { gateway_active_at: gatewayActiveAt }),
-      ...(facts === undefined || stoppedOn(facts) === undefined ? {} : { api_error_stopped: true }),
-      ...(!present
-        ? {}
-        : {
-            harness: {
-              waiting: row !== undefined && isWaiting(row),
-              ...(row?.terminal_id === undefined ? {} : { terminal_id: row.terminal_id }),
-            },
-          }),
-      ...(stored === undefined ? {} : { last_live: { stopped_at: stored.stopped_at } }),
-    };
+   * Three sources, in the order they become observable: the harness's state
+   * files, the processes a launcher started before the harness wrote one, and
+   * the connections. A process the launcher started that the harness has since
+   * written a file for is one run and not two, which is what the pid is the key
+   * of (DR-0001 §1). */
+  #runs(sid: Sid, own: Own): SessionRun[] {
+    const observed: ObservedRun[] = [];
+    const seen = new Set<number>();
+    for (const row of own.bySid.get(sid) ?? []) {
+      seen.add(row.pid);
+      observed.push({
+        pid: row.pid,
+        started_at: row.started_at,
+        ...(row.terminal_id === undefined ? {} : { terminal_id: row.terminal_id }),
+      });
+    }
+    for (const launch of this.deps.launches?.running() ?? []) {
+      if (launch.sid !== sid || seen.has(launch.pid)) continue;
+      seen.add(launch.pid);
+      observed.push({
+        pid: launch.pid,
+        started_at: launch.started_at,
+        ...(launch.terminal_id === undefined ? {} : { terminal_id: launch.terminal_id }),
+      });
+    }
+    const held = this.#connected.get(sid);
+    return runsOf(observed, new Set(held?.pids.keys()), held !== undefined);
+  }
+
+  /** What the session's fold is worth, which is the fold's own standing except
+   * while two runs are writing it (contract, `SessionStatusStanding`). */
+  #standing(sid: Sid, runs: readonly SessionRun[]): SessionStatusStanding {
+    if (duplicated(runs)) return "frozen";
+    return this.deps.transcript?.standing(sid) ?? "absent";
   }
 
   /** The sessions holding a connection to us. Whoever follows their
@@ -480,7 +558,7 @@ export class Sessions implements UpstreamResource {
    * so a session that named neither is one no path is admitted for. */
   where(sid: Sid): { root?: string; cwd?: string } {
     const meta = this.#connected.get(sid)?.meta;
-    const cwd = meta?.cwd ?? this.#own().rows.get(sid)?.cwd;
+    const cwd = meta?.cwd ?? this.#own().bySid.get(sid)?.[0]?.cwd;
     // The container when the session named one, the working directory
     // otherwise — the same order `repo_root` is meant in (DESIGN §6.6).
     const root = meta?.repo_root ?? cwd;
@@ -490,12 +568,12 @@ export class Sessions implements UpstreamResource {
     };
   }
 
-  /** The harness's sessions as they are right now, read rather than taken
+  /** The runs of one session as they are right now, read rather than taken
    * from the watch's cache. What acts on a session's process resolves its pid
    * through this: the watch runs only while somebody is subscribed (DESIGN §6.3), and
    * a pid from a poll that has not run is a number belonging to nobody. */
-  rowsNow(): ReadonlyMap<Sid, AgentInfo> {
-    return this.#own().rows;
+  runsNow(sid: Sid): readonly SessionRun[] {
+    return this.#runs(sid, this.#own());
   }
 
   /** Drop one entry from `last_live`, which is what
@@ -575,16 +653,11 @@ export class Sessions implements UpstreamResource {
    * client that held two lists would have to move an entry between them to
    * follow one field.
    *
-   * Live is not the same as connected (DESIGN §4.3). A session the harness names is
-   * live whether or not it ever greeted us, and it has to be on this list for
-   * the same reason it is classified at all: a restart forgets every greeting,
-   * and a list that showed only what had greeted this daemon would show a host
-   * full of running sessions as empty.
-   *
-   * Every row states its `state` and its `pinned`. The contract lets an
-   * instance leave them out, and a client then shows a session it cannot group
-   * — this instance is one that classifies, so it says so on every row rather
-   * than on the rows it happens to have an answer for.
+   * Running is not the same as connected. A session the harness names is
+   * running whether or not it ever greeted us, and it has to be on this list
+   * for the same reason its runs are stated at all: a restart forgets every
+   * greeting, and a list that showed only what had greeted this daemon would
+   * show a host full of running sessions as empty.
    *
    * A lost session is a row here rather than a list of its own: its entry in
    * the store holds what was observed, and the two fields a row derives —
@@ -592,11 +665,11 @@ export class Sessions implements UpstreamResource {
    * time (M4). */
   peerRows(now: Timestamp = Date.now(), own: Own = this.#own()): PeerInfo[] {
     return [
-      ...[...this.#connected.values()].map((session) => this.#peer(session, now, own)),
+      ...[...this.#connected.values()].map((session) => this.#peer(session, own)),
       ...[...own.present]
         .filter((sid) => !this.#connected.has(sid))
-        .map((sid) => this.#unconnected(sid, now, own)),
-      ...this.#lastLive.entries(now).map((entry) => this.#lost(entry, now, own)),
+        .map((sid) => this.#unconnected(sid, own)),
+      ...this.#lastLive.entries(now).map((entry) => this.#lost(entry, own)),
     ];
   }
 
@@ -606,20 +679,22 @@ export class Sessions implements UpstreamResource {
    * connection here, a session the harness names, an entry among the sessions
    * this instance has lost. A sid none of them holds is one this instance has
    * no row for, and it says so rather than inventing one. */
-  #peerRow(sid: Sid, now: Timestamp, own: Own): PeerInfo | undefined {
+  #peerRow(sid: Sid, _now: Timestamp, own: Own): PeerInfo | undefined {
     const held = this.#connected.get(sid);
-    if (held !== undefined) return this.#peer(held, now, own);
-    if (own.present.has(sid)) return this.#unconnected(sid, now, own);
+    if (held !== undefined) return this.#peer(held, own);
+    if (own.present.has(sid)) return this.#unconnected(sid, own);
     const entry = this.#lastLive.get(sid);
-    return entry === undefined ? undefined : this.#lost(entry, now, own);
+    return entry === undefined ? undefined : this.#lost(entry, own);
   }
 
   /** A session this instance has lost, as a row: what was observed of it,
-   * with the two fields a row derives worked out at read time (M4). */
-  #lost(entry: StoredEntry, now: Timestamp, own: Own): PeerInfo {
+   * with the fields a row derives worked out at read time (M4). */
+  #lost(entry: StoredEntry, own: Own): PeerInfo {
+    const runs = this.#runs(entry.sid, own);
     return {
       ...entry,
-      state: this.classify(entry.sid, now, own) ?? "disappeared",
+      runs,
+      session_status: this.#standing(entry.sid, runs),
       pinned: this.#pinned(entry.sid),
     };
   }
@@ -642,9 +717,33 @@ export class Sessions implements UpstreamResource {
     if (peers.length > 0) this.deps.publish("peers", { peers });
   }
 
-  /** Every row `agents` states: the harness's own view, as it stated it. */
+  /** Every row `agents` states: one per process.
+   *
+   * The harness's own view, as it stated it, and beside it the processes a
+   * launcher started that the harness has not written a file for yet. Those
+   * carry no `sid` — the run is there, and which session it is running is not
+   * settled until the greeting names it (DR-0001 §4) — and they leave the list
+   * as soon as the state file arrives, since the row is then the harness's own
+   * under the same pid. */
   agentRows(own: Own = this.#own()): AgentInfo[] {
-    return [...own.rows.values()];
+    const rows = [...own.rows.values()];
+    for (const launch of this.deps.launches?.running() ?? []) {
+      if (own.rows.has(launch.pid)) continue;
+      rows.push({
+        instance: this.deps.self,
+        pid: launch.pid,
+        cwd: launch.cwd,
+        // The launcher's own word for a process whose session the harness has
+        // not named. `kind` is an open set (contract, `AgentInfo`), and no
+        // value of the harness's own would be true of this row yet.
+        kind: LAUNCHED,
+        started_at: launch.started_at,
+        config_dir: this.deps.configHome,
+        ...(launch.sid === undefined ? {} : { sid: launch.sid }),
+        ...(launch.terminal_id === undefined ? {} : { terminal_id: launch.terminal_id }),
+      });
+    }
+    return rows;
   }
 
   /** Bind a session to this instance, and take what it says about itself. Its
@@ -669,6 +768,13 @@ export class Sessions implements UpstreamResource {
     const held = this.#connected.get(sid);
     const now = Date.now();
     const meta = { ...this.#stated.get(sid), ...stated };
+    const pids = held?.pids ?? new Map<number, number>();
+    if (args.pid !== undefined) {
+      pids.set(args.pid, (pids.get(args.pid) ?? 0) + 1);
+      // The run a launcher started and the session that greeted from it are one
+      // thing, and this is the only moment the two are named together.
+      this.deps.launches?.tie(args.pid, sid);
+    }
     this.#connected.set(sid, {
       sid,
       connected_at: held?.connected_at ?? now,
@@ -677,6 +783,7 @@ export class Sessions implements UpstreamResource {
       meta,
       last_activity_at: now,
       conns: (held?.conns ?? 0) + 1,
+      pids,
     });
     this.#stated.set(sid, meta);
     this.#lastLive.remove(sid);
@@ -685,11 +792,17 @@ export class Sessions implements UpstreamResource {
 
   /** One of a session's connections closed. The session is only gone when its
    * last one is. */
-  private release(sid: Sid): void {
+  private release(sid: Sid, pid?: number): void {
     const held = this.#connected.get(sid);
     if (held === undefined) return;
+    if (pid !== undefined) {
+      const left = (held.pids.get(pid) ?? 0) - 1;
+      if (left > 0) held.pids.set(pid, left);
+      else held.pids.delete(pid);
+    }
     if (held.conns > 1) {
       this.#connected.set(sid, { ...held, conns: held.conns - 1 });
+      this.changed();
       return;
     }
     this.#connected.delete(sid);
@@ -727,7 +840,14 @@ export class Sessions implements UpstreamResource {
     }
     this.#reclaim(live);
     this.#live = live;
-    const peers = this.#sentPeers.diff(this.peerRows(now, own)) as PeerElement[];
+    const rows = this.peerRows(now, own);
+    // Whether a session is one two processes are writing is settled here, and
+    // the reading of its transcript follows from it: while it is, nothing of
+    // the file is read and the last value that could be trusted is what stands
+    // (DR-0001 §3). Told before the rows go out, so what a subscriber reads as
+    // `frozen` is a session whose fold has already stopped moving.
+    for (const row of rows) this.deps.transcript?.duplicated(row.sid, duplicated(row.runs));
+    const peers = this.#sentPeers.diff(rows) as PeerElement[];
     if (peers.length > 0) this.deps.publish("peers", { peers });
     const agents = this.#sentAgents.diff(this.agentRows(own)) as AgentElement[];
     if (agents.length > 0) this.deps.publish("agents", { agents, polled_at: now });
@@ -745,7 +865,7 @@ export class Sessions implements UpstreamResource {
 
   #entry(sid: Sid, now: Timestamp, own: Own): StoredEntry {
     const held = this.#connected.get(sid);
-    const row = own.rows.get(sid);
+    const row = own.bySid.get(sid)?.[0];
     // What answered last, not what the session named when it greeted: the
     // greeting is one instant and `/model` moves afterwards, so the fold is
     // asked first and the greeting only fills in for a transcript that has
@@ -768,20 +888,22 @@ export class Sessions implements UpstreamResource {
     };
   }
 
-  #peer(session: Connected, now: Timestamp, own: Own): PeerInfo {
+  #peer(session: Connected, own: Own): PeerInfo {
     // The two "last activity" values are different questions (DESIGN §4.4): the one
     // above moves on every request the session makes, this one only when a
     // person speaks, and the fold is the only place that knows the second.
     const userInput = this.deps.transcript?.facts(session.sid).last_user_input_at;
     // What the gateway last saw run for this session: an attribute of the row
-    // beside the classification, not folded into it (DESIGN §4.2). Absent from an
+    // beside the runs, not folded into them (DESIGN §4.2). Absent from an
     // instance with no gateway, where nothing observes inference at all.
     const gatewayActiveAt = this.#gatewayActiveAt(session.sid, own.present.has(session.sid));
+    const runs = this.#runs(session.sid, own);
     return {
       sid: session.sid,
       instance: this.deps.self,
       ...this.#where(session.sid, own),
-      state: this.classify(session.sid, now, own) ?? "live",
+      runs,
+      session_status: this.#standing(session.sid, runs),
       pinned: this.#pinned(session.sid),
       connected_at: session.connected_at,
       last_activity_at: session.last_activity_at,
@@ -794,20 +916,21 @@ export class Sessions implements UpstreamResource {
 
   /** A session the harness names that holds no connection here (DESIGN §4.2).
    *
-   * It is on the same list as the connected ones because it is live in the same
-   * sense: the classification is what separates them, and a client groups on
-   * that field alone (DESIGN §4.3). What it cannot carry is everything a greeting
-   * states — the session never said where it works, so the working directory
-   * comes from the harness's own row and the display names it does not know are
-   * simply absent.
+   * It is on the same list as the connected ones because it is running in the
+   * same sense: what separates them is the `runs` each row states, and a client
+   * reads that off the row (DR-0001 §2). What it cannot carry is everything a
+   * greeting states — the session never said where it works, so the working
+   * directory comes from the harness's own row and the display names it does
+   * not know are simply absent.
    *
    * The connection fields go with the connection: `connected_at`,
    * `last_activity_at` and the client's build and generation are things about a
    * client of this session, and there is none. */
-  #unconnected(sid: Sid, now: Timestamp, own: Own): PeerInfo {
-    const row = own.rows.get(sid);
+  #unconnected(sid: Sid, own: Own): PeerInfo {
+    const row = own.bySid.get(sid)?.[0];
     const userInput = this.deps.transcript?.facts(sid).last_user_input_at;
     const gatewayActiveAt = this.#gatewayActiveAt(sid, true);
+    const runs = this.#runs(sid, own);
     return {
       sid,
       instance: this.deps.self,
@@ -815,7 +938,8 @@ export class Sessions implements UpstreamResource {
       // what the session said about itself overrides it.
       ...(row?.name === undefined ? {} : { title: row.name }),
       ...this.#where(sid, own),
-      state: this.classify(sid, now, own) ?? "live",
+      runs,
+      session_status: this.#standing(sid, runs),
       pinned: this.#pinned(sid),
       ...(userInput === undefined ? {} : { last_user_input_at: userInput }),
       ...(gatewayActiveAt === undefined ? {} : { gateway_active_at: gatewayActiveAt }),
@@ -866,7 +990,7 @@ export class Sessions implements UpstreamResource {
     own: Own,
   ): Pick<PeerInfo, "repo" | "ws" | "cwd" | "transcript_path" | "repo_root" | "branch" | "title"> {
     const meta = this.#stated.get(sid) ?? {};
-    const cwd = meta.cwd ?? own.rows.get(sid)?.cwd ?? "";
+    const cwd = meta.cwd ?? own.bySid.get(sid)?.[0]?.cwd ?? "";
     return {
       repo: meta.repo ?? "",
       ws: meta.ws ?? "",

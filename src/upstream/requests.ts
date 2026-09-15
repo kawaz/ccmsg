@@ -1,12 +1,12 @@
 import {
   type InstanceId,
+  GATEWAY_LIVE_WINDOW_MS,
   LLM_PROMPT_CACHE_TTL_MS,
   llmCacheWindowEndAt,
   type LlmRequestInfo,
   type Sid,
   type Timestamp,
 } from "@ccmsg/protocol";
-import { GATEWAY_LIVE_WINDOW_MS } from "../sessions/index.ts";
 import type { TopicValue, UpstreamResource } from "../topics/index.ts";
 import type {
   CacheExpiredObservation,

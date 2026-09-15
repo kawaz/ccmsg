@@ -39,9 +39,13 @@ export interface OwnSessions {
    * (DESIGN §6.3 / §8.3: no upstream is read until somebody is listening). */
   start(): void;
   stop(): void;
-  /** The harness's own rows, as `agents` answers with them. Empty for a
-   * harness whose own view is not the one that contract states. */
-  rows(): ReadonlyMap<Sid, AgentInfo>;
+  /** The harness's own rows, as `agents` answers with them, keyed by the pid
+   * each one is about. Empty for a harness whose own view is not the one that
+   * contract states.
+   *
+   * One process per row: the same session may have two of them, and a row is
+   * matched by its pid for that reason (contract, `AgentInfo`). */
+  rows(): ReadonlyMap<number, AgentInfo>;
   /** The sessions the harness says are there at this instant. */
   present(): ReadonlySet<Sid>;
 }
@@ -100,7 +104,7 @@ class CodexThreads implements OwnSessions {
     this.#watch.stop();
   }
 
-  rows(): ReadonlyMap<Sid, AgentInfo> {
+  rows(): ReadonlyMap<number, AgentInfo> {
     return new Map();
   }
 
@@ -150,14 +154,20 @@ export class HarnessSessions implements OwnSessions {
     this.#watch.stop();
   }
 
-  rows(): ReadonlyMap<Sid, AgentInfo> {
+  rows(): ReadonlyMap<number, AgentInfo> {
     return this.scan();
   }
 
   /** Every session with a state file, which for this harness is the same
-   * reading its rows came from. */
+   * reading its rows came from. Two state files naming one session are two
+   * runs of it and one entry here: this answers which sessions exist, and a
+   * session exists once however many processes are writing it. */
   present(): ReadonlySet<Sid> {
-    return new Set(this.scan().keys());
+    const sids = new Set<Sid>();
+    for (const row of this.scan().values()) {
+      if (row.sid !== undefined) sids.add(row.sid);
+    }
+    return sids;
   }
 
   /** The directory as it is at this instant.
@@ -173,9 +183,14 @@ export class HarnessSessions implements OwnSessions {
    *
    * Read in place because the answer may not depend on anybody waiting: what
    * this states is that a session exists, and a reading that could be waited
-   * for would make it something the callers above cannot ask (DESIGN §4.2). */
-  scan(): ReadonlyMap<Sid, AgentInfo> {
-    const rows = new Map<Sid, AgentInfo>();
+   * for would make it something the callers above cannot ask (DESIGN §4.2).
+   *
+   * Keyed by pid and not by sid: the harness lets a running session be resumed,
+   * and from that moment two files name the same session. Folding them onto the
+   * sid would keep whichever was read last and leave the duplicate invisible,
+   * which is the one thing a client has to be able to see (DR-0001). */
+  scan(): ReadonlyMap<number, AgentInfo> {
+    const rows = new Map<number, AgentInfo>();
     const names = this.#watch.names().filter((name) => STATE_FILE.test(name));
     const present = new Set(names);
     for (const name of names) {
@@ -184,13 +199,13 @@ export class HarnessSessions implements OwnSessions {
         document = JSON.parse(readFileSync(join(this.dir, name), "utf8"));
       } catch {
         const previous = this.#lastComplete.get(name);
-        if (previous !== undefined) rows.set(previous.sid, previous);
+        if (previous !== undefined) rows.set(previous.pid, previous);
         continue;
       }
       const result = toRow(document, this.dir, this.instance);
       if (!result.complete) {
         const previous = this.#lastComplete.get(name);
-        if (previous !== undefined) rows.set(previous.sid, previous);
+        if (previous !== undefined) rows.set(previous.pid, previous);
         continue;
       }
       if (result.row === undefined) {
@@ -198,7 +213,7 @@ export class HarnessSessions implements OwnSessions {
         continue;
       }
       this.#lastComplete.set(name, result.row);
-      rows.set(result.row.sid, result.row);
+      rows.set(result.row.pid, result.row);
     }
     for (const name of this.#lastComplete.keys()) {
       if (!present.has(name)) this.#lastComplete.delete(name);

@@ -5,7 +5,7 @@
     "": {
       "name": "@ccmsg/cli",
       "dependencies": {
-        "@ccmsg/protocol": "1.23.0",
+        "@ccmsg/protocol": "2.0.0",
       },
       "devDependencies": {
         "@types/bun": "^1.3.0",
@@ -17,7 +17,7 @@
     },
   },
   "packages": {
-    "@ccmsg/protocol": ["@ccmsg/protocol@1.23.0", "", { "dependencies": { "@sinclair/typebox": "^0.34.33" } }, "sha512-/2QDT+TA3MY7OHNHglxKHH918t/hO0SnhXSRreiqEt2v0cnxI2PAZwezC9R0ZQFJoBOZixJnOucQqPiQ3Bkv4g=="],
+    "@ccmsg/protocol": ["@ccmsg/protocol@2.0.0", "", { "dependencies": { "@sinclair/typebox": "^0.34.33" } }, "sha512-+C6NnWSEM7+/WLeYF3hXSsJqTzQZ88Hb4MQP2E6nIjdBv6/GqSV7aUsQqd2yN9CZBGID5L89MJKDdwBJ8mL+lQ=="],
 
     "@oxfmt/binding-android-arm-eabi": ["@oxfmt/binding-android-arm-eabi@0.58.0", "", { "os": "android", "cpu": "arm" }, "sha512-Uz62sHduGGPftXtILGyxdSW4PX82rUg+rfdNqhsgxe881g4rIoXlIqmZQ6HVKcF4f+F8qMhdD03Bx5u7gmeTdg=="],
 

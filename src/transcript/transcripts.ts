@@ -1,4 +1,4 @@
-import type { InstanceId, Sid } from "@ccmsg/protocol";
+import type { InstanceId, SessionStatusStanding, Sid } from "@ccmsg/protocol";
 import { CONFIRM_POLL_MS } from "../sessions/harness.ts";
 import { topicParam, type TopicValue, type UpstreamResource } from "../topics/index.ts";
 import type { FoldCache } from "./cache.ts";
@@ -98,6 +98,50 @@ export class Transcripts implements UpstreamResource {
     return this.#followed.get(sid)?.fold.facts ?? NO_FACTS;
   }
 
+  /** What the fold of a session is worth, as `peers.session_status` states it
+   * (contract, `SessionStatusStanding`) — everything but `frozen`, which is a
+   * count of processes rather than anything about the reading and belongs to
+   * whoever holds the runs.
+   *
+   * A session nothing is following stands at `absent` for the same reason one
+   * whose file is not there does: there is no fold here to read, and the two
+   * are one answer to the client's question of whether the status is worth
+   * reading. Following starts when something wants the fold, which is the
+   * subscription driving the resource (DESIGN §6.3). */
+  standing(sid: Sid): SessionStatusStanding {
+    return this.#followed.get(sid)?.standing ?? "absent";
+  }
+
+  /** Two or more processes are writing this session's transcript, or are no
+   * longer.
+   *
+   * While they are, nothing of the file is read: the records interleave, the
+   * offsets are wrong, and the fold would state a reading that describes
+   * neither run. So the tail stops and the last value the fold could be
+   * trusted for is left standing (DR-0001 §3).
+   *
+   * When they stop, the reading begins again from the top rather than from
+   * where it was: the cached offset was taken from a file two writers have
+   * since moved, so it names a position in nothing. */
+  duplicated(sid: Sid, now: boolean): void {
+    const followed = this.#followed.get(sid);
+    if (followed === undefined || followed.frozen === now) return;
+    followed.frozen = now;
+    if (now) {
+      this.#let(followed);
+      followed.standing = "frozen";
+      return;
+    }
+    const path = followed.path;
+    if (path !== undefined) void this.deps.cache?.drop(path);
+    followed.fold.reset();
+    this.#reset(followed);
+    followed.tail = undefined;
+    followed.path = undefined;
+    followed.standing = "absent";
+    followed.ready = this.#open(sid, followed);
+  }
+
   /** When the transcript held for a session has been read. Whoever states a
    * value the fold settles waits on this, so what is stated describes the
    * whole file rather than the part of it read so far (CT-Q8). */
@@ -125,6 +169,8 @@ export class Transcripts implements UpstreamResource {
       reading: new Classification(),
       recent: [],
       ready: Promise.resolve(),
+      standing: "absent",
+      frozen: false,
     };
     this.#followed.set(sid, followed);
     followed.ready = this.#open(sid, followed);
@@ -173,17 +219,19 @@ export class Transcripts implements UpstreamResource {
    * put a watch on a file and states about it into a session that has since
    * been opened afresh. */
   async #open(sid: Sid, followed: Followed, appeared = false): Promise<void> {
+    if (followed.frozen) return;
     const path = await this.#find(sid);
-    if (!this.#holds(sid, followed)) return;
+    if (!this.#holds(sid, followed) || followed.frozen) return;
     if (path === undefined) {
+      followed.standing = "absent";
       this.#lookAgain(sid, followed, true);
       return;
     }
     followed.path = path;
+    followed.standing = "folding";
     try {
       const kept = await this.deps.cache?.read(path);
-      if (!this.#holds(sid, followed)) return;
-      let settled = false;
+      if (!this.#holds(sid, followed) || followed.frozen) return;
       if (kept !== undefined) {
         followed.fold.restore(kept.fold);
         followed.recent.push(...kept.items);
@@ -191,7 +239,6 @@ export class Transcripts implements UpstreamResource {
         // the calls it was still waiting on are taken up with the items they
         // belong to, so a result answered now names the call a reader holds.
         followed.reading.restore(kept.reading, followed.recent);
-        settled = true;
       }
       const tail = new TranscriptTail(path, {
         onExisting: (read) => {
@@ -206,7 +253,7 @@ export class Transcripts implements UpstreamResource {
             return;
           }
           this.#keep(followed, read);
-          if (foldAll(followed.fold, read.lines)) settled = true;
+          foldAll(followed.fold, read.lines);
         },
         onAppended: (appended) => this.#appended(sid, followed, appended),
         onTruncated: () => {
@@ -219,6 +266,10 @@ export class Transcripts implements UpstreamResource {
       });
       followed.tail = tail;
       await tail.start(kept?.offset ?? 0);
+      if (followed.frozen) {
+        tail.stop();
+        return;
+      }
       if (!this.#holds(sid, followed)) {
         // Released while the file was being read: the watch this just put on it
         // is the only thing left of the reading, and it goes with it.
@@ -226,9 +277,11 @@ export class Transcripts implements UpstreamResource {
         return;
       }
       await this.#remember(followed);
-      // A file that said nothing says nothing: the reading is finished either
-      // way, and only a reading that settled something is news to the domain.
-      if (settled) this.deps.onFacts(sid);
+      followed.standing = "ready";
+      // Told whatever the file said. What the fold settled may be nothing, and
+      // the reading being finished is itself a value of the row
+      // (`session_status`), so a file that said nothing is still news.
+      this.deps.onFacts(sid);
     } catch {
       // The reading could not be made. What it was taken up from goes, since
       // an entry this build read back but could not restore would fail the
@@ -240,9 +293,12 @@ export class Transcripts implements UpstreamResource {
       followed.tail = undefined;
       followed.path = undefined;
       followed.fold.reset();
+      followed.standing = "absent";
       this.#reset(followed);
       void this.deps.cache?.drop(path);
-      if (this.#holds(sid, followed)) this.#lookAgain(sid, followed, false);
+      if (this.#holds(sid, followed) && !followed.frozen) {
+        this.#lookAgain(sid, followed, false);
+      }
     }
   }
 
@@ -355,6 +411,11 @@ interface Followed {
   readonly recent: Item[];
   /** Settled once the file has been looked for and, where found, read. */
   ready: Promise<void>;
+  /** What the fold is worth right now, as `peers.session_status` states it. */
+  standing: SessionStatusStanding;
+  /** Whether two or more processes are writing the file, in which case nothing
+   * of it is read and the last trusted value is what stands. */
+  frozen: boolean;
   path?: string;
   tail?: TranscriptTail;
   /** The next look for a file that was not there, while nothing is read. */

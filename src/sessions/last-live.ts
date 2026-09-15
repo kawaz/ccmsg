@@ -14,19 +14,21 @@ export const LAST_LIVE_FILE = "last-live.json";
 /** What is stored per session: the observations a lost session's row is built
  * from, and nothing the row derives or a connection supplies.
  *
- * `state` is left out on purpose (M4). It follows from `stopped_at` and from
- * whether the session is live again, both of which are known when the list is
- * read, so storing it would be storing a conclusion that can go stale on disk.
- * `pinned` is left out because no pin is held anywhere yet; when one is, it
- * belongs to the session rather than to this list. The connection fields go
- * with the connection there is none of.
+ * `runs` and `session_status` are left out on purpose (M4). Both are readings
+ * of this instant — which processes are there, and how far the fold has got —
+ * and an entry this store holds is by definition one whose processes are gone,
+ * so storing either would be storing an observation that is false the moment
+ * it is written. `pinned` is left out because no pin is held anywhere yet; when
+ * one is, it belongs to the session rather than to this list. The connection
+ * fields go with the connection there is none of.
  *
  * `last_seen_at` is required here while the row states it optionally: a row
  * this store holds is by definition one this instance has lost, and when it
  * last saw it is what the retention window is measured from. */
 export type StoredEntry = Omit<
   PeerInfo,
-  | "state"
+  | "runs"
+  | "session_status"
   | "pinned"
   | "last_activity_at"
   | "last_user_input_at"

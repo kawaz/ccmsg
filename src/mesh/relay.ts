@@ -7,7 +7,7 @@ import {
   TOPIC_ATTRIBUTES,
   type Timestamp,
 } from "@ccmsg/protocol";
-import { Elements, type TopicValue } from "../topics/index.ts";
+import { AGENT_ROWS, Elements, PEER_ROWS, type TopicValue } from "../topics/index.ts";
 
 /** The rows of sessions the whole mesh is seen through.
  *
@@ -127,7 +127,9 @@ export class Relay {
 
   /** The rows one instance has stated on a topic, made the first time it does. */
   #rows(held: Map<string, unknown>, topic: string): Elements {
-    const rows = (held.get(topic) as Elements | undefined) ?? new Elements();
+    const rows =
+      (held.get(topic) as Elements | undefined) ??
+      new Elements(topic === "agents" ? AGENT_ROWS : PEER_ROWS);
     held.set(topic, rows);
     return rows;
   }

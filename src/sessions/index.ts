@@ -1,4 +1,3 @@
-export * from "./classify.ts";
 export { DUMP_SUFFIX, DUMPS, dumpWrite } from "./dump.ts";
 export { forkOrigin } from "./fork.ts";
 export * from "./harness.ts";
@@ -20,6 +19,7 @@ export {
   terminalOf,
 } from "./processes.ts";
 export * from "./registry.ts";
+export { duplicated, type ObservedRun, runsOf, statedTerminalId } from "./runs.ts";
 export { search, type SearchDeps } from "./search.ts";
 export * from "./status.ts";
 export { TerminalCache, type TerminalReader } from "./terminals.ts";

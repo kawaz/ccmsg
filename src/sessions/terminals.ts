@@ -7,10 +7,12 @@ export type TerminalReader = (pid: number) => Promise<Terminal | undefined>;
 
 /** The terminal each live session runs in, read once per process.
  *
- * `agents` states a session's terminal and the classification reads it: a live
- * session that neither holds a connection here nor names a terminal is the one
- * nothing can reach (DESIGN §4.3, `live_unmanaged`). Both want the value on every
- * row, and neither may pay for it on every read — the harness's directory is
+ * Both `agents` and each run of `peers.runs` state the terminal a process runs
+ * in, which is what says a running session can be reached at all: a run that
+ * neither holds a connection here nor names a terminal is one nothing can be
+ * handed to and nothing can be typed into (contract, `reachable`). Both want
+ * the value on every row, and neither may pay for it on every read — the
+ * harness's directory is
  * scanned whenever any question is asked of it, and reading every session's
  * environment there would spawn a child per session per question.
  *
