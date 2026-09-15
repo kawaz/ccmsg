@@ -39,6 +39,10 @@ test が hook script を実プロセス (`bun` の子) として起動してお�
 
 `test/terminals.test.ts` "the terminals of a host > are the manager's listing, in the contract's spelling" も全件走行で 5000.90 ms の timeout (単体は 10 pass)。どちらも子プロセス (hook script / fake hyoui) を起動する test で、負荷が高い時に起動が 5 秒を超える。issue の対象を「子プロセスを起動する test の timeout が起動時間と無関係な固定値」に広げる。
 
+## 直すことの訂正 (2026-09-15)
+
+「timeout の値」の話ではない。落ちている test は hook script / fake hyoui を bun の子プロセスとして起動して出力を待っており、負荷で起動が遅れれば上限を何秒にしても同じ構図。直すのは待ち方でなく test の切り方: (1) hook script のロジック (event JSON を受けて何を書くか) は関数として直接呼び、子プロセスを起動しない。`terminals` の listing の読み替えも `hyoui` の jsonl を文字列で与えて関数を test する。(2) 「script として起動できる」「PATH の hyoui を呼べる」の確認は各 1 本だけ残し、`proc.exited` / stdout の行という完了事象を await する (時間で待たない、上限は付けない)。
+
 ## 受け入れ条件
 
 - [ ] `just ci` を 5 回連続で pass
