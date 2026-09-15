@@ -51,7 +51,7 @@ import {
   sessionStatusOf,
   SessionStatus,
 } from "../sessions/index.ts";
-import { hostTerminals, Terminals } from "../terminals/index.ts";
+import { hostTerminals, hostTerminalWatch, Terminals } from "../terminals/index.ts";
 import { topicHandlers, Topics } from "../topics/index.ts";
 import { FoldCache, TranscriptFiles, Transcripts } from "../transcript/index.ts";
 import {
@@ -650,13 +650,13 @@ export class Instance {
     this.#terminals = new Terminals({
       self: this.self,
       list: hostTerminals(this.self),
+      watch: hostTerminalWatch,
       publish: (topic, data) => {
         this.#topics.publish(topic, data);
       },
       log: (msg, fields) => {
         this.log.write(msg, fields);
       },
-      ...(pollMs === undefined ? {} : { pollMs }),
     });
 
     this.#instances = new Instances({

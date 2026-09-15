@@ -22,10 +22,6 @@ const PERIODIC: Record<string, string> = {
   // not happen. Its period is chosen rather than derived, and says so where it
   // is defined (mesh-peer-auth §8.3).
   "mesh/mesh.ts": "the mesh heartbeat, which detects a silently dropped link",
-  // A terminal manager announces nothing, so asking it is the only route there
-  // is: no file to watch and no event to wait on. What bounds it is the
-  // subscription — the poll runs while somebody is looking and not otherwise.
-  "terminals/terminals.ts": "the only route to a terminal manager, which announces nothing",
 };
 
 const SRC = new URL("../src/", import.meta.url).pathname;

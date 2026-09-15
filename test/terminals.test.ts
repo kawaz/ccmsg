@@ -1,5 +1,13 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -13,6 +21,8 @@ import { OpError } from "../src/dispatch/index.ts";
 import { hostProcessDeps } from "../src/sessions/index.ts";
 import {
   hostTerminals,
+  hostTerminalWatch,
+  socketDirs,
   type TerminalListing,
   Terminals,
   terminalsOf,
@@ -104,24 +114,46 @@ function listing(jsonl: () => string): TerminalListing {
   return () => Promise.resolve(terminalsOf(SELF, jsonl()));
 }
 
-/** A `Terminals` with somewhere to publish, whose poll is never waited on: the
- * tests drive the reading themselves, which is what makes them say when a
- * reading happened rather than how long one takes. */
+/** A `Terminals` with somewhere to publish, over a watch the case itself works:
+ * `moved` is what the socket directories would have said. The readings are
+ * driven by the case for the same reason, which is what makes these say when a
+ * reading happened rather than how long one takes. What the real watch reports
+ * of a real directory is its own test, below. */
 function domain(list = hostTerminals(SELF)) {
   const published: { topic: string; data: unknown }[] = [];
   const logged: string[] = [];
+  const armed = { started: 0, stopped: 0 };
+  let onChange: (() => void) | undefined;
   const terminals = new Terminals({
     self: SELF,
     list,
+    watch: (moved) => {
+      onChange = moved;
+      return {
+        start: () => {
+          armed.started++;
+        },
+        stop: () => {
+          armed.stopped++;
+        },
+      };
+    },
     publish: (topic, data) => {
       published.push({ topic, data });
     },
     log: (message) => {
       logged.push(message);
     },
-    pollMs: 60_000,
   });
-  return { terminals, published, logged };
+  return {
+    terminals,
+    published,
+    logged,
+    armed,
+    moved: () => {
+      onChange?.();
+    },
+  };
 }
 
 /** The rows one frame carries, whether it opened the subscription or changed
@@ -315,6 +347,38 @@ describe("the terminals of a host", () => {
     }
   });
 
+  test("are read again when the socket directories move, and not otherwise", async () => {
+    let jsonl = `${line(CLAUDE)}\n`;
+    let reads = 0;
+    const { terminals, published, armed, moved } = domain(() => {
+      reads++;
+      return Promise.resolve(terminalsOf(SELF, jsonl));
+    });
+    // The watch is what the subscription drives: armed when the first
+    // subscriber arrives and let go when the last one leaves (DESIGN §6.3).
+    terminals.start();
+    expect(armed).toEqual({ started: 1, stopped: 0 });
+    await terminals.snapshot();
+    published.splice(0);
+
+    // Nothing in the directories moved, so the manager is not asked again and
+    // a subscriber is told nothing: there is no interval to arrive.
+    const quiet = reads;
+    await Bun.sleep(50);
+    expect(reads).toBe(quiet);
+    expect(published).toEqual([]);
+
+    // A socket appeared, which is a terminal opening.
+    jsonl = `${line(CLAUDE)}\n${line(SHELL)}\n`;
+    moved();
+    await terminals.read();
+    expect(reads).toBeGreaterThan(quiet);
+    expect(rows(published[0]?.data).map((row) => row.id)).toEqual(["hyoui:run-42929-ea1c2477"]);
+
+    terminals.stop();
+    expect(armed).toEqual({ started: 1, stopped: 1 });
+  });
+
   test("leave out a line that states no terminal", () => {
     expect(
       terminalsOf(
@@ -335,5 +399,80 @@ describe("the terminals of a host", () => {
       state: "stale",
       command: [],
     });
+  });
+});
+
+describe("the directories the manager binds its sockets in", () => {
+  const HOME = "/home/someone";
+
+  test("are the manager's own, for the namespace this instance asks it about", () => {
+    // Both bases, in the manager's own order (hyoui `discovery`).
+    expect(socketDirs({ XDG_RUNTIME_DIR: "/run/user/1", XDG_STATE_HOME: "/s", HOME })).toEqual([
+      "/run/user/1/hyoui",
+      "/s/hyoui",
+    ]);
+    // The state base is where it goes by default, which is the one a host
+    // without `XDG_RUNTIME_DIR` has.
+    expect(socketDirs({ HOME })).toEqual(["/home/someone/.local/state/hyoui"]);
+    expect(socketDirs({ XDG_RUNTIME_DIR: "", XDG_STATE_HOME: "", HOME })).toEqual([
+      "/home/someone/.local/state/hyoui",
+    ]);
+    // A namespace of its own is a directory under each base; the default one is
+    // the base itself, whether it is named or left unsaid.
+    expect(socketDirs({ HOME, HYOUI_NAMESPACE: "work" })).toEqual([
+      "/home/someone/.local/state/hyoui/work",
+    ]);
+    expect(socketDirs({ HOME, HYOUI_NAMESPACE: "default" })).toEqual([
+      "/home/someone/.local/state/hyoui",
+    ]);
+    // A host with no home at all: there is nowhere to watch and nothing is
+    // guessed.
+    expect(socketDirs({})).toEqual([]);
+  });
+
+  test("say a terminal opened and closed, and say so before they exist", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ccmsg-sockets-"));
+    homes.push(root);
+    // The state base of a host whose manager has never run: the directory is
+    // not there when the subscription opens.
+    const dir = join(root, "hyoui");
+    let moved = 0;
+    const waiters: (() => void)[] = [];
+    const watch = hostTerminalWatch(() => {
+      moved++;
+      for (const waiter of waiters.splice(0)) waiter();
+    }, [dir]);
+    /** Whether the watch said anything within `budgetMs`. */
+    const reported = async (budgetMs: number): Promise<boolean> => {
+      const before = moved;
+      await Promise.race([
+        new Promise<void>((resolve) => waiters.push(resolve)),
+        Bun.sleep(budgetMs),
+      ]);
+      return moved > before;
+    };
+
+    watch.start();
+    // Arming is itself a reason to read, once however many directories there
+    // are.
+    expect(moved).toBe(1);
+
+    // The manager's first terminal, which makes the directory as it binds.
+    mkdirSync(dir, { recursive: true });
+    expect(await reported(5_000)).toBe(true);
+    const socket = join(dir, "run-1-a.sock");
+    writeFileSync(socket, "");
+    expect(await reported(5_000)).toBe(true);
+    // And the terminal closing, which is the socket going away.
+    unlinkSync(socket);
+    expect(await reported(5_000)).toBe(true);
+
+    watch.stop();
+    const quiet = moved;
+    writeFileSync(join(dir, "run-2-b.sock"), "");
+    await Bun.sleep(300);
+    // Nobody is subscribed: nothing is watched and nothing is read (DESIGN
+    // §6.3).
+    expect(moved).toBe(quiet);
   });
 });

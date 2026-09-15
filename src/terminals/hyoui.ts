@@ -1,11 +1,19 @@
+import { join } from "node:path";
 import { HYOUI_TERMINAL_SCHEME, type InstanceId, type TerminalInfo } from "@ccmsg/protocol";
 import { HYOUI_COMMAND, terminalId } from "./ids.ts";
 import { run } from "../sessions/processes.ts";
-import type { TerminalListing } from "./terminals.ts";
+import { DirectoryWatch } from "./watch.ts";
+import type { TerminalListing, TerminalWatching } from "./terminals.ts";
 
 /** How the manager is asked for its whole list. One line per terminal, which is
  * what lets a line this instance cannot read be dropped on its own. */
 const LIST = [HYOUI_COMMAND, "list", "--format=jsonl"];
+
+/** What the manager calls the namespace it lists when nobody named one, and how
+ * it is named. A namespace of its own is a directory under the base; the
+ * default one is the base itself (hyoui `discovery`). */
+const DEFAULT_NAMESPACE = "default";
+const NAMESPACE = "HYOUI_NAMESPACE";
 
 /** The terminals of this host, as the manager states them.
  *
@@ -26,6 +34,63 @@ export function hostTerminals(instance: InstanceId): TerminalListing {
     return terminalsOf(instance, jsonl);
   };
 }
+
+/** Where the manager keeps the socket it binds per terminal, which is what the
+ * list it answers with is a reading of (hyoui `discovery`): one or both of
+ * `$XDG_RUNTIME_DIR/hyoui` and `${XDG_STATE_HOME:-$HOME/.local/state}/hyoui`,
+ * and under either, the directory of the namespace being listed.
+ *
+ * The namespace is the environment's, because that is what decides which one
+ * the manager lists when it is asked without being told — this instance asks
+ * for its own namespace and watches the directory that namespace's sockets are
+ * in, so the two cannot answer about different terminals. */
+export function socketDirs(env: Record<string, string | undefined> = process.env): string[] {
+  const bases: string[] = [];
+  const runtime = env["XDG_RUNTIME_DIR"];
+  if (runtime !== undefined && runtime !== "") bases.push(join(runtime, "hyoui"));
+  const state = env["XDG_STATE_HOME"];
+  const home = env["HOME"];
+  if (state !== undefined && state !== "") bases.push(join(state, "hyoui"));
+  else if (home !== undefined && home !== "") bases.push(join(home, ".local", "state", "hyoui"));
+  const namespace = env[NAMESPACE];
+  return namespace === undefined || namespace === "" || namespace === DEFAULT_NAMESPACE
+    ? bases
+    : bases.map((base) => join(base, namespace));
+}
+
+/** What says this host's terminals may have moved: a socket appearing or
+ * disappearing in one of the directories the manager binds them in.
+ *
+ * Both candidate directories are watched whether or not they are there now —
+ * one of them typically is not, and a host that has never run the manager gets
+ * its first terminal at the moment the directory itself appears, which is
+ * exactly what `DirectoryWatch` watches from above for. */
+export const hostTerminalWatch: TerminalWatching = (onChange, dirs = socketDirs()) => {
+  // Arming a watch is itself a reason to read, and there are two of them: while
+  // they are being armed the reason is held back, so a subscription that opens
+  // asks the manager once rather than once per directory.
+  let arming = false;
+  const watches = dirs.map(
+    (dir) =>
+      new DirectoryWatch(dir, () => {
+        if (!arming) onChange();
+      }),
+  );
+  return {
+    start: () => {
+      arming = true;
+      try {
+        for (const watch of watches) watch.start();
+      } finally {
+        arming = false;
+      }
+      onChange();
+    },
+    stop: () => {
+      for (const watch of watches) watch.stop();
+    },
+  };
+};
 
 /** The rows one listing states, in the contract's spelling.
  *

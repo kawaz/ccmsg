@@ -7,32 +7,33 @@ import {
   type UpstreamResource,
 } from "../topics/index.ts";
 
-/** How often the manager is asked for its list.
- *
- * Asking is the only route there is: a terminal manager announces nothing, and
- * what it runs in a terminal is its own affair, so there is no file to watch
- * and no event to wait on. What keeps the cost of that bounded is the
- * subscription — the poll runs while somebody is looking at the terminals and
- * not otherwise (DESIGN §6.3), so an instance nobody is watching starts no
- * children at all.
- *
- * Five seconds is the interval the harness directory's confirmation poll runs
- * at, so a terminal opening and a session appearing reach a client within the
- * same span rather than one trailing the other. */
-export const TERMINAL_POLL_MS = 5_000;
-
 /** The terminals of this host, as a terminal manager answers with them. A host
- * with no manager answers with none; a poll that failed throws, because a
+ * with no manager answers with none; a reading that failed throws, because a
  * failed reading is not a host whose terminals are gone. */
 export type TerminalListing = () => Promise<readonly TerminalInfo[]>;
+
+/** What says the host's terminals may have moved, while somebody is looking.
+ *
+ * A terminal manager announces nothing itself, but it keeps a socket per
+ * terminal, so a terminal opening and a terminal closing are entries appearing
+ * and disappearing in a directory — which is an event to wait on rather than a
+ * question to repeat. What the manager is asked is the whole list, once per
+ * event and once when the subscription opens (DESIGN §4.6). */
+export type TerminalWatching = (
+  onChange: () => void,
+  /** The directories to watch, for a test that has its own. */
+  dirs?: readonly string[],
+) => {
+  start(): void;
+  stop(): void;
+};
 
 export interface TerminalsDeps {
   readonly self: InstanceId;
   readonly list: TerminalListing;
+  readonly watch: TerminalWatching;
   readonly publish: (topic: string, data: unknown) => void;
   readonly log?: (message: string, fields?: Record<string, unknown>) => void;
-  /** The poll interval, so a test does not wait one out. */
-  readonly pollMs?: number;
 }
 
 /** The `terminals` topic: what terminals this host has, whoever opened them
@@ -51,16 +52,18 @@ export interface TerminalsDeps {
 export class Terminals implements UpstreamResource {
   readonly #readings: Readings<readonly TerminalInfo[] | undefined>;
   readonly #sent = new Elements(TERMINAL_ROWS);
-  #timer: ReturnType<typeof setInterval> | undefined;
+  readonly #watch: { start(): void; stop(): void };
   #rows: readonly TerminalInfo[] = [];
-  /** When the poll behind the rows above ran, which a frame states so a client
-   * can tell a quiet list from a stale one. Absent before the first one. */
+  /** When the reading behind the rows above was made, which a frame states so a
+   * client can tell a quiet list from a stale one. Absent before the first
+   * one. */
   #polledAt: Timestamp | undefined;
-  /** Whether the last poll failed, so a manager that is failing is logged once
-   * rather than every interval. */
+  /** Whether the last reading failed, so a manager that is failing is logged
+   * once rather than at every event. */
   #failing = false;
 
   constructor(private readonly deps: TerminalsDeps) {
+    this.#watch = deps.watch(() => void this.read());
     this.#readings = new Readings(
       () => this.#list(),
       (rows) => {
@@ -77,25 +80,16 @@ export class Terminals implements UpstreamResource {
   }
 
   start(): void {
-    if (this.#timer !== undefined) return;
-    this.#timer = setInterval(() => void this.read(), this.deps.pollMs ?? TERMINAL_POLL_MS);
-    void this.read();
+    this.#watch.start();
   }
 
   stop(): void {
-    if (this.#timer !== undefined) clearInterval(this.#timer);
-    this.#timer = undefined;
-  }
-
-  /** Whether the poll is running, which is what "the subscription drives the
-   * resource" means in practice. */
-  get polling(): boolean {
-    return this.#timer !== undefined;
+    this.#watch.stop();
   }
 
   /** What a fresh subscriber is handed: every terminal there is.
    *
-   * The poll has only just been started, so the opening frame waits for a
+   * The watch has only just been started, so the opening frame waits for a
    * reading of its own rather than stating an empty list that means something
    * else (CT-Q8). Stating the rows is also what the difference after it is
    * taken against. */
@@ -114,10 +108,10 @@ export class Terminals implements UpstreamResource {
 
   /** One reading, or nothing where the manager could not be read.
    *
-   * A failed poll leaves the rows as they stand: the terminals of a host whose
-   * manager did not answer are unknown, not gone, and publishing them as
+   * A failed reading leaves the rows as they stand: the terminals of a host
+   * whose manager did not answer are unknown, not gone, and publishing them as
    * removals would close every terminal in every client's view and open them
-   * again on the next poll that works. */
+   * again on the next reading that works. */
   async #list(): Promise<readonly TerminalInfo[] | undefined> {
     try {
       const rows = await this.deps.list();
