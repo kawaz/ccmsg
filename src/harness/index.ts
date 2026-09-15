@@ -91,6 +91,17 @@ export function currentSession(
   return undefined;
 }
 
+/** What a process was launched as: the last segment of the first word of its
+ * command line, however the program was found on the path.
+ *
+ * Read from argv0 rather than by searching the whole command line for a word:
+ * on a host running sessions, half the processes carry a harness's name
+ * somewhere in their arguments, including the daemon itself. */
+export function launchedAs(command: string): string {
+  const argv0 = command.trimStart().split(/\s/, 1)[0] ?? "";
+  return argv0.slice(argv0.lastIndexOf("/") + 1);
+}
+
 export function isHarness(value: unknown): value is Harness {
   return HARNESSES.includes(value as Harness);
 }

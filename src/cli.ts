@@ -49,7 +49,7 @@ import { currentSession, DEFAULT_HARNESS, HARNESS, HARNESSES, isHarness } from "
 /** The variables a session is named by, for the help and for the message a
  * command answers with when it finds none of them. */
 const SESSION_ENV = HARNESSES.flatMap((harness) => [...HARNESS[harness].sessionEnv]);
-import { hookEvent, type StatedMeta, statedMeta } from "./greeting/index.ts";
+import { hookEvent, type StatedMeta, statedMeta, statedRun } from "./greeting/index.ts";
 import {
   applied,
   configFiles,
@@ -1169,7 +1169,13 @@ function peers(args: readonly string[]): Promise<unknown> {
     parsed.flags.has("all"),
     sid === undefined || sid === ""
       ? { op: "hello.user", protocol_version: PROTOCOL_VERSION }
-      : { op: "hello.session", sid, protocol_version: PROTOCOL_VERSION, ...statedMeta() },
+      : {
+          op: "hello.session",
+          sid,
+          protocol_version: PROTOCOL_VERSION,
+          ...statedRun(),
+          ...statedMeta(),
+        },
   );
 }
 
@@ -1552,6 +1558,7 @@ export async function hello(args: readonly string[], read?: Read): Promise<unkno
       op: "hello.session",
       sid,
       protocol_version: PROTOCOL_VERSION,
+      ...statedRun(),
       ...meta,
     });
     return { greeted: true, sid };
@@ -1694,7 +1701,7 @@ async function call(
     );
   }
   return await exchange(
-    { op: "hello.session", sid, protocol_version: PROTOCOL_VERSION, ...meta },
+    { op: "hello.session", sid, protocol_version: PROTOCOL_VERSION, ...statedRun(), ...meta },
     request,
   );
 }
