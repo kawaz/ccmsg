@@ -33,7 +33,10 @@ origin: 自リポ TODO
 - [ ] 挨拶か状態ファイルの出現で同じ行に `sid` が付く (行は移動しない)
 - [ ] `launches.tie` は挨拶の sid を無条件に信じない (その pid からの接続、または状態ファイルの sid と一致する時だけ結ぶ)。理由: 別セッションの Bash から `ccmsg post --sid B` を打つと `tie(pid_A, B)` になり、B に phantom run が生えて frozen になるため
 
+## 訂正 (2026-09-15)
+
+hyoui への依頼は不要だった。`hyoui status --format=json <session_id>` が `child_pid` (ハーネス本体の pid。hyoui は `claude` を直接 spawn していてシェルを挟まない)、`child_state`、`daemon_version` 等を返し、`hyoui list --format=json` でも取れる。launcher は起動直後に session id で status を引き、`child_pid` と `terminal_id = hyoui:<session_id>` を `LaunchSource` に供給すればよい。hyoui 側の issue `report-harness-pid-of-session` は取り下げ。
+
 ## 関連
 
 - 契約 DR-0001 §4、daemon `src/sessions/runs.ts`、`src/launcher/`
-- hyoui への依頼 issue (起票次第ここに slug を書く)
