@@ -1,6 +1,6 @@
 ---
 title: test で daemon の時計を差し替えられるようにする
-status: open
+status: discarded
 category: design
 created: 2026-09-15T13:17:08+09:00
 last_read:
@@ -8,11 +8,11 @@ open_entered: 2026-09-15T13:17:08+09:00
 wip_entered:
 blocked_entered:
 pending_entered:
-discarded_entered:
+discarded_entered: 2026-09-15T20:23:49+09:00
 resolved_entered:
-discard_reason:
+discard_reason: ["却下 (kawaz 2026-09-15)。UI の visual 差分を消す目的に対して daemon の実装 (Date.now() の一元化) を歪める手段は釣り合わない。目的は幅固定 (webui test/visual/screenshot.css) で既に達成済み。clock 固定はタイマー依存の振る舞い test で検討するもので、visual の差分消しには持ち出さない"]
 pending_reason:
-close_reason:
+close_reason: ["discarded"]
 blocked_by:
 origin: 自リポ TODO
 ---

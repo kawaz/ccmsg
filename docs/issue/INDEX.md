@@ -26,7 +26,6 @@ wire の契約は [kawaz/ccmsg-protocol](https://github.com/kawaz/ccmsg-protocol
 | date | category | status | slug | 概要 |
 |---|---|---|---|---|
 | 2026-09-14 | task | open | [gateway-signal-keepalive-retired](./2026-09-14-gateway-signal-keepalive-retired.md) | llm-gateway v0.48.0 (DR-0027 段階 B) で合図方式の keepalive を撤去、ccmsg 側の受け口を撤去する |
-| 2026-09-15 | design | open | [clock-injection-for-deterministic-tests](./2026-09-15-clock-injection-for-deterministic-tests.md) | test で daemon の時計を差し替えられるようにする (page.clock だけでは webui の visual を決定的にできない) |
 | 2026-09-14 | design | open | [session-search-regex-unbounded](./2026-09-14-session-search-regex-unbounded.md) | `session.search` のユーザ指定正規表現が 1 回の `test()` でイベントループを塞ぎ切る |
 | 2026-09-14 | design | open | [translate-queue-instance-wide](./2026-09-14-translate-queue-instance-wide.md) | 翻訳の待ち行列が instance 全体で 1 本なので、無関係なセッションの翻訳が互いを待つ |
 | 2026-09-12 | task | open | [webauthn-tests-library-grade](./2026-09-12-webauthn-tests-library-grade.md) | WebAuthn の検証を自前 (`src/auth/webauthn.ts` 401 行 + `cbor.ts` 150 行、DR-0001 §2.11) で… |
