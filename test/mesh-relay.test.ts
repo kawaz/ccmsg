@@ -624,7 +624,7 @@ describe("what a disconnected instance leaves behind (§7.5, DV-Q12)", () => {
     const relay = new Relay({ publish: () => undefined });
     const peer = "ws://127.0.0.1:9" as InstanceId;
     relay.accept(peer, "peers", {
-      peers: [{ sid: SID_ON_B, instance: peer, state: "paused", last_seen_at: 0 }],
+      peers: [{ sid: SID_ON_B, instance: peer, runs: [], stopped_at: 0, last_seen_at: 0 }],
     });
     expect(relay.owner(SID_ON_B)).toBe(peer);
   });
@@ -632,7 +632,9 @@ describe("what a disconnected instance leaves behind (§7.5, DV-Q12)", () => {
   test("a row the peer removed is no longer found", () => {
     const relay = new Relay({ publish: () => undefined });
     const peer = "ws://127.0.0.1:9" as InstanceId;
-    relay.accept(peer, "peers", { peers: [{ sid: SID_ON_B, instance: peer, state: "live" }] });
+    relay.accept(peer, "peers", {
+      peers: [{ sid: SID_ON_B, instance: peer, runs: [{ connected: true }] }],
+    });
     relay.accept(peer, "peers", { peers: [{ sid: SID_ON_B, instance: peer, removed: true }] });
     expect(relay.owner(SID_ON_B)).toBeUndefined();
   });
@@ -641,21 +643,21 @@ describe("what a disconnected instance leaves behind (§7.5, DV-Q12)", () => {
     const passed: { topic: string; data: unknown }[] = [];
     const relay = new Relay({ publish: (topic, data) => passed.push({ topic, data }) });
     const peer = "ws://127.0.0.1:9" as InstanceId;
-    const row = { sid: SID_ON_B, instance: peer, state: "live" };
+    const row = { sid: SID_ON_B, instance: peer, runs: [{ connected: true }] };
 
     relay.accept(peer, "peers", { peers: [row] });
     // The peer restating a row it has already stated tells this instance
     // nothing, so nothing reaches its subscribers either (M5, per element).
     relay.accept(peer, "peers", { peers: [row] });
     // And a frame that moves one of two rows carries that one.
-    const other = { sid: SID, instance: peer, state: "live" };
+    const other = { sid: SID, instance: peer, runs: [{ connected: true }] };
     relay.accept(peer, "peers", { peers: [other] });
-    relay.accept(peer, "peers", { peers: [{ ...row, state: "waiting" }] });
+    relay.accept(peer, "peers", { peers: [{ ...row, session_status: "ready" }] });
 
-    expect(passed.map((frame) => (frame.data as { peers: { sid: string }[] }).peers)).toEqual([
+    expect(passed.map((frame) => (frame.data as { peers: unknown[] }).peers)).toEqual([
       [row],
       [other],
-      [{ ...row, state: "waiting" }],
+      [{ ...row, session_status: "ready" }],
     ]);
   });
 
@@ -665,8 +667,8 @@ describe("what a disconnected instance leaves behind (§7.5, DV-Q12)", () => {
     const peer = "ws://127.0.0.1:9" as InstanceId;
     relay.accept(peer, "peers", {
       peers: [
-        { sid: SID_ON_B, instance: peer, state: "live" },
-        { sid: SID, instance: peer, state: "live" },
+        { sid: SID_ON_B, instance: peer, runs: [{ connected: true }] },
+        { sid: SID, instance: peer, runs: [{ connected: true }] },
       ],
     });
 
@@ -674,7 +676,12 @@ describe("what a disconnected instance leaves behind (§7.5, DV-Q12)", () => {
     // two. The other is gone from its list and from nothing else, so the
     // removal is this instance's to state onward.
     passed.length = 0;
-    relay.accept(peer, "peers", { peers: [{ sid: SID, instance: peer, state: "live" }] }, true);
+    relay.accept(
+      peer,
+      "peers",
+      { peers: [{ sid: SID, instance: peer, runs: [{ connected: true }] }] },
+      true,
+    );
 
     expect(passed).toEqual([{ peers: [{ sid: SID_ON_B, instance: peer, removed: true }] }]);
     expect(relay.owner(SID_ON_B)).toBeUndefined();

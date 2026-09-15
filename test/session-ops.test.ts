@@ -1,5 +1,13 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
@@ -720,6 +728,25 @@ describe("session.dump.write", () => {
     expect(readdirSync(join(stateDir, "dumps")).length).toBe(1);
     expect(written["instance"]).toBe(SELF);
     expect(written["bytes"]).toBe(Buffer.byteLength(readFileSync(path)));
+  });
+
+  test("a session two processes are running is refused rather than dumped", async () => {
+    // A transcript two runs are interleaving reads as neither of them, so a
+    // dump of it would be a durable artifact of something that never was.
+    const { configHome, stateDir, handlers, domain } = ops();
+    writeTranscript(configHome, SID);
+    const second = child();
+    writeState(configHome, process.pid, SID);
+    writeState(configHome, second, SID);
+    expect(domain.duplicated(SID)).toBe(true);
+
+    const refused = await run("session.dump.write", handlers["session.dump.write"], {
+      sid: SID,
+    }).catch((cause: unknown) => cause);
+
+    expect(refused).toMatchObject({ code: "session_duplicated" });
+    // Nothing was written: a refusal leaves the caller's goal with the caller.
+    expect(existsSync(join(stateDir, "dumps"))).toBe(false);
   });
 
   test("what was written is counted by type, and one turn is more than one item", async () => {

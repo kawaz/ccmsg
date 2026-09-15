@@ -87,6 +87,37 @@ describe("notify.send reaches whoever is watching", () => {
     ]);
   });
 
+  test("a session two processes are running is refused, and nothing is shown", async () => {
+    // What the notification would say about such a session is read from a
+    // transcript neither run's reading describes, and it holds nothing back for
+    // later: the text is still with the caller.
+    const { topics, send } = rig(new Set([OTHER_SID]));
+    const watcher = connAs("user");
+    await topics.subscribe(watcher, "notify");
+    watcher.flush();
+
+    expect(() => send(connAs("session", SID), { text: "隣のこと", sid: OTHER_SID })).toThrow(
+      "more than one process",
+    );
+    expect(received(watcher)).toEqual([]);
+
+    // The session beside it is untouched: the refusal is about one session.
+    send(connAs("session", SID), { text: "自分のこと" });
+    expect(received(watcher).map((one) => one.sid)).toEqual([SID]);
+  });
+
+  test("a session refuses a notification about itself on the same grounds", async () => {
+    const { topics, send } = rig(new Set([SID]));
+    const watcher = connAs("user");
+    await topics.subscribe(watcher, "notify");
+    watcher.flush();
+
+    expect(() => send(connAs("session", SID), { text: "自分のこと" })).toThrow(
+      "more than one process",
+    );
+    expect(received(watcher)).toEqual([]);
+  });
+
   test("`sid` names the session it is about, and the caller is meant without it", async () => {
     const { topics, send } = rig();
     const watcher = connAs("user");
