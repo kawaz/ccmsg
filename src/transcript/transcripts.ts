@@ -38,6 +38,16 @@ export interface TranscriptsDeps {
    * settles is an input to the sessions domain (DESIGN §4.2), so the domain that
    * states those values is told to state them again. */
   readonly onFacts: (sid: Sid) => void;
+  /** Whether two or more processes are running this session right now.
+   *
+   * Asked when a session is first followed rather than only pushed in: a
+   * session that was already being run twice when something first asked for its
+   * fold would otherwise be read once, from a file the two of them have
+   * interleaved, before the next recompute freezes it — and "the last value
+   * that could be trusted" would be a value that never could (contract
+   * DR-0001 §3). Absent where nothing holds the runs, in which case no session
+   * is ever taken as duplicated. */
+  readonly duplicated?: (sid: Sid) => boolean;
   /** Overrides the confirmation poll, for a test that cannot wait. */
   readonly pollMs?: number;
 }
@@ -162,16 +172,21 @@ export class Transcripts implements UpstreamResource {
       held.holds += 1;
       return;
     }
+    // A session already being run twice is followed frozen from the start:
+    // there is no reading of its file that would be worth anything, and the
+    // one this would otherwise do is the reading the freeze exists to prevent.
+    const frozen = this.deps.duplicated?.(sid) === true;
     const followed: Followed = {
       holds: 1,
       fold: new TranscriptFold(),
       reading: new Classification(),
       recent: [],
       ready: Promise.resolve(),
-      standing: "absent",
-      frozen: false,
+      standing: frozen ? "frozen" : "absent",
+      frozen,
     };
     this.#followed.set(sid, followed);
+    if (frozen) return;
     followed.ready = this.#open(sid, followed);
   }
 
