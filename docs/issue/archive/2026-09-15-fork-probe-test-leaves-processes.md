@@ -1,6 +1,6 @@
 ---
 title: test の fork probe (偽 `claude` シェル) がプロセスを残す
-status: open
+status: discarded
 category: bug
 created: 2026-09-15T11:28:42+09:00
 last_read:
@@ -8,11 +8,11 @@ open_entered: 2026-09-15T11:28:42+09:00
 wip_entered:
 blocked_entered:
 pending_entered:
-discarded_entered:
+discarded_entered: 2026-09-15T12:14:09+09:00
 resolved_entered:
-discard_reason:
+discard_reason: ["v2(kawaz/ccmsg)にはfork probeのhelperが存在しない。残骸はv1(kawaz/claude-ccmsg)の起動時fork probe(2026-09-02のcommit 3d139b9aで削除済み)が削除前のtest実行で置いたもので、v2で直す対象は無い","ホスト上の残骸52プロセスは2026-09-15にpid指定で回収済み","v2のtest/harness.ts reapOrphans()はtracked rootをargvに含むプロセスを回収する一般形を既に持つ"]
 pending_reason:
-close_reason:
+close_reason: ["discarded"]
 blocked_by:
 origin: 自リポ TODO
 ---
