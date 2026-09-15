@@ -10,7 +10,7 @@ blocked_entered:
 pending_entered:
 discarded_entered: 2026-09-15T20:23:49+09:00
 resolved_entered:
-discard_reason: ["却下 (kawaz 2026-09-15)。UI の visual 差分を消す目的に対して daemon の実装 (Date.now() の一元化) を歪める手段は釣り合わない。目的は幅固定 (webui test/visual/screenshot.css) で既に達成済み。clock 固定はタイマー依存の振る舞い test で検討するもので、visual の差分消しには持ち出さない"]
+discard_reason: ["この issue の動機 (webui の visual 差分を消す) に対して、daemon の全経路を時計注入に揃える規模は見合わない。差分は幅固定 (webui test/visual/screenshot.css) で既に消えている。時計を差し込める設計自体は正しく (StartOptions.now は既にある)、振る舞いの test がそれを要する時に、その test の範囲で注入点を広げればよい"]
 pending_reason:
 close_reason: ["discarded"]
 blocked_by:
