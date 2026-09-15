@@ -1,6 +1,6 @@
 ---
 title: launcher が起動した run を状態ファイルより前に `agents` に載せる配線 (hyoui から harness の pid を得る)
-status: open
+status: discarded
 category: task
 created: 2026-09-15T10:58:20+09:00
 last_read:
@@ -8,9 +8,9 @@ open_entered: 2026-09-15T10:58:20+09:00
 wip_entered:
 blocked_entered:
 pending_entered:
-discarded_entered:
+discarded_entered: 2026-09-15T13:45:32+09:00
 resolved_entered:
-discard_reason:
+discard_reason: ["契約 DR-0026 で置き換え: 端末は terminals topic (hyoui list の polling、daemon v1.1.0) として一覧化し、起動直後のハーネスは契約の starting(terminals, agents) (pid があるのに agents に無く、command の先頭がハーネス) で導出する。launcher が agents に偽の行を載せる配線は不要になった"]
 pending_reason:
 close_reason:
 blocked_by:
