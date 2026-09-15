@@ -25,7 +25,6 @@ wire の契約は [kawaz/ccmsg-protocol](https://github.com/kawaz/ccmsg-protocol
 
 | date | category | status | slug | 概要 |
 |---|---|---|---|---|
-| 2026-09-15 | bug | open | [mesh-cut-peer-test-race](./2026-09-15-mesh-cut-peer-test-race.md) | `test/mesh.test.ts` の cut テストが時々落ちる (先行して存在する race) |
 | 2026-09-15 | task | open | [launcher-run-before-state-file](./2026-09-15-launcher-run-before-state-file.md) | launcher が起動した run を状態ファイルより前に `agents` に載せる配線 (hyoui から harness の… |
 | 2026-09-14 | task | open | [gateway-signal-keepalive-retired](./2026-09-14-gateway-signal-keepalive-retired.md) | llm-gateway v0.48.0 (DR-0027 段階 B) で合図方式の keepalive を撤去、ccmsg 側の受け口を撤去する |
 | 2026-09-15 | design | open | [clock-injection-for-deterministic-tests](./2026-09-15-clock-injection-for-deterministic-tests.md) | test で daemon の時計を差し替えられるようにする (page.clock だけでは webui の visual を決定的にできない) |

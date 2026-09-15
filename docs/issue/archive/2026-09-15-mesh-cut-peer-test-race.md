@@ -1,6 +1,6 @@
 ---
 title: mesh の cut テストが時々落ちる (先行して存在する race)
-status: open
+status: resolved
 category: bug
 created: 2026-09-15T12:54:07+09:00
 last_read: 2026-09-15T13:05:35+09:00
@@ -9,10 +9,10 @@ wip_entered:
 blocked_entered:
 pending_entered:
 discarded_entered:
-resolved_entered:
+resolved_entered: 2026-09-15T13:43:33+09:00
 discard_reason:
 pending_reason:
-close_reason:
+close_reason: ["dr/DR-0015","implemented","done:cut test 50/50 pass (commit c56bb940)"]
 blocked_by:
 origin: 自リポ TODO
 ---
