@@ -30,11 +30,14 @@ import { Topics } from "../src/topics/index.ts";
 import {
   type GatewaySource,
   HarnessSessions,
+  type LaunchSource,
   LastLiveStore,
   runsOf,
   Sessions,
+  SessionProcesses,
   hostTerminalReader,
   type TerminalReader,
+  type TranscriptSource,
 } from "../src/sessions/index.ts";
 import { NO_FACTS, type TranscriptFacts } from "../src/transcript/index.ts";
 import { connAs, greeting, OTHER_SID, SELF, SELF_ENDPOINT, SID, TestConn } from "./frames.ts";
@@ -200,6 +203,10 @@ function sessions(
     gateway?: GatewaySource;
     terminals?: TerminalReader;
     transcript?: { facts: (sid: Sid) => TranscriptFacts };
+    /** The fold as the domain reads it, whole, for a case about what the row
+     * says of it rather than about the facts it carries. */
+    fold?: TranscriptSource;
+    launches?: LaunchSource;
     terminalGateway?: string;
   } = {},
 ) {
@@ -238,6 +245,8 @@ function sessions(
             duplicated: () => {},
           },
         }),
+    ...(overrides.fold === undefined ? {} : { transcript: overrides.fold }),
+    ...(overrides.launches === undefined ? {} : { launches: overrides.launches }),
     ...(overrides.terminalGateway === undefined
       ? {}
       : { terminalGateway: overrides.terminalGateway }),
@@ -296,7 +305,12 @@ async function refusalOf(call: () => Promise<unknown>): Promise<unknown> {
   return undefined;
 }
 
-async function helloFrom(domain: Sessions, conn: TestConn, sid: Sid = SID): Promise<HelloResult> {
+async function helloFrom(
+  domain: Sessions,
+  conn: TestConn,
+  sid: Sid = SID,
+  over: { pid?: number } = {},
+): Promise<HelloResult> {
   // A greeting settles the transcript path it was given against this config
   // home, which is a read of the filesystem, so the answer is a promise.
   return (await domain.helloSession({
@@ -308,6 +322,7 @@ async function helloFrom(domain: Sessions, conn: TestConn, sid: Sid = SID): Prom
       protocol_version: PROTOCOL_VERSION,
       sid,
       ...meta(),
+      ...over,
     },
   })) as HelloResult;
 }
@@ -1314,6 +1329,194 @@ describe("last_live", () => {
     restarted.stop("peers");
     await restarted.flush();
     expect(readdirSync(context.stateDir)).toEqual(["last-live.json"]);
+  });
+});
+
+describe("a session two processes are running", () => {
+  /** A domain whose fold is a stub that records what it was told, so what is
+   * under test is the domain settling the count and passing it on rather than
+   * the reading itself. */
+  function withFold() {
+    const told: boolean[] = [];
+    let standing: "absent" | "folding" | "ready" = "ready";
+    const context = sessions({
+      transcript: { facts: () => NO_FACTS },
+      fold: {
+        facts: () => NO_FACTS,
+        standing: () => standing,
+        duplicated: (_sid: Sid, now: boolean) => {
+          told.push(now);
+        },
+      },
+    });
+    return { ...context, told, at: (next: typeof standing) => (standing = next) };
+  }
+
+  test("both state files are runs of the one row, and the fold it states is frozen", async () => {
+    const context = withFold();
+    const second = await child({});
+    writeState(context.sessionsDir, process.pid, SID);
+    writeState(context.sessionsDir, second, SID);
+
+    const row = context.domain.row(SID) as PeerInfo;
+    // One session, two processes: the row is one and the runs are two, which
+    // is the whole of what the harness letting a running session be resumed
+    // looks like from here.
+    expect(row.runs.map((run) => run.pid).sort()).toEqual([process.pid, second].sort());
+    expect(liveness(row, Date.now())).toBe("duplicated");
+    // What the fold says cannot be trusted while both are writing it, whatever
+    // the reading had got to.
+    expect(row.session_status).toBe("frozen");
+    expect(context.domain.duplicated(SID)).toBe(true);
+  });
+
+  test("`agents` keeps a row per process rather than the last one read", async () => {
+    const context = withFold();
+    const second = await child({});
+    writeState(context.sessionsDir, process.pid, SID, { name: "first" });
+    writeState(context.sessionsDir, second, SID, { name: "second" });
+
+    const rows = context.domain.agentRows();
+    expect(rows.map((row) => row.pid).sort()).toEqual([process.pid, second].sort());
+    expect(new Set(rows.map((row) => row.sid))).toEqual(new Set([SID]));
+  });
+
+  test("the reading is told to stop, and to start again from the top once one is left", async () => {
+    const context = withFold();
+    const second = await child({});
+    writeState(context.sessionsDir, process.pid, SID);
+    writeState(context.sessionsDir, second, SID);
+    context.domain.refresh();
+    expect(context.told.at(-1)).toBe(true);
+
+    rmSync(join(context.sessionsDir, `${second}.json`));
+    // The reading begins again rather than resuming: the cached offset was
+    // taken from a file two writers have since moved.
+    context.at("folding");
+    context.domain.refresh();
+    expect(context.told.at(-1)).toBe(false);
+    expect(context.domain.row(SID)?.session_status).toBe("folding");
+
+    context.at("ready");
+    expect(context.domain.row(SID)?.session_status).toBe("ready");
+  });
+
+  test("a kill that named no run is refused, and one that named a pid is not", async () => {
+    const context = withFold();
+    const second = await child({});
+    writeState(context.sessionsDir, process.pid, SID);
+    writeState(context.sessionsDir, second, SID);
+    const signalled: number[] = [];
+    const processes = new SessionProcesses({
+      runs: (sid) => context.domain.runsNow(sid),
+      command: () => Promise.resolve("claude"),
+      environment: () => Promise.resolve(""),
+      started: () => Promise.resolve(undefined),
+      signal: (pid) => {
+        signalled.push(pid);
+      },
+      alive: () => false,
+      sleep: () => Promise.resolve(),
+      platform: () => process.platform,
+    });
+
+    await expect(processes.kill(SID)).rejects.toMatchObject({ code: "ambiguous_run" });
+    expect(signalled).toEqual([]);
+
+    expect(await processes.kill(SID, false, second)).toEqual({ terminated: true });
+    expect(signalled).toEqual([second]);
+  });
+
+  test("a pid that is no run of this session ends nothing", async () => {
+    const context = withFold();
+    writeState(context.sessionsDir, process.pid, SID);
+    const signalled: number[] = [];
+    const processes = new SessionProcesses({
+      runs: (sid) => context.domain.runsNow(sid),
+      command: () => Promise.resolve("claude"),
+      environment: () => Promise.resolve(""),
+      started: () => Promise.resolve(undefined),
+      signal: (pid) => {
+        signalled.push(pid);
+      },
+      alive: () => false,
+      sleep: () => Promise.resolve(),
+      platform: () => process.platform,
+    });
+
+    await expect(processes.kill(SID, false, 999_999)).rejects.toMatchObject({
+      code: "session_not_found",
+    });
+    expect(signalled).toEqual([]);
+  });
+});
+
+describe("a run a launcher started", () => {
+  /** The launcher's own view, which is what says a process is there before the
+   * harness has written a file for it. */
+  function withLaunch(pid: number) {
+    let sid: Sid | undefined;
+    const context = sessions({
+      launches: {
+        running: () => [
+          {
+            pid,
+            started_at: STARTED_AT,
+            cwd: "/repos/a-repo/main",
+            terminal_id: "hyoui:t-9",
+            ...(sid === undefined ? {} : { sid }),
+          },
+        ],
+        tie: (tied: number, to: Sid) => {
+          if (tied === pid) sid = to;
+        },
+      },
+    });
+    return { ...context, tied: () => sid };
+  }
+
+  test("is on `agents` with no session before anything has named one", () => {
+    const context = withLaunch(4242);
+    const row = context.domain.agentRows().find((each) => each.pid === 4242);
+    expect(row?.sid).toBeUndefined();
+    expect(row?.terminal_id).toBe("hyoui:t-9");
+    expect(row?.started_at).toBe(STARTED_AT);
+    // Nothing has said which session it is, so no row of `peers` claims it.
+    expect(context.domain.peerRows().filter(isLive)).toEqual([]);
+  });
+
+  test("a greeting that names the harness process ties the two together", async () => {
+    const context = withLaunch(4242);
+    await helloFrom(context.domain, greeting(), SID, { pid: 4242 });
+
+    expect(context.tied()).toBe(SID);
+    // One row and one run: the process the launcher started and the session
+    // that greeted from it are the same thing.
+    expect(context.domain.agentRows().filter((row) => row.pid === 4242)[0]?.sid).toBe(SID);
+    expect(context.domain.row(SID)?.runs).toEqual([
+      { pid: 4242, started_at: STARTED_AT, terminal_id: "hyoui:t-9", connected: true },
+    ]);
+  });
+
+  test("the harness writing its own file leaves one run, not two", async () => {
+    const context = withLaunch(process.pid);
+    await helloFrom(context.domain, greeting(), SID, { pid: process.pid });
+    writeState(context.sessionsDir, process.pid, SID);
+
+    const row = context.domain.row(SID) as PeerInfo;
+    expect(row.runs).toHaveLength(1);
+    expect(liveness(row, Date.now())).toBe("alive");
+    expect(context.domain.agentRows().filter((each) => each.pid === process.pid)).toHaveLength(1);
+  });
+
+  test("a greeting that names no process leaves the launcher's run unclaimed", async () => {
+    const context = withLaunch(4242);
+    await helloFrom(context.domain, greeting(), SID);
+
+    expect(context.tied()).toBeUndefined();
+    // The connection is the only evidence of a process for this session, which
+    // is one run with no pid — and nothing here can signal such a run.
+    expect(context.domain.row(SID)?.runs).toEqual([{ connected: true }]);
   });
 });
 

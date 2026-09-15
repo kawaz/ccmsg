@@ -438,6 +438,91 @@ describe("the tail runs while somebody is listening (§6.3)", () => {
   });
 });
 
+describe("a transcript two processes are writing", () => {
+  test("nothing of the file is read while they are, and the last trusted value stands", async () => {
+    const file = transcript([prompt("first", 0), apiError("API Error: 500", 1)]);
+    const { transcripts, published } = domain(file.path);
+    transcripts.hold(SID);
+    await transcripts.ready(SID);
+    expect(transcripts.standing(SID)).toBe("ready");
+    const trusted = transcripts.facts(SID);
+    expect(trusted.api_error).toBeDefined();
+
+    transcripts.duplicated(SID, true);
+    expect(transcripts.standing(SID)).toBe("frozen");
+    expect(transcripts.following(SID)).toBe(false);
+
+    // Both runs are writing it now, so the records interleave and the offsets
+    // are wrong. What was appended is not folded and is not carried.
+    published.length = 0;
+    file.append(answer(2));
+    await Bun.sleep(POLL_MS * 4);
+    expect(published).toEqual([]);
+    // The last value that could be trusted is what still stands: the error the
+    // reading had settled has not been cleared by an answer nothing read.
+    expect(transcripts.facts(SID).api_error).toEqual(trusted.api_error);
+  });
+
+  test("once one is left the reading begins again from the top, not where it stopped", async () => {
+    const file = transcript([prompt("first", 0), apiError("API Error: 500", 1)]);
+    const dropped: string[] = [];
+    const published: Published[] = [];
+    const transcripts = new Transcripts({
+      self: SELF,
+      pathOf: async () => file.path,
+      publish: (topic, data) => published.push({ topic, data: data as Record<string, unknown> }),
+      onFacts: () => {},
+      pollMs: POLL_MS,
+      cache: {
+        read: async () => undefined,
+        save: async () => {},
+        drop: async (path: string) => {
+          dropped.push(path);
+        },
+      } as unknown as FoldCache,
+    });
+    running.push(transcripts);
+    transcripts.hold(SID);
+    await transcripts.ready(SID);
+
+    transcripts.duplicated(SID, true);
+    // What the two of them wrote while it was frozen, which the reading has
+    // never seen.
+    file.append(answer(2));
+
+    transcripts.duplicated(SID, false);
+    // The cached offset named a position in a file two writers have since
+    // moved, so it is given up rather than resumed from.
+    expect(dropped).toEqual([file.path]);
+    await transcripts.ready(SID);
+    await settled(() => transcripts.standing(SID) === "ready");
+    // Read whole, so the answer written during the freeze is what the fold
+    // says now.
+    expect(transcripts.facts(SID).api_error).toBeUndefined();
+  });
+
+  test("telling it the same thing twice does nothing the second time", async () => {
+    const file = transcript([prompt("first", 0)]);
+    const { transcripts } = domain(file.path);
+    transcripts.hold(SID);
+    await transcripts.ready(SID);
+
+    transcripts.duplicated(SID, true);
+    transcripts.duplicated(SID, true);
+    expect(transcripts.standing(SID)).toBe("frozen");
+    transcripts.duplicated(SID, false);
+    await transcripts.ready(SID);
+    expect(transcripts.following(SID)).toBe(true);
+  });
+
+  test("a session nothing is following stands at absent, whichever it is told", () => {
+    const { transcripts } = domain(undefined);
+    expect(transcripts.standing(SID)).toBe("absent");
+    transcripts.duplicated(SID, true);
+    expect(transcripts.standing(SID)).toBe("absent");
+  });
+});
+
 describe("one fold, and only one (M5)", () => {
   /** The harness's own vocabulary: a file that names any of these is reading a
    * transcript record. Every kind of record the fold reads is represented, so
