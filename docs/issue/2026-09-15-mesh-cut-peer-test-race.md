@@ -3,7 +3,7 @@ title: mesh の cut テストが時々落ちる (先行して存在する race)
 status: open
 category: bug
 created: 2026-09-15T12:54:07+09:00
-last_read:
+last_read: 2026-09-15T13:05:35+09:00
 open_entered: 2026-09-15T12:54:07+09:00
 wip_entered:
 blocked_entered:
