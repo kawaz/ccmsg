@@ -29,7 +29,6 @@ import { dumpWrite } from "./dump.ts";
 import { forkOrigin } from "./fork.ts";
 import { itemsRead } from "./items.ts";
 import type { SessionProcesses } from "./processes.ts";
-import { statedTerminalId } from "./runs.ts";
 import { search } from "./search.ts";
 
 /** The two capabilities of the session ops, present only where what they rest
@@ -98,7 +97,7 @@ export function sessionHandlers(deps: SessionOpsDeps) {
       // The handle is stated with the scheme that says how it is opened, which
       // is what every other statement of a terminal carries (contract,
       // `terminalUrl`); the bare handle is what was typed into.
-      return { terminal_id: statedTerminalId(terminal.id), instance: deps.self, title };
+      return { terminal_id: terminal.id, instance: deps.self, title };
     },
 
     "session.env.read": async (input: HandlerInput): Promise<SessionEnvReadResult> => {

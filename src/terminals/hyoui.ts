@@ -1,19 +1,11 @@
-import type { InstanceId, TerminalInfo } from "@ccmsg/protocol";
+import { HYOUI_TERMINAL_SCHEME, type InstanceId, type TerminalInfo } from "@ccmsg/protocol";
+import { HYOUI_COMMAND, terminalId } from "./ids.ts";
 import { run } from "../sessions/processes.ts";
 import type { TerminalListing } from "./terminals.ts";
 
-/** The terminal manager this instance reads, and the scheme its ids carry.
- *
- * The scheme is what says which manager a row came from (contract, DR-0026),
- * and it is the same word the session's own process names its terminal by
- * (`HYOUI_SESSION_ID`, `processes.ts`) — so a terminal reached from a run and
- * the same terminal on this list are one id. */
-export const TERMINAL_MANAGER = "hyoui";
-export const TERMINAL_SCHEME = `${TERMINAL_MANAGER}:`;
-
 /** How the manager is asked for its whole list. One line per terminal, which is
  * what lets a line this instance cannot read be dropped on its own. */
-const LIST = [TERMINAL_MANAGER, "list", "--format=jsonl"];
+const LIST = [HYOUI_COMMAND, "list", "--format=jsonl"];
 
 /** The terminals of this host, as the manager states them.
  *
@@ -80,7 +72,7 @@ function stated(instance: InstanceId, document: unknown): TerminalInfo | undefin
   if (id === undefined || state === undefined) return undefined;
   return {
     instance,
-    id: `${TERMINAL_SCHEME}${id}`,
+    id: terminalId(HYOUI_TERMINAL_SCHEME, id),
     state,
     // A manager that named no argv states a terminal with nothing known to be
     // running in it, which is an empty command rather than an absent field:

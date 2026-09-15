@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -9,6 +9,8 @@ import {
   unattachedTerminals,
   validationErrors,
 } from "@ccmsg/protocol";
+import { OpError } from "../src/dispatch/index.ts";
+import { hostProcessDeps } from "../src/sessions/index.ts";
 import { hostTerminals, Terminals, terminalsOf } from "../src/terminals/index.ts";
 import { SELF } from "./frames.ts";
 
@@ -52,7 +54,7 @@ afterEach(() => {
  *
  * The real manager is out of reach of these tests by construction: `PATH` holds
  * this directory and nothing else. */
-function manager(script: string): { lines: (jsonl: string) => void } {
+function manager(script: string): { lines: (jsonl: string) => void; said: () => string[] } {
   const dir = mkdtempSync(join(tmpdir(), "ccmsg-terminals-"));
   homes.push(dir);
   const out = join(dir, "listing");
@@ -64,7 +66,22 @@ function manager(script: string): { lines: (jsonl: string) => void } {
     lines: (jsonl) => {
       writeFileSync(out, jsonl);
     },
+    said: () =>
+      readFileSync(out, "utf8")
+        .split("\n")
+        .filter((said) => said !== ""),
   };
+}
+
+/** The code one refused call answered with. */
+async function refusalOf(call: () => unknown): Promise<string> {
+  try {
+    await call();
+  } catch (cause) {
+    if (cause instanceof OpError) return cause.code;
+    throw cause;
+  }
+  throw new Error("the call was expected to be refused");
 }
 
 // Absolute, because `PATH` holds nothing but the directory this script is in.
@@ -235,6 +252,32 @@ describe("the terminals of a host", () => {
     await first;
     expect(published).toHaveLength(1);
     expect(rows(published[0]?.data).map((held) => held.id)).toEqual(["hyoui:new"]);
+  });
+
+  test("are typed into by the manager their scheme names, under its own handle", async () => {
+    // The manager records what it was asked to do, because what is under test is
+    // the argv this host builds rather than what a terminal did with it.
+    const hyoui = manager('#!/bin/sh\necho "$@" >> @LISTING@\n');
+    const { type } = hostProcessDeps(() => Promise.resolve([]));
+    await type?.({ id: "hyoui:run-1-a", namespace: "work" }, ["text:/rename x", "key:Enter"]);
+    await type?.({ id: "hyoui:run-1-a" }, ["key:Escape"]);
+    expect(hyoui.said()).toEqual([
+      "input --namespace work run-1-a text:/rename x key:Enter",
+      // The scheme is this instance's way of telling managers apart and means
+      // nothing to the manager, so what it is handed is the handle alone.
+      "input run-1-a key:Escape",
+    ]);
+  });
+
+  test("are not typed into where no manager here knows them", async () => {
+    manager(LISTS);
+    const { type } = hostProcessDeps(() => Promise.resolve([]));
+    // A terminal of a manager this instance does not speak to, and one whose id
+    // carries no scheme at all: neither is handed to whichever command happens
+    // to be installed.
+    for (const id of ["tmux:0", "run-1-a", "hyoui:", ":x"]) {
+      expect(await refusalOf(() => type?.({ id }, ["key:Enter"]))).toBe("capability_unavailable");
+    }
   });
 
   test("leave out a line that states no terminal", () => {

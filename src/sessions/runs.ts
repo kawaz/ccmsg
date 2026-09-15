@@ -1,4 +1,4 @@
-import { HYOUI_TERMINAL_SCHEME, type SessionRun, type Timestamp } from "@ccmsg/protocol";
+import type { SessionRun, Timestamp } from "@ccmsg/protocol";
 
 /** One process this instance can see running a session, before it is stated as
  * a run: what the harness's state file says, or what a launcher started.
@@ -55,14 +55,4 @@ export function runsOf(
  * freezes its fold and refuses the ops that would act on it. */
 export function duplicated(runs: readonly SessionRun[]): boolean {
   return runs.length >= 2;
-}
-
-/** A terminal handle as the wire states it: the scheme the gateway serves, and
- * the handle the multiplexer knows it by.
- *
- * The scheme is what decides how a client opens it (contract, `terminalUrl`),
- * and the bare handle is what this instance types into — so the two forms are
- * kept apart rather than one being parsed back out of the other at each use. */
-export function statedTerminalId(id: string): string {
-  return `${HYOUI_TERMINAL_SCHEME}:${id}`;
 }

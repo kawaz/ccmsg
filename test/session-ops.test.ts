@@ -574,13 +574,17 @@ describe("session.rename", () => {
       sid: SID,
       title: "  a new title  ",
     });
-    // Stated with the scheme a client opens it by, while what is typed into is
-    // the bare handle the multiplexer knows.
+    // One id for one terminal: what the row states, what a client opens it by
+    // and what is handed to whoever types into it are the same value. Which
+    // manager that is, and the handle it knows the terminal by, are read out of
+    // the scheme where the typing happens (`hostProcessDeps`).
     expect(renamed["terminal_id"]).toBe(`${HYOUI_TERMINAL_SCHEME}:t-1`);
     expect(renamed["title"]).toBe("a new title");
     // The submit is a keystroke of its own, so the terminal drains the typed
     // line before it arrives.
-    expect(typed).toEqual([["t-1", "work", "text:/rename a new title", "key:Enter"]]);
+    expect(typed).toEqual([
+      [`${HYOUI_TERMINAL_SCHEME}:t-1`, "work", "text:/rename a new title", "key:Enter"],
+    ]);
   });
 
   test("a session whose terminal is unknown is refused rather than guessed at", async () => {

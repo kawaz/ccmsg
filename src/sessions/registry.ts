@@ -29,7 +29,7 @@ import type { TranscriptFacts } from "../transcript/index.ts";
 import { AGENT_ROWS, Elements, type TopicValue, type UpstreamResource } from "../topics/index.ts";
 import { type OwnSessions, ownSessions } from "./harness.ts";
 import { LastLiveStore, type StoredEntry } from "./last-live.ts";
-import { duplicated, type ObservedRun, runsOf, statedTerminalId } from "./runs.ts";
+import { duplicated, type ObservedRun, runsOf } from "./runs.ts";
 import { StartCache, type StartReader } from "./starts.ts";
 import { TerminalCache, type TerminalReader } from "./terminals.ts";
 
@@ -494,7 +494,7 @@ export class Sessions implements UpstreamResource {
                 // The scheme is what tells a client how to open it, and the
                 // bare handle is what this instance types into (contract,
                 // `terminalUrl`).
-                terminal_id: statedTerminalId(terminal.id),
+                terminal_id: terminal.id,
                 ...(terminal.namespace === undefined
                   ? {}
                   : { terminal_namespace: terminal.namespace }),

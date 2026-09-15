@@ -1,6 +1,7 @@
-import type { SessionRun, Sid, Timestamp } from "@ccmsg/protocol";
+import { HYOUI_TERMINAL_SCHEME, type SessionRun, type Sid, type Timestamp } from "@ccmsg/protocol";
 import { OpError } from "../dispatch/index.ts";
 import { isHarness, launchedAs } from "../harness/index.ts";
+import { managerOf, terminalId } from "../terminals/ids.ts";
 import type { TerminalReader } from "./terminals.ts";
 
 /** How long a child this instance runs to observe a process may take. A wedged
@@ -73,11 +74,18 @@ export interface ProcessDeps {
   readonly alive: (pid: number) => boolean;
   readonly sleep: (ms: number) => Promise<void>;
   readonly platform: () => NodeJS.Platform;
-  /** What a rename types with, when this instance has one configured. */
+  /** What a rename types with. Refuses a terminal no manager here can act on,
+   * which is the same answer whether this host has no manager at all or the
+   * terminal belongs to one it does not speak to. */
   readonly type?: (terminal: Terminal, keys: readonly string[]) => Promise<void>;
 }
 
-/** The terminal a session runs in, as its own process names it. */
+/** The terminal a session runs in, as its own process names it.
+ *
+ * The id is the one the wire states and the `terminals` list holds
+ * (`<scheme>:<handle>`), so a terminal reached through a session and the same
+ * terminal on that list are one value rather than two spellings of one. What
+ * acts on it reads the manager out of the scheme (`managerOf`). */
 export interface Terminal {
   readonly id: string;
   /** Absent means the process set none, which the multiplexer reads as its own
@@ -89,12 +97,19 @@ export interface Terminal {
 const TERMINAL_ID = "HYOUI_SESSION_ID";
 const TERMINAL_NAMESPACE = "HYOUI_NAMESPACE";
 
-/** The terminal an environment names, or nothing when it names none. */
+/** The terminal an environment names, or nothing when it names none.
+ *
+ * The variable carries the manager's own handle, and which manager set it is
+ * the variable itself — so the scheme is put on here, where that is known,
+ * rather than by each use working it out again. */
 export function terminalOf(env: Record<string, string>): Terminal | undefined {
-  const id = env[TERMINAL_ID];
-  if (id === undefined || id === "") return undefined;
+  const handle = env[TERMINAL_ID];
+  if (handle === undefined || handle === "") return undefined;
   const namespace = env[TERMINAL_NAMESPACE];
-  return { id, ...(namespace === undefined || namespace === "" ? {} : { namespace }) };
+  return {
+    id: terminalId(HYOUI_TERMINAL_SCHEME, handle),
+    ...(namespace === undefined || namespace === "" ? {} : { namespace }),
+  };
 }
 
 /** The ops that act on the process behind a session.
@@ -411,10 +426,7 @@ export function hostTerminalReader(): TerminalReader {
 }
 
 /** The effects as this host provides them. */
-export function hostProcessDeps(
-  runs: (sid: Sid) => Promise<readonly SessionRun[]>,
-  terminalCommand?: string,
-): ProcessDeps {
+export function hostProcessDeps(runs: (sid: Sid) => Promise<readonly SessionRun[]>): ProcessDeps {
   return {
     runs,
     command: (pid) => run(["ps", "-p", String(pid), "-o", "command="]),
@@ -435,18 +447,27 @@ export function hostProcessDeps(
     },
     sleep: (ms) => new Promise((done) => setTimeout(done, ms)),
     platform: () => process.platform,
-    ...(terminalCommand === undefined
-      ? {}
-      : {
-          type: async (terminal: Terminal, keys: readonly string[]) => {
-            await run([
-              terminalCommand,
-              "input",
-              ...(terminal.namespace === undefined ? [] : ["--namespace", terminal.namespace]),
-              terminal.id,
-              ...keys,
-            ]);
-          },
-        }),
+    // Which command types into a terminal is the terminal's own to say: its
+    // scheme names the manager that observed it, and only that manager knows
+    // the handle behind it (contract, DR-0026). What is typed goes to that
+    // command under the handle, never under the id the wire states — the
+    // scheme is this instance's way of telling managers apart, and means
+    // nothing to the manager itself.
+    type: async (terminal: Terminal, keys: readonly string[]) => {
+      const manager = managerOf(terminal.id);
+      if (manager === undefined) {
+        throw new OpError(
+          "capability_unavailable",
+          `${terminal.id} is a terminal this instance types into no manager of`,
+        );
+      }
+      await run([
+        manager.command,
+        "input",
+        ...(terminal.namespace === undefined ? [] : ["--namespace", terminal.namespace]),
+        manager.handle,
+        ...keys,
+      ]);
+    },
   };
 }

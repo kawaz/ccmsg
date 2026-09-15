@@ -21,7 +21,7 @@ export {
   terminalOf,
 } from "./processes.ts";
 export * from "./registry.ts";
-export { duplicated, type ObservedRun, runsOf, statedTerminalId } from "./runs.ts";
+export { duplicated, type ObservedRun, runsOf } from "./runs.ts";
 export { search, type SearchDeps } from "./search.ts";
 export * from "./status.ts";
 export { StartCache, type StartReader } from "./starts.ts";

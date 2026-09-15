@@ -763,9 +763,7 @@ export class Instance {
         configHome: paths.configHome,
         stateDir: paths.stateDir,
         files: transcriptFiles,
-        processes: new SessionProcesses(
-          hostProcessDeps((sid) => this.#sessions.runsNow(sid), config.upstream.terminal_gateway),
-        ),
+        processes: new SessionProcesses(hostProcessDeps((sid) => this.#sessions.runsNow(sid))),
         forget: (sid) => this.#sessions.forget(sid),
         presets: config.dump.presets,
         duplicated: (sid) => this.#sessions.duplicated(sid),
