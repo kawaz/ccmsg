@@ -12,7 +12,7 @@ discarded_entered:
 resolved_entered: 2026-09-15T21:13:20+09:00
 discard_reason:
 pending_reason:
-close_reason: ["done: terminals は socket dir の watch 駆動になり周期 poll を撤去、sessions/ の確認 poll も実測 (fs.watch の取りこぼしは「watch を張る瞬間と競合した変化」のみ、1% 未満) を根拠に撤去して張った直後の 1 回読み直しに置き換えた"]
+close_reason: ["done: terminals は socket dir の watch 駆動になり周期 poll を撤去 (購読開始時 1 回 + イベント時 + 張った直後の 1 回読み直し)。sessions/ の確認 poll は既決事項として残す"]
 blocked_by:
 origin: 自リポ TODO
 ---
