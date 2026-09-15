@@ -20,7 +20,7 @@
     "test": "bun test"
   },
   "dependencies": {
-    "@ccmsg/protocol": "2.0.1"
+    "@ccmsg/protocol": "2.1.1"
   },
   "devDependencies": {
     "@types/bun": "^1.3.0",

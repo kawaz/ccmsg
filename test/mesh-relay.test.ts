@@ -620,6 +620,25 @@ describe("what a disconnected instance leaves behind (§7.5, DV-Q12)", () => {
     expect(relay.owner(SID_ON_B)).toBe(peer);
   });
 
+  test("a peer's terminals are relayed as rows of their own, matched by their id", () => {
+    const passed: { topic: string; data: unknown }[] = [];
+    const relay = new Relay({ publish: (topic, data) => passed.push({ topic, data }) });
+    const peer = "ws://127.0.0.1:9" as InstanceId;
+    const row = { instance: peer, id: "hyoui:%17", state: "running", command: ["zsh"], pid: 7 };
+
+    relay.accept(peer, "terminals", { terminals: [row] });
+    relay.accept(peer, "terminals", { terminals: [row] });
+    relay.accept(peer, "terminals", {
+      terminals: [{ instance: peer, id: "hyoui:%17", removed: true }],
+    });
+
+    expect(passed.map((frame) => (frame.data as { terminals: unknown[] }).terminals)).toEqual([
+      [row],
+      [{ instance: peer, id: "hyoui:%17", removed: true }],
+    ]);
+    expect(relay.snapshot("terminals")).toEqual([{ instance: peer, data: { terminals: [] } }]);
+  });
+
   test("a session the peer has lost is still found (§7.3)", () => {
     const relay = new Relay({ publish: () => undefined });
     const peer = "ws://127.0.0.1:9" as InstanceId;

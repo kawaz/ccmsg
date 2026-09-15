@@ -297,6 +297,16 @@ sid が指すファイルは **announce と walk の 2 経路**で引く。hello
 
 2 経路とも境界は 1 つで、**自 config home の `projects/` ツリーの中しか見ない** (M6)。announce された path は「そのツリー内にあったから受理された」もので、walk はそのツリーを歩くものだからである。受理の判定は **ファイルの有無ではなく置き場所**: session-start hook が名乗る時点では harness はファイルもディレクトリも作っていないし、`projects/` 自体が未作成の config home (初回セッション) もありうる。存在する区間は realpath で辿り、無い区間は綴りのまま繋いだ上でツリー内か比べるので、`..` や symlink で外へ出る path は綴りが内側でも受理されない。受理しなかった path は `peers` の行からその field が消えるだけで、hello は `ok` のまま (契約は変えない) — **理由は daemon の log に 1 行出す**運用側の責務とする。
 
+### 4.6 ホストの端末
+
+端末はセッションの属性ではないので、端末自身の一覧を持つ: `terminals` は、ホストの端末管理が報告する端末 1 つにつき 1 行で、誰が開いたものかを問わない (契約 DR-0026)。人が開いたシェルも 1 行だし、状態ファイルを書く前のハーネスが居る端末も 1 行 — その run はそこからしか観測できない。
+
+行が運ぶのは端末自身の語 — `id` (`<scheme>:<id>`、scheme が観測元の管理を示す)、`state`、`command`、`cwd`、`pid`、`started_at` — だけで、セッションのことは何も言わない。**どのセッションがどの端末に居るかは述べずに導出する**: 端末の行と `agents` の行が共有する pid から、契約自身の `terminalsOf` / `unattachedTerminals` / `starting` が答える。instance と client は `liveness` と同じく 1 つの実装で同じ答えを出す。`agents.terminal_id` は端末管理を持たない instance が状態ファイルから知る値として残り、一覧がある時は pid の一致が優先する。
+
+**一覧は polling で取り、その polling は subscription のもの**。端末管理は何も announce しない (watch するファイルも待つイベントも無い) ので、こちらから訊く (`hyoui list --format=jsonl`)。§4.2 が常設経路として拒否した「5 秒ごとの子プロセス起動」のコストを抑えるのは、これが **subscriber が居る間だけ走る**こと (§6.3) — 誰も見ていない instance は子を 1 つも起動しない。読みが重なった場合は世代で決着させる (ハーネスのディレクトリと同じ): 飛行中に追い越された読みは、新しい答えを上書きせずに捨てる。
+
+**端末管理が無いホストは空の一覧を述べ**、失敗した poll は何も述べない: 行はそのまま据え置く。答えなかった管理は「端末が消えたホスト」ではないし、removal を publish すれば全 client の視界で全端末が閉じ、次に成功した poll でまた開くことになるからである。失敗は daemon の log に出す (失敗が続く区間につき 1 回)。
+
 ## 5. transcript の分類と dump
 
 state dir にはもう 1 つ、`dumps/` がある。`session.dump.write` が transcript を読んで `<state dir>/dumps/<sid>[-agent-<agent id>]-<written_at>.dump.json` に書き、応答としてその path を返す。これは上の 6 種のどれでもなく、本節の意味での永続化でもない: instance はこの file を読み返さず、消えても何も壊れない。

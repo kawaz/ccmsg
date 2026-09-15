@@ -51,6 +51,7 @@ import {
   sessionStatusOf,
   SessionStatus,
 } from "../sessions/index.ts";
+import { hostTerminals, Terminals } from "../terminals/index.ts";
 import { topicHandlers, Topics } from "../topics/index.ts";
 import { FoldCache, TranscriptFiles, Transcripts } from "../transcript/index.ts";
 import {
@@ -378,6 +379,7 @@ export class Instance {
   readonly #transport = new Transport();
   readonly #topics: Topics;
   readonly #sessions: Sessions;
+  readonly #terminals: Terminals;
   readonly #instances: Instances;
   readonly #status: SessionStatus;
   readonly #transcripts: Transcripts;
@@ -643,6 +645,20 @@ export class Instance {
       duplicated: (sid) => this.#sessions.duplicated(sid),
     });
 
+    // The host's terminals, which are nobody's session and so nobody's row on
+    // the two lists above (contract DR-0026).
+    this.#terminals = new Terminals({
+      self: this.self,
+      list: hostTerminals(this.self),
+      publish: (topic, data) => {
+        this.#topics.publish(topic, data);
+      },
+      log: (msg, fields) => {
+        this.log.write(msg, fields);
+      },
+      ...(pollMs === undefined ? {} : { pollMs }),
+    });
+
     this.#instances = new Instances({
       self: this.self,
       ...(this.#mesh === undefined ? {} : { endpoint: this.#mesh.self, mesh: this.#mesh }),
@@ -654,6 +670,7 @@ export class Instance {
     this.#topics.attach("instances", this.#instances);
     this.#topics.attach("peers", this.#sessions);
     this.#topics.attach("agents", this.#sessions);
+    this.#topics.attach("terminals", this.#terminals);
     this.#topics.attach("inbox", this.#delivery);
     this.#topics.attach("notify", this.#notify);
     this.#topics.attach("transcript", this.#transcripts);

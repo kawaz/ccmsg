@@ -1,4 +1,4 @@
-import type { SessionRow } from "../topics/index.ts";
+import type { ElementRow } from "../topics/index.ts";
 import {
   type InstanceId,
   LAST_LIVE_RETENTION_MS,
@@ -7,17 +7,37 @@ import {
   TOPIC_ATTRIBUTES,
   type Timestamp,
 } from "@ccmsg/protocol";
-import { AGENT_ROWS, Elements, PEER_ROWS, type TopicValue } from "../topics/index.ts";
+import {
+  AGENT_ROWS,
+  type ElementKind,
+  Elements,
+  PEER_ROWS,
+  TERMINAL_ROWS,
+  type TopicValue,
+} from "../topics/index.ts";
 
-/** The rows of sessions the whole mesh is seen through.
+/** The rows the whole mesh is seen through.
  *
  * They are `element`-granular, and an element topic is relayable only when its
  * elements say whose they are: a row here names the instance that holds the
- * session, so two instances' rows stand side by side under one topic name the
- * way a whole value per instance does. `inbox` and `kv:<ns>` are elements of
- * the same granularity and are not relayed, because their elements carry no
- * such name — an `inbox` frame belongs to a session, not to an instance. */
-const ROW_TOPICS: readonly string[] = ["peers", "agents"];
+ * session or the host the terminal was opened on, so two instances' rows stand
+ * side by side under one topic name the way a whole value per instance does.
+ * `inbox` and `kv:<ns>` are elements of the same granularity and are not
+ * relayed, because their elements carry no such name — an `inbox` frame belongs
+ * to a session, not to an instance. */
+const ROW_TOPICS: readonly string[] = ["peers", "agents", "terminals"];
+
+/** How each of those is matched, which is the topic's own (`ElementKind`). */
+const ROW_KINDS: Record<string, ElementKind> = {
+  peers: PEER_ROWS,
+  agents: AGENT_ROWS,
+  terminals: TERMINAL_ROWS,
+};
+
+/** The rows that name a session, which is what answers whose a sid is. A
+ * terminal names none: which session is in it is read off the pids, and a
+ * terminal with nobody's session in it is still a terminal. */
+const SID_TOPICS: readonly string[] = ["peers", "agents"];
 
 /** The topics a subscriber sees the whole mesh on.
  *
@@ -49,9 +69,9 @@ function carriesRows(topic: string): boolean {
 
 /** The rows of one frame, under the field each topic names them in. A frame
  * that carries none is one there is nothing to merge from. */
-function rowsOf(topic: string, data: unknown): readonly SessionRow[] {
+function rowsOf(topic: string, data: unknown): readonly ElementRow[] {
   const field = (data as Record<string, unknown> | undefined)?.[topic];
-  return Array.isArray(field) ? (field as SessionRow[]) : [];
+  return Array.isArray(field) ? (field as ElementRow[]) : [];
 }
 
 export interface RelayDeps {
@@ -127,9 +147,7 @@ export class Relay {
 
   /** The rows one instance has stated on a topic, made the first time it does. */
   #rows(held: Map<string, unknown>, topic: string): Elements {
-    const rows =
-      (held.get(topic) as Elements | undefined) ??
-      new Elements(topic === "agents" ? AGENT_ROWS : PEER_ROWS);
+    const rows = (held.get(topic) as Elements | undefined) ?? new Elements(ROW_KINDS[topic]);
     held.set(topic, rows);
     return rows;
   }
@@ -187,7 +205,7 @@ export class Relay {
    * still points at the session's own. */
   owner(sid: Sid): InstanceId | undefined {
     this.#sweep();
-    for (const topic of ROW_TOPICS) {
+    for (const topic of SID_TOPICS) {
       for (const held of this.#held.values()) {
         const row = (held.get(topic) as Elements | undefined)
           ?.rows()
