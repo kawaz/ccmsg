@@ -25,6 +25,7 @@ wire の契約は [kawaz/ccmsg-protocol](https://github.com/kawaz/ccmsg-protocol
 
 | date | category | status | slug | 概要 |
 |---|---|---|---|---|
+| 2026-09-15 | bug | open | [session-cwd-from-hook-event-drifts](./2026-09-15-session-cwd-from-hook-event-drifts.md) | セッションの `cwd` を hook event の cwd から採ると Bash ツールの一時 cwd を拾う |
 | 2026-09-15 | bug | open | [fork-probe-test-leaves-processes](./2026-09-15-fork-probe-test-leaves-processes.md) | test の fork probe (偽 `claude` シェル) がプロセスを残す |
 | 2026-09-15 | task | open | [launcher-run-before-state-file](./2026-09-15-launcher-run-before-state-file.md) | launcher が起動した run を状態ファイルより前に `agents` に載せる配線 (hyoui から harness の… |
 | 2026-09-14 | task | open | [gateway-signal-keepalive-retired](./2026-09-14-gateway-signal-keepalive-retired.md) | llm-gateway v0.48.0 (DR-0027 段階 B) で合図方式の keepalive を撤去、ccmsg 側の受け口を撤去する |
