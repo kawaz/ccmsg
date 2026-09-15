@@ -76,10 +76,10 @@ function sessions(overrides: { mesh?: MeshSource } = {}) {
 /** One connection driven the way transport drives it: a line in, a frame
  * dispatched, the identity settled by the reply. Every op but the greetings
  * answers nothing, since nothing here is about them. */
-function driven(domain: Sessions) {
+function driven(domain: Sessions, id = 1) {
   const sent: Record<string, unknown>[] = [];
   const waiters: (() => void)[] = [];
-  const conn = new BaseConn(1, {
+  const conn = new BaseConn(id, {
     send: (line) => {
       sent.push(JSON.parse(line));
       for (const waiter of waiters.splice(0)) waiter();
@@ -164,6 +164,27 @@ describe("a connection greets once, whenever its greetings arrive (DR-0015 §2.5
     expect((await replied("1"))["ok"]).toBe(true);
     expect(conn.identity).toEqual({ state: "settled", role: "session", sid: SID });
     expect(domain.connectedSids()).toEqual([SID]);
+  });
+
+  test("two connections greet one session at once: both are counted", async () => {
+    // One session reaches this instance as several processes, and each of them
+    // greets on its own connection. Both greetings settle the transcript path
+    // before they take their count, so the one that lands second has to take
+    // the count the first left rather than the count it read before waiting.
+    const { domain, transcript } = sessions();
+    const first = driven(domain, 1);
+    const second = driven(domain, 2);
+    first.chunk(helloSession("1", transcript));
+    second.chunk(helloSession("2", transcript));
+
+    expect((await first.replied("1"))["ok"]).toBe(true);
+    expect((await second.replied("2"))["ok"]).toBe(true);
+    expect(domain.connectedSids()).toEqual([SID]);
+
+    first.conn.closed();
+    expect(domain.connectedSids()).toEqual([SID]);
+    second.conn.closed();
+    expect(domain.connectedSids()).toEqual([]);
   });
 
   test("a greeting that could not be answered leaves the connection free to greet", async () => {

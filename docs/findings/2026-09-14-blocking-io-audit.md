@@ -50,7 +50,7 @@
 | upstream/gateway.ts:264 | readFileSync | `start()` → `gatewaySetup()` → `token(path)` (webhook token、小さい固定ファイル) | 同期のまま |
 | messaging/inbox.ts:72,198,205,206,207 | readFileSync / unlinkSync / mkdirSync / writeFileSync / renameSync | `Instance` 構築 → `inbox.load()` → `#compact()`。`load()` は起動時の 1 回のみ | 同期のまま |
 | messaging/direct.ts:154 | unlinkSync | `stop()` → `ClaudeCodeSocketRoute.close()` → 各 `StatusInbox.close()` | 同期のまま |
-| sessions/last-live.ts:71 | readFileSync + JSON.parse | `Sessions` コンストラクタ → `lastLive.load()` (起動時 1 回) | 同期のまま |
+| sessions/last-live.ts:77 | readFileSync + JSON.parse | `Sessions` コンストラクタ → `lastLive.load()` (起動時 1 回) | 同期のまま |
 | daemon/supervise.ts:190,192,235 | mkdirSync / unlinkSync / chmodSync | supervisor の `run()` → `#serve()` → `#listen()` | 同期のまま |
 | daemon/registry.ts:668 | mkdirSync | `Supervisor#keep()` → `prepareFor()` (子 instance 起動の都度) | 同期のまま |
 
@@ -97,7 +97,7 @@
 | sessions/status.ts | realpathSync (`canonicalSync` 経由) | topic `session.status:<sid>` の snapshot / refresh → `sessionStatusOf()` の root と `named_files` の正規化 | named_files の数 | 済 | `canonicalSync` を廃し `canonical` に一本化。`sessionStatusOf()` は Promise を返す |
 | sessions/harness.ts | readFileSync + JSON.parse | `DirectoryWatch` の fs.watch callback または 5 秒ポーリング → 状態ファイルの読み | `sessions/` の状態ファイル数 × 小さい JSON | 済 | `readFile` をファイルごとに await し、読めた行をメモリに持つ。判定側はそのメモリを同期に読む |
 | sessions/harness.ts | readdirSync | 同上 → `DirectoryWatch.names()` | ディレクトリのエントリ数 | 済 | `readdir` に置き換え。構築時の初回読みだけ同期 (B 分類) |
-| sessions/registry.ts:894,903,925 | realpathSync / statSync | op `hello.session` → `register()` → `metaOf()` → `ownTranscript()` / `resolveAsFarAsItGoes()` | 小さい (パス解決) | async 化 | セッションの挨拶ごとに走る。1 回は速いが原則側に倒す |
+| sessions/registry.ts | realpath / stat | op `hello.session` → `register()` → `metaOf()` → `ownTranscript()` / `resolveAsFarAsItGoes()` | 小さい (パス解決) | 済 | `register()` は読みを終えてから `#connected` を読み直すので、並行する挨拶どうしが数え落とさない |
 
 ### 永続化 (小さい固定サイズ)
 
@@ -109,7 +109,7 @@
 | auth/records.ts:361,367,369,371 | mkdirSync / writeFileSync / renameSync / unlinkSync | 同上の書き込み系 (`write` / `merge` / `remove` / `fail`) → `#persist()` | records.json 全体 | async 化 | 認証のたびにファイル全体を書き直す |
 | messaging/inbox.ts:187,188 | mkdirSync / appendFileSync | op `message.send` → `Delivery.send()` → `#hold()` → `inbox.hold()`、および `#offer()` → `inbox.delivered()` | 追記 1 行 (メッセージ本文) | async 化 | メッセージのたびに走る。追記なので量は小さいが経路はホットパス |
 | messaging/direct.ts:128 | chmodSync | op `message.send` → `ClaudeCodeSocketRoute.send()` → `#inbox()` → `new StatusInbox(dir).address()` (相手ごと初回のみ) | 固定 | async 化 | 同じハンドラの中 |
-| sessions/last-live.ts:132,133,134 | mkdirSync / writeFileSync / renameSync | `LastLiveStore.#save()` ← `record()` (セッションの live 遷移を `Sessions.changed()` が拾った時) / `remove()` (op `hello.session` / `session.forget`) | 保持エントリ数 (通常小) | async 化 | セッションの出入りのたびに走る |
+| sessions/last-live.ts | mkdir / writeFile / rename | `LastLiveStore.#save()` ← `record()` (セッションの live 遷移を `Sessions.changed()` が拾った時) / `remove()` (op `hello.session` / `session.forget`) | 保持エントリ数 (通常小) | 済 | 書きを 1 本の鎖に連ね、`flush()` が着地を待つ |
 
 ### 同期のまま置くもの ((C) だが IO でない / 設計上の理由がある)
 
@@ -168,7 +168,7 @@
 
 ## async 化する対象
 
-(C) の 71 件のうち、`mesh/keys.ts:61` は fs IO でないため同期のまま、`instance/log.ts:25` は判断を仰ぐ。fold の seed に属する 6 件 (`transcript/tail.ts`) と群 3 の 2 件 (`transcript/files.ts` の `path()` / `find()`、`sessions/status.ts` の `canonicalSync`) は issue `fold-from-head-with-versioned-cache` で済。残る **63 件が async 化の対象**である。直し方の方向を、連鎖する範囲ごとにまとめる。
+(C) の 71 件のうち、`mesh/keys.ts:61` は fs IO でないため同期のまま、`instance/log.ts:25` は判断を仰ぐ。fold の seed に属する 6 件 (`transcript/tail.ts`) と群 3 の 2 件 (`transcript/files.ts` の `path()` / `find()`、`sessions/status.ts` の `canonicalSync`) は issue `fold-from-head-with-versioned-cache` で済。残る **63 件が async 化の対象**である。直し方の方向を、連鎖する範囲ごとにまとめる。**群 3 (topic の値を作る経路) は全件済み**で、同期のまま残したのは `sessions/last-live.ts` の `load()` だけで、これは `Sessions` の構築時に 1 回走る (B) である。
 
 **1. file / dir / sandbox 系 op (`files/files.ts` 17 件 + `files/containment.ts` 2 件 + `launcher/tree.ts` `launcher/roots.ts` 2 件、計 21 件)**
 `node:fs` の同期版を `node:fs/promises` (`readFile` / `writeFile` / `mkdir` / `stat` / `lstat` / `readdir` / `realpath` / `rename` / `unlink`) に、`openSync` + `readSync` + `closeSync` は `fs.promises.open()` が返す `FileHandle#read()` に置き換える。連鎖するのは `Containment` の `canonical()` を通る全メソッド (`locate` / `root` / `inbox` / `identify`) で、これが async になると file 系・dir 系・sandbox 系のハンドラがすべて async になる。ハンドラの戻り値は dispatch が `await` する形になっているので、呼び出し側の契約は変わらない。`find()` / `walk()` / `dirTree()` の再帰は async の再帰に変え、ディレクトリ 1 段ごとにイベントループへ譲る形になる。
@@ -177,7 +177,7 @@
 `readFileSync(file, "utf8")` を `await readFile(file, "utf8")` に、`readSlice()` の `openSync` / `readSync` を `FileHandle#read()` に置き換える。連鎖するのは `sessionHandlers()` の `transcript.read` / `transcript.items.read` / `session.fork.origin.read` (現在は同期のハンドラ) が async になることと、`TranscriptFiles` の `all()` / `locate()` / `subjectOf()` が async になることである。`path()` / `find()` は `Transcripts.hold()` が tail を立てる経路でもあるので群 3 に回す (上の表)。64 MB を一息に読む `search()` / `forkOrigin()` は、読みを非同期にするだけでは行の走査が同期に残るので、候補ファイル 1 つごとに (必要なら数千行ごとに) `await` を挟んで譲る形にする。
 
 **3. topic の値を作る経路 (`sessions/workspace.ts` 4 件 + `sessions/harness.ts` 2 件 + `sessions/registry.ts` 3 件 + `sessions/last-live.ts` 3 件、計 12 件)**
-`sessionStatusOf()` は async 化済み。`UpstreamResource.snapshot` は `readonly TopicValue[] | Promise<readonly TopicValue[]>` を返す形になり、`Topics.subscribe` が await するので、購読の開始応答は値が揃ってから返る (CT-Q8)。`sessions/workspace.ts` 4 件と `sessions/harness.ts` 2 件も済。残るのは `sessions/registry.ts` 3 件 + `sessions/last-live.ts` 3 件である。`hello.session` の `ownTranscript()` は単独で async 化できる。
+**済。** `sessionStatusOf()` は async 化済み。`UpstreamResource.snapshot` は `readonly TopicValue[] | Promise<readonly TopicValue[]>` を返す形になり、`Topics.subscribe` が await するので、購読の開始応答は値が揃ってから返る (CT-Q8)。`sessions/registry.ts` は `ownTranscript()` / `resolveAsFarAsItGoes()` が `fs/promises` の `realpath` / `stat` を await する形になり、連鎖は `metaOf()` から既に async な `register()` までで止まる。`sessions/last-live.ts` は `#save()` の書きを 1 本の鎖に連ねてあり、順序は保たれ、`flush()` が着地を待つ。`load()` の読みだけは `Sessions` の構築時に 1 回走るもので (B 分類)、接続を握る前なので同期のまま置く。
 
 **`sessions/harness.ts` は読みと判定を分けて済んだ。** ディレクトリと状態ファイルは非同期に読み、読めた行 (pid 鍵) をメモリに持つ。`Sessions` の分類・行の組み立て・二重実行の判定はそのメモリを同期に読むので、`message.send` の配送判定・`last_live` の再計算・`peers` / `agents` の行組み立ては同期契約のまま残った。「今この瞬間のディレクトリ」に対して動くものは自分で読みを起こして待つ (`message.send` の宛先判定、`runsNow()` 経由でプロセスへ signal する op、`peers` / `agents` の開始フレーム = CT-Q8 で購読の開始応答が値を待てる形)。どちらも購読者の有無を問わないので、「セッションが存在する」は購読に依存しないまま (DESIGN §4.2)。
 
