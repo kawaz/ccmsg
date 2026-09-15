@@ -1,6 +1,6 @@
 ---
 title: harness.ts の scan() (config home の sessions/ の読み) が同期のまま残っている
-status: open
+status: resolved
 category: design
 created: 2026-09-14T14:28:13+09:00
 last_read:
@@ -9,10 +9,10 @@ wip_entered:
 blocked_entered:
 pending_entered:
 discarded_entered:
-resolved_entered:
+resolved_entered: 2026-09-15T12:55:27+09:00
 discard_reason:
 pending_reason:
-close_reason:
+close_reason: ["implemented","dr/DR-0015","finding/2026-09-14-blocking-io-audit"]
 blocked_by:
 origin: 自リポ TODO
 ---
