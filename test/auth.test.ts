@@ -20,6 +20,7 @@ import {
 import { SoftAuthenticator } from "./authenticator.ts";
 import { connectWs, type LineClient } from "./client.ts";
 import { writeInstanceHome } from "./harness.ts";
+import { leasePort } from "./mesh.ts";
 
 /** The person's authentication end to end (DR-0001): a registration URL made
  * on the machine, a credential registered against it, an assertion, the tokens
@@ -37,18 +38,17 @@ afterEach(async () => {
   for (const instance of running.splice(0)) await instance.stop();
 });
 
-/** An instance on a port chosen here rather than by the kernel.
+/** An instance on an address reserved before its config is written.
  *
  * The page's origin has to be in the config before the listener is bound, and a
- * passkey is made for a host — so the address is settled first and the origin,
- * the endpoint and the relying party all follow from it, which is the ordinary
- * configuration (§2.3). */
-let nextPort = 45_000 + Math.floor(Math.random() * 10_000);
-
+ * passkey is made for a host — so the kernel's address is settled first and the
+ * origin, the endpoint and the relying party all follow from it, which is the
+ * ordinary configuration (§2.3). */
 async function serving(
   options: { now?: () => number } = {},
 ): Promise<{ instance: Instance; origin: string }> {
-  const port = (nextPort += 1);
+  const lease = leasePort();
+  const port = lease.port;
   const origin = `http://127.0.0.1:${String(port)}`;
   const root = mkdtempSync(join(tmpdir(), "ccmsg-auth-"));
   mkdirSync(join(root, "home", "sessions"), { recursive: true });
@@ -61,6 +61,7 @@ async function serving(
     CCMSG_CACHE_DIR: join(root, "cache"),
     CCMSG_CONFIG_DIR: join(root, "config"),
   };
+  await lease.release();
   const outcome = await start({
     env,
     echoLog: false,

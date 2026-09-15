@@ -7,6 +7,7 @@ import { clientAddress, parseCidr, trusted } from "../src/instance/client.ts";
 import { evaluate } from "../src/instance/config.ts";
 import { type Env, type Instance, isRunning, start } from "../src/instance/index.ts";
 import { writeConfigHome } from "./harness.ts";
+import { leasePort } from "./mesh.ts";
 
 /** What a config home was refused for, as one string. */
 async function problems(dir: string): Promise<string> {
@@ -145,11 +146,10 @@ describe("the address a forwarding header is believed for", () => {
 });
 
 describe("what the instance keeps (DR-0001 §2.2)", () => {
-  let nextPort = 39_820;
-
   /** An instance whose config names the proxies the test wants. */
   async function serving(trusted_proxies: string[]): Promise<{ instance: Instance; port: number }> {
-    const port = (nextPort += 1);
+    const lease = leasePort();
+    const port = lease.port;
     const root = mkdtempSync(join(tmpdir(), "ccmsg-forwarded-"));
     mkdirSync(join(root, "home", "sessions"), { recursive: true });
     writeConfigHome(
@@ -168,6 +168,7 @@ describe("what the instance keeps (DR-0001 §2.2)", () => {
       CCMSG_CACHE_DIR: join(root, "cache"),
       CCMSG_CONFIG_DIR: join(root, "config"),
     };
+    await lease.release();
     const outcome = await start({ env, echoLog: false });
     if (!isRunning(outcome)) throw new Error("another instance holds this config home");
     running.push(outcome);
