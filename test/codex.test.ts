@@ -413,12 +413,13 @@ describe("what says a session is there", () => {
     return file;
   }
 
-  test("a thread with a live writer is live, and one whose lock is gone is not", () => {
+  test("a thread with a live writer is live, and one whose lock is gone is not", async () => {
     const home = codexHome();
     const domain = domainFor(home);
     expect(domain.row(THREAD)).toBeUndefined();
 
     const file = lock(home, THREAD);
+    await domain.read();
     // Nothing can be typed into a Codex thread the way a terminal is typed
     // into, so a live thread this instance holds no connection of is alive and
     // out of reach.
@@ -427,7 +428,11 @@ describe("what says a session is there", () => {
     expect(reachable(row)).toBe(false);
 
     rmSync(file);
-    expect(domain.row(THREAD)).toBeUndefined();
+    await domain.read();
+    // The thread is one this instance has lost rather than one it never had:
+    // it was there, and the row says where it stands now.
+    expect(domain.peerRows().filter(notLost)).toEqual([]);
+    expect(liveness(rowOf(domain, THREAD), Date.now())).toBe("disappeared");
   });
 
   test("the store's own coordination lock names no thread", () => {

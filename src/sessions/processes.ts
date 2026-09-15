@@ -59,9 +59,9 @@ export function sameProcess(started: Timestamp, startedAt: Timestamp): boolean {
  * and the liveness probe are the platform's, and the two readers are children.
  */
 export interface ProcessDeps {
-  /** The runs of one session, read now rather than from a watch's cache. Only
-   * this instance's config home is ever read (M6). */
-  readonly runs: (sid: Sid) => readonly SessionRun[];
+  /** The runs of one session, read now rather than from the last reading of
+   * the directory. Only this instance's config home is ever read (M6). */
+  readonly runs: (sid: Sid) => Promise<readonly SessionRun[]>;
   /** What the process is running, as `ps` states argv. */
   readonly command: (pid: number) => Promise<string>;
   /** The process's own environment, as the platform exposes it. */
@@ -120,9 +120,8 @@ export class SessionProcesses {
    *
    * A run with no pid is not one of these: nothing in this contract can signal
    * a run known only by its connection. */
-  #run(sid: Sid, wanted: number | undefined, ambiguous: boolean): SessionRun {
-    const runs = this.deps
-      .runs(sid)
+  async #run(sid: Sid, wanted: number | undefined, ambiguous: boolean): Promise<SessionRun> {
+    const runs = (await this.deps.runs(sid))
       // A pid at or below 1 is refused before it reaches a signal: 0 addresses
       // this process's own group and a negative number a whole group, so a
       // corrupted row must not be able to reach either.
@@ -155,7 +154,7 @@ export class SessionProcesses {
    * answers for one config home (M6), and a pid read from anywhere else is a
    * number it has no business signalling. */
   async pid(sid: Sid, wanted?: number, ambiguous = false): Promise<number> {
-    const run = this.#run(sid, wanted, ambiguous);
+    const run = await this.#run(sid, wanted, ambiguous);
     const pid = run.pid as number;
     if (!(await this.isHarness(pid))) {
       throw new OpError("session_not_found", `the process of ${sid} is gone`);
@@ -413,7 +412,7 @@ export function hostTerminalReader(): TerminalReader {
 
 /** The effects as this host provides them. */
 export function hostProcessDeps(
-  runs: (sid: Sid) => readonly SessionRun[],
+  runs: (sid: Sid) => Promise<readonly SessionRun[]>,
   terminalCommand?: string,
 ): ProcessDeps {
   return {

@@ -84,6 +84,8 @@ class FakeSessions {
   readonly connected: PeerInfo[] = [];
   readonly lastLive: PeerInfo[] = [];
 
+  async read(): Promise<void> {}
+
   row(sid: Sid): PeerInfo | undefined {
     return this.rows.get(sid);
   }

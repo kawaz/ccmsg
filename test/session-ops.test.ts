@@ -625,7 +625,7 @@ describe("session.forget", () => {
     // A subscriber that holds the row is what the removal has to reach: a
     // frame carries what changed, and what changed is measured against what
     // the opening frame stated.
-    domain.snapshot("peers");
+    await domain.snapshot("peers");
     published.length = 0;
     const removed = await run("session.forget", handlers["session.forget"], {
       sid: SID,
@@ -738,6 +738,7 @@ describe("session.dump.write", () => {
     const second = child();
     writeState(configHome, process.pid, SID);
     writeState(configHome, second, SID);
+    await domain.read();
     expect(domain.duplicated(SID)).toBe(true);
 
     const refused = await run("session.dump.write", handlers["session.dump.write"], {

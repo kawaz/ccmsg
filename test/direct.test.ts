@@ -404,6 +404,7 @@ describe("delivery over route (a)", () => {
       session_status: "ready",
     }),
     peerRows: () => [],
+    read: async () => {},
   };
 
   function delivery(configHome: string, dir: string): Delivery {

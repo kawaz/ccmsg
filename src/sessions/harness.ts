@@ -1,4 +1,5 @@
 import { type FSWatcher, readdirSync, readFileSync, watch } from "node:fs";
+import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { AgentInfo, InstanceId, Sid } from "@ccmsg/protocol";
 import type { Harness } from "../harness/index.ts";
@@ -39,6 +40,14 @@ export interface OwnSessions {
    * (DESIGN §6.3 / §8.3: no upstream is read until somebody is listening). */
   start(): void;
   stop(): void;
+  /** Read the directory again, and settle what the two answers below state.
+   *
+   * What everything else here answers is the last reading, which is what lets
+   * those answers be synchronous. Whoever has to act on the directory as it is
+   * at this instant — the ops that signal a session's process — waits for this
+   * first, and a reading that began before the question is never what it is
+   * answered with. */
+  read(): Promise<void>;
   /** The harness's own rows, as `agents` answers with them, keyed by the pid
    * each one is about. Empty for a harness whose own view is not the one that
    * contract states.
@@ -46,8 +55,45 @@ export interface OwnSessions {
    * One process per row: the same session may have two of them, and a row is
    * matched by its pid for that reason (contract, `AgentInfo`). */
   rows(): ReadonlyMap<number, AgentInfo>;
-  /** The sessions the harness says are there at this instant. */
+  /** The sessions the harness says are there, as the last reading found them. */
   present(): ReadonlySet<Sid>;
+}
+
+/** One directory read over and over, where the answer is the latest reading.
+ *
+ * The readings overlap: a watch callback, the poll and a question of the
+ * directory each start one, and they land in whatever order the filesystem
+ * answers in. What settles is the one that began last, so a reading overtaken
+ * while it was in flight is dropped rather than written over the newer answer
+ * (DR-0015 §2.5). A caller waiting on `again()` is waiting for what the
+ * directory holds now: either its own reading settles, or a reading that began
+ * after it did, and it waits for that one instead. */
+export class Readings<T> {
+  #generation = 0;
+  #latest: Promise<void> = Promise.resolve();
+
+  constructor(
+    private readonly read: () => Promise<T>,
+    /** What the reading found, for the one reading that is still the latest
+     * when it lands. */
+    private readonly settle: (found: T) => void,
+  ) {}
+
+  again(): Promise<void> {
+    const generation = ++this.#generation;
+    const reading = this.#take(generation);
+    this.#latest = reading;
+    return reading;
+  }
+
+  async #take(generation: number): Promise<void> {
+    const found = await this.read();
+    if (generation !== this.#generation) {
+      await this.#latest;
+      return;
+    }
+    this.settle(found);
+  }
 }
 
 /** The one this config home runs (DESIGN §4.1). */
@@ -87,9 +133,19 @@ const THREAD_LOCK = /^([0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12})\.lo
  * that is held by the registry for every harness alike. */
 class CodexThreads implements OwnSessions {
   readonly #watch: DirectoryWatch;
+  readonly #readings: Readings<string[]>;
+  #present: ReadonlySet<Sid>;
 
   constructor(dir: string, onChange: () => void, pollMs?: number) {
-    this.#watch = new DirectoryWatch(dir, onChange, pollMs);
+    this.#watch = new DirectoryWatch(dir, () => void this.read(), pollMs);
+    this.#readings = new Readings(
+      () => this.#watch.names(),
+      (names) => {
+        this.#present = threads(names);
+        onChange();
+      },
+    );
+    this.#present = threads(this.#watch.namesNow());
   }
 
   get running(): boolean {
@@ -104,18 +160,27 @@ class CodexThreads implements OwnSessions {
     this.#watch.stop();
   }
 
+  read(): Promise<void> {
+    return this.#readings.again();
+  }
+
   rows(): ReadonlyMap<number, AgentInfo> {
     return new Map();
   }
 
   present(): ReadonlySet<Sid> {
-    const live = new Set<Sid>();
-    for (const name of this.#watch.names()) {
-      const sid = THREAD_LOCK.exec(name)?.[1];
-      if (sid !== undefined) live.add(sid);
-    }
-    return live;
+    return this.#present;
   }
+}
+
+/** The threads named by the lock files among a directory's entries. */
+function threads(names: readonly string[]): ReadonlySet<Sid> {
+  const live = new Set<Sid>();
+  for (const name of names) {
+    const sid = THREAD_LOCK.exec(name)?.[1];
+    if (sid !== undefined) live.add(sid);
+  }
+  return live;
 }
 
 /** The sessions the harness itself reports, read from one config home.
@@ -125,13 +190,16 @@ class CodexThreads implements OwnSessions {
  * ever opened (M6) — the path is handed in, and nothing here searches for
  * another one.
  *
- * Two things live here, and DESIGN §6.3 separates them. Reading the directory answers
- * a question, and is done whenever one is asked. Watching it says the answer
- * may have changed, which is only worth knowing while somebody is subscribed —
- * so the watch is what the subscription drives, and no answer waits on it. */
+ * Two things live here, and DESIGN §6.3 separates them. Reading the directory
+ * settles what this says, and is done whenever the answer may have moved.
+ * Watching it says the answer may have moved, which is only worth knowing while
+ * somebody is subscribed — so the watch is what the subscription drives, and no
+ * answer waits on it. */
 export class HarnessSessions implements OwnSessions {
   readonly #watch: DirectoryWatch;
-  readonly #lastComplete = new Map<string, AgentInfo>();
+  readonly #readings: Readings<readonly State[]>;
+  #lastComplete: ReadonlyMap<string, AgentInfo>;
+  #rows: ReadonlyMap<number, AgentInfo>;
 
   constructor(
     private readonly dir: string,
@@ -139,7 +207,20 @@ export class HarnessSessions implements OwnSessions {
     onChange: () => void,
     pollMs?: number,
   ) {
-    this.#watch = new DirectoryWatch(dir, onChange, pollMs);
+    this.#watch = new DirectoryWatch(dir, () => void this.read(), pollMs);
+    this.#readings = new Readings(
+      () => this.#read(),
+      (states) => {
+        this.#settle(states);
+        onChange();
+      },
+    );
+    // The first reading is made here, before this instance holds a connection
+    // and so with nobody to be held up by it (DR-0015 §2.4). Every reading
+    // after it is the asynchronous one.
+    this.#lastComplete = new Map();
+    this.#rows = new Map();
+    this.#settle(this.#readNow());
   }
 
   get running(): boolean {
@@ -154,8 +235,26 @@ export class HarnessSessions implements OwnSessions {
     this.#watch.stop();
   }
 
+  read(): Promise<void> {
+    return this.#readings.again();
+  }
+
+  /** What the state files said when they were last read.
+   *
+   * Which sessions exist is an input to the classification (DESIGN §4.2), and
+   * classifying happens inside `message.send`'s decision and inside the
+   * recompute that writes `last_live` — neither of which can hand back a
+   * promise without changing what it means, and neither of which may depend on
+   * somebody being subscribed. So the reading and the answer are separate
+   * things: the directory is read asynchronously, and what it said is stated
+   * here in place.
+   *
+   * Keyed by pid and not by sid: the harness lets a running session be resumed,
+   * and from that moment two files name the same session. Folding them onto the
+   * sid would keep whichever was read last and leave the duplicate invisible,
+   * which is the one thing a client has to be able to see (contract DR-0001). */
   rows(): ReadonlyMap<number, AgentInfo> {
-    return this.scan();
+    return this.#rows;
   }
 
   /** Every session with a state file, which for this harness is the same
@@ -164,77 +263,113 @@ export class HarnessSessions implements OwnSessions {
    * session exists once however many processes are writing it. */
   present(): ReadonlySet<Sid> {
     const sids = new Set<Sid>();
-    for (const row of this.scan().values()) {
+    for (const row of this.#rows.values()) {
       if (row.sid !== undefined) sids.add(row.sid);
     }
     return sids;
   }
 
-  /** The directory as it is at this instant.
+  /** The directory and every state file in it, read one after another so that
+   * a home with many sessions yields between them (DR-0015 §2). */
+  async #read(): Promise<readonly State[]> {
+    const states: State[] = [];
+    for (const name of stateFiles(await this.#watch.names())) {
+      states.push({ name, text: await contents(join(this.dir, name)) });
+    }
+    return states;
+  }
+
+  #readNow(): readonly State[] {
+    return stateFiles(this.#watch.namesNow()).map((name) => ({
+      name,
+      text: contentsNow(join(this.dir, name)),
+    }));
+  }
+
+  /** What one reading found, taken as what this now states.
    *
-   * Every answer comes from here rather than from anything the watch left
-   * behind. Which sessions exist is an input to the classification (DESIGN §4.2), and
-   * classifying happens inside `message.send`'s decision and inside the
-   * recompute that writes `last_live` — neither of which can hand back a
-   * promise without changing what it means, and neither of which may depend on
-   * somebody being subscribed. The ops that signal a session's process read it
-   * here too: a pid from a poll that has not run is a number belonging to
-   * nobody.
-   *
-   * Read in place because the answer may not depend on anybody waiting: what
-   * this states is that a session exists, and a reading that could be waited
-   * for would make it something the callers above cannot ask (DESIGN §4.2).
-   *
-   * Keyed by pid and not by sid: the harness lets a running session be resumed,
-   * and from that moment two files name the same session. Folding them onto the
-   * sid would keep whichever was read last and leave the duplicate invisible,
-   * which is the one thing a client has to be able to see (contract DR-0001). */
-  scan(): ReadonlyMap<number, AgentInfo> {
+   * A file caught between truncate and write keeps the last complete row it
+   * had, so what a reading carries forward is decided against the reading
+   * before it — and a file the directory no longer holds carries nothing
+   * forward, which is what keeps this the size of the session list. */
+  #settle(states: readonly State[]): void {
     const rows = new Map<number, AgentInfo>();
-    const names = this.#watch.names().filter((name) => STATE_FILE.test(name));
-    const present = new Set(names);
-    for (const name of names) {
-      let document: unknown;
-      try {
-        document = JSON.parse(readFileSync(join(this.dir, name), "utf8"));
-      } catch {
-        const previous = this.#lastComplete.get(name);
-        if (previous !== undefined) rows.set(previous.pid, previous);
+    const complete = new Map<string, AgentInfo>();
+    for (const { name, text } of states) {
+      const result = text === undefined ? INCOMPLETE : stated(text, this.dir, this.instance);
+      if (result.complete && result.row !== undefined) {
+        complete.set(name, result.row);
+        rows.set(result.row.pid, result.row);
         continue;
       }
-      const result = toRow(document, this.dir, this.instance);
-      if (!result.complete) {
-        const previous = this.#lastComplete.get(name);
-        if (previous !== undefined) rows.set(previous.pid, previous);
-        continue;
-      }
-      if (result.row === undefined) {
-        this.#lastComplete.delete(name);
-        continue;
-      }
-      this.#lastComplete.set(name, result.row);
-      rows.set(result.row.pid, result.row);
+      // A complete document for a dead process states no row and keeps none.
+      if (result.complete) continue;
+      const previous = this.#lastComplete.get(name);
+      if (previous === undefined) continue;
+      complete.set(name, previous);
+      rows.set(previous.pid, previous);
     }
-    for (const name of this.#lastComplete.keys()) {
-      if (!present.has(name)) this.#lastComplete.delete(name);
-    }
-    return rows;
+    this.#lastComplete = complete;
+    this.#rows = rows;
+  }
+}
+
+/** One state file as a reading found it, or with nothing where the file could
+ * not be read at all — which is the same to a reader as a document it cannot
+ * parse. */
+interface State {
+  readonly name: string;
+  readonly text: string | undefined;
+}
+
+const INCOMPLETE: RowResult = { complete: false };
+
+function stateFiles(names: readonly string[]): string[] {
+  return names.filter((name) => STATE_FILE.test(name));
+}
+
+/** What one state file's text states, or that it states nothing yet. */
+function stated(text: string, configDir: string, instance: InstanceId): RowResult {
+  let document: unknown;
+  try {
+    document = JSON.parse(text);
+  } catch {
+    return INCOMPLETE;
+  }
+  return toRow(document, configDir, instance);
+}
+
+async function contents(file: string): Promise<string | undefined> {
+  try {
+    return await readFile(file, "utf8");
+  } catch {
+    return undefined;
+  }
+}
+
+function contentsNow(file: string): string | undefined {
+  try {
+    return readFileSync(file, "utf8");
+  } catch {
+    return undefined;
   }
 }
 
 /** One directory that says what the harness's sessions are, watched while
- * somebody is subscribed and read whenever an answer is wanted.
+ * somebody is subscribed and read whenever it may have moved.
  *
- * The two things DESIGN §6.3 separates live here. Reading the directory answers a
- * question, and is done whenever one is asked. Watching it says the answer may
- * have changed, which is only worth knowing while somebody is listening — so
- * the watch is what the subscription drives, and no answer waits on it. */
+ * The two things DESIGN §6.3 separates live here. Watching the directory says the
+ * answer may have changed, which is only worth knowing while somebody is
+ * listening — so the watch is what the subscription drives. Reading it settles
+ * the answer, and is started by the watch, by the poll, and by whoever must act
+ * on the directory as it is now. */
 class DirectoryWatch {
   #watcher: FSWatcher | undefined;
   #timer: ReturnType<typeof setInterval> | undefined;
 
   constructor(
     private readonly dir: string,
+    /** Read again: the directory may have moved. */
     private readonly onChange: () => void,
     private readonly pollMs: number = CONFIRM_POLL_MS,
   ) {}
@@ -264,9 +399,19 @@ class DirectoryWatch {
     this.#timer = undefined;
   }
 
-  /** What is in the directory now, read in place for the reason `scan()` is:
-   * it is the same answer, and the callers above it cannot wait for one. */
-  names(): string[] {
+  /** What is in the directory. A directory that is not there is a config home
+   * whose harness has not run, and it holds nothing. */
+  async names(): Promise<string[]> {
+    try {
+      return await readdir(this.dir);
+    } catch {
+      return [];
+    }
+  }
+
+  /** The same reading, made once before the instance holds a connection
+   * (DR-0015 §2.4). */
+  namesNow(): string[] {
     try {
       return readdirSync(this.dir);
     } catch {

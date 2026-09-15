@@ -39,6 +39,10 @@ const INBOX = "inbox";
  * sessions are around — neither is asked of anything else, which is what keeps
  * the reasons of DESIGN §6.6 from growing a source per reason. */
 export interface SessionLookup {
+  /** Read what the harness says, so the rows below are the sessions there are
+   * now. A message is addressed to a session that may have started since
+   * anything last looked, and nothing here is subscribed to make it look. */
+  read(): Promise<void>;
   /** The row for one session, or nothing for a sid this instance has no row
    * for. Where a session stands is read off it by the contract's `liveness`,
    * so an instance and a client answer that question the same way. */
@@ -125,6 +129,7 @@ export class Delivery implements UpstreamResource {
   send = async (input: HandlerInput): Promise<MessageSendResult> => {
     const args = input.args as unknown as MessageSendArgs;
     const to = args.to;
+    await this.deps.sessions.read();
     const row = this.deps.sessions.row(to);
     if (row === undefined) {
       const elsewhere = await this.#elsewhere(to, input);

@@ -13,11 +13,12 @@ export type TerminalReader = (pid: number) => Promise<Terminal | undefined>;
  * handed to and nothing can be typed into (contract, `reachable`). Both want
  * the value on every row, and neither may pay for it on every read — the
  * harness's directory is
- * scanned whenever any question is asked of it, and reading every session's
- * environment there would spawn a child per session per question.
+ * read whenever it may have moved, and reading every session's
+ * environment there would spawn a child per session per reading.
  *
- * So the value is remembered per pid and read exactly once for a pid the scan
- * has not seen before. A pid the scan no longer holds is forgotten, which is
+ * So the value is remembered per pid and read exactly once for a pid no
+ * reading has seen before. A pid the last reading no longer holds is
+ * forgotten, which is
  * both how the map stays the size of the session list and how a resumed
  * session — a new process, possibly in another terminal — is read afresh
  * rather than answered from what the process before it named. */

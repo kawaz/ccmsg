@@ -23,8 +23,8 @@ type Read = Timestamp | null;
  * which is the key the contract gives for exactly this (`SessionRun.started_at`).
  *
  * Read once per pid and remembered, for the reason the terminal is: the
- * directory is scanned whenever any question is asked of it, and a child per
- * session per question is not something a scan can cost. A pid the scan no
+ * directory is read whenever it may have moved, and a child per session per
+ * reading is not something a reading can cost. A pid the last reading no
  * longer holds is forgotten, which is both how the map stays the size of the
  * session list and how a pid that comes back is read afresh rather than
  * answered from what ran under it before.

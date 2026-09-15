@@ -32,6 +32,7 @@ import {
   HarnessSessions,
   type LaunchSource,
   LastLiveStore,
+  Readings,
   runsOf,
   Sessions,
   SessionProcesses,
@@ -711,22 +712,24 @@ describe("the harness's sessions directory", () => {
    * session that nobody happens to be watching becomes a session nobody can
    * be sent a message, and a session that is plainly still running gets
    * written down as gone. */
-  test("a session the harness has is classified with nobody subscribed", () => {
+  test("a session the harness has is classified with nobody subscribed", async () => {
     const context = sessions();
     writeState(context.sessionsDir, process.pid, SID);
+    await context.domain.read();
 
     expect(context.domain.watching).toBe(false);
     expect(stands(context.domain, SID)).toBe("alive_unreachable");
     expect(context.domain.agentRows().map((row) => row.sid)).toEqual([SID]);
   });
 
-  test("a session the harness names is on `peers` though it never greeted", () => {
+  test("a session the harness names is on `peers` though it never greeted", async () => {
     // What a restart is left with: the sessions were started before this
     // daemon was, so none of them has greeted it and none of them will. The
     // list has to be the sessions that are there rather than the ones that
     // happened to say hello, or a host full of running sessions reads as empty.
     const context = sessions();
     writeState(context.sessionsDir, process.pid, SID, { name: "a title" });
+    await context.domain.read();
 
     const payload = { peers: context.domain.peerRows(NOW) };
     expect(payload.peers).toEqual([
@@ -771,6 +774,7 @@ describe("the harness's sessions directory", () => {
     // the greeting described rather than a bare sid.
     const context = sessions();
     writeState(context.sessionsDir, process.pid, SID);
+    await context.domain.read();
     const conn = greeting();
     await helloFrom(context.domain, conn);
     conn.close();
@@ -786,6 +790,7 @@ describe("the harness's sessions directory", () => {
   test("a session still in the directory is not written down as gone when its connection closes", async () => {
     const context = sessions();
     writeState(context.sessionsDir, process.pid, SID);
+    await context.domain.read();
     // A greeting that closes at once is what a command-line client is: it
     // greets, says its piece and goes, while the session it spoke for carries
     // on. What is gone is a connection, not a session.
@@ -853,22 +858,49 @@ describe("the harness's sessions directory", () => {
     expect(context.domain.agentRows().map((agent) => agent.sid)).toEqual([OTHER_SID]);
   });
 
-  test("an in-place state write keeps the last complete row until its replacement is complete", () => {
+  test("an in-place state write keeps the last complete row until its replacement is complete", async () => {
     const dir = harnessDir("ccmsg-partial-state-");
     const harness = new HarnessSessions(dir, SELF, () => undefined);
     const file = join(dir, `${process.pid}.json`);
     writeState(dir, process.pid, SID, { status: "idle" });
-    expect(harness.scan().get(process.pid)?.status).toBe("idle");
+    await harness.read();
+    expect(harness.rows().get(process.pid)?.status).toBe("idle");
 
     writeFileSync(file, "");
-    expect(harness.scan().get(process.pid)?.status).toBe("idle");
+    await harness.read();
+    expect(harness.rows().get(process.pid)?.status).toBe("idle");
     writeFileSync(file, JSON.stringify({ pid: process.pid, sessionId: SID }));
-    expect(harness.scan().get(process.pid)?.status).toBe("idle");
+    await harness.read();
+    expect(harness.rows().get(process.pid)?.status).toBe("idle");
 
     writeState(dir, process.pid, SID, { status: "waiting", waitingFor: "permission" });
-    expect(harness.scan().get(process.pid)?.status).toBe("waiting");
+    await harness.read();
+    expect(harness.rows().get(process.pid)?.status).toBe("waiting");
     rmSync(file);
-    expect(harness.scan().has(process.pid)).toBe(false);
+    await harness.read();
+    expect(harness.rows().has(process.pid)).toBe(false);
+  });
+
+  test("a reading overtaken while it was in flight never settles, and waits for the one that did", async () => {
+    const answers: ((found: string) => void)[] = [];
+    const settled: string[] = [];
+    const readings = new Readings<string>(
+      () => new Promise<string>((answer) => answers.push(answer)),
+      (found) => settled.push(found),
+    );
+    const overtaken = readings.again();
+    const newer = readings.again();
+
+    answers[1]?.("newer");
+    await newer;
+    expect(settled).toEqual(["newer"]);
+
+    // The older reading lands after the newer one and states nothing, and what
+    // its caller was waiting for — a reading no older than its question — has
+    // already happened.
+    answers[0]?.("older");
+    await overtaken;
+    expect(settled).toEqual(["newer"]);
   });
 
   /** The two routes of §5.1, each pinned by what it alone is answerable for.
@@ -889,7 +921,7 @@ describe("the harness's sessions directory", () => {
 
     mkdirSync(dir, { recursive: true });
     writeState(dir, process.pid, SID);
-    while (watch.harness.scan().size !== 1) await watch.reported(5_000);
+    while (watch.harness.rows().size !== 1) await watch.reported(5_000);
   });
 
   test("the watch is a live route, so not every change waits for the poll", async () => {
@@ -962,7 +994,7 @@ describe("a frame carries the rows that changed", () => {
     // rather than having only one to name.
     await helloFrom(domain, greeting(), SID);
     await helloFrom(domain, greeting(), OTHER_SID);
-    domain.snapshot("peers");
+    await domain.snapshot("peers");
 
     published.length = 0;
     for (let n = 1; n <= 10; n += 1) {
@@ -986,7 +1018,7 @@ describe("a frame carries the rows that changed", () => {
     });
     await helloFrom(domain, greeting(), SID);
     await helloFrom(domain, greeting(), OTHER_SID);
-    domain.snapshot("peers");
+    await domain.snapshot("peers");
 
     published.length = 0;
     seen = NOW + 1_000;
@@ -1001,7 +1033,7 @@ describe("a frame carries the rows that changed", () => {
       gateway: { activeAt: (sid) => (sid === SID ? NOW : undefined) },
     });
     await helloFrom(domain, greeting(), SID);
-    domain.snapshot("peers");
+    await domain.snapshot("peers");
 
     published.length = 0;
     domain.gatewayMoved(SID);
@@ -1015,7 +1047,7 @@ describe("a frame carries the rows that changed", () => {
   test("a recompute that found nothing different says nothing", async () => {
     const { domain, published } = sessions();
     await helloFrom(domain, greeting());
-    domain.snapshot("peers");
+    await domain.snapshot("peers");
 
     published.length = 0;
     domain.refresh();
@@ -1027,7 +1059,7 @@ describe("a frame carries the rows that changed", () => {
     const context = sessions();
     const conn = greeting();
     await helloFrom(context.domain, conn, SID);
-    context.domain.snapshot("peers");
+    await context.domain.snapshot("peers");
 
     // Gone from the connections is an update of the row it already had: the
     // classification moves and the sid stays.
@@ -1055,7 +1087,7 @@ describe("a frame carries the rows that changed", () => {
     conn.close();
     await helloFrom(context.domain, greeting(), OTHER_SID);
 
-    const snapshot = context.domain.snapshot("peers")[0];
+    const snapshot = (await context.domain.snapshot("peers"))[0];
     const rows = (snapshot?.data as { peers: PeerInfo[] } | undefined)?.peers ?? [];
     expect(rows.map((row) => row.sid).sort()).toEqual([SID, OTHER_SID].sort());
     expect(standingOf(rows.find((row) => row.sid === SID) as PeerInfo)).toBe("paused");
@@ -1070,7 +1102,7 @@ describe("a frame carries the rows that changed", () => {
 
     // The row has travelled one way only: a subscriber arriving now is handed
     // it by the opening frame, and nothing has been published since.
-    context.domain.snapshot("peers");
+    await context.domain.snapshot("peers");
     context.published.length = 0;
 
     // So its removal has to go out, against what that frame stated — a
@@ -1223,7 +1255,7 @@ describe("last_live", () => {
     ).toEqual([SID]);
 
     writeState(context.sessionsDir, process.pid, SID);
-    context.domain.refresh();
+    await context.domain.read();
 
     expect(context.domain.peerRows().filter(isLost)).toEqual([]);
     expect(
@@ -1364,6 +1396,7 @@ describe("a session two processes are running", () => {
     const second = await child({});
     writeState(context.sessionsDir, process.pid, SID);
     writeState(context.sessionsDir, second, SID);
+    await context.domain.read();
 
     const row = context.domain.row(SID) as PeerInfo;
     // One session, two processes: the row is one and the runs are two, which
@@ -1384,6 +1417,7 @@ describe("a session two processes are running", () => {
     const second = await child({});
     writeState(context.sessionsDir, process.pid, SID, { name: "first" });
     writeState(context.sessionsDir, second, SID, { name: "second" });
+    await context.domain.read();
 
     const rows = context.domain.agentRows();
     expect(rows.map((row) => row.pid).sort(ascending)).toEqual(
@@ -1397,14 +1431,14 @@ describe("a session two processes are running", () => {
     const second = await child({});
     writeState(context.sessionsDir, process.pid, SID);
     writeState(context.sessionsDir, second, SID);
-    context.domain.refresh();
+    await context.domain.read();
     expect(context.told.at(-1)).toBe(true);
 
     rmSync(join(context.sessionsDir, `${second}.json`));
     // The reading begins again rather than resuming: the cached offset was
     // taken from a file two writers have since moved.
     context.at("folding");
-    context.domain.refresh();
+    await context.domain.read();
     expect(context.told.at(-1)).toBe(false);
     expect(context.domain.row(SID)?.session_status).toBe("folding");
 
@@ -1417,6 +1451,7 @@ describe("a session two processes are running", () => {
     const second = await child({});
     writeState(context.sessionsDir, process.pid, SID);
     writeState(context.sessionsDir, second, SID);
+    await context.domain.read();
     const first = greeting();
     await helloFrom(context.domain, first, SID, { pid: process.pid });
     const other = greeting();
@@ -1502,6 +1537,7 @@ describe("a state file whose pid belongs to somebody else", () => {
     );
     writeState(context.sessionsDir, process.pid, SID);
     writeState(context.sessionsDir, second, SID);
+    await context.domain.read();
 
     await context.until(() => context.domain.row(SID)?.runs.length === 1);
     const row = context.domain.row(SID) as PeerInfo;
@@ -1634,12 +1670,13 @@ describe("a run a launcher started", () => {
 });
 
 describe("what the gateway saw, on the row", () => {
-  test("it reaches the row through the domain", () => {
+  test("it reaches the row through the domain", async () => {
     const seen = Date.now() - 1_000;
     const context = sessions({ gateway: { activeAt: (sid) => (sid === SID ? seen : undefined) } });
     // The harness naming it is what makes it a session of this config home;
     // without that the gateway's word says nothing here (DESIGN §4.2).
     writeState(context.sessionsDir, process.pid, SID);
+    await context.domain.read();
 
     expect(context.domain.row(SID)?.gateway_active_at).toBe(seen);
     expect(context.domain.row(OTHER_SID)).toBeUndefined();
@@ -1779,8 +1816,9 @@ describe("the terminal a live session runs in", () => {
     const context = withTerminals();
     const pid = await child({ HYOUI_SESSION_ID: "t-1", HYOUI_NAMESPACE: "work" });
     writeState(context.sessionsDir, pid, SID);
+    await context.domain.read();
 
-    // The scan is what notices the pid, and the read is what follows it.
+    // The reading is what notices the pid, and the read of it is what follows.
     expect(context.domain.agentRows()[0]?.terminal_id).toBeUndefined();
     await context.until(() => context.domain.agentRows()[0]?.terminal_id === "hyoui:t-1");
     expect(context.domain.agentRows()[0]?.terminal_namespace).toBe("work");
@@ -1793,6 +1831,7 @@ describe("the terminal a live session runs in", () => {
     const context = withTerminals();
     const pid = await child({});
     writeState(context.sessionsDir, pid, SID);
+    await context.domain.read();
     // The read is asked for while the list is built, and its finishing is the
     // one thing that publishes here.
     context.domain.agentRows();
@@ -1809,6 +1848,7 @@ describe("the terminal a live session runs in", () => {
     const context = withTerminals(reads);
     const pid = await child({ HYOUI_SESSION_ID: "t-2" });
     writeState(context.sessionsDir, pid, SID);
+    await context.domain.read();
     await context.until(() => context.domain.agentRows()[0]?.terminal_id === "hyoui:t-2");
     for (let asked = 0; asked < 5; asked += 1) stands(context.domain, SID);
     expect(reads).toEqual([pid]);
@@ -1819,14 +1859,15 @@ describe("the terminal a live session runs in", () => {
     const context = withTerminals(reads);
     const pid = await child({ HYOUI_SESSION_ID: "t-3" });
     writeState(context.sessionsDir, pid, SID);
+    await context.domain.read();
     await context.until(() => context.domain.agentRows()[0]?.terminal_id === "hyoui:t-3");
 
     rmSync(join(context.sessionsDir, `${pid}.json`));
-    context.domain.agentRows();
+    await context.domain.read();
     // The same pid again is a process this instance knows nothing about: what
     // it named before was named by whatever was running under it then.
     writeState(context.sessionsDir, pid, SID);
-    context.domain.agentRows();
+    await context.domain.read();
     await context.until(() => reads.length === 2);
     expect(reads).toEqual([pid, pid]);
   });
@@ -1845,6 +1886,7 @@ describe("what a session said about itself when it greeted", () => {
   test("outlives the connection that said it, while the harness still names the session", async () => {
     const context = sessions();
     writeState(context.sessionsDir, process.pid, SID);
+    await context.domain.read();
     context.domain.start("peers");
     const conn = greeting();
     await helloFrom(context.domain, conn, SID);
@@ -1877,9 +1919,10 @@ describe("what a session said about itself when it greeted", () => {
     expect(context.domain.transcriptPath(SID)).toBeUndefined();
   });
 
-  test("a session the harness names but that never greeted is shown without them", () => {
+  test("a session the harness names but that never greeted is shown without them", async () => {
     const context = sessions();
     writeState(context.sessionsDir, process.pid, OTHER_SID);
+    await context.domain.read();
 
     // Nothing is guessed out of the row's path: `repo` and `ws` are what a
     // session said, and this one has said nothing.

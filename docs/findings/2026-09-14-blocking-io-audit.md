@@ -95,8 +95,8 @@
 | sessions/workspace.ts:53 | readFileSync | 同上 → `specs(file)` (`.code-workspace` の読み) | ファイル 1 個 (小) | 済 | 同上 |
 | sessions/workspace.ts:118,119 | realpathSync / statSync | 同上 → `directory(spec.path)` を folders の各要素に対して | folders の要素数 | 済 | 同上 |
 | sessions/status.ts | realpathSync (`canonicalSync` 経由) | topic `session.status:<sid>` の snapshot / refresh → `sessionStatusOf()` の root と `named_files` の正規化 | named_files の数 | 済 | `canonicalSync` を廃し `canonical` に一本化。`sessionStatusOf()` は Promise を返す |
-| sessions/harness.ts:183 | readFileSync + JSON.parse | `DirectoryWatch` の fs.watch callback または 5 秒ポーリング → `HarnessSessions.scan()` (topic `peers` / `agents` の購読が生きている間) | `sessions/` の状態ファイル数 × 小さい JSON | async 化 | watcher の callback は購読中ずっと回る |
-| sessions/harness.ts:256 | readdirSync | 同上 → `DirectoryWatch.names()` | ディレクトリのエントリ数 | async 化 | 同上 |
+| sessions/harness.ts | readFileSync + JSON.parse | `DirectoryWatch` の fs.watch callback または 5 秒ポーリング → 状態ファイルの読み | `sessions/` の状態ファイル数 × 小さい JSON | 済 | `readFile` をファイルごとに await し、読めた行をメモリに持つ。判定側はそのメモリを同期に読む |
+| sessions/harness.ts | readdirSync | 同上 → `DirectoryWatch.names()` | ディレクトリのエントリ数 | 済 | `readdir` に置き換え。構築時の初回読みだけ同期 (B 分類) |
 | sessions/registry.ts:894,903,925 | realpathSync / statSync | op `hello.session` → `register()` → `metaOf()` → `ownTranscript()` / `resolveAsFarAsItGoes()` | 小さい (パス解決) | async 化 | セッションの挨拶ごとに走る。1 回は速いが原則側に倒す |
 
 ### 永続化 (小さい固定サイズ)
@@ -177,9 +177,9 @@
 `readFileSync(file, "utf8")` を `await readFile(file, "utf8")` に、`readSlice()` の `openSync` / `readSync` を `FileHandle#read()` に置き換える。連鎖するのは `sessionHandlers()` の `transcript.read` / `transcript.items.read` / `session.fork.origin.read` (現在は同期のハンドラ) が async になることと、`TranscriptFiles` の `all()` / `locate()` / `subjectOf()` が async になることである。`path()` / `find()` は `Transcripts.hold()` が tail を立てる経路でもあるので群 3 に回す (上の表)。64 MB を一息に読む `search()` / `forkOrigin()` は、読みを非同期にするだけでは行の走査が同期に残るので、候補ファイル 1 つごとに (必要なら数千行ごとに) `await` を挟んで譲る形にする。
 
 **3. topic の値を作る経路 (`sessions/workspace.ts` 4 件 + `sessions/harness.ts` 2 件 + `sessions/registry.ts` 3 件 + `sessions/last-live.ts` 3 件、計 12 件)**
-`sessionStatusOf()` は async 化済み。`UpstreamResource.snapshot` は `readonly TopicValue[] | Promise<readonly TopicValue[]>` を返す形になり、`Topics.subscribe` が await するので、購読の開始応答は値が揃ってから返る (CT-Q8)。`sessions/workspace.ts` 4 件も済。残るのは `sessions/harness.ts` 2 件 + `sessions/registry.ts` 3 件 + `sessions/last-live.ts` 3 件である。`hello.session` の `ownTranscript()` は単独で async 化できる。
+`sessionStatusOf()` は async 化済み。`UpstreamResource.snapshot` は `readonly TopicValue[] | Promise<readonly TopicValue[]>` を返す形になり、`Topics.subscribe` が await するので、購読の開始応答は値が揃ってから返る (CT-Q8)。`sessions/workspace.ts` 4 件と `sessions/harness.ts` 2 件も済。残るのは `sessions/registry.ts` 3 件 + `sessions/last-live.ts` 3 件である。`hello.session` の `ownTranscript()` は単独で async 化できる。
 
-**`sessions/harness.ts` の `scan()` は別 issue に切る。** `scan()` を async にすると `Sessions.classify()` → `inputs()` → `#own()` が async になり、`message.send` の配送判定と `last_live` の再計算、`peers` / `agents` の行の組み立てまで連鎖する。`scan()` 自身のコメントが「どちらも promise を返すと意味が変わる」と述べており、`fold-from-head-with-versioned-cache` の範囲を超える設計判断が要る。据え置きの根拠は**この意味論だけ**である — 「セッションが存在する」が購読者の有無に依存しない、という同期契約をどう保ったまま非同期化するかの設計が要る。読む量の小ささは根拠にしない (DR-0015 §3 が量での線引きを採らない)。
+**`sessions/harness.ts` は読みと判定を分けて済んだ。** ディレクトリと状態ファイルは非同期に読み、読めた行 (pid 鍵) をメモリに持つ。`Sessions` の分類・行の組み立て・二重実行の判定はそのメモリを同期に読むので、`message.send` の配送判定・`last_live` の再計算・`peers` / `agents` の行組み立ては同期契約のまま残った。「今この瞬間のディレクトリ」に対して動くものは自分で読みを起こして待つ (`message.send` の宛先判定、`runsNow()` 経由でプロセスへ signal する op、`peers` / `agents` の開始フレーム = CT-Q8 で購読の開始応答が値を待てる形)。どちらも購読者の有無を問わないので、「セッションが存在する」は購読に依存しないまま (DESIGN §4.2)。
 
 **0. 前提: 並行に走ることを当てにできる**
 受信側に接続ごとの直列化が無い (`transport/driver.ts:33` の `void handle(...)`) ので、ハンドラを async にすれば、その await 中に同じ接続の他の op が実際に進む。つまり async 化の効果は「待ち時間が要求ごとに分かれる」ではなく「他の要求が本当に並行に答えられるようになる」である。逆に言えば、同期のまま残した 1 箇所が instance 全体を止め続けるので、経路のどこか 1 つに同期 fs が残ると、その経路を async 化した効果は消える。ハンドラ単位ではなく、入口から fs 呼び出しまでの経路を丸ごと直す必要がある。

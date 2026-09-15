@@ -479,7 +479,7 @@ export class Sessions implements UpstreamResource {
     const terminals = this.#terminals;
     let rows = scanned;
     if (terminals !== undefined) {
-      // What the scan found is what exists: a pid that has left it is one whose
+      // What the reading found is what exists: a pid that has left it is one whose
       // terminal is no longer anybody's, and one that has arrived is read once.
       terminals.observe(scanned.keys());
       const named = new Map<number, AgentInfo>();
@@ -597,11 +597,26 @@ export class Sessions implements UpstreamResource {
     };
   }
 
+  /** Read the harness's directory, so that what this domain states is the
+   * directory as it is rather than as the last reading found it.
+   *
+   * The reading is what `sessions/` reaches this instance through, and it is
+   * the one thing here that waits (DR-0015): the watch and the poll behind it
+   * start one while somebody is subscribed, and an op that must act on what is
+   * there at this instant starts one of its own. Everything the rows are then
+   * derived from is in memory, which is what lets the classification stay
+   * synchronous — a session exists because the directory named it, and not
+   * because anybody was subscribed when it did. */
+  read(): Promise<void> {
+    return this.#harness.read();
+  }
+
   /** The runs of one session as they are right now, read rather than taken
-   * from the watch's cache. What acts on a session's process resolves its pid
+   * from the last reading. What acts on a session's process resolves its pid
    * through this: the watch runs only while somebody is subscribed (DESIGN §6.3), and
    * a pid from a poll that has not run is a number belonging to nobody. */
-  runsNow(sid: Sid): readonly SessionRun[] {
+  async runsNow(sid: Sid): Promise<readonly SessionRun[]> {
+    await this.read();
     return this.#runs(sid, this.#own());
   }
 
@@ -660,7 +675,12 @@ export class Sessions implements UpstreamResource {
    * after it is taken against: these rows are what the subscriber now holds,
    * and they are the same rows every earlier subscriber was brought up to by
    * the frames it has had. */
-  snapshot(topic: string): readonly TopicValue[] {
+  async snapshot(topic: string): Promise<readonly TopicValue[]> {
+    // The watch has only just been started, and what it has read so far is
+    // whatever landed before this ran. A subscriber is told what the value is
+    // rather than an empty one that means something else (CT-Q8), so the
+    // opening frame waits for a reading of its own.
+    await this.read();
     const now = Date.now();
     const own = this.#own();
     const data =

@@ -244,7 +244,9 @@ A row with no connection carries none of the fields that are about one (`connect
 
 **One session is never on both lists.** What takes an entry off `last_live` is being alive again, not greeting: resuming a session gives it a new process and a new state file, and nothing about that is a greeting.
 
-**What a row is built from does not depend on subscription.** Reading `sessions/` and watching it are two different things, and what §6.3 makes subordinate to subscription is only the latter. Which sessions exist is a fact about the instance itself, so the directory is read where a judgement needs it: `message.send` deciding on an addressee, the recompute that writes `last_live`, and building a row. The watch and its poll are the resource that pushes a change to subscribers, not the route by which an answer is obtained. Confusing the two makes a live session `session_not_found` while nobody is subscribed, and writes a session that is still running into `last_live` as gone.
+**What a row is built from does not depend on subscription.** Reading `sessions/` and watching it are two different things, and what §6.3 makes subordinate to subscription is only the latter. Which sessions exist is a fact about the instance itself, so the reading is available wherever a judgement needs it rather than only where somebody is listening. The watch and its poll are the resource that pushes a change to subscribers, not the route by which an answer is obtained. Confusing the two makes a live session `session_not_found` while nobody is subscribed, and writes a session that is still running into `last_live` as gone.
+
+**The reading is asynchronous and the judgement is not** (DR-0015). The directory is read without blocking the instance, and what it said is held in memory; classifying a session, building a row and deciding whether two processes are running it all read that memory in place, because none of them can hand back a promise without changing what it means. A judgement that has to act on the directory as it stands at this instant starts a reading of its own and waits for it: `message.send` deciding on an addressee, the ops that signal a session's process, and the opening frame of `peers` and `agents`. Waiting for a reading is not the same as depending on a subscriber — nothing above asks whether anybody is listening.
 
 **A Codex session waiting on input is not an input here** (§4.1): a thread stopped on an approval reads as running.
 
@@ -448,7 +450,7 @@ The difference is taken against **what subscribers were sent**, so the opening `
 
 - A subscription is subordinate to a connection. When the connection closes, the subscription disappears too (no separate teardown)
 - **Upstream resources run only while there are subscribers.** When `transcript:<sid>`'s subscriber count reaches 0, stop the tail; when `agents`'s subscriber count reaches 0, stop watching `sessions/`. Subscriptions are the sole driver of a resource's lifecycle
-- What is subordinate to subscription here is **only the watch that pushes changes**, never **reading what the state is right now**. Asking an owner for its current value (§2.3) and the classification inputs of §4.2 give the same answer with zero subscribers
+- What is subordinate to subscription here is **only the watch that pushes changes**, never **reading what the state is right now**. Asking an owner for its current value (§2.3) and the classification inputs of §4.2 give the same answer with zero subscribers, and whoever needs `sessions/` as it stands now reads it whether or not the watch is running (§4.2)
 - An instance whose mesh-wide topic has been subscribed to also subscribes to the same topic on each mesh peer, and streams the received frames straight through to its own subscribers (keeping the originating `instance` intact) (§7.4)
 
 ### 6.4 The limit on the send side
