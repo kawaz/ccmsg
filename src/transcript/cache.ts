@@ -62,8 +62,16 @@ export class FoldCache {
   constructor(private readonly dir: string) {}
 
   /** What was folded out of this file, or nothing when what is on disk does not
-   * describe the file as it stands. */
+   * describe the file as it stands.
+   *
+   * It waits behind the writes already asked for rather than reading straight
+   * away. A caller that gives an entry up and then reads again — a reading that
+   * begins from the top after two processes moved the file under it — asks for
+   * the drop and the read in one breath, and a read that did not queue behind
+   * the drop would hand back the entry that was just given up. Chaining it is
+   * what makes "the entry is gone" true by the time anything looks. */
   async read(path: string): Promise<FoldCacheEntry | undefined> {
+    await this.#writing;
     let entry: FoldCacheEntry;
     try {
       entry = JSON.parse(await Bun.file(this.#fileFor(path)).text()) as FoldCacheEntry;

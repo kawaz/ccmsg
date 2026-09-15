@@ -32,6 +32,7 @@ import {
   Transcripts,
   readSlice,
 } from "../src/transcript/index.ts";
+import { Classification } from "../src/transcript/items/index.ts";
 import { connAs, greeting, SELF, SELF_ENDPOINT, SID, TestConn } from "./frames.ts";
 import { unthrottled } from "./clock.ts";
 
@@ -513,6 +514,103 @@ describe("a transcript two processes are writing", () => {
     transcripts.duplicated(SID, false);
     await transcripts.ready(SID);
     expect(transcripts.following(SID)).toBe(true);
+  });
+
+  /** The one tool call and result a task is created by, which is a value the
+   * fold keeps in a map of its own — so a reading that did not start afresh
+   * carries it into a file that no longer names it. */
+  const taskCreated = [
+    {
+      type: "assistant",
+      timestamp: at(0),
+      message: {
+        model: "claude-fable-5",
+        content: [{ type: "tool_use", id: "t1", name: "TaskCreate", input: { subject: "before" } }],
+      },
+    },
+    {
+      type: "user",
+      timestamp: at(1),
+      message: { role: "user", content: [{ type: "tool_result", tool_use_id: "t1" }] },
+      toolUseResult: { task: { id: "1", subject: "before" } },
+    },
+  ];
+
+  test("a read asked for after the entry was dropped does not answer with it", async () => {
+    // What the reading does on the way out of a freeze: give the entry up, and
+    // read again. The two are asked for in one breath, and a read that did not
+    // queue behind the drop hands back the entry that was just given up — which
+    // is the offset of a file two processes moved.
+    const root = mkdtempSync(join(tmpdir(), "ccmsg-fold-cache-"));
+    roots.push(root);
+    const file = transcript([prompt("first", 0)]);
+    const cache = new FoldCache(join(root, "transcripts"));
+    const fold = new TranscriptFold();
+    fold.line(JSON.stringify(prompt("first", 0)));
+    await cache.save(file.path, statSync(file.path).size, fold.held, new Classification().held, []);
+    expect(await cache.read(file.path)).toBeDefined();
+
+    void cache.drop(file.path);
+    expect(await cache.read(file.path)).toBeUndefined();
+  });
+
+  test("the reading that follows a freeze describes the file, not what it said before", async () => {
+    // The whole of what "start again from the top" is for, against a real
+    // cache: the two writers left a file that says something else, and what the
+    // fold carried from before must not survive into it.
+    const root = mkdtempSync(join(tmpdir(), "ccmsg-fold-cache-"));
+    roots.push(root);
+    const file = transcript(taskCreated);
+    const published: Published[] = [];
+    const transcripts = new Transcripts({
+      self: SELF,
+      pathOf: async () => file.path,
+      publish: (topic, data) => published.push({ topic, data: data as Record<string, unknown> }),
+      onFacts: () => {},
+      pollMs: POLL_MS,
+      cache: new FoldCache(join(root, "transcripts")),
+    });
+    running.push(transcripts);
+    transcripts.hold(SID);
+    await transcripts.ready(SID);
+    expect(transcripts.facts(SID).todos).toHaveLength(1);
+
+    transcripts.duplicated(SID, true);
+    // Rewritten whole and longer, which is what the offset the entry holds
+    // cannot tell from the same file appended to.
+    writeFileSync(
+      file.path,
+      jsonl([prompt("a", 2), prompt("b", 3), prompt("c", 4), prompt("d", 5), prompt("e", 6)]),
+    );
+
+    transcripts.duplicated(SID, false);
+    await transcripts.ready(SID);
+    await settled(() => transcripts.standing(SID) === "ready");
+    expect(transcripts.facts(SID).todos).toEqual([]);
+  });
+
+  test("a session already being run twice is followed frozen, and is never read once", async () => {
+    // Nothing pushed the freeze in: the count was already two when the first
+    // thing asked for this session's fold, which is what a restart finds.
+    const file = transcript(taskCreated);
+    const published: Published[] = [];
+    const transcripts = new Transcripts({
+      self: SELF,
+      pathOf: async () => file.path,
+      publish: (topic, data) => published.push({ topic, data: data as Record<string, unknown> }),
+      onFacts: () => {},
+      pollMs: POLL_MS,
+      duplicated: () => true,
+    });
+    running.push(transcripts);
+    transcripts.hold(SID);
+    await transcripts.ready(SID);
+
+    expect(transcripts.standing(SID)).toBe("frozen");
+    expect(transcripts.following(SID)).toBe(false);
+    // The file was never read, so nothing of it is stated as trusted.
+    expect(transcripts.facts(SID)).toEqual(NO_FACTS);
+    expect(published).toEqual([]);
   });
 
   test("a session nothing is following stands at absent, whichever it is told", () => {
@@ -1333,7 +1431,7 @@ describe("a reading is taken up where the last one left off", () => {
     for (const source of sources) digest.update(await Bun.file(source).text());
     expect([FOLD_CACHE_VERSION, digest.digest("hex").slice(0, 16)]).toEqual([
       4,
-      "b9053106c32b3f42",
+      "5707dec3ab49e520",
     ]);
   });
 });
