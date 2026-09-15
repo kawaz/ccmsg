@@ -1,6 +1,6 @@
 ---
 title: auth の WS テストが並行実行下でポート衝突して落ちる
-status: open
+status: resolved
 category: bug
 created: 2026-09-15T13:02:52+09:00
 last_read:
@@ -9,10 +9,10 @@ wip_entered:
 blocked_entered:
 pending_entered:
 discarded_entered:
-resolved_entered:
+resolved_entered: 2026-09-15T13:43:08+09:00
 discard_reason:
 pending_reason:
-close_reason:
+close_reason: ["done: v1.1.0 で test/mesh.ts の leasePort() (kernel に空きを取らせて release してから bind) に統一 (commit 88e6dd9a)。test/auth.test.ts と test/client-address.test.ts の連番採番を置換。just ci 4 回連続 pass"]
 blocked_by:
 origin: ccmsg TODO
 ---
