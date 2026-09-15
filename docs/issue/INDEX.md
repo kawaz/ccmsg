@@ -25,7 +25,6 @@ wire の契約は [kawaz/ccmsg-protocol](https://github.com/kawaz/ccmsg-protocol
 
 | date | category | status | slug | 概要 |
 |---|---|---|---|---|
-| 2026-09-15 | bug | open | [codex-hook-script-test-times-out-under-load](./2026-09-15-codex-hook-script-test-times-out-under-load.md) | `test/plugin.test.ts` の hook script test が全件走行の負荷下で 5 秒 timeout する |
 | 2026-09-15 | task | open | [terminals-poll-to-socket-dir-watch](./2026-09-15-terminals-poll-to-socket-dir-watch.md) | `terminals` topic の `hyoui list` 5 秒 polling を socket dir の watch + バックオフ確認 poll… |
 | 2026-09-14 | task | open | [gateway-signal-keepalive-retired](./2026-09-14-gateway-signal-keepalive-retired.md) | llm-gateway v0.48.0 (DR-0027 段階 B) で合図方式の keepalive を撤去、ccmsg 側の受け口を撤去する |
 | 2026-09-14 | design | open | [session-search-regex-unbounded](./2026-09-14-session-search-regex-unbounded.md) | `session.search` のユーザ指定正規表現が 1 回の `test()` でイベントループを塞ぎ切る |

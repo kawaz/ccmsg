@@ -1,6 +1,6 @@
 ---
 title: `test/plugin.test.ts` の hook script test が全件走行の負荷下で 5 秒 timeout する
-status: open
+status: resolved
 category: bug
 created: 2026-09-15T20:30:36+09:00
 last_read:
@@ -9,10 +9,10 @@ wip_entered:
 blocked_entered:
 pending_entered:
 discarded_entered:
-resolved_entered:
+resolved_entered: 2026-09-15T20:42:08+09:00
 discard_reason:
 pending_reason:
-close_reason:
+close_reason: ["done: commit 0bc7161fでlistingの読み替えとhook scriptの中身を関数testに切り出し、プロセス起動は各1本だけにしてproc.exited/stdoutの行をawait(時間で待たない)", "task: test/sessions.test.ts:127とtest/session-ops.test.ts:248のsleep 30(署名対象のpid作り、待つ事象が無い)が同型で残存、負荷で5秒を超えたら同じ切り方で直す"]
 blocked_by:
 origin: 自リポ TODO
 ---
