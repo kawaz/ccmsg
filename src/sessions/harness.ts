@@ -1,8 +1,9 @@
-import { type FSWatcher, readdirSync, readFileSync, watch } from "node:fs";
-import { readdir, readFile } from "node:fs/promises";
+import { readFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { AgentInfo, InstanceId, Sid } from "@ccmsg/protocol";
 import type { Harness } from "../harness/index.ts";
+import { DirectoryWatch } from "./watch.ts";
 
 /** The status the harness writes while a dialog is open and it is waiting for
  * an answer, alongside a `waitingFor` naming what it waits on.
@@ -14,13 +15,15 @@ const WAITING = "waiting";
 
 /** How often the confirmation poll re-reads the directory.
  *
- * `fs.watch` is the route; this is not. macOS/Bun delivers FSEvents tens of
- * seconds late under load (measured in the old daemon while many test children
- * ran), and the poll exists so a change the watch is sitting on is picked up
- * before a person notices it is missing (DESIGN §4.2). Five seconds is the interval
- * the old daemon's `claude agents` poller ran at as its only route, and this
- * one replaces it as a backstop (DR-0009), so it cannot be the slower of the
- * two. */
+ * `fs.watch` is the route; this is not. A session started by any route at all —
+ * this instance's launcher, a person's own shell, anything that runs the
+ * harness — is a session this instance must come to know about, and not
+ * everything that makes the directory's answer change is a change to the
+ * directory: a process that died leaves its state file behind, so the row it
+ * states goes away with no event to say so. The poll is what re-reads
+ * regardless (DESIGN §4.2). Five seconds is the interval the old daemon's
+ * `claude agents` poller ran at as its only route, and this one replaces it as
+ * a backstop (DR-0009), so it cannot be the slower of the two. */
 export const CONFIRM_POLL_MS = 5_000;
 
 const STATE_FILE = /^\d+\.json$/;
@@ -137,7 +140,7 @@ class CodexThreads implements OwnSessions {
   #present: ReadonlySet<Sid>;
 
   constructor(dir: string, onChange: () => void, pollMs?: number) {
-    this.#watch = new DirectoryWatch(dir, () => void this.read(), pollMs);
+    this.#watch = new DirectoryWatch(dir, () => void this.read(), pollMs ?? CONFIRM_POLL_MS);
     this.#readings = new Readings(
       () => this.#watch.names(),
       (names) => {
@@ -207,7 +210,7 @@ export class HarnessSessions implements OwnSessions {
     onChange: () => void,
     pollMs?: number,
   ) {
-    this.#watch = new DirectoryWatch(dir, () => void this.read(), pollMs);
+    this.#watch = new DirectoryWatch(dir, () => void this.read(), pollMs ?? CONFIRM_POLL_MS);
     this.#readings = new Readings(
       () => this.#read(),
       (states) => {
@@ -352,71 +355,6 @@ function contentsNow(file: string): string | undefined {
     return readFileSync(file, "utf8");
   } catch {
     return undefined;
-  }
-}
-
-/** One directory that says what the harness's sessions are, watched while
- * somebody is subscribed and read whenever it may have moved.
- *
- * The two things DESIGN §6.3 separates live here. Watching the directory says the
- * answer may have changed, which is only worth knowing while somebody is
- * listening — so the watch is what the subscription drives. Reading it settles
- * the answer, and is started by the watch, by the poll, and by whoever must act
- * on the directory as it is now. */
-class DirectoryWatch {
-  #watcher: FSWatcher | undefined;
-  #timer: ReturnType<typeof setInterval> | undefined;
-
-  constructor(
-    private readonly dir: string,
-    /** Read again: the directory may have moved. */
-    private readonly onChange: () => void,
-    private readonly pollMs: number = CONFIRM_POLL_MS,
-  ) {}
-
-  get running(): boolean {
-    return this.#watcher !== undefined || this.#timer !== undefined;
-  }
-
-  start(): void {
-    if (this.running) return;
-    try {
-      this.#watcher = watch(this.dir, this.onChange);
-    } catch {
-      // The directory does not exist yet — a config home whose harness has not
-      // run. The poll below both covers the wait and picks it up when it
-      // appears, so this is not a failure to start.
-      this.#watcher = undefined;
-    }
-    this.#timer = setInterval(this.onChange, this.pollMs);
-    this.onChange();
-  }
-
-  stop(): void {
-    this.#watcher?.close();
-    this.#watcher = undefined;
-    if (this.#timer !== undefined) clearInterval(this.#timer);
-    this.#timer = undefined;
-  }
-
-  /** What is in the directory. A directory that is not there is a config home
-   * whose harness has not run, and it holds nothing. */
-  async names(): Promise<string[]> {
-    try {
-      return await readdir(this.dir);
-    } catch {
-      return [];
-    }
-  }
-
-  /** The same reading, made once before the instance holds a connection
-   * (DR-0015 §2.4). */
-  namesNow(): string[] {
-    try {
-      return readdirSync(this.dir);
-    } catch {
-      return [];
-    }
   }
 }
 

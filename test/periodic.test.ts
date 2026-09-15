@@ -10,10 +10,12 @@ import { Glob } from "bun";
  * a list rather than a claim: a new `setInterval` fails this test until it is
  * added here with its reason. */
 const PERIODIC: Record<string, string> = {
-  // The directory watch tells us about a change the moment it happens; this
-  // runs behind it to catch what a watch on a directory can miss, which is why
-  // its period is a confirmation interval rather than a sampling rate.
-  "sessions/harness.ts": "confirmation poll behind the sessions/ watch",
+  // The settled exception: a session may be started by any route at all, and
+  // what makes the directory's answer change is not always a change to the
+  // directory — a process that died leaves its file behind. So this one
+  // re-reads regardless of what the watch says, which is why its period is a
+  // confirmation interval rather than a sampling rate.
+  "sessions/watch.ts": "the settled exception, which catches sessions started by any route",
   // The same shape one layer down: the tail follows a file that is appended to,
   // and this confirms what the watch may not have reported.
   "transcript/tail.ts": "confirmation poll behind the transcript tail",

@@ -903,20 +903,37 @@ describe("the harness's sessions directory", () => {
     expect(settled).toEqual(["newer"]);
   });
 
-  /** The two routes of §5.1, each pinned by what it alone is answerable for.
-   *
-   * A watch on a directory may simply not report a change: on macOS the event
-   * is dropped outright rather than delivered late, so no amount of waiting
-   * turns a miss into an arrival. That is the premise the poll exists under,
-   * and it is why neither case below asks the watch to carry a particular
-   * change — the poll is answerable for every change, and the watch only for
-   * being a route at all. */
-  test("a change the watch never sees is still carried, by the poll behind it", async () => {
+  /** The routes of §5.1, each pinned by what it alone is answerable for: the
+   * watch on the directory, the watch above it that says the directory itself
+   * came or went, and the poll that re-reads regardless of either. Every case
+   * below puts the intervals it is not about far beyond its own budget, so
+   * what carried the change is the route the case names. */
+  test("the watch is a live route, so a change is carried without being asked for", async () => {
+    // The poll is far beyond this test's own budget, so anything reported here
+    // came from `fs.watch` and from nothing else.
+    const dir = harnessDir("ccmsg-watch-");
+    const watch = watchOf(dir, 600_000);
+    watch.harness.start();
+
+    // Measured on macOS/Bun: a change to a directory already being watched is
+    // reported within ~100ms, including while this suite runs, and the change
+    // that races the arming of a watch is the one occasionally dropped (under
+    // 1 %). Ten in a row is what rules out a route that was never wired,
+    // without asserting on that coin.
+    let carried = false;
+    for (let attempt = 0; attempt < 10 && !carried; attempt++) {
+      writeState(dir, process.pid, `${SID}-${attempt}`);
+      carried = await watch.reported(1_000);
+    }
+    expect(carried).toBe(true);
+  });
+
+  test("a directory that does not exist yet is picked up when it appears", async () => {
     // A config home whose harness has not run: `fs.watch` has no directory to
-    // attach to, so it is not watching and cannot report anything that follows.
-    // This is the miss the poll covers, made total rather than occasional.
-    const dir = harnessDir("ccmsg-poll-", { create: false });
-    const watch = watchOf(dir, 20);
+    // arm on, and arming one there fails outright. What reports the directory
+    // being created is the watch on the nearest directory above it.
+    const dir = harnessDir("ccmsg-appears-", { create: false });
+    const watch = watchOf(dir, 600_000);
     watch.harness.start();
 
     mkdirSync(dir, { recursive: true });
@@ -924,24 +941,37 @@ describe("the harness's sessions directory", () => {
     while (watch.harness.rows().size !== 1) await watch.reported(5_000);
   });
 
-  test("the watch is a live route, so not every change waits for the poll", async () => {
-    // Far beyond this test's own budget, so anything reported here came from
-    // `fs.watch` and from nothing else.
-    const dir = harnessDir("ccmsg-watch-");
+  test("a directory that is taken away is reported gone", async () => {
+    // The removal of a watched directory is never reported to the watch armed
+    // on it (measured), so this is the other thing the watch above carries.
+    const dir = harnessDir("ccmsg-removed-");
+    writeState(dir, process.pid, SID);
     const watch = watchOf(dir, 600_000);
     watch.harness.start();
+    await watch.harness.read();
+    expect(watch.harness.rows().size).toBe(1);
 
-    // Measured on macOS/Bun: a change the watch does report arrives within
-    // ~50ms, and about one in twenty is dropped entirely while the suite loads
-    // the FSEvents queue. Asserting that one particular change arrives is
-    // asserting on that coin; that ten in a row are all dropped is what this
-    // rules out, and what would be true of a route that was not wired at all.
-    let carried = false;
-    for (let attempt = 0; attempt < 10 && !carried; attempt++) {
-      writeState(dir, process.pid, `${SID}-${attempt}`);
-      carried = await watch.reported(1_000);
-    }
-    expect(carried).toBe(true);
+    rmSync(dir, { recursive: true, force: true });
+    while (watch.harness.rows().size !== 0) await watch.reported(5_000);
+  });
+
+  test("a row that went away without the directory moving is carried by the poll", async () => {
+    // A session started outside this instance, and then killed: the file it
+    // left behind names a process that is gone, so the row it states goes with
+    // it — and nothing about the directory changed, so no watch has anything to
+    // report. Re-reading regardless is the whole of what the poll is for.
+    const dir = harnessDir("ccmsg-confirm-");
+    const pid = await child({});
+    writeState(dir, pid, SID);
+    const watch = watchOf(dir, 50);
+    watch.harness.start();
+    while (watch.harness.rows().size !== 1) await watch.reported(5_000);
+    // Past the one reading that follows the arming of a watch, so the reading
+    // that carries what happens next is the poll and nothing else.
+    await Bun.sleep(600);
+
+    process.kill(pid, "SIGKILL");
+    while (watch.harness.rows().size !== 0) await watch.reported(5_000);
   });
 
   test("the watch runs while a subscriber holds either topic, and not otherwise", async () => {

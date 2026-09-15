@@ -26,4 +26,5 @@ export { search, type SearchDeps } from "./search.ts";
 export * from "./status.ts";
 export { StartCache, type StartReader } from "./starts.ts";
 export { TerminalCache, type TerminalReader } from "./terminals.ts";
+export { DirectoryWatch } from "./watch.ts";
 export { workspaceFolders } from "./workspace.ts";

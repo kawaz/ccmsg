@@ -2,7 +2,7 @@ import { join } from "node:path";
 import { HYOUI_TERMINAL_SCHEME, type InstanceId, type TerminalInfo } from "@ccmsg/protocol";
 import { HYOUI_COMMAND, terminalId } from "./ids.ts";
 import { run } from "../sessions/processes.ts";
-import { DirectoryWatch } from "./watch.ts";
+import { DirectoryWatch } from "../sessions/watch.ts";
 import type { TerminalListing, TerminalWatching } from "./terminals.ts";
 
 /** How the manager is asked for its whole list. One line per terminal, which is
