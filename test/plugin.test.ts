@@ -16,7 +16,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PROTOCOL_VERSION } from "@ccmsg/protocol";
+import { liveness, type PeerInfo, PROTOCOL_VERSION, type SessionRun } from "@ccmsg/protocol";
 import { hello, stopping } from "../src/cli.ts";
 import { statedMeta } from "../src/greeting/index.ts";
 import {
@@ -552,7 +552,7 @@ describe("the hooks against a running instance", () => {
     repo?: string;
     ws?: string;
     cwd?: string;
-    state?: string;
+    runs?: SessionRun[];
     connected_at?: number;
     stopped_at?: number;
     removed?: true;
@@ -627,10 +627,11 @@ describe("the hooks against a running instance", () => {
       ws: "main",
       cwd: "/repos/ccmsg/main",
     });
-    // Leaving cost it nothing: it is still live — which of the two live
-    // classifications depends on the terminal this test's own process runs in —
-    // and nothing was written down as having stopped.
-    expect(left.peers.find((row) => row.sid === SID)?.state).toMatch(/^live/);
+    // Leaving cost it nothing: the harness still names the session, so the row
+    // states the run it names and nothing was written down as having stopped.
+    const still = left.peers.find((row) => row.sid === SID) as unknown as PeerInfo;
+    expect(liveness(still, Date.now())).toBe("alive");
+    expect(still.runs).toHaveLength(1);
     expect(left.peers.some((row) => row.sid === SID && row.stopped_at !== undefined)).toBe(false);
   });
 
@@ -660,10 +661,12 @@ describe("the hooks against a running instance", () => {
     // Declared and then gone is a pause, which is the difference the hook
     // exists to make: the harness still names the session, and it is the
     // declaration that puts it on the list at all.
+    const stands = (row: unknown) => liveness(row as PeerInfo, Date.now());
     const paused = await until(watcher, (data) =>
-      data.peers.some((row) => row.sid === SID && row.state === "paused"),
+      data.peers.some((row) => row.sid === SID && stands(row) === "paused"),
     );
-    expect(paused.peers.find((row) => row.sid === SID)).toMatchObject({ state: "paused" });
-    expect(paused.peers.find((row) => row.sid === SID)?.stopped_at).toBeGreaterThan(0);
+    const row = paused.peers.find((each) => each.sid === SID);
+    expect(stands(row)).toBe("paused");
+    expect(row?.stopped_at).toBeGreaterThan(0);
   });
 });

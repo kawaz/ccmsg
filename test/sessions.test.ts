@@ -13,23 +13,25 @@ import { join } from "node:path";
 import {
   type HelloResult,
   LAST_LIVE_RETENTION_MS,
+  type Liveness,
+  liveness,
   type PeerInfo,
   OP_SCHEMAS,
   PROTOCOL_VERSION,
-  type SessionState,
+  reachable,
+  type SessionRun,
   type Sid,
   TOPIC_SCHEMAS,
   validationErrors,
+  waiting,
 } from "@ccmsg/protocol";
 import { OpError } from "../src/dispatch/index.ts";
 import { Topics } from "../src/topics/index.ts";
 import {
-  isLive,
-  classify,
   type GatewaySource,
   HarnessSessions,
   LastLiveStore,
-  type SessionInputs,
+  runsOf,
   Sessions,
   hostTerminalReader,
   type TerminalReader,
@@ -150,6 +152,9 @@ afterEach(() => {
 /** One harness state file, in the harness's own spelling — camelCase, its own
  * status words, and its own pid. The pid is this process's, because a row
  * whose process is gone is not a session that exists. */
+/** When the state files this fixture writes say their process started. */
+const STARTED_AT = 1_757_000_000_000;
+
 function writeState(dir: string, pid: number, sid: Sid, extra: Record<string, unknown> = {}) {
   writeFileSync(
     join(dir, `${pid}.json`),
@@ -158,7 +163,7 @@ function writeState(dir: string, pid: number, sid: Sid, extra: Record<string, un
       sessionId: sid,
       cwd: "/Users/someone/.local/share/repos/github.com/someone/a-repo/main",
       kind: "interactive",
-      startedAt: 1_757_000_000_000,
+      startedAt: STARTED_AT,
       status: "idle",
       ...extra,
     }),
@@ -221,7 +226,18 @@ function sessions(
     pollMs: overrides.pollMs ?? 50,
     ...(overrides.gateway === undefined ? {} : { gateway: overrides.gateway }),
     ...(overrides.terminals === undefined ? {} : { terminals: overrides.terminals }),
-    ...(overrides.transcript === undefined ? {} : { transcript: overrides.transcript }),
+    ...(overrides.transcript === undefined
+      ? {}
+      : {
+          transcript: {
+            ...overrides.transcript,
+            // The fold's own standing, which a fixture stating facts is saying
+            // it has: what is under test here is what the row carries, not how
+            // far a reading got.
+            standing: () => "ready" as const,
+            duplicated: () => {},
+          },
+        }),
     ...(overrides.terminalGateway === undefined
       ? {}
       : { terminalGateway: overrides.terminalGateway }),
@@ -327,8 +343,43 @@ function folded(published: Published[]): PeerInfo[] {
 }
 const agentsOf = (frames: Published[]) => frames.filter((frame) => frame.topic === "agents");
 
+/** Where a session stands, and whether anything here can act on it, as one
+ * word.
+ *
+ * The contract answers the first with `liveness` and the second with
+ * `reachable`, and a row that is running with neither a connection nor a
+ * terminal is the one nothing can be handed to — so the two are read together
+ * here, the way a client showing the row reads them. Nothing for a sid this
+ * instance has no row for. */
+type Standing = Liveness | "alive_unreachable";
+
+function standingOf(row: PeerInfo, now: number = Date.now()): Standing {
+  const stands = liveness(row, now);
+  return stands === "alive" && !reachable(row) ? "alive_unreachable" : stands;
+}
+
+function stands(domain: Sessions, sid: Sid, now: number = Date.now()): Standing | undefined {
+  const row = domain.row(sid, now);
+  return row === undefined ? undefined : standingOf(row, now);
+}
+
+/** Whether a dialog or an upstream error is out that a person has to answer,
+ * which is read off the `agents` row and the fold rather than off `peers`
+ * (contract, `waiting`). */
+function isWaitingOn(domain: Sessions, sid: Sid, status?: { api_error?: unknown }): boolean {
+  return waiting(
+    domain.agentRows().find((row) => row.sid === sid),
+    status,
+  );
+}
+
+const isLive = (row: PeerInfo): boolean => {
+  const at = liveness(row, Date.now());
+  return at !== "paused" && at !== "disappeared";
+};
+
 /** The other half of the same list: the rows the instance has lost. */
-const isLost = (row: { readonly state?: string }): boolean => !isLive(row as { state?: never });
+const isLost = (row: PeerInfo): boolean => !isLive(row);
 
 describe("hello", () => {
   test("answers the contract's own result, naming only this instance", async () => {
@@ -646,7 +697,7 @@ describe("the harness's sessions directory", () => {
     writeState(context.sessionsDir, process.pid, SID);
 
     expect(context.domain.watching).toBe(false);
-    expect(context.domain.classify(SID)).toBe("live_unmanaged");
+    expect(stands(context.domain, SID)).toBe("alive_unreachable");
     expect(context.domain.agentRows().map((row) => row.sid)).toEqual([SID]);
   });
 
@@ -667,7 +718,10 @@ describe("the harness's sessions directory", () => {
         repo: "",
         ws: "",
         cwd: "/Users/someone/.local/share/repos/github.com/someone/a-repo/main",
-        state: "live_unmanaged",
+        // One process, named by its state file, that neither holds a connection
+        // here nor names a terminal: running, and nothing can reach it.
+        runs: [{ pid: process.pid, started_at: STARTED_AT, connected: false }],
+        session_status: "absent",
         pinned: false,
       },
     ]);
@@ -720,7 +774,7 @@ describe("the harness's sessions directory", () => {
     await helloFrom(context.domain, conn);
     conn.close();
 
-    expect(context.domain.classify(SID)).toBe("live_unmanaged");
+    expect(stands(context.domain, SID)).toBe("alive_unreachable");
     expect(context.domain.peerRows().filter(isLost)).toEqual([]);
   });
 
@@ -738,14 +792,14 @@ describe("the harness's sessions directory", () => {
       status: "waiting",
       waitingFor: "a choice",
     });
-    await context.until(() => context.domain.classify(SID) === "waiting");
+    await context.until(() => isWaitingOn(context.domain, SID));
 
     rmSync(join(context.sessionsDir, `${process.pid}.json`));
     // The row is gone from the directory the moment the file is, and reading
     // it says so at once. What takes a turn of the watch is the recording that
     // follows: a session stops being live, and the entry that outlives it is
     // written where that is noticed.
-    await context.until(() => context.domain.classify(SID) === "disappeared");
+    await context.until(() => stands(context.domain, SID) === "disappeared");
     expect(context.domain.agentRows()).toEqual([]);
   });
 
@@ -785,17 +839,17 @@ describe("the harness's sessions directory", () => {
     const harness = new HarnessSessions(dir, SELF, () => undefined);
     const file = join(dir, `${process.pid}.json`);
     writeState(dir, process.pid, SID, { status: "idle" });
-    expect(harness.scan().get(SID)?.status).toBe("idle");
+    expect(harness.scan().get(process.pid)?.status).toBe("idle");
 
     writeFileSync(file, "");
-    expect(harness.scan().get(SID)?.status).toBe("idle");
+    expect(harness.scan().get(process.pid)?.status).toBe("idle");
     writeFileSync(file, JSON.stringify({ pid: process.pid, sessionId: SID }));
-    expect(harness.scan().get(SID)?.status).toBe("idle");
+    expect(harness.scan().get(process.pid)?.status).toBe("idle");
 
     writeState(dir, process.pid, SID, { status: "waiting", waitingFor: "permission" });
-    expect(harness.scan().get(SID)?.status).toBe("waiting");
+    expect(harness.scan().get(process.pid)?.status).toBe("waiting");
     rmSync(file);
-    expect(harness.scan().has(SID)).toBe(false);
+    expect(harness.scan().has(process.pid)).toBe(false);
   });
 
   /** The two routes of §5.1, each pinned by what it alone is answerable for.
@@ -962,7 +1016,9 @@ describe("a frame carries the rows that changed", () => {
     declareStopping(context.domain, conn);
     conn.close();
     expect(stated(context.published)).toHaveLength(1);
-    expect(stated(context.published)[0]).toMatchObject({ sid: SID, state: "paused" });
+    const left = stated(context.published)[0] as PeerInfo;
+    expect(left.sid).toBe(SID);
+    expect(standingOf(left)).toBe("paused");
 
     // Forgetting it is the row leaving, which an absence could not say.
     context.published.length = 0;
@@ -983,7 +1039,7 @@ describe("a frame carries the rows that changed", () => {
     const snapshot = context.domain.snapshot("peers")[0];
     const rows = (snapshot?.data as { peers: PeerInfo[] } | undefined)?.peers ?? [];
     expect(rows.map((row) => row.sid).sort()).toEqual([SID, OTHER_SID].sort());
-    expect(rows.find((row) => row.sid === SID)?.state).toBe("paused");
+    expect(standingOf(rows.find((row) => row.sid === SID) as PeerInfo)).toBe("paused");
   });
 
   test("what the opening frame stated is what the next difference is taken against", async () => {
@@ -1008,8 +1064,8 @@ describe("a frame carries the rows that changed", () => {
   });
 });
 
-describe("the classification on the wire", () => {
-  test("every row of both lists states its state and whether it is pinned", async () => {
+describe("where a session stands, read off the row", () => {
+  test("every row of both lists states its runs, its fold and whether it is pinned", async () => {
     const context = sessions();
     const connected = greeting();
     await helloFrom(context.domain, connected);
@@ -1021,15 +1077,21 @@ describe("the classification on the wire", () => {
       status: "waiting",
       waitingFor: "a choice",
     });
-    await context.until(() => context.domain.classify(SID) === "waiting");
+    await context.until(() => isWaitingOn(context.domain, SID));
 
     const rows = context.domain.peerRows();
     for (const row of rows) {
-      expect(row.state).toBeDefined();
+      expect(row.runs).toBeDefined();
+      expect(row.session_status).toBeDefined();
       expect(row.pinned).toBe(false);
     }
-    expect(rows.filter(isLive)[0]?.state).toBe("waiting");
-    expect(rows.filter(isLost)[0]?.state).toBe("disappeared");
+    // The dialog the harness is holding open is read off the `agents` row and
+    // not off `peers`, which is what the contract's `waiting` takes (DR-0001).
+    expect(isWaitingOn(context.domain, SID)).toBe(true);
+    // Its own connection is open, so something here can act on it whatever the
+    // dialog the harness is holding open.
+    expect(standingOf(rows.filter(isLive)[0] as PeerInfo)).toBe("alive");
+    expect(standingOf(rows.filter(isLost)[0] as PeerInfo)).toBe("disappeared");
   });
 
   test("a session that said it was stopping travels as paused, with when it said so", async () => {
@@ -1041,7 +1103,8 @@ describe("the classification on the wire", () => {
     const declared = declareStopping(context.domain, conn);
     conn.close();
     const entry = context.domain.peerRows().filter(isLost)[0];
-    expect(entry?.state).toBe("paused");
+    expect(standingOf(entry as PeerInfo)).toBe("paused");
+    expect(entry?.runs).toEqual([]);
     expect(entry?.stopped_at).toBe(declared.stopped_at);
   });
 
@@ -1051,7 +1114,8 @@ describe("the classification on the wire", () => {
     await helloFrom(context.domain, conn);
     conn.close();
     const entry = context.domain.peerRows().filter(isLost)[0];
-    expect(entry?.state).toBe("disappeared");
+    expect(standingOf(entry as PeerInfo)).toBe("disappeared");
+    expect(entry?.runs).toEqual([]);
     expect(entry?.stopped_at).toBeUndefined();
   });
 
@@ -1060,7 +1124,7 @@ describe("the classification on the wire", () => {
     const conn = greeting();
     await helloFrom(context.domain, conn);
     declareStopping(context.domain, conn);
-    expect(context.domain.classify(SID)).toBe("live");
+    expect(stands(context.domain, SID)).toBe("alive");
     expect(context.domain.peerRows().filter(isLost)).toEqual([]);
   });
 
@@ -1111,13 +1175,13 @@ describe("last_live", () => {
     const conn = greeting();
     await helloFrom(context.domain, conn);
     conn.close();
-    expect(context.domain.classify(SID)).toBe("disappeared");
+    expect(stands(context.domain, SID)).toBe("disappeared");
 
     // What a restart reads is the file, so the writes the going produced have
     // to have landed before one stands in for a restart.
     await context.domain.flush();
     const restarted = restart(context);
-    expect(restarted.classify(SID)).toBe("disappeared");
+    expect(stands(restarted, SID)).toBe("disappeared");
     // And it leaves the list the moment the session registers again.
     await helloFrom(restarted, greeting());
     expect(restarted.peerRows().filter(isLost)).toEqual([]);
@@ -1253,17 +1317,16 @@ describe("last_live", () => {
   });
 });
 
-describe("the inputs of §5.1", () => {
-  test("what the gateway saw reaches the classification through the domain", () => {
+describe("what the gateway saw, on the row", () => {
+  test("it reaches the row through the domain", () => {
     const seen = Date.now() - 1_000;
     const context = sessions({ gateway: { activeAt: (sid) => (sid === SID ? seen : undefined) } });
     // The harness naming it is what makes it a session of this config home;
-    // without that the gateway's word says nothing here (§5.1).
+    // without that the gateway's word says nothing here (DESIGN §4.2).
     writeState(context.sessionsDir, process.pid, SID);
 
-    expect(context.domain.inputs(SID).gateway_active_at).toBe(seen);
-    expect(context.domain.inputs(OTHER_SID).gateway_active_at).toBeUndefined();
-    expect(context.domain.classify(OTHER_SID)).toBeUndefined();
+    expect(context.domain.row(SID)?.gateway_active_at).toBe(seen);
+    expect(context.domain.row(OTHER_SID)).toBeUndefined();
   });
 
   test("a session that greeted keeps the gateway's word after it disconnects", async () => {
@@ -1272,13 +1335,15 @@ describe("the inputs of §5.1", () => {
     const conn = greeting();
     await helloFrom(context.domain, conn);
 
-    expect(context.domain.inputs(SID).gateway_active_at).toBe(seen);
+    expect(context.domain.row(SID)?.gateway_active_at).toBe(seen);
     // Gone from the connections but remembered in `last_live`, which is still
     // this instance knowing whose sid that is.
     conn.close();
-    expect(context.domain.inputs(SID).gateway_active_at).toBe(seen);
-    // Alive on the gateway's word alone, now that nothing else holds it (§5.2).
-    expect(context.domain.classify(SID)).toBe("live_unmanaged");
+    expect(context.domain.row(SID)?.gateway_active_at).toBe(seen);
+    // No run is left, and the request outlives the process: the row is alive on
+    // the gateway's word alone, and nothing can reach it (contract, `liveness`).
+    expect(context.domain.row(SID)?.runs).toEqual([]);
+    expect(stands(context.domain, SID)).toBe("alive_unreachable");
   });
 
   test("the gateway cannot make a session of another config home live here", () => {
@@ -1287,56 +1352,91 @@ describe("the inputs of §5.1", () => {
     // answers for one this instance has never heard of.
     const context = sessions({ gateway: { activeAt: () => seen } });
 
-    expect(context.domain.inputs(OTHER_SID).gateway_active_at).toBeUndefined();
-    expect(context.domain.classify(OTHER_SID)).toBeUndefined();
+    expect(context.domain.row(OTHER_SID)).toBeUndefined();
+    expect(stands(context.domain, OTHER_SID)).toBeUndefined();
     // Nothing greeted, so nothing is on `peers` either — the row the gateway
     // would otherwise have put there is what makes the sid addressable.
     expect(context.domain.peerRows(Date.now()).filter(isLive)).toEqual([]);
   });
 
-  test("an instance with no gateway leaves the input absent rather than old", () => {
+  test("an instance with no gateway leaves the field absent rather than old", async () => {
     const context = sessions();
-    expect(context.domain.inputs(SID).gateway_active_at).toBeUndefined();
+    await helloFrom(context.domain, greeting());
+    expect(context.domain.row(SID)?.gateway_active_at).toBeUndefined();
   });
 });
 
-describe("the derivation of §5.2", () => {
-  const cases: [string, SessionInputs, SessionState | undefined][] = [
-    ["a dialog is open", { connected: true, harness: { waiting: true } }, "waiting"],
+describe("the runs a row states", () => {
+  const FIRST: SessionRun = { pid: 11, started_at: NOW - 60_000, connected: false };
+  const SECOND: SessionRun = { pid: 12, started_at: NOW - 30_000, connected: false };
+  const observed = (run: SessionRun) => ({
+    pid: run.pid as number,
+    started_at: run.started_at as number,
+    ...(run.terminal_id === undefined ? {} : { terminal_id: run.terminal_id }),
+  });
+
+  const cases: [string, SessionRun[], Standing][] = [
     [
-      "its last turn ended on an API error",
-      { connected: true, harness: { waiting: false }, api_error_stopped: true },
-      "waiting",
-    ],
-    ["it holds a connection", { connected: true }, "live"],
-    [
-      "the harness has it and names its terminal",
-      { connected: false, harness: { waiting: false, terminal_id: "t1" } },
-      "live",
-    ],
-    [
-      "the harness has it but nothing can reach it",
-      { connected: false, harness: { waiting: false } },
-      "live_unmanaged",
+      "one state file and no connection is one run nothing can reach",
+      runsOf([observed(FIRST)], new Set(), false),
+      "alive_unreachable",
     ],
     [
-      "only the gateway has seen it lately",
-      { connected: false, gateway_active_at: NOW - 1_000 },
-      "live_unmanaged",
+      "a greeting that named its process attributes the connection to that run",
+      runsOf([observed(FIRST), observed(SECOND)], new Set([12]), true),
+      "duplicated",
     ],
-    ["it was stopped on purpose", { connected: false, last_live: { stopped_at: NOW } }, "paused"],
-    ["it simply went away", { connected: false, last_live: {} }, "disappeared"],
-    ["nobody has heard of it", { connected: false }, undefined],
+    [
+      "a connection with nothing observed is one run with no pid",
+      runsOf([], new Set(), true),
+      "alive",
+    ],
+    [
+      "a harness that names the session without naming a process is one run all the same",
+      runsOf([], new Set(), false, true),
+      "alive_unreachable",
+    ],
+    [
+      "nothing observed and nothing connected is no run at all",
+      runsOf([], new Set(), false),
+      "disappeared",
+    ],
   ];
 
-  test.each(cases)("%s", (_name, inputs, expected) => {
-    expect(classify(inputs, NOW)).toBe(expected as SessionState);
+  test.each(cases)("%s", (_name, runs, expected) => {
+    expect(standingOf({ ...BARE_ROW, runs }, NOW)).toBe(expected);
   });
 
-  test("a session in last_live that is live again is not Paused", () => {
-    expect(classify({ connected: true, last_live: { stopped_at: NOW } }, NOW)).toBe("live");
+  test("a greeting that named no process still marks the one run connected", () => {
+    // An older client, or one that could not read its own parent: the
+    // connection belongs to the run there is, and inventing a second one would
+    // report a duplicate that is not there.
+    expect(runsOf([observed(FIRST)], new Set(), true)).toEqual([{ ...FIRST, connected: true }]);
+  });
+
+  test("with two runs observed, an unattributed connection marks neither", () => {
+    expect(runsOf([observed(FIRST), observed(SECOND)], new Set(), true)).toEqual([FIRST, SECOND]);
+  });
+
+  test("a run's terminal is what says it can be reached with no connection open", () => {
+    const withTerminal = { ...FIRST, terminal_id: "hyoui:t-1" };
+    const runs = runsOf([observed(withTerminal)], new Set(), false);
+    expect(standingOf({ ...BARE_ROW, runs }, NOW)).toBe("alive");
+    expect(reachable({ runs })).toBe(true);
   });
 });
+
+/** A row with nothing on it but what every row must carry, so a case states
+ * only the fields it is about. */
+const BARE_ROW: PeerInfo = {
+  sid: SID,
+  instance: SELF,
+  repo: "",
+  ws: "",
+  cwd: "",
+  runs: [],
+  session_status: "absent",
+};
 
 const NOW = 1_800_000_000_000;
 
@@ -1366,11 +1466,11 @@ describe("the terminal a live session runs in", () => {
 
     // The scan is what notices the pid, and the read is what follows it.
     expect(context.domain.agentRows()[0]?.terminal_id).toBeUndefined();
-    await context.until(() => context.domain.agentRows()[0]?.terminal_id === "t-1");
+    await context.until(() => context.domain.agentRows()[0]?.terminal_id === "hyoui:t-1");
     expect(context.domain.agentRows()[0]?.terminal_namespace).toBe("work");
     // Reachable through its terminal with no connection to this instance,
     // which is the whole of what the terminal is read for (§5.2).
-    expect(context.domain.classify(SID)).toBe("live");
+    expect(stands(context.domain, SID)).toBe("alive");
   });
 
   test("a session whose process names none stays the one nothing can reach", async () => {
@@ -1385,7 +1485,7 @@ describe("the terminal a live session runs in", () => {
     const row = context.domain.agentRows()[0];
     expect(row?.sid).toBe(SID);
     expect(row?.terminal_id).toBeUndefined();
-    expect(context.domain.classify(SID)).toBe("live_unmanaged");
+    expect(stands(context.domain, SID)).toBe("alive_unreachable");
   });
 
   test("a process is read once, however many questions are asked of the list", async () => {
@@ -1393,8 +1493,8 @@ describe("the terminal a live session runs in", () => {
     const context = withTerminals(reads);
     const pid = await child({ HYOUI_SESSION_ID: "t-2" });
     writeState(context.sessionsDir, pid, SID);
-    await context.until(() => context.domain.agentRows()[0]?.terminal_id === "t-2");
-    for (let asked = 0; asked < 5; asked += 1) context.domain.classify(SID);
+    await context.until(() => context.domain.agentRows()[0]?.terminal_id === "hyoui:t-2");
+    for (let asked = 0; asked < 5; asked += 1) stands(context.domain, SID);
     expect(reads).toEqual([pid]);
   });
 
@@ -1403,7 +1503,7 @@ describe("the terminal a live session runs in", () => {
     const context = withTerminals(reads);
     const pid = await child({ HYOUI_SESSION_ID: "t-3" });
     writeState(context.sessionsDir, pid, SID);
-    await context.until(() => context.domain.agentRows()[0]?.terminal_id === "t-3");
+    await context.until(() => context.domain.agentRows()[0]?.terminal_id === "hyoui:t-3");
 
     rmSync(join(context.sessionsDir, `${pid}.json`));
     context.domain.agentRows();

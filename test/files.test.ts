@@ -1,7 +1,9 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   realpathSync,
   rmSync,
   statSync,
@@ -79,7 +81,7 @@ function containment(over: Partial<SessionRoots> = {}): Containment {
 }
 
 function handlers(over: Partial<SessionRoots> = {}) {
-  return fileHandlers(containment(over));
+  return fileHandlers(containment(over), () => false);
 }
 
 /** A caller: a person greets with no sid, a session names itself with one. */
@@ -190,7 +192,7 @@ describe("contained", () => {
   });
 
   test("a session that greeted with no root admits nothing", async () => {
-    const bare = fileHandlers(new Containment({ roots: async () => undefined }));
+    const bare = fileHandlers(new Containment({ roots: async () => undefined }), () => false);
     expect(
       await refusalOf(() =>
         run("file.read", bare["file.read"], {
@@ -613,6 +615,52 @@ describe("file.stat", () => {
       paths: [join(base, "outside/secret.txt"), join(base, "outside/never-existed.txt")],
     });
     expect(body["results"]).toEqual([null, null]);
+  });
+});
+
+describe("a session two processes are running", () => {
+  /** One argument set per op, named by the op, so the loop below can hold the
+   * table to the handlers rather than to a list written beside it. */
+  const calls = (): Record<string, Record<string, unknown>> => ({
+    "dir.list": { sid: SID, kind: "contained", path: "ws" },
+    "file.read": { sid: SID, kind: "contained", path: "ws/hello.txt" },
+    "file.write": { sid: SID, path: "docs/inbox/duplicated.md", content: "note\n" },
+    "file.create": { sid: SID, kind: "contained", path: "ws/created.txt", content: "new\n" },
+    "file.edit": {
+      sid: SID,
+      kind: "contained",
+      path: "ws/hello.txt",
+      content: "mine\n",
+      expected_mtime_at: 0,
+      expected_size: 0,
+    },
+    "file.delete": { sid: SID, kind: "contained", path: "ws/hello.txt" },
+    "file.find": { sid: SID, kind: "contained", query: "hello" },
+    "file.stat": { sid: SID, paths: [join(base, "repo/ws/hello.txt")] },
+  });
+
+  const dual = () => fileHandlers(containment(), () => true);
+
+  test("is refused by every op, since which run's tree a path names is not settled", async () => {
+    const handlers = dual();
+    const table = calls();
+    expect(Object.keys(table).sort()).toEqual(Object.keys(handlers).sort());
+    for (const [op, args] of Object.entries(table)) {
+      const refusal = await refusalOf(() =>
+        run(op as OpName, handlers[op as keyof typeof handlers], args),
+      );
+      expect([op, refusal]).toEqual([op, "session_duplicated"]);
+    }
+  });
+
+  test("leaves the files alone: a refused write never reaches the tree", async () => {
+    const handlers = dual();
+    const table = calls();
+    await refusalOf(() =>
+      run("file.write", handlers["file.write"], table["file.write"] as Record<string, unknown>),
+    );
+    expect(existsSync(join(base, "repo/ws/docs/inbox/duplicated.md"))).toBe(false);
+    expect(readFileSync(join(base, "repo/ws/hello.txt"), "utf8")).toBe("hello\n");
   });
 });
 

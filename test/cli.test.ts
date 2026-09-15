@@ -4,8 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   type InboxMessage,
-  type PeerInfo,
+  liveness,
   type Notification,
+  type PeerInfo,
   PROTOCOL_VERSION,
 } from "@ccmsg/protocol";
 import { main, notify as notified, pushed, type Spawn } from "../src/cli.ts";
@@ -99,9 +100,11 @@ async function until(client: LineClient, want: (rows: PeerInfo[]) => boolean): P
       if (row.removed === true) held.delete(row.sid);
       else held.set(row.sid, row);
     }
-    const lost = [...held.values()].filter(
-      (row) => row.state === "paused" || row.state === "disappeared",
-    );
+    const now = Date.now();
+    const lost = [...held.values()].filter((row) => {
+      const stands = liveness(row, now);
+      return stands === "paused" || stands === "disappeared";
+    });
     if (want(lost)) return lost;
   }
 }
@@ -179,14 +182,16 @@ describe("ccmsg stopping", () => {
     // when the connection closes is what carries the instant.
     expect(await main(["stopping", "--sid", SID])).toBe(0);
     const paused = await until(watcher, (rows) => rows.some((row) => row.sid === SID));
-    expect(paused.find((row) => row.sid === SID)).toMatchObject({ state: "paused" });
-    expect(paused.find((row) => row.sid === SID)?.stopped_at).toBeGreaterThan(0);
+    const left = paused.find((row) => row.sid === SID);
+    expect(left === undefined ? undefined : liveness(left, Date.now())).toBe("paused");
+    expect(left?.stopped_at).toBeGreaterThan(0);
 
     // The same departure without the declaration is the other outcome.
     await (await greet(at, { role: "session", sid: OTHER_SID })).close();
     const gone = await until(watcher, (rows) => rows.some((row) => row.sid === OTHER_SID));
-    expect(gone.find((row) => row.sid === OTHER_SID)).toMatchObject({ state: "disappeared" });
-    expect(gone.find((row) => row.sid === OTHER_SID)?.stopped_at).toBeUndefined();
+    const went = gone.find((row) => row.sid === OTHER_SID);
+    expect(went === undefined ? undefined : liveness(went, Date.now())).toBe("disappeared");
+    expect(went?.stopped_at).toBeUndefined();
   });
 });
 
@@ -231,8 +236,9 @@ describe("ccmsg peers / ccmsg agents", () => {
     await session.close();
 
     const answer = await answered(["peers"]);
-    const rows = (answer[0]?.data["peers"] ?? []) as { sid: string; state?: string }[];
-    expect(rows.find((row) => row.sid === OTHER_SID)?.state).toBe("paused");
+    const rows = (answer[0]?.data["peers"] ?? []) as PeerInfo[];
+    const lost = rows.find((row) => row.sid === OTHER_SID);
+    expect(lost === undefined ? undefined : liveness(lost, Date.now())).toBe("paused");
   });
 
   test("agents is the harness's own view, which covers a session that never connected", async () => {

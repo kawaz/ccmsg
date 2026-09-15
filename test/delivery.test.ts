@@ -7,11 +7,11 @@ import {
   INBOX_RETENTION_MS,
   type InboxMessage,
   type InboxRemovedReason,
+  type Liveness,
   type MessageSendResult,
   OP_SCHEMAS,
   type PeerInfo,
-  SessionState as SessionStateSchema,
-  type SessionState,
+  type SessionRun,
   type Sid,
   TOPIC_SCHEMAS,
   validationErrors,
@@ -27,7 +27,7 @@ import {
   Notify,
   sessionLabel,
 } from "../src/messaging/index.ts";
-import { classify, Sessions, type SessionInputs } from "../src/sessions/index.ts";
+import { Sessions } from "../src/sessions/index.ts";
 import { Topics } from "../src/topics/index.ts";
 import { connAs, OTHER_SID, SELF, SELF_ENDPOINT, SID, TestConn } from "./frames.ts";
 import { unthrottled } from "./clock.ts";
@@ -46,60 +46,69 @@ function stateDir(): string {
 const THIRD_SID = "11112222-3333-4444-8555-666677778888";
 const REPO_ROOT = "/repos/a-repo";
 
-/** What §5.1 has to say for a session to be in each state, one entry per state
- * the contract defines.
- *
- * This is the join between the two things §11.4 keeps apart: a case says which
- * state its destination is in, and this says which inputs put it there. Nothing
- * here names a state to the classifier — the classifier is what turns these
- * into one. */
-const INPUTS_FOR: Record<SessionState, SessionInputs> = {
-  // A connection of its own is open, which is both what makes it live and what
-  // makes it reachable.
-  live: { connected: true },
-  // The harness has a row for it, so it exists; no connection and no terminal
-  // to drive is what leaves it unmanaged.
-  live_unmanaged: { connected: false, harness: { waiting: false } },
-  waiting: { connected: false, harness: { waiting: true } },
-  // Not live, and its entry says it was stopped on purpose.
-  paused: { connected: false, last_live: { stopped_at: 1_757_000_000_000 } },
-  // Not live, and its entry carries no such mark.
-  disappeared: { connected: false, last_live: {} },
+/** A run of a session nothing is connected to, which is what a harness's state
+ * file names. */
+const UNCONNECTED_RUN: SessionRun = {
+  pid: 4242,
+  started_at: 1_756_000_000_000,
+  connected: false,
 };
 
-/** The sessions domain as delivery sees it: §5.1's inputs per sid and the two
- * lists.
+/** What a row has to say for a session to stand where it does, one entry per
+ * value the contract's `liveness` answers with.
  *
- * What stands in for `Sessions` here is where those inputs come from — a
- * directory, a connection, a gateway — and not what they mean. The meaning is
- * the real `classify`, so a reason delivery returns is one the production rule
- * derived, and a change to that rule reaches these cases. */
+ * This is the join between the two things §11.4 keeps apart: a case says where
+ * its destination stands, and this says which observations put it there.
+ * Nothing here names a standing to the rule — `liveness` is what turns these
+ * into one — and the map is exhaustive over the contract's own type, so a value
+ * added there fails to compile until it has a row of its own. */
+const OBSERVED: Record<Liveness, Pick<PeerInfo, "runs" | "stopped_at">> = {
+  // One process is running it, which is the ordinary session.
+  alive: { runs: [{ connected: true }] },
+  // Two are, which is the one standing no message is taken for at all.
+  duplicated: { runs: [UNCONNECTED_RUN, { ...UNCONNECTED_RUN, pid: 4243 }] },
+  // Nothing is running it, and it said it was going.
+  paused: { runs: [], stopped_at: 1_757_000_000_000 },
+  // Nothing is running it, and it went without a word.
+  disappeared: { runs: [] },
+};
+
+/** The sessions domain as delivery sees it: the rows per sid and the two lists.
+ *
+ * What stands in for `Sessions` here is where a row's observations come from —
+ * a directory, a connection, a gateway — and not what they mean. The meaning is
+ * the contract's own `liveness`, so a reason delivery returns is one that rule
+ * derived, and a change to it reaches these cases. */
 class FakeSessions {
-  readonly inputs = new Map<Sid, SessionInputs>();
+  readonly rows = new Map<Sid, PeerInfo>();
   readonly connected: PeerInfo[] = [];
   readonly lastLive: PeerInfo[] = [];
 
-  /** The real derivation, over inputs this test arranges. What a reason is
-   * derived from is the thing under test, so the state is never set: it is what
-   * §5.1's inputs make it, decided by the production rule (§5.2). */
-  classify(sid: Sid): SessionState | undefined {
-    const inputs = this.inputs.get(sid);
-    return inputs === undefined ? undefined : classify(inputs);
+  row(sid: Sid): PeerInfo | undefined {
+    return this.rows.get(sid);
   }
 
   peerRows(): PeerInfo[] {
     return [...this.connected, ...this.lastLive];
   }
 
-  /** Inputs that put a session in `state`, so a case naming a state says which
-   * of §5.1's inputs is what puts it there. */
-  in(sid: Sid, state: SessionState): void {
-    this.inputs.set(sid, INPUTS_FOR[state]);
+  /** A row that puts a session where `standing` says, so a case naming a
+   * standing says which observations is what puts it there. */
+  in(sid: Sid, standing: Liveness): void {
+    this.rows.set(sid, {
+      sid,
+      instance: SELF,
+      repo: "a-repo",
+      ws: "main",
+      cwd: `${REPO_ROOT}/main`,
+      repo_root: REPO_ROOT,
+      session_status: "ready",
+      ...OBSERVED[standing],
+    });
   }
 
   live(sid: Sid, over: Partial<PeerInfo> = {}): void {
-    this.inputs.set(sid, INPUTS_FOR["live"]);
-    this.connected.push({
+    const row: PeerInfo = {
       sid,
       instance: SELF,
       repo: "a-repo",
@@ -107,13 +116,16 @@ class FakeSessions {
       cwd: `${REPO_ROOT}/main`,
       repo_root: REPO_ROOT,
       protocol_version: 2,
+      session_status: "ready",
+      ...OBSERVED["alive"],
       ...over,
-    });
+    };
+    this.rows.set(sid, row);
+    this.connected.push(row);
   }
 
-  gone(sid: Sid, state: "paused" | "disappeared", repoRoot = REPO_ROOT): void {
-    this.inputs.set(sid, INPUTS_FOR[state]);
-    this.lastLive.push({
+  gone(sid: Sid, standing: "paused" | "disappeared", repoRoot = REPO_ROOT): void {
+    const row: PeerInfo = {
       sid,
       instance: SELF,
       repo: "a-repo",
@@ -121,7 +133,11 @@ class FakeSessions {
       cwd: `${repoRoot}/main`,
       repo_root: repoRoot,
       last_seen_at: 1_757_000_000_000,
-    });
+      session_status: "ready",
+      ...OBSERVED[standing],
+    };
+    this.rows.set(sid, row);
+    this.lastLive.push(row);
   }
 }
 
@@ -195,6 +211,7 @@ function rig(
     self: SELF,
     label: (sid) => sessionLabel(sessions, sid),
     publish: (topic, data, instance) => topics.publish(topic, data, instance),
+    duplicated: () => false,
   });
   topics.attach("inbox", delivery);
   topics.attach("notify", notify);
@@ -463,35 +480,45 @@ describe("why a message is waiting (§4.2)", () => {
   /** The classification is the whole input: one row per state the sessions
    * domain can answer, and the reason that follows from it. A reason reached
    * some other way would not be in this table. */
-  const REASONS: [SessionState, string][] = [
-    ["live", "preparing"],
-    ["live_unmanaged", "preparing"],
-    ["waiting", "preparing"],
-    ["paused", "paused"],
-    ["disappeared", "disappeared"],
-  ];
+  /** One entry per value the contract's `liveness` answers with, and what
+   * becomes of a message addressed to a session standing there. A reason
+   * reached some other way would not be in this table, and a standing the
+   * contract adds fails to compile until it is. */
+  const OUTCOME: Record<Liveness, MessageSendResult["reason"] | "refused"> = {
+    alive: "preparing",
+    duplicated: "refused",
+    paused: "paused",
+    disappeared: "disappeared",
+  };
 
-  for (const [state, reason] of REASONS) {
-    test(`${state} is ${reason}`, async () => {
+  for (const [standing, outcome] of Object.entries(OUTCOME) as [
+    Liveness,
+    (typeof OUTCOME)[Liveness],
+  ][]) {
+    if (outcome === "refused") continue;
+    test(`${standing} is ${outcome}`, async () => {
       const { sessions, send } = rig();
       sessions.live(SID);
-      sessions.in(OTHER_SID, state);
+      sessions.in(OTHER_SID, standing);
 
       const result = await send(connAs("session", SID), OTHER_SID);
 
       expect(result.delivered).toBe(false);
-      expect(result.reason).toBe(reason as MessageSendResult["reason"]);
+      expect(result.reason).toBe(outcome);
       expect(problems(result)).toEqual([]);
     });
   }
 
-  test("the table covers every state the contract defines", () => {
-    // Read out of the contract, so a state added to it lands here rather than
-    // falling through the reason table above unnoticed.
-    const declared = (SessionStateSchema.anyOf as { const: SessionState }[]).map(
-      (branch) => branch.const,
-    );
-    expect(new Set(REASONS.map(([state]) => state))).toEqual(new Set(declared));
+  test("a session two processes are running takes nothing at all", async () => {
+    const { sessions, inbox, send } = rig();
+    sessions.live(SID);
+    sessions.in(OTHER_SID, "duplicated");
+
+    await expect(send(connAs("session", SID), OTHER_SID)).rejects.toMatchObject({
+      code: "session_duplicated",
+    });
+    // Nothing is held for later: the draft is still with the caller.
+    expect(inbox.undelivered(OTHER_SID)).toEqual([]);
   });
 
   test("a full inbox drops the oldest and says so", async () => {
@@ -548,14 +575,8 @@ describe("why a message is waiting (§4.2)", () => {
   test("throttled is route (a)'s alone, so the flag being off never yields it", async () => {
     const { sessions, send } = rig();
     sessions.live(SID);
-    for (const [state] of [
-      ["live"],
-      ["live_unmanaged"],
-      ["waiting"],
-      ["paused"],
-      ["disappeared"],
-    ] as [SessionState][]) {
-      sessions.in(OTHER_SID, state);
+    for (const standing of ["alive", "paused", "disappeared"] as const) {
+      sessions.in(OTHER_SID, standing);
       const result = await send(connAs("session", SID), OTHER_SID);
       expect(result.reason).not.toBe("throttled");
     }
@@ -628,7 +649,7 @@ describe("the sessions a message can be addressed to", () => {
 
     const result = await messagingHandlers(
       delivery,
-      new Notify({ self: SELF, label: (sid) => sid, publish: () => "ok" }),
+      new Notify({ self: SELF, label: (sid) => sid, publish: () => "ok", duplicated: () => false }),
     )["message.send"]({
       op: "message.send",
       conn,
@@ -674,12 +695,17 @@ describe("the sessions a message can be addressed to", () => {
 
     // Nothing greeted and the harness names nobody, so the gateway's word is
     // the only thing that could make OTHER_SID live here.
-    expect(domain.classify(OTHER_SID)).toBeUndefined();
+    expect(domain.row(OTHER_SID)).toBeUndefined();
     expect(domain.peerRows(Date.now())).toEqual([]);
     expect(
       messagingHandlers(
         delivery,
-        new Notify({ self: SELF, label: (sid) => sid, publish: () => "ok" }),
+        new Notify({
+          self: SELF,
+          label: (sid) => sid,
+          publish: () => "ok",
+          duplicated: () => false,
+        }),
       )["message.send"]({
         op: "message.send",
         conn,
@@ -888,7 +914,7 @@ describe("what is held is offered again when the session can take it", () => {
     await delivery.retry();
     expect(route.carried).toHaveLength(1);
 
-    sessions.in(OTHER_SID, "live");
+    sessions.in(OTHER_SID, "alive");
     await delivery.retry();
 
     expect(route.texts()).toEqual(["while away", "while away"]);

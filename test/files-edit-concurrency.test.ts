@@ -27,7 +27,10 @@ afterAll(() => {
 });
 
 function files() {
-  return fileHandlers(new Containment({ roots: async (sid) => (sid === SID ? roots : undefined) }));
+  return fileHandlers(
+    new Containment({ roots: async (sid) => (sid === SID ? roots : undefined) }),
+    () => false,
+  );
 }
 
 function caller(): Pick<HandlerInput, "conn" | "identity"> {

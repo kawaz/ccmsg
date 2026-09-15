@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  GATEWAY_LIVE_WINDOW_MS,
   type LlmRequestInfo,
   type LlmStatusReport,
   PROTOCOL_VERSION,
@@ -10,7 +11,6 @@ import {
   validationErrors,
 } from "@ccmsg/protocol";
 import { type Env, type Instance, isRunning, start } from "../src/instance/index.ts";
-import { GATEWAY_LIVE_WINDOW_MS } from "../src/sessions/index.ts";
 import {
   Gateway,
   LlmRequests,

@@ -4,9 +4,12 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
   type DumpPreset,
+  HYOUI_TERMINAL_SCHEME,
+  liveness,
   type OpName,
   OP_SCHEMAS,
   opAttributes,
+  type PeerInfo,
   type Role,
   SessionDumpFile,
   type Sid,
@@ -294,7 +297,7 @@ function ops(
   const signalled: Signalled[] = [];
   const typed: string[][] = over.typed ?? [];
   const processes = new SessionProcesses({
-    ...hostProcessDeps(() => domain.rowsNow()),
+    ...hostProcessDeps((sid) => domain.runsNow(sid)),
     // The reuse guard reads what the process was launched as; a `sleep` child
     // is not the harness, so the test states the answer the guard would get on
     // a real session and keeps every other step real.
@@ -321,6 +324,7 @@ function ops(
     }),
     processes,
     forget: (sid) => domain.forget(sid),
+    duplicated: (sid) => domain.duplicated(sid),
     presets: over.presets ?? [],
   });
   return { configHome, stateDir, domain, handlers, published, signalled, typed };
@@ -371,10 +375,12 @@ async function refusalOf(call: () => unknown): Promise<string> {
   throw new Error("the call was expected to be refused");
 }
 
-import { isLive } from "../src/sessions/index.ts";
-
-/** The other half of the same list: the rows the instance has lost. */
-const isLost = (row: { readonly state?: string }): boolean => !isLive(row as { state?: never });
+/** The rows the instance has lost: the half of the one list no process is
+ * running, which is what `liveness` names `paused` or `disappeared`. */
+const isLost = (row: PeerInfo): boolean => {
+  const stands = liveness(row, Date.now());
+  return stands === "paused" || stands === "disappeared";
+};
 
 describe("transcript.read (scope: role)", () => {
   test("a person reads a session that is not theirs, a session reads only its own", async () => {
@@ -560,7 +566,9 @@ describe("session.rename", () => {
       sid: SID,
       title: "  a new title  ",
     });
-    expect(renamed["terminal_id"]).toBe("t-1");
+    // Stated with the scheme a client opens it by, while what is typed into is
+    // the bare handle the multiplexer knows.
+    expect(renamed["terminal_id"]).toBe(`${HYOUI_TERMINAL_SCHEME}:t-1`);
     expect(renamed["title"]).toBe("a new title");
     // The submit is a keystroke of its own, so the terminal drains the typed
     // line before it arrives.

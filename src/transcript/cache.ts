@@ -16,7 +16,7 @@ import type { FoldState } from "./fold.ts";
  * `test/transcript.test.ts` holds the digest of the sources this number stands
  * for and fails when they move without it, so the assertion is checked rather
  * than remembered. */
-export const FOLD_CACHE_VERSION = 3;
+export const FOLD_CACHE_VERSION = 4;
 
 /** What one session's fold had reached, as it is written down.
  *

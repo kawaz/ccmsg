@@ -22,13 +22,21 @@ export interface ObservedRun {
  * unattributed connection would report a duplicate that is not there, and a
  * duplicate is what freezes the fold and refuses every send.
  *
- * A session with connections and nothing observed is the other way round: the
- * connection is the only evidence there is a process at all, so it is one run
- * with no pid — which is also why nothing here can signal such a run. */
+ * A session nothing has been observed of is the other way round. It is running
+ * all the same when a connection is open for it, or when the harness says it is
+ * there without saying what is running it — Codex names a thread with a live
+ * writer and no pid — and that is one run with no pid, which is also why
+ * nothing here can signal such a run.
+ *
+ * `present` is the harness's own word that the session exists, which is a
+ * weaker statement than a state file: it says there is a process and not which
+ * one. Two of those cannot be told apart, so it is never more than one run and
+ * never makes a session duplicated. */
 export function runsOf(
   observed: readonly ObservedRun[],
   greeted: ReadonlySet<number>,
   connected: boolean,
+  present = false,
 ): SessionRun[] {
   const runs: SessionRun[] = observed.map((run) => ({
     pid: run.pid,
@@ -36,8 +44,8 @@ export function runsOf(
     ...(run.terminal_id === undefined ? {} : { terminal_id: run.terminal_id }),
     connected: greeted.has(run.pid),
   }));
+  if (runs.length === 0 && (connected || present)) return [{ connected }];
   if (!connected) return runs;
-  if (runs.length === 0) return [{ connected: true }];
   const only = runs[0];
   if (runs.length === 1 && only !== undefined && !only.connected) only.connected = true;
   return runs;

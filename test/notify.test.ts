@@ -26,12 +26,15 @@ interface Rig {
   markRead: (sid?: Sid) => void;
 }
 
-function rig(): Rig {
+/** The sessions two processes are running, for the one op that asks. Empty
+ * unless a test names one, which is what every other test here stands on. */
+function rig(duplicated: ReadonlySet<Sid> = new Set()): Rig {
   const topics = new Topics(SELF, new Set(), undefined, unthrottled());
   const notify = new Notify({
     self: SELF,
     label: (sid) => LABELS[sid] ?? sid,
     publish: (topic, data, instance) => topics.publish(topic, data, instance),
+    duplicated: (sid) => duplicated.has(sid),
   });
   topics.attach("notify", notify);
   // Delivery refuses rather than being absent: none of the three ops here goes
@@ -114,6 +117,22 @@ describe("notify.send reaches whoever is watching", () => {
     const { send } = rig();
     const person = new TestConn({ state: "settled", role: "user" });
     expect(() => send(person, { text: "誰の話か分からない" })).toThrow(OpError);
+  });
+
+  test("a session two processes are running is refused, and nothing is shown", async () => {
+    const { topics, send } = rig(new Set([OTHER_SID]));
+    const watcher = connAs("user");
+    await topics.subscribe(watcher, "notify");
+    watcher.flush();
+
+    expect(() => send(connAs("session", SID), { text: "どちらの話か", sid: OTHER_SID })).toThrow(
+      OpError,
+    );
+    expect(received(watcher)).toEqual([]);
+
+    // The session beside it is untouched: the refusal is about the one named.
+    send(connAs("session", SID), { text: "こちらは通る" });
+    expect(received(watcher).map((one) => one.sid)).toEqual([SID]);
   });
 
   test("nothing is held: a connection that subscribes after it gets no snapshot", async () => {

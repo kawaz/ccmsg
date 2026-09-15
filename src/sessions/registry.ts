@@ -517,7 +517,7 @@ export class Sessions implements UpstreamResource {
       });
     }
     const held = this.#connected.get(sid);
-    return runsOf(observed, new Set(held?.pids.keys()), held !== undefined);
+    return runsOf(observed, new Set(held?.pids.keys()), held !== undefined, own.present.has(sid));
   }
 
   /** What the session's fold is worth, which is the fold's own standing except
@@ -691,10 +691,19 @@ export class Sessions implements UpstreamResource {
    * with the fields a row derives worked out at read time (M4). */
   #lost(entry: StoredEntry, own: Own): PeerInfo {
     const runs = this.#runs(entry.sid, own);
+    // What the gateway last saw is stated on a lost row too, and it is the one
+    // thing that can make such a row alive: a session whose processes are all
+    // gone while its inference is still running is alive, the request
+    // outliving the terminal it was typed in (contract, `liveness`). It is not
+    // among what the store holds — an observation of this instant is false the
+    // moment it is written down — so it is read here, at the same moment the
+    // runs are.
+    const gatewayActiveAt = this.#gatewayActiveAt(entry.sid, own.present.has(entry.sid));
     return {
       ...entry,
       runs,
       session_status: this.#standing(entry.sid, runs),
+      ...(gatewayActiveAt === undefined ? {} : { gateway_active_at: gatewayActiveAt }),
       pinned: this.#pinned(entry.sid),
     };
   }

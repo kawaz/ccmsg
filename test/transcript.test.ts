@@ -11,8 +11,14 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Glob } from "bun";
-import { PROTOCOL_VERSION, TOPIC_SCHEMAS, validationErrors } from "@ccmsg/protocol";
-import { isLive, classify, Sessions, sessionStatusOf } from "../src/sessions/index.ts";
+import {
+  liveness,
+  PROTOCOL_VERSION,
+  TOPIC_SCHEMAS,
+  validationErrors,
+  waiting,
+} from "@ccmsg/protocol";
+import { Sessions, sessionStatusOf } from "../src/sessions/index.ts";
 import { Topics } from "../src/topics/index.ts";
 import {
   FOLD_CACHE_VERSION,
@@ -270,9 +276,13 @@ describe("the fold (§3.3)", () => {
   test("a fold that has read an error is what makes a live session Waiting (§5.2)", () => {
     const fold = new TranscriptFold();
     fold.line(JSON.stringify(apiError("Prompt is too long")));
-    const stopped = fold.facts.api_error !== undefined;
-    expect(classify({ connected: true, api_error_stopped: stopped })).toBe("waiting");
-    expect(classify({ connected: true })).toBe("live");
+    // No dialog is open here, so the fold's own error is the whole of what
+    // says a person has to answer. Where the session stands is the row's
+    // question and the error does not touch it: a connected run is running
+    // either way.
+    expect(waiting(undefined, fold.facts)).toBe(true);
+    expect(liveness({ runs: [{ connected: true }] }, NOW)).toBe("alive");
+    expect(waiting(undefined, new TranscriptFold().facts)).toBe(false);
   });
 });
 
@@ -288,10 +298,13 @@ describe("a transcript that is not written yet", () => {
 
     transcripts.hold(SID);
     await settled(() => transcripts.following(SID));
-    expect(facts).toEqual([]);
+    // Nothing has been read, so the fold has settled nothing: the tail is
+    // waiting on the file rather than having decided there is none.
+    expect(transcripts.facts(SID)).toEqual(NO_FACTS);
 
+    const told = facts.length;
     writeFileSync(path, jsonl([prompt("the first thing typed")]));
-    await settled(() => facts.length > 0);
+    await settled(() => facts.length > told);
     expect(transcripts.facts(SID).last_user_input_at).toBe(NOW);
   });
 });
@@ -469,7 +482,11 @@ describe("what the fold settles reaches the sessions domain (§5.1)", () => {
       version: "test",
       startedAt: NOW,
       publish: () => {},
-      transcript: { facts: () => facts },
+      transcript: {
+        facts: () => facts,
+        standing: () => "ready",
+        duplicated: () => {},
+      },
     });
     // Under the config home's `projects/`, which is the only place a greeting's
     // transcript path is taken from (M6).
@@ -486,9 +503,25 @@ describe("what the fold settles reaches the sessions domain (§5.1)", () => {
       },
     } as unknown as Parameters<typeof sessions.helloSession>[0]);
 
-    expect(sessions.inputs(SID).api_error_stopped).toBe(true);
-    expect(sessions.classify(SID)).toBe("waiting");
-    expect(sessions.peerRows().filter(isLive)[0]?.last_user_input_at).toBe(NOW - 1000);
+    // The error the fold read reaches the status frame, which is one of the two
+    // materials that say a person has to answer; the other is the harness's own
+    // row, and a session that only greeted has none.
+    const status = await sessionStatusOf(SID, facts, sessions.where(SID));
+    expect(status.api_error).toBeDefined();
+    expect(
+      waiting(
+        sessions.agentRows().find((each) => each.sid === SID),
+        status,
+      ),
+    ).toBe(true);
+
+    const row = sessions.row(SID);
+    if (row === undefined) throw new Error("the session that just greeted has no row");
+    // The greeting is a connection, so a run of it is here.
+    expect(liveness(row, NOW)).toBe("alive");
+    expect(row.last_user_input_at).toBe(NOW - 1000);
+    // What the fold is worth is the source's own answer, carried onto the row.
+    expect(row.session_status).toBe("ready");
     expect(sessions.transcriptPath(SID)).toBe(transcript);
   });
 });
@@ -1214,8 +1247,8 @@ describe("a reading is taken up where the last one left off", () => {
     ];
     for (const source of sources) digest.update(await Bun.file(source).text());
     expect([FOLD_CACHE_VERSION, digest.digest("hex").slice(0, 16)]).toEqual([
-      3,
-      "d50f17a5c027d31f",
+      4,
+      "1d47f48805490b41",
     ]);
   });
 });

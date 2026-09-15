@@ -6,6 +6,7 @@ import {
   directDeliveryReplyLine,
   type InboxMessage,
   parseDirectDelivery,
+  type PeerInfo,
   type Sid,
 } from "@ccmsg/protocol";
 import {
@@ -393,7 +394,15 @@ describe("delivery over route (a)", () => {
   /** The sessions domain narrowed to what delivery asks it, so `message.send`
    * can run against the real route without the rest of the instance. */
   const sessions = {
-    classify: () => "live" as const,
+    row: (sid: Sid): PeerInfo => ({
+      sid,
+      instance: SELF,
+      repo: "",
+      ws: "",
+      cwd: "",
+      runs: [{ connected: true }],
+      session_status: "ready",
+    }),
     peerRows: () => [],
   };
 
@@ -421,7 +430,12 @@ describe("delivery over route (a)", () => {
     const conn = connAs("session", SID);
     const result = await messagingHandlers(
       target,
-      new Notify({ self: SELF, label: (sid) => sid, publish: () => "ok" }),
+      new Notify({
+        self: SELF,
+        label: (sid) => sid,
+        publish: () => "ok",
+        duplicated: () => false,
+      }),
     )["message.send"]({
       op: "message.send",
       conn,

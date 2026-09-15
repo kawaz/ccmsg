@@ -5,6 +5,8 @@ import {
   type InstanceId,
   type InstanceInfo,
   LAST_LIVE_RETENTION_MS,
+  liveness,
+  type PeerInfo,
   PROTOCOL_VERSION,
   type Sid,
 } from "@ccmsg/protocol";
@@ -569,8 +571,11 @@ describe("what a disconnected instance leaves behind (§7.5, DV-Q12)", () => {
     await eventually(() => {
       const held = a.mesh?.relay.snapshot("peers") ?? [];
       const value = held.find((one) => one.instance === returned.self)?.data;
-      const rows = (value as { peers?: { state?: string }[] } | undefined)?.peers ?? [];
-      return rows.length === 1 && rows[0]?.state === "disappeared";
+      const rows = (value as { peers?: PeerInfo[] } | undefined)?.peers ?? [];
+      const only = rows[0];
+      return (
+        rows.length === 1 && only !== undefined && liveness(only, Date.now()) === "disappeared"
+      );
     });
   });
 

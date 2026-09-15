@@ -11,7 +11,15 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type InboxMessage, type InstanceId, Sid, validationErrors } from "@ccmsg/protocol";
+import {
+  type InboxMessage,
+  type InstanceId,
+  liveness,
+  type PeerInfo,
+  reachable,
+  Sid,
+  validationErrors,
+} from "@ccmsg/protocol";
 import { add, harnessFor } from "../src/daemon/index.ts";
 import { currentSession } from "../src/harness/index.ts";
 import { DEFAULT_CONFIG, parseConfig } from "../src/instance/config.ts";
@@ -24,7 +32,7 @@ import {
 } from "../src/instance/index.ts";
 import { CodexQueueRoute } from "../src/messaging/index.ts";
 import { HOOKS_FILE, install, status, uninstall } from "../src/plugin/index.ts";
-import { isLive, Sessions } from "../src/sessions/index.ts";
+import { Sessions } from "../src/sessions/index.ts";
 import { readRecord, TranscriptFiles, TranscriptFold } from "../src/transcript/index.ts";
 
 const dirs: string[] = [];
@@ -34,6 +42,20 @@ function temp(prefix: string): string {
   const dir = mkdtempSync(join(tmpdir(), prefix));
   dirs.push(dir);
   return dir;
+}
+
+/** The row for one thread, or a failure naming the thread that has none. */
+function rowOf(domain: Sessions, sid: Sid): PeerInfo {
+  const row = domain.row(sid);
+  if (row === undefined) throw new Error(`no row for ${sid}`);
+  return row;
+}
+
+/** Whether a row is one some process is running rather than one the instance
+ * has lost, which is what a row has to be for anything here to reach it. */
+function notLost(row: PeerInfo): boolean {
+  const stands = liveness(row, Date.now());
+  return stands !== "paused" && stands !== "disappeared";
 }
 
 /** A Codex config home, as `daemon add --harness codex` requires one: the
@@ -394,16 +416,18 @@ describe("what says a session is there", () => {
   test("a thread with a live writer is live, and one whose lock is gone is not", () => {
     const home = codexHome();
     const domain = domainFor(home);
-    expect(domain.classify(THREAD)).toBeUndefined();
+    expect(domain.row(THREAD)).toBeUndefined();
 
     const file = lock(home, THREAD);
     // Nothing can be typed into a Codex thread the way a terminal is typed
-    // into, so a live thread this instance holds no connection of reads as
-    // live and unmanaged.
-    expect(domain.classify(THREAD)).toBe("live_unmanaged");
+    // into, so a live thread this instance holds no connection of is alive and
+    // out of reach.
+    const row = rowOf(domain, THREAD);
+    expect(liveness(row, Date.now())).toBe("alive");
+    expect(reachable(row)).toBe(false);
 
     rmSync(file);
-    expect(domain.classify(THREAD)).toBeUndefined();
+    expect(domain.row(THREAD)).toBeUndefined();
   });
 
   test("the store's own coordination lock names no thread", () => {
@@ -411,7 +435,7 @@ describe("what says a session is there", () => {
     const domain = domainFor(home);
     mkdirSync(join(home, "thread-writer-locks"), { recursive: true });
     writeFileSync(join(home, "thread-writer-locks", ".coordination.lock"), "");
-    expect(domain.peerRows().filter(isLive)).toEqual([]);
+    expect(domain.peerRows().filter(notLost)).toEqual([]);
     expect(domain.agentRows()).toEqual([]);
   });
 
@@ -625,7 +649,9 @@ describe("a Codex thread id is a sid", () => {
       pollMs: 50,
     });
     running.push(domain);
-    expect(domain.classify(THREAD_ID as Sid)).toBe("live_unmanaged");
+    const row = rowOf(domain, THREAD_ID as Sid);
+    expect(liveness(row, Date.now())).toBe("alive");
+    expect(reachable(row)).toBe(false);
   });
 
   test("it is what a session running under Codex says it is", () => {

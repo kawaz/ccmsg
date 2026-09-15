@@ -11,7 +11,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { OP_NAMES, PROTOCOL_VERSION } from "@ccmsg/protocol";
+import { liveness, OP_NAMES, type PeerInfo, PROTOCOL_VERSION } from "@ccmsg/protocol";
 import { DUMPS } from "../src/sessions/index.ts";
 import { KV_DIR } from "../src/kv/index.ts";
 import { OpError } from "../src/dispatch/index.ts";
@@ -900,9 +900,11 @@ describe("a session that never greeted this instance", () => {
         cwd: "/repos/a-repo/main",
         pinned: false,
       });
-      // Live, and which of the two live classifications depends on whether a
-      // terminal could be read off the process this test runs as.
-      expect(rows[0]?.["state"]).toMatch(/^live/);
+      // Running: the harness's state file names one process, and whether
+      // anything can reach it depends on the terminal this test's own process
+      // runs in.
+      expect(liveness(rows[0] as unknown as PeerInfo, Date.now())).toBe("alive");
+      expect(rows[0]?.["runs"]).toHaveLength(1);
       // No connection has ever been open for it, so the row states neither a
       // generation nor when one was made.
       expect(rows[0]?.["protocol_version"]).toBeUndefined();

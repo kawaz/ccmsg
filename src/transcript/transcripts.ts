@@ -277,7 +277,11 @@ export class Transcripts implements UpstreamResource {
         return;
       }
       await this.#remember(followed);
-      followed.standing = "ready";
+      // A file the reading has reached the end of is `ready`; one that is not
+      // there, or is there with nothing in it, has no record to fold and stands
+      // at `absent` until the harness writes its first (contract,
+      // `SessionStatusStanding`). A path that resolves is not a transcript.
+      followed.standing = tail.size > 0 ? "ready" : "absent";
       // Told whatever the file said. What the fold settled may be nothing, and
       // the reading being finished is itself a value of the row
       // (`session_status`), so a file that said nothing is still news.
@@ -366,6 +370,9 @@ export class Transcripts implements UpstreamResource {
    * the calls still outstanding, and the items of the opening frame. */
   #appended(sid: Sid, followed: Followed, appended: Appended): void {
     const changed = foldAll(followed.fold, appended.lines);
+    // The first record of a session that had none: there is a transcript now,
+    // and what has been read of it is the whole of it.
+    if (followed.standing === "absent") followed.standing = "ready";
     this.deps.publish(`transcript:${sid}`, {
       sid,
       lines: [...appended.lines],

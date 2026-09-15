@@ -166,6 +166,7 @@ describe("what happened, as against what is (§6.4)", () => {
       self: SELF,
       label: (sid) => sid,
       publish: (topic, data, instance) => hub.publish(topic, data, instance),
+      duplicated: () => false,
     });
     const input = {
       op: "notify.send" as const,
