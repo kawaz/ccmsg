@@ -101,6 +101,7 @@ function hookScript(configHome: string, command: string): string {
   const dropped = HARNESSES.filter((harness) => harness !== "codex").flatMap((harness) => [
     HARNESS[harness].homeEnv,
     ...HARNESS[harness].sessionEnv,
+    ...HARNESS[harness].projectEnv,
   ]);
   return `#!/bin/sh
 command -v ccmsg >/dev/null 2>&1 || exit 0

@@ -11,6 +11,8 @@
  * filling a row, and a difference that has no row here is a difference nobody
  * declared. */
 
+import { isAbsolute } from "node:path";
+
 export const HARNESSES = ["claude", "codex"] as const;
 export type Harness = (typeof HARNESSES)[number];
 
@@ -36,6 +38,12 @@ export interface HarnessFacts {
    * runs, and by nothing else — which is what makes them the answer to "whose
    * session is this". */
   readonly sessionEnv: readonly string[];
+  /** The variables that name where the session itself is working, in the order
+   * they are believed. Fixed by the harness when the session starts and handed
+   * to the commands it runs, which is what makes them the session's location
+   * rather than whichever directory a tool last ran in (DESIGN §4.2). Empty
+   * for a harness that names none. */
+  readonly projectEnv: readonly string[];
 }
 
 export const HARNESS: Record<Harness, HarnessFacts> = {
@@ -44,12 +52,14 @@ export const HARNESS: Record<Harness, HarnessFacts> = {
     transcripts: "projects",
     homeEnv: "CLAUDE_CONFIG_DIR",
     sessionEnv: ["CLAUDE_CODE_SESSION_ID"],
+    projectEnv: ["CLAUDE_PROJECT_DIR"],
   },
   codex: {
     marker: "config.toml",
     transcripts: "sessions",
     homeEnv: "CODEX_HOME",
     sessionEnv: ["CODEX_THREAD_ID", "CODEX_SESSION_ID"],
+    projectEnv: [],
   },
 };
 
@@ -87,6 +97,28 @@ export function currentSession(
       const sid = env[variable];
       if (sid !== undefined && sid !== "") return { harness, sid };
     }
+  }
+  return undefined;
+}
+
+/** Where the session this process runs inside is working, where its harness
+ * says so.
+ *
+ * Asked of the harness that claimed the process and of no other, for the same
+ * reason `currentSession` is: a session of one harness started from a session
+ * of the other inherits the whole environment of its parent, and the outer
+ * session's project directory is not where the inner session works. A harness
+ * that names none leaves this unanswered, and the caller falls back to what it
+ * is told rather than to where it happens to be running.
+ *
+ * Absolute or nothing: a relative path is read against the working directory,
+ * which is the very thing this exists not to depend on. */
+export function sessionProject(env: Record<string, string | undefined>): string | undefined {
+  const claim = currentSession(env);
+  if (claim === undefined) return undefined;
+  for (const variable of HARNESS[claim.harness].projectEnv) {
+    const dir = env[variable];
+    if (dir !== undefined && isAbsolute(dir)) return dir;
   }
   return undefined;
 }

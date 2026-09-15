@@ -17,7 +17,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { liveness, type PeerInfo, PROTOCOL_VERSION, type SessionRun } from "@ccmsg/protocol";
-import { hello, stopping } from "../src/cli.ts";
+import { hello, peers, stopping } from "../src/cli.ts";
 import { statedMeta } from "../src/greeting/index.ts";
 import {
   type Instance,
@@ -49,6 +49,7 @@ const OWNED = [
   "CCMSG_CACHE_DIR",
   "CCMSG_CONFIG_DIR",
   "CLAUDE_CODE_SESSION_ID",
+  "CLAUDE_PROJECT_DIR",
 ] as const;
 const saved = new Map<string, string | undefined>();
 const dirs: string[] = [];
@@ -668,5 +669,48 @@ describe("the hooks against a running instance", () => {
     const row = paused.peers.find((each) => each.sid === SID);
     expect(stands(row)).toBe("paused");
     expect(row?.stopped_at).toBeGreaterThan(0);
+  });
+
+  /** One session's row, as a command that greets as that session is answered.
+   *
+   * Asked through a command rather than through the watcher because what is
+   * being read is what the command's own greeting did to the row, and a
+   * greeting that changed nothing publishes no frame to wait for. */
+  async function rowThrough(ask: Promise<unknown>): Promise<Row | undefined> {
+    const answer = (await ask) as { data?: { peers?: Row[] } }[];
+    return answer.flatMap((one) => one.data?.peers ?? []).find((row) => row.sid === SID);
+  }
+
+  test("a command run from wherever a tool went does not move the session", async () => {
+    const paths = home();
+    harnessRow(paths, SID);
+    env("CLAUDE_CODE_SESSION_ID", undefined);
+    env("CLAUDE_PROJECT_DIR", undefined);
+    await instance();
+
+    expect(
+      await hello(["--sid", SID, "--repo", "ccmsg", "--ws", "main", "--cwd", "/repos/ccmsg/main"]),
+    ).toMatchObject({ greeted: true });
+
+    // `peers` greets as the session too, and it runs in this process — which is
+    // the working directory a shell tool's `cd` moves. The session is still
+    // where it was started, so its row says so.
+    expect(await rowThrough(peers(["--sid", SID]))).toMatchObject({
+      repo: "ccmsg",
+      ws: "main",
+      cwd: "/repos/ccmsg/main",
+    });
+  });
+
+  test("what the harness fixed at startup is where the session works", async () => {
+    const paths = home();
+    harnessRow(paths, SID);
+    env("CLAUDE_CODE_SESSION_ID", SID);
+    env("CLAUDE_PROJECT_DIR", "/repos/ccmsg/main");
+    await instance();
+
+    // Nothing greeted before this, and the command is run from somewhere else
+    // entirely: what the row says is what the harness fixed for the session.
+    expect(await rowThrough(peers([]))).toMatchObject({ cwd: "/repos/ccmsg/main" });
   });
 });

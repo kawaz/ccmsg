@@ -44,7 +44,14 @@ import {
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative } from "node:path";
 import { document } from "./transcript/items/index.ts";
-import { currentSession, DEFAULT_HARNESS, HARNESS, HARNESSES, isHarness } from "./harness/index.ts";
+import {
+  currentSession,
+  DEFAULT_HARNESS,
+  HARNESS,
+  HARNESSES,
+  isHarness,
+  sessionProject,
+} from "./harness/index.ts";
 
 /** The variables a session is named by, for the help and for the message a
  * command answers with when it finds none of them. */
@@ -1161,7 +1168,7 @@ function never(release: () => void): Promise<void> {
  * messaging reaches that peer, and there is nobody to compare against for a
  * greeting that named no session. Without a sid it asks as a person, which is
  * the same list minus that field. */
-function peers(args: readonly string[]): Promise<unknown> {
+export function peers(args: readonly string[]): Promise<unknown> {
   const parsed = options(args, ["sid"], ["all", "json"]);
   const sid = parsed.named.get("sid") ?? ownSid();
   return topic(
@@ -1174,7 +1181,7 @@ function peers(args: readonly string[]): Promise<unknown> {
           sid,
           protocol_version: PROTOCOL_VERSION,
           ...statedRun(),
-          ...statedMeta(),
+          ...sessionLocation(),
         },
   );
 }
@@ -1549,7 +1556,7 @@ export async function hello(args: readonly string[], read?: Read): Promise<unkno
   const event = parsed.flags.has("hook") ? await hookEvent(read) : {};
   const sid = parsed.named.get("sid") ?? event.sid ?? ownSid();
   if (sid === undefined || sid === "") return { greeted: false, reason: "no_session_id" };
-  const meta = stated(parsed.named, event);
+  const meta = stated(parsed.named, event, true);
   const paths = resolvePaths();
   const conn = await connect(paths.socket);
   if (conn === undefined) return { greeted: false, reason: "no_instance" };
@@ -1576,14 +1583,22 @@ export async function hello(args: readonly string[], read?: Read): Promise<unkno
  * The derivation is the floor: whoever runs the command may know better —
  * a hook is told the working directory and the transcript by the harness, and
  * a caller may state any field outright — and what is stated wins over what is
- * derived, field by field. */
+ * derived, field by field.
+ *
+ * Where the session is comes from the fixed sources alone (`sessionLocation`),
+ * with one exception: `atStart` is the session-start hook, which fires before
+ * the session has run anything, so the working directory it is handed is where
+ * the session was put rather than where a tool has since gone. */
 function stated(
   named: ReadonlyMap<string, string>,
   event: { cwd?: string; transcript_path?: string },
+  atStart = false,
 ): StatedMeta {
-  const cwd = named.get("cwd") ?? event.cwd;
   const transcript = named.get("transcript-path") ?? event.transcript_path;
-  const derived = statedMeta(cwd ?? process.cwd());
+  const stationed = named.get("cwd") ?? sessionProject(process.env);
+  const derived = atStart
+    ? statedMeta(stationed ?? event.cwd ?? process.cwd())
+    : sessionLocation(stationed);
   return {
     ...derived,
     ...only("repo", named.get("repo")),
@@ -1593,6 +1608,20 @@ function stated(
     ...only("title", named.get("title")),
     ...only("transcript_path", transcript),
   };
+}
+
+/** Where the session is working, from the sources that cannot drift: what the
+ * caller stated outright, and what the harness fixed when the session started.
+ *
+ * Nothing when neither says so. This process's own working directory is not a
+ * third source: a command a session runs is run wherever its last tool went —
+ * a shell tool's `cd` moves it — and a greeting stating that would move the
+ * session there. Saying nothing about a field instead leaves the instance
+ * holding what it was told before (contract, DR-0010), which is where the
+ * session-start hook put it. */
+function sessionLocation(cwd?: string): StatedMeta {
+  const where = cwd ?? sessionProject(process.env);
+  return where === undefined ? {} : statedMeta(where);
 }
 
 function only(field: keyof StatedMeta, value: string | undefined): StatedMeta {
@@ -1687,11 +1716,15 @@ function announce(named: string | undefined, args: NotifySendArgs): Promise<unkn
  * recipient is shown as its sender: the label is built from the repository and
  * workspace the sending connection greeted from, and a greeting that named
  * neither leaves the recipient a sid to read. The words cost one `git` call and
- * they are the difference between "ccmsg/main said this" and a line of hex. */
+ * they are the difference between "ccmsg/main said this" and a line of hex.
+ *
+ * They are said only where the session's own location is known for certain
+ * (`sessionLocation`): a message sent from a tool that has moved would
+ * otherwise relabel the session as working wherever that tool went. */
 async function call(
   named: string | undefined,
   request: Record<string, unknown>,
-  meta: StatedMeta = statedMeta(),
+  meta: StatedMeta = sessionLocation(),
 ): Promise<unknown> {
   const sid = named ?? ownSid();
   if (sid === undefined || sid === "") {
