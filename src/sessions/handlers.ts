@@ -67,7 +67,7 @@ export interface SessionOpsDeps {
   readonly presets: readonly DumpPreset[];
   /** Whether two or more processes are running one session, which is what a
    * dump of it is refused for: a transcript two runs are writing reads as
-   * neither of them (DR-0001 §3). */
+   * neither of them (contract DR-0001 §3). */
   readonly duplicated: (sid: Sid) => boolean;
 }
 

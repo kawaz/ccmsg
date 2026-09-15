@@ -104,7 +104,7 @@ export class SessionProcesses {
    * kill is refused with `ambiguous_run` so a person picks one from
    * `peers.runs`, while reading an environment or typing a rename has no such
    * code to answer with and takes the run that started first — a deterministic
-   * choice rather than whichever file was read last (DR-0001 §3).
+   * choice rather than whichever file was read last (contract DR-0001 §3).
    *
    * A run with no pid is not one of these: nothing in this contract can signal
    * a run known only by its connection. */

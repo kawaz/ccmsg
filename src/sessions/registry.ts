@@ -61,7 +61,7 @@ export interface LaunchedRun {
 }
 
 /** The processes a launcher of this instance started, which are runs before
- * anything else can see them (DR-0001 §4). Absent on an instance with no
+ * anything else can see them (contract DR-0001 §4). Absent on an instance with no
  * launcher, where every run is first seen in the harness's own directory. */
 export interface LaunchSource {
   /** The ones still running, as they stand now. */
@@ -83,7 +83,7 @@ export interface SessionsDeps {
    * an instance reached by the unix socket alone, which has no URL to state. */
   readonly endpoint?: Endpoint;
   /** When the connection's authorization runs out, on one an access token
-   * opened (DR-0001 §2.5). Absent on the unix socket, where reaching the
+   * opened (contract DR-0001 §2.5). Absent on the unix socket, where reaching the
    * instance is itself the permission, and on a mesh link. */
   readonly authExpiresAt?: (conn: Requester) => Timestamp | undefined;
   /** The one config home this instance answers for (DESIGN §8.2). Its `sessions/` is
@@ -136,7 +136,7 @@ export interface SessionsDeps {
    * gateway configured. */
   readonly terminalGateway?: string;
   /** The runs a launcher started, seen before the harness writes anything of
-   * its own (DR-0001 §4). Absent on an instance with no launcher. */
+   * its own (contract DR-0001 §4). Absent on an instance with no launcher. */
   readonly launches?: LaunchSource;
 }
 
@@ -159,7 +159,7 @@ export interface TranscriptSource {
    * everything but `frozen`, which is a count of runs and is settled here. */
   standing(sid: Sid): SessionStatusStanding;
   /** Two or more processes are writing this session, or are no longer: while
-   * they are, nothing of the file is read (DR-0001 §3). */
+   * they are, nothing of the file is read (contract DR-0001 §3). */
   duplicated(sid: Sid, now: boolean): void;
 }
 
@@ -432,14 +432,14 @@ export class Sessions implements UpstreamResource {
    * seen live and does not hold in `last_live`.
    *
    * Where a session stands is read off the row by the contract's own `liveness`
-   * rather than stated here (DR-0001 §2): an instance and a client that each
+   * rather than stated here (contract DR-0001 §2): an instance and a client that each
    * wrote that arithmetic would show the same row two ways. */
   row(sid: Sid, now: Timestamp = Date.now(), own: Own = this.#own()): PeerInfo | undefined {
     return this.#peerRow(sid, now, own);
   }
 
   /** Whether two or more processes are running this session, which is what the
-   * ops that would act on it refuse with `session_duplicated` (DR-0001 §3).
+   * ops that would act on it refuse with `session_duplicated` (contract DR-0001 §3).
    *
    * False for a sid this instance has no row for: what such a call meets is
    * the session not being here, which is the answer its own op already has. */
@@ -495,7 +495,7 @@ export class Sessions implements UpstreamResource {
    * files, the processes a launcher started before the harness wrote one, and
    * the connections. A process the launcher started that the harness has since
    * written a file for is one run and not two, which is what the pid is the key
-   * of (DR-0001 §1). */
+   * of (contract DR-0001 §1). */
   #runs(sid: Sid, own: Own): SessionRun[] {
     const observed: ObservedRun[] = [];
     const seen = new Set<number>();
@@ -731,7 +731,7 @@ export class Sessions implements UpstreamResource {
    * The harness's own view, as it stated it, and beside it the processes a
    * launcher started that the harness has not written a file for yet. Those
    * carry no `sid` — the run is there, and which session it is running is not
-   * settled until the greeting names it (DR-0001 §4) — and they leave the list
+   * settled until the greeting names it (contract DR-0001 §4) — and they leave the list
    * as soon as the state file arrives, since the row is then the harness's own
    * under the same pid. */
   agentRows(own: Own = this.#own()): AgentInfo[] {
@@ -853,7 +853,7 @@ export class Sessions implements UpstreamResource {
     // Whether a session is one two processes are writing is settled here, and
     // the reading of its transcript follows from it: while it is, nothing of
     // the file is read and the last value that could be trusted is what stands
-    // (DR-0001 §3). Told before the rows go out, so what a subscriber reads as
+    // (contract DR-0001 §3). Told before the rows go out, so what a subscriber reads as
     // `frozen` is a session whose fold has already stopped moving.
     for (const row of rows) this.deps.transcript?.duplicated(row.sid, duplicated(row.runs));
     const peers = this.#sentPeers.diff(rows) as PeerElement[];
@@ -927,7 +927,7 @@ export class Sessions implements UpstreamResource {
    *
    * It is on the same list as the connected ones because it is running in the
    * same sense: what separates them is the `runs` each row states, and a client
-   * reads that off the row (DR-0001 §2). What it cannot carry is everything a
+   * reads that off the row (contract DR-0001 §2). What it cannot carry is everything a
    * greeting states — the session never said where it works, so the working
    * directory comes from the harness's own row and the display names it does
    * not know are simply absent.

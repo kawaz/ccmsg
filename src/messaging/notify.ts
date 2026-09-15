@@ -28,7 +28,7 @@ export interface NotifyDeps {
   /** Whether two or more processes are running one session. A notification
    * about such a session is refused rather than shown: what it would say about
    * the session is read from a transcript neither run's reading describes
-   * (DR-0001 §3). */
+   * (contract DR-0001 §3). */
   readonly duplicated: (sid: Sid) => boolean;
 }
 

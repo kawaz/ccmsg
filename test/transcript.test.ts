@@ -1333,7 +1333,7 @@ describe("a reading is taken up where the last one left off", () => {
     for (const source of sources) digest.update(await Bun.file(source).text());
     expect([FOLD_CACHE_VERSION, digest.digest("hex").slice(0, 16)]).toEqual([
       4,
-      "1d47f48805490b41",
+      "b5538a68bb9d748b",
     ]);
   });
 });

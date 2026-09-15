@@ -188,7 +188,7 @@ export class HarnessSessions implements OwnSessions {
    * Keyed by pid and not by sid: the harness lets a running session be resumed,
    * and from that moment two files name the same session. Folding them onto the
    * sid would keep whichever was read last and leave the duplicate invisible,
-   * which is the one thing a client has to be able to see (DR-0001). */
+   * which is the one thing a client has to be able to see (contract DR-0001). */
   scan(): ReadonlyMap<number, AgentInfo> {
     const rows = new Map<number, AgentInfo>();
     const names = this.#watch.names().filter((name) => STATE_FILE.test(name));

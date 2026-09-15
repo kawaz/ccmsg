@@ -514,9 +514,8 @@ describe("why a message is waiting (§4.2)", () => {
     sessions.live(SID);
     sessions.in(OTHER_SID, "duplicated");
 
-    await expect(send(connAs("session", SID), OTHER_SID)).rejects.toMatchObject({
-      code: "session_duplicated",
-    });
+    const refused = await send(connAs("session", SID), OTHER_SID).catch((cause: unknown) => cause);
+    expect(refused).toMatchObject({ code: "session_duplicated" });
     // Nothing is held for later: the draft is still with the caller.
     expect(inbox.undelivered(OTHER_SID)).toEqual([]);
   });

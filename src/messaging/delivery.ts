@@ -267,7 +267,7 @@ export class Delivery implements UpstreamResource {
       const stands = liveness(row, now);
       // A session two processes are running is not offered anything either:
       // what it would be handed to is not settled, which is the same reason
-      // `send` refuses one (DR-0001 §3).
+      // `send` refuses one (contract DR-0001 §3).
       if (stands !== "alive") continue;
       // One session at a time within its own offer, every session at once
       // across them: a session that is slow to answer, or that never does
@@ -410,7 +410,7 @@ export class Delivery implements UpstreamResource {
    * The rows are one list of sessions, connected and lost alike, so which of
    * them can be written to is read off each row by the contract's own
    * `liveness` — the same rule the addressee's own reason was named by, and the
-   * same one a client applies to the rows it holds (DR-0001 §2). A session two
+   * same one a client applies to the rows it holds (contract DR-0001 §2). A session two
    * processes are running is not among them: `duplicated` is not `alive`, and
    * offering a sender somewhere its message would be refused is worse than
    * offering nothing.

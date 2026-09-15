@@ -1332,6 +1332,9 @@ describe("last_live", () => {
   });
 });
 
+/** Pids are numbers, so a list of them is ordered as numbers. */
+const ascending = (a: number | undefined, b: number | undefined) => (a ?? 0) - (b ?? 0);
+
 describe("a session two processes are running", () => {
   /** A domain whose fold is a stub that records what it was told, so what is
    * under test is the domain settling the count and passing it on rather than
@@ -1362,7 +1365,9 @@ describe("a session two processes are running", () => {
     // One session, two processes: the row is one and the runs are two, which
     // is the whole of what the harness letting a running session be resumed
     // looks like from here.
-    expect(row.runs.map((run) => run.pid).sort()).toEqual([process.pid, second].sort());
+    expect(row.runs.map((run) => run.pid).sort(ascending)).toEqual(
+      [process.pid, second].sort(ascending),
+    );
     expect(liveness(row, Date.now())).toBe("duplicated");
     // What the fold says cannot be trusted while both are writing it, whatever
     // the reading had got to.
@@ -1377,7 +1382,9 @@ describe("a session two processes are running", () => {
     writeState(context.sessionsDir, second, SID, { name: "second" });
 
     const rows = context.domain.agentRows();
-    expect(rows.map((row) => row.pid).sort()).toEqual([process.pid, second].sort());
+    expect(rows.map((row) => row.pid).sort(ascending)).toEqual(
+      [process.pid, second].sort(ascending),
+    );
     expect(new Set(rows.map((row) => row.sid))).toEqual(new Set([SID]));
   });
 
@@ -1420,7 +1427,8 @@ describe("a session two processes are running", () => {
       platform: () => process.platform,
     });
 
-    await expect(processes.kill(SID)).rejects.toMatchObject({ code: "ambiguous_run" });
+    const refused = await processes.kill(SID).catch((cause: unknown) => cause);
+    expect(refused).toMatchObject({ code: "ambiguous_run" });
     expect(signalled).toEqual([]);
 
     expect(await processes.kill(SID, false, second)).toEqual({ terminated: true });
@@ -1444,9 +1452,8 @@ describe("a session two processes are running", () => {
       platform: () => process.platform,
     });
 
-    await expect(processes.kill(SID, false, 999_999)).rejects.toMatchObject({
-      code: "session_not_found",
-    });
+    const refused = await processes.kill(SID, false, 999_999).catch((cause: unknown) => cause);
+    expect(refused).toMatchObject({ code: "session_not_found" });
     expect(signalled).toEqual([]);
   });
 });

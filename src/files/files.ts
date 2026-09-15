@@ -203,7 +203,7 @@ export function fileHandlers(paths: Containment, duplicated: (sid: Sid) => boole
   // Every one of them names the session whose files are being reached, and
   // every one of them is refused while two processes are running it: the tree
   // a caller means is the one that session sees, and which of two runs that is
-  // is not settled (DR-0001 §3). Applied once here rather than at the head of
+  // is not settled (contract DR-0001 §3). Applied once here rather than at the head of
   // eight bodies, so an op added later cannot be the one that forgot.
   return Object.fromEntries(
     Object.entries(handlers).map(([op, handler]) => [

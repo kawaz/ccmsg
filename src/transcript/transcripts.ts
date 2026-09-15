@@ -118,7 +118,7 @@ export class Transcripts implements UpstreamResource {
    * While they are, nothing of the file is read: the records interleave, the
    * offsets are wrong, and the fold would state a reading that describes
    * neither run. So the tail stops and the last value the fold could be
-   * trusted for is left standing (DR-0001 §3).
+   * trusted for is left standing (contract DR-0001 §3).
    *
    * When they stop, the reading begins again from the top rather than from
    * where it was: the cached offset was taken from a file two writers have
