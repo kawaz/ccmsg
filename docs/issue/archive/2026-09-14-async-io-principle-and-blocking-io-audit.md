@@ -1,6 +1,6 @@
 ---
 title: IO を伴うイベント / メッセージ処理を非同期にする原則を v2 daemon の DR に起こし、接続後に走る同期 IO を監査して直す
-status: open
+status: resolved
 category: design
 created: 2026-09-14T11:56:56+09:00
 last_read:
@@ -9,10 +9,10 @@ wip_entered:
 blocked_entered:
 pending_entered:
 discarded_entered:
-resolved_entered:
+resolved_entered: 2026-09-15T13:46:00+09:00
 discard_reason:
 pending_reason:
-close_reason:
+close_reason: ["dr/DR-0015","implemented","finding/2026-09-14-blocking-io-audit","finding/2026-09-14-await-crossing-invariants","done: 群1/2/3/4 + 外部待ち3件を全部 async 化 (v0.14.0〜v1.0.4)、await 越えの総点検 (v0.16.0)。同期のまま残すのは起動時1回 (B) と CLI 単発 (A) だけ。正規表現の阻害は issue session-search-regex-unbounded に分離"]
 blocked_by:
 origin: 自リポ TODO
 ---
