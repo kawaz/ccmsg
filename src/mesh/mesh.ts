@@ -677,8 +677,12 @@ export class Mesh {
       // anywhere once the handshake ends (mesh-peer-auth §5.5, §10.5).
       this.#pending.delete(conn);
     }
-    // The claim is checked again now that it is trusted: the fetch and the wait
-    // took time, and another connection may have taken the id in between.
+    // The peer list and claim are checked again now that the proof is trusted:
+    // the fetch and proof wait yielded, so the endpoint may have been forgotten
+    // or another connection may have taken the id in between.
+    if (this.#forgotten.has(claim.iss)) {
+      throw new OpError("forbidden", `${claim.iss} is not a peer of this instance`);
+    }
     this.#checkBinding(claim.iss, claim.id);
     this.#bind(claim.iss, claim.id);
     this.#hold(claim.iss, conn, false);
@@ -849,7 +853,7 @@ export class Mesh {
   // --- the dialling end (mesh-peer-auth §5, steps 1-3 and 13) ---
 
   async #dial(peer: Endpoint): Promise<void> {
-    if (this.#stopping || this.#links.has(peer)) return;
+    if (this.#stopping || this.#forgotten.has(peer) || this.#links.has(peer)) return;
     const self = this.self;
     const key = new EphemeralKey();
     const minted: Minted = { key, aud: peer };
@@ -902,6 +906,10 @@ export class Mesh {
       return;
     }
     this.#minted.delete(kid);
+    if (this.#forgotten.has(peer)) {
+      conn.close();
+      return;
+    }
     if (fields["ok"] !== true) {
       const error = fields["error"] as { msg?: string } | undefined;
       this.deps.log?.("mesh peer refused this instance", { peer, msg: error?.msg });
@@ -1067,7 +1075,7 @@ export class Mesh {
 
   /** Try again, later each time up to the ceiling. */
   #retry(peer: Endpoint): void {
-    if (this.#stopping || this.#retries.has(peer)) return;
+    if (this.#stopping || this.#forgotten.has(peer) || this.#retries.has(peer)) return;
     const min = this.deps.reconnectMinMs ?? RECONNECT_MIN_MS;
     const previous = this.#backoff.get(peer) ?? 0;
     const wait = previous === 0 ? min : Math.min(previous * 2, RECONNECT_MAX_MS);

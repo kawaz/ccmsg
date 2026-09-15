@@ -397,6 +397,7 @@ describe("what a handshake leaves behind (mesh-peer-auth §10.5)", () => {
     const first = await startAt(homeFor(a, peers), { reconnectMinMs: 20 });
     const second = await startAt(homeFor(b, peers), { reconnectMinMs: 20 });
     await eventually(() => first.mesh?.reachable(endpointOf(second)) === true);
+    await eventually(() => second.mesh?.reachable(endpointOf(first)) === true);
     // What `ccmsg mesh remove` asks of a running instance: the endpoint is off
     // this host's list, so the link it has to it goes now rather than at the
     // next start. Config is still read once (DV-Q8) — this is the one edit that
@@ -404,14 +405,57 @@ describe("what a handshake leaves behind (mesh-peer-auth §10.5)", () => {
     expect(first.mesh?.forget(endpointOf(second))).toBe(true);
     expect(first.mesh?.reachable(endpointOf(second))).toBe(false);
     expect(first.mesh?.peers).not.toContain(endpointOf(second));
-    // And it stays cut: the other end dials back, and is refused rather than
-    // quietly relinked.
-    await Bun.sleep(200);
+    // The far end observing the closed link is the synchronization point: once
+    // it has, any dial already in flight must still be unable to restore the
+    // endpoint this host forgot.
+    await eventually(() => second.mesh?.reachable(endpointOf(first)) === false);
     expect(first.mesh?.reachable(endpointOf(second))).toBe(false);
     // The instance that was cut off is still an instance; nothing here stopped
     // it, which is what makes this a mesh edit and not a shutdown.
     expect(second.self).toBeTruthy();
   }, 20_000);
+
+  test("an outgoing handshake already in flight cannot restore a forgotten peer", async () => {
+    const real = leasePort();
+    const peerLease = leasePort();
+    const peer = await FakePeer.at(peerLease);
+    const answer = Promise.withResolvers<void>();
+    peer.greetingGate = answer.promise;
+    peer.greetingReply = { ok: true, instance: peer.id };
+    const instance = await startAt(homeFor(real, [endpoint(real.port), peer.endpoint]), {
+      reconnectMinMs: 0,
+    });
+    await peer.greetingReceived.promise;
+
+    expect(instance.mesh?.forget(peer.endpoint)).toBe(false);
+    answer.resolve();
+    await peer.dialClosed.promise;
+    await new Promise<void>((resolve) => {
+      setImmediate(resolve);
+    });
+
+    // A successful answer can arrive after `forget`: it is only evidence about
+    // the handshake, not that the endpoint is still a peer. Closing that stale
+    // connection must not schedule another dial for the forgotten endpoint.
+    expect(instance.mesh?.reachable(peer.endpoint)).toBe(false);
+    expect(peer.greetings).toBe(1);
+  });
+
+  test("an incoming handshake already in flight cannot restore a forgotten peer", async () => {
+    const { instance, peer } = await withFakePeer();
+    const keyAsked = Promise.withResolvers<void>();
+    const key = Promise.withResolvers<void>();
+    peer.keyGate = key.promise;
+    peer.onKeyAsked = keyAsked.resolve;
+    const greeting = peer.greet(endpointOf(instance));
+    await keyAsked.promise;
+
+    expect(instance.mesh?.forget(peer.endpoint)).toBe(false);
+    key.resolve();
+
+    expect((await greeting)["ok"]).toBe(false);
+    expect(instance.mesh?.reachable(peer.endpoint)).toBe(false);
+  });
 
   test("stopping lets the links and the keys go", async () => {
     const { instance, peer } = await withFakePeer();

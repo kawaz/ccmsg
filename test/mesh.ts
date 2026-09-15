@@ -275,6 +275,16 @@ export class FakePeer {
   jwk: (() => MeshJwk) | undefined;
   /** Called when the key is asked for, before the proof goes out. */
   onKeyAsked: (() => void) | undefined;
+  /** Hold an incoming greeting between the key request and its proof. */
+  keyGate: Promise<void> | undefined;
+  /** Hold the answer to a greeting this instance dialled us with. */
+  greetingGate: Promise<void> | undefined;
+  /** What to answer a greeting this instance dialled us with. */
+  greetingReply: Record<string, unknown> | undefined;
+  /** How many greetings this instance has dialled us with. */
+  greetings = 0;
+  readonly greetingReceived = Promise.withResolvers<void>();
+  readonly dialClosed = Promise.withResolvers<void>();
 
   /** Take the address a lease is holding and serve on it. Private so that the
    * handover cannot be skipped: this peer binds as it is built. */
@@ -298,15 +308,23 @@ export class FakePeer {
         return new Response("Not Found", { status: 404 });
       },
       websocket: {
-        message(ws, message) {
+        message: async (ws, message) => {
           const fields = JSON.parse(String(message)) as Record<string, unknown>;
+          this.greetings += 1;
+          this.greetingReceived.resolve();
+          await this.greetingGate;
           ws.send(
             JSON.stringify({
-              ok: false,
               request_id: fields["request_id"],
-              error: { code: "forbidden", msg: "this peer is a test double" },
+              ...(this.greetingReply ?? {
+                ok: false,
+                error: { code: "forbidden", msg: "this peer is a test double" },
+              }),
             }),
           );
+        },
+        close: () => {
+          this.dialClosed.resolve();
         },
       },
     });
@@ -319,6 +337,7 @@ export class FakePeer {
   async #serveKey(request: Request): Promise<Response> {
     const asked = (await request.json()) as { challenge?: string };
     this.onKeyAsked?.();
+    await this.keyGate;
     const claim: ProofClaim = {
       ver: MESH_VER,
       iss: this.claim.iss as Endpoint,
