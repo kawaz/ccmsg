@@ -2,8 +2,14 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type CredentialRecord, originOf, PROTOCOL_VERSION } from "@ccmsg/protocol";
+import {
+  type CredentialRecord,
+  originOf,
+  PROTOCOL_VERSION,
+  REGISTER_TTL_MS,
+} from "@ccmsg/protocol";
 import { type Env, type Instance, isRunning, start } from "../src/instance/index.ts";
+import { OpError } from "../src/dispatch/index.ts";
 import {
   Auth,
   AuthRecords,
@@ -214,6 +220,19 @@ describe("registering a passkey (§2.2)", () => {
     expect(refused.status).toBe(401);
   });
 });
+
+/** The code an op refused with, or nothing where it answered. Stated rather
+ * than only that something was thrown: a session answered where a refusal was
+ * due is what these are about. */
+async function refusal(call: Promise<unknown>): Promise<string | undefined> {
+  try {
+    await call;
+    return undefined;
+  } catch (cause) {
+    if (cause instanceof OpError) return cause.code;
+    throw cause;
+  }
+}
 
 /** The refresh token a response set, as the browser would send it back. */
 function mintedCookie(response: Response, name: string): string {
@@ -691,16 +710,25 @@ describe("what a registration or an assertion is refused for", () => {
         userId: issued.user_id,
       }),
     };
+    // Refused the way every binding here refuses, and saying no more than that:
+    // what a caller learns from "it was the `Origin`" is which value to try
+    // next (contract, DR-0029).
+    const refusedFor = async (answer: Response): Promise<string> => {
+      expect(answer.status).toBe(401);
+      return ((await answer.json()) as { error: { code: string } }).error.code;
+    };
     const noOrigin = await fetch(`http://${at.instance.http[0] as string}/auth/register`, {
       method: "POST",
       headers: { "content-type": "application/json", "sec-fetch-site": "same-origin" },
       body: JSON.stringify(body),
     });
-    expect(noOrigin.status).toBe(403);
-    expect((await post(at, "register", body, { site: null })).status).toBe(403);
+    expect(await refusedFor(noOrigin)).toBe("auth_invalid");
+    expect(await refusedFor(await post(at, "register", body, { site: null }))).toBe("auth_invalid");
     // `none` is a request the person typed in themselves rather than one a page
     // made, which is not how any of these are reached.
-    expect((await post(at, "register", body, { site: "none" })).status).toBe(403);
+    expect(await refusedFor(await post(at, "register", body, { site: "none" }))).toBe(
+      "auth_invalid",
+    );
     // The same body, with what a browser would have written, is taken.
     expect((await post(at, "register", body)).status).toBe(200);
   });
@@ -1017,11 +1045,12 @@ describe("the user handle a subject is known by (§2.2)", () => {
 describe("a credential is good for one endpoint (§2.3)", () => {
   test("a registration posted under another prefix than its endpoint is refused", async () => {
     const at = await serving();
-    // The URL was issued for the instance at `/personal/`, and the browser
-    // posts to the one at the root. Both are answered by this listener — the
-    // routes are matched by the end of the path — so what tells them apart is
-    // the endpoint the URL named (contract, `CredentialRecord.endpoint`).
-    const issued = at.instance.auth.issue({ endpoint: `${servedAt(at)}personal/` });
+    // The URL was issued for the instance at the root, and the browser posts to
+    // the prefix a neighbour would be published under. Both are answered by
+    // this listener — the routes are matched by the end of the path — so what
+    // tells them apart is the endpoint the URL named (contract,
+    // `CredentialRecord.endpoint`).
+    const issued = at.instance.auth.issue({});
     const authenticator = new SoftAuthenticator(issued.rp_id);
     const challenge = (await (await post(at, "challenge", {})).json()) as { challenge: string };
     const credential = await authenticator.create({
@@ -1031,20 +1060,22 @@ describe("a credential is good for one endpoint (§2.3)", () => {
     });
     const token = issued.url.slice(issued.url.indexOf("#register=") + "#register=".length);
     const body = { token, code: issued.code, credential };
-    const elsewhere = await post(at, "register", body);
+    const elsewhere = await fetch(
+      `http://${at.instance.http[0] as string}/personal/auth/register`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          origin: at.origin,
+          "sec-fetch-site": "same-origin",
+        },
+        body: JSON.stringify(body),
+      },
+    );
     expect(elsewhere.status).toBe(401);
 
     // The same registration, posted where the URL said, is taken.
-    const here = await fetch(`http://${at.instance.http[0] as string}/personal/auth/register`, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        origin: at.origin,
-        "sec-fetch-site": "same-origin",
-      },
-      body: JSON.stringify(body),
-    });
-    expect(here.status).toBe(200);
+    expect((await post(at, "register", body)).status).toBe(200);
   });
 
   test("an endpoint that is not a base URL is refused where it is typed", async () => {
@@ -1160,9 +1191,16 @@ describe("a credential is good from one web UI (DR-0029)", () => {
     const address = at.instance.http[0] ?? "";
     // Refused as an upgrade that does not happen: there is no connection yet to
     // answer an error frame on.
-    expect(
-      connectWs(address, minted.session.access.value, { origin: "http://elsewhere.example" }),
-    ).rejects.toThrow();
+    const elsewhere = await connectWs(address, minted.session.access.value, {
+      origin: "http://elsewhere.example",
+    }).then(
+      async (opened) => {
+        await opened.close();
+        return "opened";
+      },
+      () => "refused",
+    );
+    expect(elsewhere).toBe("refused");
     const client = await connectWs(address, minted.session.access.value);
     clients.push(client);
     client.send({ op: "hello.user", request_id: "1", protocol_version: PROTOCOL_VERSION });
@@ -1261,7 +1299,7 @@ describe("a credential is good from one web UI (DR-0029)", () => {
     expect(answer?.headers.get("set-cookie")).toContain("Partitioned");
   });
 
-  test("a credential written before the field existed is invalid rather than migrated", async () => {
+  test("a record naming no web UI is invalid everywhere it would be read", async () => {
     const dir = mkdtempSync(join(tmpdir(), "ccmsg-auth-no-webui-"));
     const self = "0".repeat(32);
     const records = new AuthRecords({ dir, self, publish: () => {} });
@@ -1269,6 +1307,7 @@ describe("a credential is good from one web UI (DR-0029)", () => {
     // What an older instance wrote: an endpoint and no page. There is nothing
     // to compare an origin with, and the contract has no migration for it — the
     // person registers again (DR-0029).
+    const now = Date.now();
     await records.write("credential/old/abc", {
       kind: "credential",
       sub: "old",
@@ -1278,9 +1317,184 @@ describe("a credential is good from one web UI (DR-0029)", () => {
       endpoint: "https://h.example/",
       registered_at: 1,
     } as never);
+    await records.write("family/old/1", {
+      kind: "token_family",
+      sub: "old",
+      iss: self,
+      access: { value: "access-of-the-old-one", expires_at: now + 3_600_000 },
+      refresh: { value: "refresh-of-the-old-one", expires_at: now + 86_400_000 },
+    } as never);
+
     expect(auth.knownOrigins()).toEqual([]);
+    // No page is named, so no connection is opened and no token is minted from
+    // it: the family answers nothing on a handshake, and neither generation of
+    // it rotates.
+    expect(auth.admits("access-of-the-old-one")).toBeUndefined();
+    expect(await refusal(auth.refreshToken("refresh-of-the-old-one"))).toBe("auth_invalid");
+    expect(await refusal(auth.rotate("refresh-of-the-old-one"))).toBe("auth_invalid");
+    // And the credential answers no assertion. Refused before the signature is
+    // looked at, so a made-up one is enough to ask with.
+    expect(
+      await refusal(
+        auth.assert({
+          credential: {
+            raw_id: "abc",
+            client_data_json: "e30",
+            authenticator_data: "AA",
+            signature: "AA",
+          },
+          challenge: { challenge: "AA", issuer: self, expires_at: now + 60_000 },
+        }),
+      ),
+    ).toBe("auth_invalid");
+
     // It is still on the list a person reads back, which is how they find the
     // line to remove.
     expect(auth.list().map((record) => record.sub)).toEqual(["old"]);
+  });
+
+  test("the relying party the ceremony is held to is the web UI's host, not the endpoint's", async () => {
+    // The two are different hosts here, which is the whole point of naming the
+    // web UI: a credential made under the endpoint's host would be one the
+    // authenticator answers for at the endpoint's site as well (contract,
+    // DR-0029, which is why the alternative of reading the relying party off
+    // the host reached was not taken).
+    const dir = mkdtempSync(join(tmpdir(), "ccmsg-auth-rpid-"));
+    const self = "0".repeat(32);
+    const auth = new Auth({
+      self,
+      records: new AuthRecords({ dir, self, publish: () => {} }),
+      endpoint: () => "https://mba.example.test/",
+      unit: "unit",
+    });
+    const register = async (rpId: string): Promise<string | undefined> => {
+      const issued = auth.issue({ webui: "https://ui.example.test/ccmsg/" as never });
+      const authenticator = new SoftAuthenticator(rpId);
+      const challenge = auth.challenge();
+      return await refusal(
+        auth.register({
+          token: issued.url.slice(issued.url.indexOf("#register=") + "#register=".length),
+          code: issued.code,
+          credential: await authenticator.create({
+            challenge: challenge.challenge,
+            // The page is the web UI either way; what differs is the relying
+            // party the authenticator signed under.
+            origin: "https://ui.example.test",
+            userId: issued.user_id,
+          }),
+        }),
+      );
+    };
+    expect(await register("mba.example.test")).toBe("auth_invalid");
+    expect(await register("ui.example.test")).toBeUndefined();
+  });
+
+  test("a registration and a refresh are held to the page as an assertion is", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ccmsg-auth-origin-ops-"));
+    const self = "0".repeat(32);
+    const auth = new Auth({
+      self,
+      records: new AuthRecords({ dir, self, publish: () => {} }),
+      endpoint: () => "https://h.example/",
+      unit: "unit",
+    });
+    const issued = auth.issue({});
+    const authenticator = new SoftAuthenticator(issued.rp_id);
+    const challenge = auth.challenge();
+    const credential = await authenticator.create({
+      challenge: challenge.challenge,
+      origin: "https://h.example",
+      userId: issued.user_id,
+    });
+    const token = issued.url.slice(issued.url.indexOf("#register=") + "#register=".length);
+    // A page elsewhere, holding everything else that is right.
+    expect(
+      await refusal(
+        auth.register(
+          { token, code: issued.code, credential },
+          { origin: "https://elsewhere.example" },
+        ),
+      ),
+    ).toBe("auth_invalid");
+    expect(
+      await refusal(auth.register({ token, code: issued.code, credential }, { origin: null })),
+    ).toBe("auth_invalid");
+    const minted = await auth.register({ token, code: issued.code, credential });
+
+    // And the same of a refresh, which is checked before the family is rotated
+    // or the rotation is carried to the instance that minted it.
+    expect(
+      await refusal(
+        auth.refreshToken(minted.refresh.value, { origin: "https://elsewhere.example" }),
+      ),
+    ).toBe("auth_invalid");
+    expect(await refusal(auth.refreshToken(minted.refresh.value, { origin: null }))).toBe(
+      "auth_invalid",
+    );
+    expect(
+      await refusal(auth.refreshToken(minted.refresh.value, { origin: "https://h.example" })),
+    ).toBeUndefined();
+  });
+
+  test("a registration URL that has run out is no longer a page this answers for", async () => {
+    let now = 1_000_000;
+    const dir = mkdtempSync(join(tmpdir(), "ccmsg-auth-stale-url-"));
+    const self = "0".repeat(32);
+    const auth = new Auth({
+      self,
+      records: new AuthRecords({ dir, self, publish: () => {} }),
+      endpoint: () => "https://h.example/",
+      unit: "unit",
+      now: () => now,
+    });
+    auth.issue({ webui: "https://ui.example.test/" as never });
+    expect(auth.knownOrigins()).toEqual(["https://ui.example.test"]);
+    // The set is the URLs still live: one that has expired cannot complete a
+    // registration, so the page it named is one this instance answers nothing
+    // for (contract, DR-0029).
+    now += REGISTER_TTL_MS + 1;
+    expect(auth.knownOrigins()).toEqual([]);
+  });
+
+  test("a credential is refused at an instance whose endpoint it does not name", async () => {
+    // The record travels to every instance in the mesh, so what keeps it from
+    // opening the neighbour is the endpoint it carries: the page, the ceremony
+    // and the relying party are all the first instance's and agree with
+    // themselves wherever they are read (contract, DR-0029). Two instances at
+    // one path and two hosts, which is what the deployment looks like.
+    const dir = mkdtempSync(join(tmpdir(), "ccmsg-auth-two-instances-"));
+    const self = "0".repeat(32);
+    const records = new AuthRecords({ dir, self, publish: () => {} });
+    const here = new Auth({ self, records, endpoint: () => "https://one.example/", unit: "one" });
+    const issued = here.issue({});
+    const authenticator = new SoftAuthenticator(issued.rp_id);
+    const challenge = here.challenge();
+    await here.register({
+      token: issued.url.slice(issued.url.indexOf("#register=") + "#register=".length),
+      code: issued.code,
+      credential: await authenticator.create({
+        challenge: challenge.challenge,
+        origin: "https://one.example",
+        userId: issued.user_id,
+      }),
+    });
+
+    // The same records, read by the instance next door.
+    const next = new Auth({ self, records, endpoint: () => "https://two.example/", unit: "two" });
+    const asserting = async (auth: Auth): Promise<unknown> => {
+      const asked = auth.challenge();
+      return await refusal(
+        auth.assert({
+          credential: await authenticator.get({
+            challenge: asked.challenge,
+            origin: "https://one.example",
+          }),
+          challenge: asked,
+        }),
+      );
+    };
+    expect(await asserting(next)).toBe("auth_invalid");
+    // At the instance the credential names, the same assertion is taken.
+    expect(await asserting(here)).toBeUndefined();
   });
 });

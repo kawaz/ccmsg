@@ -1,6 +1,6 @@
 # 古い passkey を消して登録し直す (webui 束縛)
 
-契約 DR-0029 で、credential と token family は「入ってよい endpoint」と「使ってよい webui」の 2 つを持つようになった。`webui` を持たない record — この変更より前に登録された passkey と、そこから生まれた token — は **名指す page が無いので無効**である。移行は持たない (URL から導く値を後から埋めると、人が実際に送られる page と食い違ったまま固定されうる)。人は登録し直す。
+credential と token family は「入ってよい endpoint」と「使ってよい webui」の 2 つを持つ (契約 DR-0029)。`webui` を持たない record は **名指す page が無いので無効**である。移行は持たない (URL から導く値を後から埋めると、人が実際に送られる page と食い違ったまま固定されうる)。人は登録し直す。
 
 対象の instance ごとに、この手順を 1 回実行する。
 
@@ -42,4 +42,4 @@ ccmsg daemon passkey list <unit>
 
 ## 設定の endpoint も見直す
 
-同じ変更で、config の `endpoints.json` の endpoint は契約の綴りに正規化して読むようになった (小文字の host、scheme 既定の port は書かない、国際化ドメインは punycode、末尾スラッシュ必須)。正規化できない綴り — route を含む URL、query・fragment・userinfo 付き、`wss://` — は **起動時に refuse** される。起動しなくなった instance があれば `endpoints.json` の当該行を直す。
+config の `endpoints.json` の endpoint は契約の綴りに正規化して読む (小文字の host、scheme 既定の port は書かない、国際化ドメインは punycode、末尾スラッシュ必須)。正規化できない綴り — route を含む URL、query・fragment・userinfo 付き、`wss://` — は **起動時に refuse** される。起動しなくなった instance があれば `endpoints.json` の当該行を直す。

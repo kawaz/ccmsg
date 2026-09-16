@@ -774,73 +774,78 @@ describe("the credentials and tokens the mesh shares (DR-0001 §2.6)", () => {
   });
 });
 
-describe("registering at one instance with another's URL (DR-0001 §2.6)", () => {
-  test("the issuer checks the URL and the code; the instance reached does the rest", async () => {
+describe("a registration completes where it was issued (DR-0001 §2.6)", () => {
+  test("a URL one instance issued is not a registration at another", async () => {
     const { a, b } = await pair();
-    // A makes the URL and holds the secret and the six digits; the browser
-    // lands on B, which knows neither.
-    const issued = a.auth.issue({ endpoint: endpointOf(b) });
+    // A registration URL names the instance that issued it, and that is the
+    // only instance it can be spent at: the secret that signed it and the count
+    // of tries against the six digits are A's, and the endpoint inside it is
+    // A's (contract, DR-0029). So it is not a way into B, whose page even
+    // answers for the origin here.
+    const issued = a.auth.issue({});
     const authenticator = new SoftAuthenticator(issued.rp_id);
-    const origin = `http://${addressOf(b)}`;
-    answersFor(b, `${origin}/`);
+    const originA = `http://${addressOf(a)}`;
+    const originB = `http://${addressOf(b)}`;
+    answersFor(b, `${originB}/`);
+    answersFor(b, `${originA}/`);
     const token = issued.url.slice(issued.url.indexOf("#register=") + "#register=".length);
 
-    // The wrong digits are refused by A, and the try is counted there.
-    const challenge = await authChallenge(b, origin);
-    const refused = await authPost(b, origin, "register", {
-      token,
-      code: issued.code === "000000" ? "111111" : "000000",
-      credential: await authenticator.create({
-        challenge: challenge.challenge,
-        origin,
-        userId: issued.user_id,
-      }),
-    });
-    expect(refused.status).toBe(401);
+    const atB = await authChallenge(b, originA);
+    expect(
+      (
+        await authPost(b, originA, "register", {
+          token,
+          code: issued.code,
+          challenge: atB,
+          credential: await authenticator.create({
+            challenge: atB.challenge,
+            origin: originA,
+            userId: issued.user_id,
+          }),
+        })
+      ).status,
+    ).toBe(401);
+    expect(b.auth.records.credential(authenticator.credentialIdUrl)).toBeUndefined();
 
-    const second = await authChallenge(b, origin);
-    const accepted = await authPost(b, origin, "register", {
+    // The same URL, opened where it was issued, registers.
+    const atA = await authChallenge(a, originA);
+    const accepted = await authPost(a, originA, "register", {
       token,
       code: issued.code,
-      challenge: second,
+      challenge: atA,
       credential: await authenticator.create({
-        challenge: second.challenge,
-        origin,
+        challenge: atA.challenge,
+        origin: originA,
         userId: issued.user_id,
       }),
     });
     expect(accepted.status).toBe(200);
-    const session = (await accepted.json()) as { sub: string; access: { value: string } };
-    expect(session.sub).toBe(issued.sub);
+    expect(((await accepted.json()) as { sub: string }).sub).toBe(issued.sub);
 
-    // The record was written at B, and reaches A the way every record does.
-    await eventually(() => a.auth.records.credential(authenticator.credentialIdUrl) !== undefined);
-    expect(a.auth.records.credential(authenticator.credentialIdUrl)?.user_handle).toBe(
-      issued.user_id,
-    );
+    // The record reaches B the way every record does, and is still no way in
+    // there: it names A's endpoint, which is what keeps one instance's passkey
+    // out of its neighbour (contract, `CredentialRecord.endpoint`).
+    await eventually(() => b.auth.records.credential(authenticator.credentialIdUrl) !== undefined);
+    const asserted = await authChallenge(b, originA);
+    expect(
+      (
+        await authPost(b, originA, "assert", {
+          credential: await authenticator.get({ challenge: asserted.challenge, origin: originA }),
+          challenge: asserted,
+        })
+      ).status,
+    ).toBe(401);
 
-    // The person authenticates at the endpoint the credential was registered
-    // for, which is B.
-    const asserted = await authChallenge(b, origin);
-    const atB = await authPost(b, origin, "assert", {
-      credential: await authenticator.get({ challenge: asserted.challenge, origin }),
-      challenge: asserted,
-    });
-    expect(atB.status).toBe(200);
-
-    // Not at A, even though A holds the same record and issued the URL. Two
-    // gates refuse it and either alone would: the credential names B's endpoint
-    // and no other, which is what keeps one instance's passkey from being a way
-    // into its neighbour, and the page asking is A's rather than the web UI the
-    // credential was made at (contract, `CredentialRecord.endpoint` / DR-0029).
-    const elsewhere = `http://${addressOf(a)}`;
-    answersFor(a, `${elsewhere}/`);
-    const other = await authChallenge(a, elsewhere);
-    const atA = await authPost(a, elsewhere, "assert", {
-      credential: await authenticator.get({ challenge: other.challenge, origin: elsewhere }),
-      challenge: other,
-    });
-    expect(atA.status).toBe(401);
+    // And is one at A, where it was made.
+    const here = await authChallenge(a, originA);
+    expect(
+      (
+        await authPost(a, originA, "assert", {
+          credential: await authenticator.get({ challenge: here.challenge, origin: originA }),
+          challenge: here,
+        })
+      ).status,
+    ).toBe(200);
   });
 });
 
@@ -873,7 +878,9 @@ describe("authenticating where the challenge was not issued (DR-0001 §2.6)", ()
   test("the instance reached verifies the assertion and spends the challenge at its issuer", async () => {
     const { a, b } = await pair();
     const originB = `http://${addressOf(b)}`;
-    const issued = a.auth.issue({ endpoint: endpointOf(b) });
+    // Registered at B, which is the only instance a URL B issued completes at.
+    // What crosses the mesh here is the challenge, not the registration.
+    const issued = b.auth.issue({});
     answersFor(b, `${originB}/`);
     answersFor(a, `http://${addressOf(a)}/`);
     const authenticator = new SoftAuthenticator(issued.rp_id);
