@@ -26,7 +26,7 @@ kawaz 2026-09-16: webui で開いている URL と接続先 endpoint は異な�
 
 層ごとの整理: WS 接続には CORS が効かず (ブラウザは `Origin` を送るだけ)、認証は subprotocol の token (契約は `Origin` を見ない)。HTTP の認証 op (passkey register / assert / token refresh) には CORS が効く。cookie は使っていないので cross-site cookie の問題は無い。webui の CSP `connect-src` は allowlist で build するか全許可。本質は信頼の向きが逆転すること (今: endpoint が配る webui を信じる → 分けると: どこかから読んだ webui のコードに自分の instance の token を渡す)。daemon で防げるのは origin 束縛と CORS allowlist まで。
 
-- [ ] a: 分ける。instance の設定に許可 origin の一覧を持ち、credential を (endpoint, origin) に束ねる (`Origin` はページ JS が偽装できない。非ブラウザ client は UDS / mesh の別経路)。HTTP 認証 op はその一覧で CORS に答える。webui は `connect-src` を allowlist で build。一覧に無い origin からの登録・接続は断る (統括推し。信頼の境界を「許可した origin」に置く形)
+- [ ] a: 分ける。`Origin` はページがどの site から来たかを偽装なしに言うだけで、そのページが user の webui か他人のページかを instance は判断できない (token は person を識別し、page を識別しない)。よって **user が instance に「自分の webui の origin」を宣言する** (設定の許可一覧、または登録時に記録) ことで初めて `Origin` が意味を持つ。一覧に無い origin からの登録・接続は断り、HTTP 認証 op はその一覧で CORS に答え、webui は `connect-src` を allowlist で build。静的サイト 1 つを任意の instance に繋ぐ運用は「各 instance がその origin を許可する」形になり、どの webui コードを信じるかの判断は user に残る (統括推し)
 - [ ] b: 分けない (endpoint が配る webui だけ)。現状維持
 - [ ] c: 分けるが origin 束縛は入れない (token だけ)。漏れた token を他 origin のページから使える経路が残る
 
