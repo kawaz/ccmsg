@@ -125,7 +125,7 @@ function peerClaims(): RegisterClaims {
     sub: "unit-1",
     unit: "unit",
     endpoint: ENDPOINT,
-    rp_id: "ui.example",
+    webui: ENDPOINT,
     expires_at: Date.now() + REGISTER_TTL_MS,
     jti: randomBytes(16).toString("base64url"),
     user_id: randomBytes(16).toString("base64url"),
@@ -176,7 +176,7 @@ describe("an issuer's answer is read against the contract before anything turns 
     test(`a registration answered with ${shape.name} is refused and leaves no record`, async () => {
       const it = made();
       const claims = peerClaims();
-      const authenticator = new SoftAuthenticator(claims.rp_id);
+      const authenticator = new SoftAuthenticator(new URL(claims.webui).hostname);
       const challenge = it.auth.challenge().challenge;
       const credential = await authenticator.create({
         challenge,
@@ -198,7 +198,10 @@ describe("an issuer's answer is read against the contract before anything turns 
       expect(it.records.families()).toEqual([]);
       expect(existsSync(it.file)).toBe(false);
       expect(it.auth.held.challenges).toBe(1);
-      expect(it.auth.knownOrigins()).toEqual([ORIGIN]);
+      // Nothing was registered and this instance issued no URL of its own, so
+      // there is no page it answers for: the set is what registrations and its
+      // own outstanding URLs put in it, and nothing else (contract, DR-0029).
+      expect(it.auth.knownOrigins()).toEqual([]);
     });
   }
 
@@ -209,6 +212,7 @@ describe("an issuer's answer is read against the contract before anything turns 
       kind: "token_family",
       sub: "them",
       iss: PEER,
+      webui: ENDPOINT,
       access: { value: randomBytes(32).toString("base64url"), expires_at: now + 3_600_000 },
       refresh: { value: randomBytes(32).toString("base64url"), expires_at: now + 86_400_000 },
     };
@@ -252,7 +256,7 @@ describe("a write the records refused is not answered as a session", () => {
   test("a family the records refused mints nothing", async () => {
     const it = made();
     await it.records.remove("gone");
-    expect(await refusal(it.auth.mint("gone"))).toBe("forbidden");
+    expect(await refusal(it.auth.mint("gone", ENDPOINT))).toBe("forbidden");
     expect(it.records.families()).toEqual([]);
   });
 

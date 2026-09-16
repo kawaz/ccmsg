@@ -187,6 +187,7 @@ describe("what the instance keeps (DR-0001 §2.2)", () => {
     const headers: Record<string, string> = {
       "content-type": "application/json",
       origin,
+      "sec-fetch-site": "same-origin",
       cookie: `${cookieName(at.instance.self, "someone")}=${value}`,
     };
     if (from.header !== undefined) headers["x-forwarded-for"] = from.header;
@@ -201,7 +202,10 @@ describe("what the instance keeps (DR-0001 §2.2)", () => {
     // A registration URL is what makes this instance's own origin one it
     // serves, which `/auth/*` is compared against before anything else (§2.3).
     at.instance.auth.issue({ endpoint: `http://127.0.0.1:${String(at.port)}/` });
-    const minted = await at.instance.auth.mint("someone");
+    const minted = await at.instance.auth.mint(
+      "someone",
+      `http://${at.instance.http[0] as string}/`,
+    );
     const answered = await refresh(at, minted.refresh.value, {
       source: "127.0.0.1",
       header: "203.0.113.7",
@@ -215,7 +219,10 @@ describe("what the instance keeps (DR-0001 §2.2)", () => {
     // A registration URL is what makes this instance's own origin one it
     // serves, which `/auth/*` is compared against before anything else (§2.3).
     at.instance.auth.issue({ endpoint: `http://127.0.0.1:${String(at.port)}/` });
-    const minted = await at.instance.auth.mint("someone");
+    const minted = await at.instance.auth.mint(
+      "someone",
+      `http://${at.instance.http[0] as string}/`,
+    );
     const answered = await refresh(at, minted.refresh.value, {
       source: "127.0.0.1",
       header: "203.0.113.7",

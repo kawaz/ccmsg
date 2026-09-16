@@ -273,6 +273,47 @@ describe("config", () => {
     expect(await refused(dir)).toMatch(/is not an entry of endpoints.json/);
   });
 
+  test("an endpoint is read into the one spelling the contract compares (§7.1)", async () => {
+    const { root, home } = disposable();
+    const dir = join(root, "config");
+    // Every use of an endpoint is a comparison — against a peer's handshake,
+    // against the URL a request arrived at, against what a record carries — so
+    // an operator's spelling is brought to the contract's rather than kept as
+    // typed (contract, `Endpoint`). A second spelling would be an address that
+    // never matches the place it names.
+    const read = async (endpoint: string): Promise<string | undefined> => {
+      writeConfigHome(dir, {}, { mine: { dir: home, entry: PORT } }, [
+        { id: idFor("mine"), endpoint },
+      ]);
+      return (await readConfig(dir, home))?.endpoint;
+    };
+    expect(await read("https://CCMSG-Mine.Example/")).toBe("https://ccmsg-mine.example/");
+    // The scheme's own port is what a browser leaves out.
+    expect(await read("https://ccmsg-mine.example:443/ccmsg/")).toBe(
+      "https://ccmsg-mine.example/ccmsg/",
+    );
+    // An international host is spelled the way the wire carries it.
+    expect(await read("https://日本.example/")).toBe("https://xn--wgv71a.example/");
+    // A port that is not the scheme's own is part of the address.
+    expect(await read("http://127.0.0.1:8080/")).toBe("http://127.0.0.1:8080/");
+
+    // What cannot be brought to that spelling is not an endpoint: an address
+    // carrying a query, a fragment or a userinfo meant something this is not,
+    // and one naming a route of its own is not a base URL.
+    for (const wrong of [
+      "https://h.example/ws",
+      "https://h.example/?x=1",
+      "https://h.example/#at",
+      "https://user:pw@h.example/",
+      "wss://h.example/",
+    ]) {
+      writeConfigHome(dir, {}, { mine: { dir: home, entry: PORT } }, [
+        { id: idFor("mine"), endpoint: wrong },
+      ]);
+      expect(await refused(dir)).toMatch(/base URL ending in \//);
+    }
+  });
+
   test("what the supervisor starts has to be an instance of the mesh", async () => {
     const { root, home } = disposable();
     const dir = join(root, "config");

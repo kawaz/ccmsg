@@ -720,14 +720,19 @@ describe("the credentials and tokens the mesh shares (DR-0001 §2.6)", () => {
   test("a record written on one instance authenticates at the other", async () => {
     const { a, b } = await pair();
     // What a registration would have left behind, written where it happened.
-    const minted = await a.auth.mint("someone");
+    const minted = await a.auth.mint("someone", `http://${a.http[0] as string}/`);
     await eventually(() => b.auth.admits(minted.session.access.value) !== undefined);
     expect(b.auth.admits(minted.session.access.value)?.sub).toBe("someone");
 
     // The endpoint the record travelled to takes the token on its own
     // handshake, which is the whole point of replicating it: the instance a
     // person registered at may be down.
-    const client = await connectWs(addressOf(b), minted.session.access.value);
+    // The page is still A's — the token was minted at its web UI — and that is
+    // what B holds the handshake's `Origin` to, whichever instance is dialled
+    // (contract, DR-0029).
+    const client = await connectWs(addressOf(b), minted.session.access.value, {
+      origin: `http://${a.http[0] as string}`,
+    });
     client.send({ op: "hello.user", request_id: "1", protocol_version: PROTOCOL_VERSION });
     expect(await client.next()).toMatchObject({ ok: true });
     await client.close();
@@ -735,7 +740,7 @@ describe("the credentials and tokens the mesh shares (DR-0001 §2.6)", () => {
 
   test("a rotation is carried to the instance that minted the family", async () => {
     const { a, b } = await pair();
-    const minted = await a.auth.mint("someone");
+    const minted = await a.auth.mint("someone", `http://${a.http[0] as string}/`);
     await eventually(() => b.auth.records.byRefresh(minted.refresh.value) !== undefined);
 
     // B holds the family but may not write it, so it asks A — the single
@@ -761,7 +766,7 @@ describe("the credentials and tokens the mesh shares (DR-0001 §2.6)", () => {
 
   test("a removal travels, and refuses the credential everywhere", async () => {
     const { a, b } = await pair();
-    const minted = await a.auth.mint("goes-away");
+    const minted = await a.auth.mint("goes-away", `http://${a.http[0] as string}/`);
     await eventually(() => b.auth.admits(minted.session.access.value) !== undefined);
     await a.auth.remove("goes-away");
     await eventually(() => b.auth.records.removed("goes-away"));
@@ -777,6 +782,7 @@ describe("registering at one instance with another's URL (DR-0001 §2.6)", () =>
     const issued = a.auth.issue({ endpoint: endpointOf(b) });
     const authenticator = new SoftAuthenticator(issued.rp_id);
     const origin = `http://${addressOf(b)}`;
+    answersFor(b, `${origin}/`);
     const token = issued.url.slice(issued.url.indexOf("#register=") + "#register=".length);
 
     // The wrong digits are refused by A, and the try is counted there.
@@ -822,11 +828,13 @@ describe("registering at one instance with another's URL (DR-0001 §2.6)", () =>
     });
     expect(atB.status).toBe(200);
 
-    // Not at A, even though A holds the same record and issued the URL: a
-    // credential is good for the endpoint it names and no other, which is what
-    // keeps one instance's passkey from being a way into its neighbour
-    // (contract, `CredentialRecord.endpoint`).
+    // Not at A, even though A holds the same record and issued the URL. Two
+    // gates refuse it and either alone would: the credential names B's endpoint
+    // and no other, which is what keeps one instance's passkey from being a way
+    // into its neighbour, and the page asking is A's rather than the web UI the
+    // credential was made at (contract, `CredentialRecord.endpoint` / DR-0029).
     const elsewhere = `http://${addressOf(a)}`;
+    answersFor(a, `${elsewhere}/`);
     const other = await authChallenge(a, elsewhere);
     const atA = await authPost(a, elsewhere, "assert", {
       credential: await authenticator.get({ challenge: other.challenge, origin: elsewhere }),
@@ -839,7 +847,7 @@ describe("registering at one instance with another's URL (DR-0001 §2.6)", () =>
 describe("a token reused at another instance (DR-0001 §2.4)", () => {
   test("the instance that minted the family is the one that fails it", async () => {
     const { a, b } = await pair();
-    const minted = await a.auth.mint("someone");
+    const minted = await a.auth.mint("someone", `http://${a.http[0] as string}/`);
     // Twice, so the value the family started with is past the grace the
     // generation before the standing one gets: what is left of it is the digest
     // the family carries.
@@ -866,6 +874,8 @@ describe("authenticating where the challenge was not issued (DR-0001 §2.6)", ()
     const { a, b } = await pair();
     const originB = `http://${addressOf(b)}`;
     const issued = a.auth.issue({ endpoint: endpointOf(b) });
+    answersFor(b, `${originB}/`);
+    answersFor(a, `http://${addressOf(a)}/`);
     const authenticator = new SoftAuthenticator(issued.rp_id);
     const token = issued.url.slice(issued.url.indexOf("#register=") + "#register=".length);
     const registration = await authChallenge(b, originB);
@@ -905,6 +915,18 @@ describe("authenticating where the challenge was not issued (DR-0001 §2.6)", ()
   });
 });
 
+/** Make an instance answer for a page.
+ *
+ * An instance answers CORS for the web UIs its credentials name and for the
+ * registration URLs it still holds, and for nothing else (contract, DR-0029) —
+ * so an exchange that is the first thing to happen at a page needs the
+ * instance receiving it to hold a URL for that page. Issuing one is how an
+ * operator puts it there.
+ */
+function answersFor(instance: Instance, webui: string): void {
+  instance.auth.issue({ endpoint: endpointOf(instance), webui: webui as never });
+}
+
 /** One `/auth/*` request against an instance in the mesh. */
 async function authPost(
   instance: Instance,
@@ -914,7 +936,7 @@ async function authPost(
 ): Promise<Response> {
   return await fetch(`http://${addressOf(instance)}/auth/${route}`, {
     method: "POST",
-    headers: { "content-type": "application/json", origin },
+    headers: { "content-type": "application/json", origin, "sec-fetch-site": "same-origin" },
     body: JSON.stringify(body),
   });
 }

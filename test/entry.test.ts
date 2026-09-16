@@ -47,7 +47,7 @@ async function serving(entry: Record<string, unknown> = {}): Promise<Instance> {
  * was accepted; anything else is the status of the refusal. */
 function handshake(
   instance: Instance,
-  init: { origin?: string; protocols?: string[]; path?: string } = {},
+  init: { origin?: string | null; protocols?: string[]; path?: string } = {},
 ): Promise<Response> {
   const url = new URL(`http://${instance.http[0]}${init.path ?? "/ws"}`);
   const headers: Record<string, string> = {
@@ -56,7 +56,11 @@ function handshake(
     "sec-websocket-version": "13",
     "sec-websocket-key": "dGhlIHNhbXBsZSBub25jZQ==",
   };
-  if (init.origin !== undefined) headers["origin"] = init.origin;
+  // The page a browser would say it came from. Stated on every handshake,
+  // because the upgrade compares it with the web UI the token's family names
+  // (contract, DR-0029); `null` is the caller that states none.
+  const origin = init.origin === undefined ? `http://${instance.http[0] as string}` : init.origin;
+  if (origin !== null) headers["origin"] = origin;
   if (init.protocols !== undefined) headers["sec-websocket-protocol"] = init.protocols.join(", ");
   return fetch(url, { headers });
 }
@@ -93,7 +97,8 @@ describe("the handshake (§3.1)", () => {
 
 /** An access token for a person, as `/auth/assert` would have answered with. */
 async function personToken(instance: Instance): Promise<string> {
-  return (await instance.auth.mint("test-person")).session.access.value;
+  return (await instance.auth.mint("test-person", `http://${instance.http[0] as string}/`)).session
+    .access.value;
 }
 
 describe("the entry is matched at the end of the path (DR-0001 §2.7)", () => {
@@ -116,17 +121,21 @@ describe("the entry is matched at the end of the path (DR-0001 §2.7)", () => {
 });
 
 describe("who may reach the entry (§3.1)", () => {
-  test("a browser's `Origin` is not what admits it; the token is", async () => {
-    // There is no origin allowlist to be on or off (DR-0001 §2.7): a page at
-    // any URL the instance is reached through presents the access token its
-    // person was given, and one arriving without a token is refused as the
-    // anonymous connection it is.
+  test("the page holding the token is what the `Origin` is held to", async () => {
+    // No allowlist is configured: which page may hold a token is its own
+    // family's to say, and the handshake compares the two (contract, DR-0029).
+    // A token says who the person is and nothing about what is holding it, so
+    // without this one that leaked would be usable from any page at all.
     const instance = await serving();
+    // An origin and no token is still an anonymous connection.
     expect((await handshake(instance, { origin: "http://ui.example" })).status).toBe(401);
     const protocols = [`ccmsg.token.${await personToken(instance)}`];
     expect(
       (await handshake(instance, { origin: "http://elsewhere.example", protocols })).status,
-    ).toBe(101);
+    ).toBe(401);
+    // Nothing to compare is not an exemption from comparing: every gate has to
+    // be passed.
+    expect((await handshake(instance, { origin: null, protocols })).status).toBe(401);
     expect((await handshake(instance, { protocols })).status).toBe(101);
   });
 

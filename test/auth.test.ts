@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type CredentialRecord, PROTOCOL_VERSION } from "@ccmsg/protocol";
+import { type CredentialRecord, originOf, PROTOCOL_VERSION } from "@ccmsg/protocol";
 import { type Env, type Instance, isRunning, start } from "../src/instance/index.ts";
 import {
   Auth,
@@ -11,7 +11,6 @@ import {
   handleAuth,
   cookieName,
   cookiePath,
-  originOf,
   PREVIOUS_GRACE_MS,
   ACCESS_KEEP_MS,
   ACCESS_TTL_MS,
@@ -72,18 +71,24 @@ async function serving(
   return { instance: outcome, origin };
 }
 
-/** One `/auth/*` request, as the page would make it. */
+/** One `/auth/*` request, as the page would make it.
+ *
+ * The two headers a browser writes and a page's script cannot are stated as a
+ * browser states them: the origin the page was served from, and a fetch that
+ * did not come from outside a site (contract, DR-0029 / DR-0028). */
 async function post(
   at: { instance: Instance; origin: string },
   route: string,
   body: unknown,
-  init: { cookie?: string } = {},
+  init: { cookie?: string; origin?: string; site?: string | null } = {},
 ): Promise<Response> {
+  const site = init.site === undefined ? "same-origin" : init.site;
   return await fetch(`http://${at.instance.http[0] as string}/auth/${route}`, {
     method: "POST",
     headers: {
       "content-type": "application/json",
-      origin: at.origin,
+      origin: init.origin ?? at.origin,
+      ...(site === null ? {} : { "sec-fetch-site": site }),
       ...(init.cookie === undefined ? {} : { cookie: init.cookie }),
     },
     body: JSON.stringify(body ?? {}),
@@ -265,7 +270,7 @@ describe("authenticating and the tokens that follow (§2.4, §2.5)", () => {
     // The registration URL is what tells this instance which relying party its
     // pages belong to, and every `/auth/*` answer is bounded by that (§2.3).
     at.instance.auth.issue({ endpoint: servedAt(at) });
-    const first = await at.instance.auth.mint("someone");
+    const first = await at.instance.auth.mint("someone", servedAt(at));
     const name = cookieName(at.instance.self, "someone");
     const zero = `${name}=${first.refresh.value}`;
 
@@ -305,7 +310,7 @@ describe("authenticating and the tokens that follow (§2.4, §2.5)", () => {
       unit: "unit",
     });
     auth.issue({});
-    const minted = await auth.mint("someone");
+    const minted = await auth.mint("someone", "https://ui.example.com/");
     const name = cookieName(self, "someone");
 
     const refresh = async (value: string, body: unknown) =>
@@ -315,6 +320,7 @@ describe("authenticating and the tokens that follow (§2.4, §2.5)", () => {
           headers: {
             "content-type": "application/json",
             origin: "https://ui.example.com",
+            "sec-fetch-site": "same-origin",
             "user-agent": "a browser",
             cookie: `${name}=${value}`,
           },
@@ -461,7 +467,7 @@ describe("the access token is the family's, shared by the person's pages (§2.4)
       unit: "unit",
       now: () => now,
     });
-    const minted = await auth.mint("someone");
+    const minted = await auth.mint("someone", "https://ui.example.com/");
 
     // Two loads in a row, as two tabs would do: the refresh cookie turns over
     // each time, the token the open pages hold does not.
@@ -498,7 +504,7 @@ describe("a token reused after its grace fails the family (§2.4)", () => {
       ...deps,
       records: new AuthRecords({ dir, self, publish: () => {} }),
     });
-    const zero = (await before.mint("someone")).refresh.value;
+    const zero = (await before.mint("someone", "https://ui.example.com/")).refresh.value;
     const one = await before.rotate(zero);
     const two = await before.rotate(one.refresh.value);
     const [family] = new AuthRecords({ dir, self, publish: () => {} }).families();
@@ -524,7 +530,7 @@ describe("a token reused after its grace fails the family (§2.4)", () => {
       unit: "unit",
       now: () => now,
     });
-    const zero = (await auth.mint("someone")).refresh.value;
+    const zero = (await auth.mint("someone", "https://ui.example.com/")).refresh.value;
     const one = await auth.rotate(zero);
 
     // Inside the grace it is the retry it looks like, answered with the pair
@@ -668,14 +674,54 @@ describe("what a registration or an assertion is refused for", () => {
     );
   });
 
-  test("a POST carrying no Origin is refused", async () => {
+  test("an op that decides an identity is refused without either header", async () => {
+    // Both are written by the browser and neither can be by a page's script, so
+    // a caller stating nothing has not passed the gate rather than been let
+    // past it (contract, DR-0029 / DR-0028).
     const at = await serving();
-    const refused = await fetch(`http://${at.instance.http[0] as string}/auth/challenge`, {
+    const issued = at.instance.auth.issue({ endpoint: servedAt(at) });
+    const authenticator = new SoftAuthenticator(issued.rp_id);
+    const challenge = (await (await post(at, "challenge", {})).json()) as { challenge: string };
+    const body = {
+      token: issued.url.slice(issued.url.indexOf("#register=") + "#register=".length),
+      code: issued.code,
+      credential: await authenticator.create({
+        challenge: challenge.challenge,
+        origin: at.origin,
+        userId: issued.user_id,
+      }),
+    };
+    const noOrigin = await fetch(`http://${at.instance.http[0] as string}/auth/register`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "sec-fetch-site": "same-origin" },
+      body: JSON.stringify(body),
+    });
+    expect(noOrigin.status).toBe(403);
+    expect((await post(at, "register", body, { site: null })).status).toBe(403);
+    // `none` is a request the person typed in themselves rather than one a page
+    // made, which is not how any of these are reached.
+    expect((await post(at, "register", body, { site: "none" })).status).toBe(403);
+    // The same body, with what a browser would have written, is taken.
+    expect((await post(at, "register", body)).status).toBe(200);
+  });
+
+  test("a challenge is not held to those headers, and is still held to the CORS set", async () => {
+    // It is asked before there is anything to compare a caller with, and what it
+    // hands out can only be spent by its issuer against one of the three ops.
+    const at = await serving();
+    at.instance.auth.issue({ endpoint: servedAt(at) });
+    const bare = await fetch(`http://${at.instance.http[0] as string}/auth/challenge`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: "{}",
     });
-    expect(refused.status).toBe(403);
+    expect(bare.status).toBe(200);
+    const elsewhere = await fetch(`http://${at.instance.http[0] as string}/auth/challenge`, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: "http://elsewhere.example" },
+      body: "{}",
+    });
+    expect(elsewhere.status).toBe(403);
   });
 
   test("a browser that writes crossOrigin: false is admitted", async () => {
@@ -791,6 +837,7 @@ describe("the registration URL runs out (§2.2)", () => {
       public_key: "k",
       user_handle: "u",
       endpoint: "http://ui.example/",
+      webui: "http://ui.example/",
       registered_at: 1,
     });
     // A restart is a new Auth over the same records, and it must not hand the
@@ -803,8 +850,8 @@ describe("the registration URL runs out (§2.2)", () => {
 describe("extending a connection (§2.5)", () => {
   test("a token of one's own extends it, and somebody else's does not", async () => {
     const at = await serving();
-    const mine = await at.instance.auth.mint("me");
-    const theirs = await at.instance.auth.mint("them");
+    const mine = await at.instance.auth.mint("me", servedAt(at));
+    const theirs = await at.instance.auth.mint("them", servedAt(at));
     const client = await connectWs(at.instance.http[0] ?? "", mine.session.access.value);
     clients.push(client);
     client.send({ op: "hello.user", request_id: "1", protocol_version: PROTOCOL_VERSION });
@@ -834,7 +881,7 @@ describe("extending a connection (§2.5)", () => {
     // it really arrives on — the timer the connection was held with.
     let now = Date.now();
     const at = await serving({ now: () => now });
-    const minted = await at.instance.auth.mint("brief");
+    const minted = await at.instance.auth.mint("brief", servedAt(at));
     // Almost the whole life of the token has passed by the time the handshake
     // happens, so the connection is held with a deadline moments away.
     now = minted.session.access.expires_at - 60;
@@ -861,7 +908,7 @@ describe("what a peer's records may and may not do (§2.4, §2.6)", () => {
       endpoint: () => undefined,
       unit: "unit",
     });
-    const minted = await auth.mint("someone");
+    const minted = await auth.mint("someone", "https://ui.example.com/");
     const [family] = records.families();
     await records.fail(family?.key ?? "");
     expect(auth.admits(minted.session.access.value)).toBeUndefined();
@@ -885,6 +932,7 @@ describe("what a peer's records may and may not do (§2.4, §2.6)", () => {
       public_key: "k",
       user_handle: "u",
       endpoint: "http://ui.example/",
+      webui: "http://ui.example/",
       registered_at: 1,
     });
     const removal = await records.merge([
@@ -910,6 +958,7 @@ describe("what a peer's records may and may not do (§2.4, §2.6)", () => {
               public_key: "k",
               user_handle: "u",
               endpoint: "http://ui.example/",
+              webui: "http://ui.example/",
               registered_at: 1,
             },
           },
@@ -988,7 +1037,11 @@ describe("a credential is good for one endpoint (§2.3)", () => {
     // The same registration, posted where the URL said, is taken.
     const here = await fetch(`http://${at.instance.http[0] as string}/personal/auth/register`, {
       method: "POST",
-      headers: { "content-type": "application/json", origin: at.origin },
+      headers: {
+        "content-type": "application/json",
+        origin: at.origin,
+        "sec-fetch-site": "same-origin",
+      },
       body: JSON.stringify(body),
     });
     expect(here.status).toBe(200);
@@ -1018,7 +1071,8 @@ describe("where the registration URL points (§2.2)", () => {
     expect(servesPath("https://h.example/", "/")).toBe(true);
     expect(servesPath("https://h.example/", "/personal/")).toBe(false);
     // The origin is the other half, and says nothing about which of the two it
-    // is: both endpoints share it.
+    // is: both endpoints share it. It is read off a URL rather than kept
+    // (contract, `originOf`).
     expect(originOf("https://h.example/personal/")).toBe("https://h.example");
     expect(originOf("https://h.example/")).toBe("https://h.example");
   });
@@ -1035,5 +1089,154 @@ describe("where the registration URL points (§2.2)", () => {
     const issued = auth.issue({});
     expect(issued.url.startsWith("https://h.example/personal/#register=")).toBe(true);
     expect(issued.rp_id).toBe("h.example");
+    // The endpoint is what the UI is published at where none is named: an
+    // instance that serves its own is the ordinary case.
+    expect(issued.webui).toBe("https://h.example/personal/");
+  });
+
+  test("a web UI published elsewhere is where the URL sends the person", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ccmsg-auth-url-webui-"));
+    const self = "0".repeat(32);
+    const auth = new Auth({
+      self,
+      records: new AuthRecords({ dir, self, publish: () => {} }),
+      endpoint: () => "https://mba.example.ts.net/ccmsg/personal/",
+      unit: "unit",
+    });
+    const issued = auth.issue({ webui: "https://ui.example.test/ccmsg/" as never });
+    // Where the person goes is the UI; which instance the registration comes
+    // back to is inside the claims, and the two are not derivable from each
+    // other (contract, DR-0029).
+    expect(issued.url.startsWith("https://ui.example.test/ccmsg/#register=")).toBe(true);
+    expect(issued.endpoint).toBe("https://mba.example.ts.net/ccmsg/personal/");
+    // Both derived from the UI's URL, and neither kept beside it.
+    expect(issued.rp_id).toBe("ui.example.test");
+    expect(auth.knownOrigins()).toEqual(["https://ui.example.test"]);
+
+    // What is not a base URL is refused where it is typed, as an endpoint is.
+    expect(() => auth.issue({ webui: "https://ui.example.test/ccmsg" as never })).toThrow(
+      /base URL/,
+    );
+    expect(() => auth.issue({ webui: "https://UI.example.test/" as never })).toThrow(/base URL/);
+  });
+});
+
+describe("a credential is good from one web UI (DR-0029)", () => {
+  test("a page at another origin is refused, whatever it holds", async () => {
+    const at = await serving();
+    const { issued, authenticator } = await registered(at);
+    const challenge = (await (await post(at, "challenge", {})).json()) as {
+      challenge: string;
+      issuer: string;
+      expires_at: number;
+    };
+    const credential = await authenticator.get({
+      challenge: challenge.challenge,
+      origin: at.origin,
+    });
+    // The record names the page the credential was made at, and the browser's
+    // own word for where this one came from is held to it. A page elsewhere is
+    // refused before the signature is looked at — and so is one that says
+    // nothing, which the carrier refuses outright.
+    at.instance.auth.issue({ endpoint: servedAt(at), webui: "http://ui.example/" as never });
+    const elsewhere = await post(
+      at,
+      "assert",
+      { credential, challenge },
+      { origin: "http://ui.example" },
+    );
+    expect(elsewhere.status).toBe(401);
+    expect(((await elsewhere.json()) as { error: { code: string } }).error.code).toBe(
+      "auth_invalid",
+    );
+    // The same assertion from the page it was made at is taken.
+    expect((await post(at, "assert", { credential, challenge })).status).toBe(200);
+    expect(issued.webui).toBe(servedAt(at));
+  });
+
+  test("a handshake from another page does not open a connection", async () => {
+    const at = await serving();
+    const minted = await at.instance.auth.mint("someone", servedAt(at));
+    const address = at.instance.http[0] ?? "";
+    // Refused as an upgrade that does not happen: there is no connection yet to
+    // answer an error frame on.
+    expect(
+      connectWs(address, minted.session.access.value, { origin: "http://elsewhere.example" }),
+    ).rejects.toThrow();
+    const client = await connectWs(address, minted.session.access.value);
+    clients.push(client);
+    client.send({ op: "hello.user", request_id: "1", protocol_version: PROTOCOL_VERSION });
+    expect(await client.next()).toMatchObject({ ok: true });
+  });
+
+  test("the refresh cookie is partitioned where the page is at another site", async () => {
+    // Which site the page belongs to is what decides it, and nothing else: the
+    // same endpoint answers both people (DR-0028).
+    const dir = mkdtempSync(join(tmpdir(), "ccmsg-auth-cookie-site-"));
+    const self = "0".repeat(32);
+    const auth = new Auth({
+      self,
+      records: new AuthRecords({ dir, self, publish: () => {} }),
+      endpoint: () => "https://mba.example.test/",
+      unit: "unit",
+    });
+    const cookieFor = async (webui: string, sub: string): Promise<string> => {
+      // The instance answers for a page it holds a registration URL for, which
+      // is what an operator sending somebody to that UI has put there.
+      auth.issue({ webui: webui as never });
+      const minted = await auth.mint(sub, webui as never);
+      const name = cookieName(self, sub);
+      const answer = await handleAuth(
+        new Request("https://mba.example.test/auth/refresh", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            origin: originOf(webui),
+            "sec-fetch-site": "same-origin",
+            cookie: `${name}=${minted.refresh.value}`,
+          },
+          body: "{}",
+        }),
+        { auth, self },
+      );
+      expect(answer?.status).toBe(200);
+      return answer?.headers.get("set-cookie") ?? "";
+    };
+
+    const here = await cookieFor("https://mba.example.test/", "same-site");
+    expect(here).toContain("SameSite=Strict");
+    expect(here).not.toContain("Partitioned");
+
+    const across = await cookieFor("https://ui.example.test/ccmsg/", "cross-site");
+    expect(across).toContain("SameSite=None");
+    expect(across).toContain("Partitioned");
+    // Both are the browser's to keep and nobody's to read.
+    for (const cookie of [here, across]) {
+      expect(cookie).toContain("HttpOnly");
+      expect(cookie).toContain("Secure");
+    }
+  });
+
+  test("a credential written before the field existed is invalid rather than migrated", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ccmsg-auth-no-webui-"));
+    const self = "0".repeat(32);
+    const records = new AuthRecords({ dir, self, publish: () => {} });
+    const auth = new Auth({ self, records, endpoint: () => "https://h.example/", unit: "unit" });
+    // What an older instance wrote: an endpoint and no page. There is nothing
+    // to compare an origin with, and the contract has no migration for it — the
+    // person registers again (DR-0029).
+    await records.write("credential/old/abc", {
+      kind: "credential",
+      sub: "old",
+      credential_id: "abc",
+      public_key: "k",
+      user_handle: "u",
+      endpoint: "https://h.example/",
+      registered_at: 1,
+    } as never);
+    expect(auth.knownOrigins()).toEqual([]);
+    // It is still on the list a person reads back, which is how they find the
+    // line to remove.
+    expect(auth.list().map((record) => record.sub)).toEqual(["old"]);
   });
 });

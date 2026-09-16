@@ -140,11 +140,20 @@ export function writeConfigHome(
     // Every instance is an entry of the mesh, since that is where its own
     // address comes from: the port it states where it states one, and a name
     // of its own where a case is not about addresses at all.
-    const port = portOf(settings);
+    // Port 0 is a test asking the kernel for a free one, which is not an
+    // address anything can be published at: such an instance gets a name of its
+    // own, as one that states no port does.
+    const stated = portOf(settings);
+    const port = stated === 0 ? undefined : stated;
     rows.push({
       id,
       endpoint:
-        port === undefined ? `http://${name}.example/` : `http://127.0.0.1:${String(port)}/`,
+        port === undefined
+          ? // A name with an underscore is a label no host may carry, and an
+            // endpoint is held to the spelling a browser would write
+            // (contract, `Endpoint`).
+            `http://${name.replaceAll("_", "-")}.example/`
+          : `http://127.0.0.1:${String(port)}/`,
     });
     writeFileSync(
       join(configDir, "instances", `instance-${id}.ts`),

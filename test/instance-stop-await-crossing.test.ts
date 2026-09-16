@@ -78,7 +78,11 @@ describe("an instance's stop and a request already past the door", () => {
   ): Promise<Response | undefined> {
     const request = new Request(`http://${at.instance.http[0] as string}/auth/${route}`, {
       method: "POST",
-      headers: { "content-type": "application/json", origin: at.origin },
+      headers: {
+        "content-type": "application/json",
+        origin: at.origin,
+        "sec-fetch-site": "same-origin",
+      },
       body,
     });
     return at.instance.route(request, "127.0.0.1");
@@ -155,6 +159,10 @@ describe("an instance's stop and a request already past the door", () => {
     const bound = 200;
     const at = await serving(bound);
     const { instance } = at;
+    // The route answers for the pages this instance holds a registration URL
+    // for (contract, DR-0029), and the request has to get past that to be the
+    // one in flight this is about.
+    instance.auth.issue({ endpoint: `http://${instance.http[0] as string}/` });
 
     // Held open for longer than the stop will wait. The supervisor's graceful
     // stage is what the bound protects: one request must not be able to spend

@@ -222,7 +222,8 @@ async function startWith(
  * and no authenticator — so it asks the instance for a session directly, which
  * is what `/auth/assert` would have answered. */
 async function personToken(instance: Instance): Promise<string> {
-  return (await instance.auth.mint("test-person")).session.access.value;
+  return (await instance.auth.mint("test-person", `http://${instance.http[0] as string}/`)).session
+    .access.value;
 }
 
 /** The upstream section of an instance wired to a gateway both ways. */
