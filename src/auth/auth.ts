@@ -230,7 +230,8 @@ export class Auth {
     readonly label?: string;
     readonly sub?: Subject;
   }): IssuedRegistration {
-    const endpoint = options.endpoint ?? this.deps.endpoint();
+    const mine = this.deps.endpoint();
+    const endpoint = options.endpoint ?? mine;
     if (endpoint === undefined) {
       throw new OpError(
         "invalid_args",
@@ -241,6 +242,18 @@ export class Auth {
     // address that is not a base URL would be written into the record and be
     // compared, forever after, against a request that can never match it.
     this.#baseUrl("endpoint", EndpointSchema, endpoint);
+    // A registration URL names this instance's own endpoint and no other. The
+    // secret that signed it and the count of tries against the six digits are
+    // here, so a registration only ever completes here — a URL sending somebody
+    // to a neighbour would be one that cannot be spent where it points
+    // (contract, DR-0029). Stating one is for the instance the mesh names no
+    // address for, which has none of its own to use.
+    if (mine !== undefined && endpoint !== mine) {
+      throw new OpError(
+        "invalid_args",
+        `登録 URL が名乗れるのはこの instance の endpoint (${mine}) だけです`,
+      );
+    }
     // The page the credential will be made by. It defaults to the endpoint
     // because an instance that serves its own web UI is the ordinary case; a UI
     // published anywhere else is named here, and the URL a person is handed is
@@ -634,11 +647,10 @@ export class Auth {
     if (record === undefined) {
       throw new OpError("auth_invalid", "この credential は登録されていません");
     }
-    // A record from before a credential was held to a web UI names no page it
-    // may be used from, and there is nothing to compare an origin with. It is
-    // not a credential this contract can accept: the person registers again
-    // (contract, DR-0029), and `docs/runbooks/passkeys-webui-binding.md` is how
-    // the old one is taken off.
+    // A record naming no web UI names no page it may be used from, and there
+    // is nothing to compare an origin with. It is not a credential this
+    // contract can accept: the person registers again (contract, DR-0029), and
+    // `docs/runbooks/passkeys-webui-binding.md` is how it is taken off.
     const webui = webuiOf(record);
     // The endpoint the credential was registered for, and no other: two
     // instances may share a host, and this is what keeps one's credential from
@@ -711,14 +723,43 @@ export class Auth {
   /** Refuse an exchange that arrived somewhere other than the endpoint it is
    * about.
    *
-   * The path the request came in on is the carrier's observation, so a caller
-   * cannot state it. A carrier that does not observe one — the mesh, where the
-   * issuer is asked about a URL rather than posted to — states nothing and is
-   * not held to a path it never had. */
+   * Two halves, because an endpoint is a base URL and both parts of it say
+   * something (contract, DR-0029). The scheme and authority say which instance:
+   * a credential is replicated to every instance in the mesh, so without this a
+   * record made at one would be a way into its neighbour — the page, the
+   * ceremony and the relying party are all the first instance's and none of
+   * them would notice. The path says which of the instances published at one
+   * origin: `https://h/` and `https://h/personal/` are two.
+   *
+   * Design rationale: the authority compared is the one this instance is
+   * published at rather than one read off the request. A proxy in front of it
+   * terminates the TLS and rewrites the host, so what arrives says little about
+   * which URL was dialled, and which instance was meant is settled by the
+   * address the proxy forwarded to (DR-0001 §2.7) — which is this one. An
+   * instance the mesh names no address for has nothing to compare and is held
+   * to the path alone; it is reached at one address, its own socket's.
+   *
+   * The path is the carrier's observation, so a caller cannot state it. A
+   * carrier that observes none — the mesh, where the issuer is asked about a
+   * URL rather than posted to — states nothing and is not held to a path it
+   * never had. */
   #servedHere(endpoint: Endpoint, path: string | undefined): void {
-    if (path !== undefined && !servesPath(endpoint, path)) {
-      throw new OpError("auth_invalid", `この要求は ${endpoint} 宛ではありません`);
+    const mine = this.deps.endpoint();
+    if (mine !== undefined && originOf(endpoint) !== originOf(mine)) {
+      this.#log("an exchange named another instance's endpoint", { endpoint, mine });
+      throw refused();
     }
+    if (path !== undefined && !servesPath(endpoint, path)) {
+      this.#log("an exchange arrived under another path than its endpoint's", { endpoint, path });
+      throw refused();
+    }
+  }
+
+  /** Write down which check refused an exchange. The answer says only that it
+   * was refused (contract, DR-0029): the operator reading the log is the one
+   * who may know which gate it was, and the caller is not. */
+  #log(msg: string, fields: Record<string, unknown>): void {
+    this.deps.log?.(msg, fields);
   }
 
   /** Refuse an exchange that came from a page other than the web UI it is
@@ -738,7 +779,8 @@ export class Auth {
   #cameFrom(webui: WebUi, origin: string | null | undefined): void {
     if (origin === undefined) return;
     if (origin !== originOf(webui)) {
-      throw new OpError("auth_invalid", "この要求は登録された web UI の page からではありません");
+      this.#log("an exchange came from a page other than its web UI", { webui, origin });
+      throw refused();
     }
   }
 
@@ -761,6 +803,9 @@ export class Auth {
    * A credential with no web UI names no page and adds no origin; it is a
    * record this contract cannot accept, and the person registers again. */
   knownOrigins(): string[] {
+    // What has run out is not held any more, so its page is not one this
+    // instance answers for: the contract's set is the URLs still live.
+    this.#forget();
     const origins = new Set<string>();
     for (const record of this.deps.records.credentials()) {
       if (record.webui !== undefined) origins.add(originOf(record.webui));
@@ -1255,16 +1300,20 @@ export function servesPath(endpoint: Endpoint, path: string): boolean {
 
 /** The web UI a credential or a family names.
  *
- * A record written before credentials were held to a web UI has none, and
- * there is no value to compare an origin or a relying party with. The contract
- * has no migration for it: the record is invalid and the person registers
- * again (DR-0029). */
+ * A record that names none has no value to compare an origin or a relying
+ * party with. The contract has no migration for it: the record is invalid and
+ * the person registers again (DR-0029). */
 function webuiOf(held: { webui?: WebUi }): WebUi {
-  if (held.webui === undefined) {
-    throw new OpError(
-      "auth_invalid",
-      "この登録は web UI を持たないので使えません。登録し直してください",
-    );
-  }
+  if (held.webui === undefined) throw refused();
   return held.webui;
+}
+
+/** How every one of these binding checks answers.
+ *
+ * One refusal for all of them, saying that the exchange was not accepted and
+ * not which gate it failed: what a caller learns from "the page was wrong"
+ * rather than "the endpoint was" is which value to try next (contract,
+ * DR-0029). */
+function refused(): OpError {
+  return new OpError("auth_invalid", "この要求は受け付けられません");
 }
