@@ -122,21 +122,6 @@ export async function handleAuth(
   if (origin !== null && !deps.auth.knownOrigins().includes(origin)) {
     return new Response("Forbidden", { status: 403 });
   }
-  // The three ops that decide an identity are held to two headers a page's own
-  // script cannot write: an `Origin`, which is compared with the web UI the
-  // claims or the record name, and a `Sec-Fetch-Site` that is anything but
-  // `none`. Either one absent is a mismatch and not an exemption — every gate
-  // has to be passed, and a caller with nothing to compare has not passed it
-  // (contract, DR-0029 / DR-0028).
-  //
-  // `auth.challenge` is not among them: it is asked before there is anything to
-  // compare a caller with, and what it hands out can only be spent by its
-  // issuer against one of the three. It answers the CORS set like the rest.
-  if (route !== "challenge" && request.method !== "OPTIONS") {
-    if (origin === null) return new Response("Forbidden", { status: 403 });
-    const site = request.headers.get("sec-fetch-site");
-    if (site === null || site === "none") return new Response("Forbidden", { status: 403 });
-  }
   const cors: Record<string, string> =
     origin === null
       ? {}
@@ -145,6 +130,28 @@ export async function handleAuth(
           "access-control-allow-credentials": "true",
           vary: "Origin",
         };
+  // The three ops that decide an identity are held to two headers a page's own
+  // script cannot write: an `Origin`, which the op compares with the web UI the
+  // claims or the record name, and a `Sec-Fetch-Site` that is anything but
+  // `none`. Either one absent is a mismatch and not an exemption — every gate
+  // has to be passed, and a caller with nothing to compare has not passed it.
+  // The answer is the one every binding gives, saying that the exchange was
+  // refused and not which gate refused it; which one is written to the log,
+  // where the operator rather than the caller reads it (contract, DR-0029 /
+  // DR-0028).
+  //
+  // `auth.challenge` is not among them: it is asked before there is anything to
+  // compare a caller with, and what it hands out can only be spent by its
+  // issuer against one of the three. It answers the CORS set like the rest.
+  if (route !== "challenge" && request.method !== "OPTIONS") {
+    const site = request.headers.get("sec-fetch-site");
+    const missing =
+      origin === null ? "Origin" : site === null || site === "none" ? "Sec-Fetch-Site" : undefined;
+    if (missing !== undefined) {
+      deps.log?.("an auth request states no page it came from", { route, header: missing, site });
+      return refusal("auth_invalid", "この要求は受け付けられません", cors);
+    }
+  }
   if (request.method === "OPTIONS") {
     return new Response(null, {
       status: 204,
