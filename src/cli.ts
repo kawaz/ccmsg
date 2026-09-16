@@ -252,9 +252,13 @@ const ROOT: Command = {
             {
               name: "add",
               summary: "登録用 URL と 6 桁コードを 1 組発行する (10 分で失効)",
-              usage: "ccmsg daemon passkey add <unit> [endpoint] [--name <ラベル>]",
+              usage: "ccmsg daemon passkey add <unit> [endpoint] [--webui <URL>] [--name <ラベル>]",
               options: [
                 ["[endpoint]", "登録先の公開 base URL (末尾 /)。既定はこの instance の endpoint"],
+                [
+                  "--webui <URL>",
+                  "URL で人を送る先の webui の base URL (末尾 /)。既定は endpoint 自身",
+                ],
                 ["--name <ラベル>", "誰宛に発行した URL かの管理ラベル"],
               ],
               run: (args) => passkeyAdd(args),
@@ -1057,18 +1061,23 @@ async function passkeyAsk(unit: string | undefined, request: Record<string, unkn
  * anything the instance hands out — so that holding the URL is not enough to
  * register (DR-0001 §2.2). */
 async function passkeyAdd(args: readonly string[]): Promise<unknown> {
-  const parsed = options(args, ["name"]);
+  const parsed = options(args, ["name", "webui"]);
   const [unit, endpoint] = parsed.rest;
   if (unit === undefined) {
     throw new CommandError(
       "invalid_args",
-      "使い方: ccmsg daemon passkey add <unit> [endpoint] [--name <ラベル>]",
+      "使い方: ccmsg daemon passkey add <unit> [endpoint] [--webui <URL>] [--name <ラベル>]",
     );
   }
   const name = parsed.named.get("name");
+  // Where the URL sends the person. An instance that serves its own web UI
+  // needs none of this; one whose UI is published elsewhere names it, and the
+  // credential is made at that page and usable from nowhere else (DR-0029).
+  const webui = parsed.named.get("webui");
   return await passkeyAsk(unit, {
     admin: "passkey_add",
     ...(endpoint === undefined ? {} : { endpoint }),
+    ...(webui === undefined ? {} : { webui }),
     ...(name === undefined ? {} : { name }),
   });
 }

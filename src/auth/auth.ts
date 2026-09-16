@@ -21,14 +21,18 @@ import type {
   Subject,
   Timestamp,
   TokenFamily,
+  WebUi,
 } from "@ccmsg/protocol";
 import {
   AUTH_CHALLENGE_TTL_MS,
   AuthResolveResult as AuthResolveResultSchema,
   AuthRotateResult as AuthRotateResultSchema,
   Endpoint as EndpointSchema,
+  originOf,
   REGISTER_TTL_MS,
+  rpIdOf,
   validationErrors,
+  WebUi as WebUiSchema,
 } from "@ccmsg/protocol";
 import { type HandlerInput, OpError, type Requester } from "../dispatch/index.ts";
 import { AuthRecords, credentialKey, familyKey } from "./records.ts";
@@ -146,6 +150,9 @@ export interface AuthDeps {
 export interface MintedSession {
   readonly session: AuthSession;
   readonly refresh: { readonly value: Base64Url; readonly expires_at: Timestamp };
+  /** The web UI the family is held to, which is what the carrier reads to know
+   * whether its cookie crosses sites (DR-0028). */
+  readonly webui: WebUi;
 }
 
 /** What is known about the client that asked for a refresh: its own word for
@@ -171,6 +178,13 @@ export interface IssuedRegistration {
   readonly user_id: Base64Url;
   readonly expires_at: Timestamp;
   readonly endpoint: Endpoint;
+  /** Where the URL sends the person, which is the page the credential will be
+   * made by. */
+  readonly webui: WebUi;
+  /** The relying party the page will create the credential under, read off the
+   * web UI's URL (contract, `rpIdOf`). Stated so the command that issued the
+   * URL can show what the browser will be asked for; it is a derived value and
+   * is kept nowhere. */
   readonly rp_id: string;
 }
 
@@ -192,6 +206,13 @@ export class Auth {
     return this.deps.records;
   }
 
+  /** Where this instance is published, for the carrier that has to know which
+   * site its cookie belongs to (DR-0028). Absent on an instance the mesh names
+   * no address for, which is one that serves the unix socket alone. */
+  endpoint(): Endpoint | undefined {
+    return this.deps.endpoint();
+  }
+
   #now(): Timestamp {
     return (this.deps.now ?? Date.now)();
   }
@@ -205,6 +226,7 @@ export class Auth {
    * terminal this ran on. Somebody holding the URL alone cannot register. */
   issue(options: {
     readonly endpoint?: Endpoint;
+    readonly webui?: WebUi;
     readonly label?: string;
     readonly sub?: Subject;
   }): IssuedRegistration {
@@ -215,21 +237,20 @@ export class Auth {
         "この instance には endpoint が無いので、登録先の URL を引数で渡してください",
       );
     }
-    // An operator types this one, so it is read here rather than trusted: an
+    // An operator types these, so they are read here rather than trusted: an
     // address that is not a base URL would be written into the record and be
     // compared, forever after, against a request that can never match it.
-    const problems = validationErrors(EndpointSchema, endpoint);
-    if (problems.length > 0) {
-      throw new OpError(
-        "invalid_args",
-        `endpoint は末尾が / の http(s) base URL です (${endpoint}): ${problems.join("; ")}`,
-      );
-    }
-    // The relying party is the endpoint's own host and nothing wider. A
-    // registrable suffix of it would make the credential usable at every other
-    // host under that suffix, and there is no deployment this instance supports
-    // where that is what was wanted (DR-0001 §2.3).
-    const rpId = hostOf(endpoint);
+    this.#baseUrl("endpoint", EndpointSchema, endpoint);
+    // The page the credential will be made by. It defaults to the endpoint
+    // because an instance that serves its own web UI is the ordinary case; a UI
+    // published anywhere else is named here, and the URL a person is handed is
+    // that UI's rather than this instance's (contract, `RegisterClaims.webui`).
+    const webui = (options.webui ?? endpoint) as WebUi;
+    this.#baseUrl("webui", WebUiSchema, webui);
+    // The relying party and the origin are both read off that URL, every time
+    // they are needed, rather than settled here and carried (contract,
+    // `originOf` / `rpIdOf`).
+    const rpId = rpIdOf(webui);
     const sub = options.sub ?? this.#nextSubject();
     if (this.deps.records.removed(sub)) {
       throw new OpError("forbidden", `${sub} は削除済みなので、この名前では登録できません`);
@@ -240,7 +261,7 @@ export class Auth {
       sub,
       unit: this.deps.unit,
       endpoint,
-      rp_id: rpId,
+      webui,
       expires_at: at + REGISTER_TTL_MS,
       jti: randomBytes(16).toString("base64url"),
       user_id: this.#userIdFor(sub),
@@ -251,13 +272,28 @@ export class Auth {
     this.#pending.set(claims.jti, { claims, secret, code, attempts: 0 });
     return {
       sub,
-      url: `${endpoint}#register=${sign(claims, secret)}`,
+      // The web UI is where the person is sent; the endpoint is named inside
+      // the claims, because the registration has to come back to the instance
+      // that holds the secret and the code (contract, DR-0029).
+      url: `${webui}#register=${sign(claims, secret)}`,
       code,
       user_id: claims.user_id,
       expires_at: claims.expires_at,
       endpoint,
+      webui,
       rp_id: rpId,
     };
+  }
+
+  /** Read one base URL an operator stated, in the contract's own spelling. */
+  #baseUrl(name: string, schema: Parameters<typeof validationErrors>[0], url: string): void {
+    const problems = validationErrors(schema, url);
+    if (problems.length > 0) {
+      throw new OpError(
+        "invalid_args",
+        `${name} は末尾が / の http(s) base URL です (${url}): ${problems.join("; ")}`,
+      );
+    }
   }
 
   /** The WebAuthn user handle this subject is known by.
@@ -437,7 +473,7 @@ export class Auth {
    * here, by whoever the browser reached (DR-0001 §2.6). */
   async register(
     args: AuthRegisterArgs,
-    from: { ip?: string; userAgent?: string; path?: string } = {},
+    from: { ip?: string; userAgent?: string; path?: string; origin?: string | null } = {},
   ): Promise<MintedSession> {
     // What the URL says about itself, before anything has vouched for it. It is
     // read to know which relying party the credential should have been made
@@ -448,6 +484,10 @@ export class Auth {
     // registration posted to a neighbour sharing the host is a registration at
     // an instance the URL never named (contract, `CredentialRecord.endpoint`).
     this.#servedHere(stated.endpoint, from.path);
+    // The page has to be the one the URL sends people to. What the carrier
+    // observed of it is held to the same value the ceremony is (contract,
+    // DR-0029), and a request that states no origin has not passed this gate.
+    this.#cameFrom(stated.webui, from.origin);
     // What the page answered, verified before anything is spent: a challenge is
     // good once, so consuming it for a message that then fails to verify would
     // let a caller burn challenges without ever holding a credential (m9).
@@ -455,8 +495,8 @@ export class Auth {
     const verified = refusable(() =>
       verifyRegistration(args.credential, {
         challenge,
-        origin: originOf(stated.endpoint),
-        rpId: stated.rp_id,
+        origin: originOf(stated.webui),
+        rpId: rpIdOf(stated.webui),
       }),
     );
     // A key nothing can verify with is a credential that can never be used, and
@@ -470,8 +510,12 @@ export class Auth {
     // party the credential was actually checked against has to be the one the
     // issuer authorized.
     const claims = await this.#claimsOf(args);
-    if (claims.rp_id !== stated.rp_id) {
-      throw new OpError("auth_invalid", "登録 URL が名乗る relying party が一致しません");
+    // The ceremony was verified against what the token said about itself, so
+    // the two have to be the same two URLs the issuer authorized: a credential
+    // checked against one web UI and written down under another would be a
+    // record that says something nobody checked.
+    if (claims.webui !== stated.webui || claims.endpoint !== stated.endpoint) {
+      throw new OpError("auth_invalid", "登録 URL が名乗る宛先が一致しません");
     }
     if (this.deps.records.removed(claims.sub)) {
       throw new OpError("forbidden", `${claims.sub} は削除済みです`);
@@ -492,7 +536,7 @@ export class Auth {
       public_key: verified.publicKey,
       user_handle: claims.user_id,
       endpoint: claims.endpoint,
-      rp_id: claims.rp_id,
+      webui: claims.webui,
       sign_count: verified.signCount,
       // What the authenticator said about backing this credential up, kept
       // because it decides what removing the line costs the person and nothing
@@ -515,7 +559,7 @@ export class Auth {
       at,
     );
     if (!written) throw new OpError("forbidden", `${claims.sub} は削除済みです`);
-    return this.mint(claims.sub);
+    return this.mint(claims.sub, claims.webui);
   }
 
   /** What a registration URL authorized.
@@ -584,16 +628,25 @@ export class Auth {
 
   async assert(
     args: AuthAssertArgs,
-    from: { ip?: string; userAgent?: string; path?: string } = {},
+    from: { ip?: string; userAgent?: string; path?: string; origin?: string | null } = {},
   ): Promise<MintedSession> {
     const record = this.deps.records.credential(args.credential.raw_id);
     if (record === undefined) {
       throw new OpError("auth_invalid", "この credential は登録されていません");
     }
+    // A record from before a credential was held to a web UI names no page it
+    // may be used from, and there is nothing to compare an origin with. It is
+    // not a credential this contract can accept: the person registers again
+    // (contract, DR-0029), and `docs/runbooks/passkeys-webui-binding.md` is how
+    // the old one is taken off.
+    const webui = webuiOf(record);
     // The endpoint the credential was registered for, and no other: two
     // instances may share a host, and this is what keeps one's credential from
     // being a way into the other (contract, `CredentialRecord.endpoint`).
     this.#servedHere(record.endpoint, from.path);
+    // Which page the credential may be used from, held to the same value the
+    // ceremony inside it is (contract, DR-0029).
+    this.#cameFrom(webui, from.origin);
     // A resident credential answers with the handle it was created against,
     // which is how a person is found without having named an account. It is
     // held to what the registration settled: a handle naming somebody else is
@@ -618,8 +671,8 @@ export class Auth {
         },
         {
           challenge: args.challenge.challenge,
-          origin: originOf(record.endpoint),
-          rpIds: this.#rpIdFor(record),
+          origin: originOf(webui),
+          rpIds: [rpIdOf(webui)],
         },
       ),
     );
@@ -652,7 +705,7 @@ export class Auth {
       at,
     );
     if (!written) throw new OpError("forbidden", `${standing.sub} は削除済みです`);
-    return this.mint(standing.sub);
+    return this.mint(standing.sub, webuiOf(standing));
   }
 
   /** Refuse an exchange that arrived somewhere other than the endpoint it is
@@ -668,50 +721,69 @@ export class Auth {
     }
   }
 
-  /** The relying party an assertion is checked against.
+  /** Refuse an exchange that came from a page other than the web UI it is
+   * about.
    *
-   * The one the credential was registered under, which the record carries: a
-   * passkey only ever answers for the domain it was made under, and the
-   * endpoint being reached says nothing about that (DR-0001 §2.3). Nothing is widened
-   * to a suffix, and a record from before the field existed names the host of
-   * the endpoint it was registered for. */
-  #rpIdFor(record: CredentialRecord): string[] {
-    return [record.rp_id ?? hostOf(record.endpoint)];
+   * The `Origin` is the browser's own word for where the page was served from,
+   * which its script cannot write, and it is compared with the origin read off
+   * the web UI the claims or the record name. A request that states none is a
+   * mismatch rather than an exemption: every gate has to be passed, and a
+   * caller with nothing to compare has not passed this one (contract,
+   * DR-0029).
+   *
+   * `undefined` is a carrier that observes no header at all — the mesh, where
+   * the issuer is asked about a URL rather than posted to — and is not held to
+   * one it never had. `null` is an HTTP request that carried none.
+   */
+  #cameFrom(webui: WebUi, origin: string | null | undefined): void {
+    if (origin === undefined) return;
+    if (origin !== originOf(webui)) {
+      throw new OpError("auth_invalid", "この要求は登録された web UI の page からではありません");
+    }
   }
 
-  /** The origins whose pages may read these answers: this instance's own, the
-   * ones its credentials were registered at, and the ones its outstanding
-   * registration URLs were issued for.
+  /** The origins whose pages may read these answers: the web UIs this
+   * instance's credentials were made at, and the ones its outstanding
+   * registration URLs name (contract, DR-0029).
    *
-   * Its own is there because a browser may land here holding a URL another
-   * instance issued — the page it runs the exchange from is then this
-   * instance's, and the issuer is only asked to spend the URL (DR-0001 §2.6).
+   * Nothing is configured and no list is kept: a registration is what adds an
+   * origin and the removal of the last credential at one is what takes it away.
+   * The URLs this instance holds are the other half, and the only half, of how
+   * a first registration at a new web UI is answered at all — there is no
+   * credential naming it yet. They are this instance's own knowledge and
+   * travel nowhere, so a registration only completes where it was issued.
    *
-   * Read by the HTTP carrier, which compares them whole (DR-0001 §2.3). Not the relying
-   * party: an RP ID is a domain, so a page at any host under it would be let in
-   * — and `/auth/refresh` answers a cookie the browser attaches by domain, so a
-   * sibling subdomain admitted here would read a person's access token. What
-   * this instance serves is its endpoints, so its endpoints are the answer. */
+   * Read by the HTTP carrier, which compares them whole. Not the relying party:
+   * an RP ID is a domain, so a page at any host under it would be let in — and
+   * the refresh route answers a cookie the browser attaches by domain, so a
+   * sibling subdomain admitted here would read a person's access token.
+   *
+   * A credential with no web UI names no page and adds no origin; it is a
+   * record this contract cannot accept, and the person registers again. */
   knownOrigins(): string[] {
     const origins = new Set<string>();
     for (const record of this.deps.records.credentials()) {
-      origins.add(originOf(record.endpoint));
+      if (record.webui !== undefined) origins.add(originOf(record.webui));
     }
-    for (const held of this.#pending.values()) origins.add(originOf(held.claims.endpoint));
-    const endpoint = this.deps.endpoint();
-    if (endpoint !== undefined) origins.add(originOf(endpoint));
+    for (const held of this.#pending.values()) origins.add(originOf(held.claims.webui));
     return [...origins];
   }
 
   // --- tokens (DR-0001 §2.4) ---
 
-  /** Make a family for this person, minted by this instance. */
-  async mint(sub: Subject): Promise<MintedSession> {
+  /** Make a family for this person, minted by this instance.
+   *
+   * The web UI comes from the credential that answered and is carried on the
+   * family: a token says who the person is and nothing about what is holding
+   * it, and this is what a connection presenting it is then held to (contract,
+   * `TokenFamily.webui`). */
+  async mint(sub: Subject, webui: WebUi): Promise<MintedSession> {
     const at = this.#now();
     const family: TokenFamily = {
       kind: "token_family",
       sub,
       iss: this.deps.self,
+      webui,
       access: { value: token(), expires_at: at + ACCESS_TTL_MS },
       refresh: { value: token(), expires_at: at + REFRESH_TTL_MS },
     };
@@ -721,7 +793,7 @@ export class Auth {
     // admits, so the refusal is the answer.
     const written = await this.deps.records.write(familyKey(sub, id), family, at);
     if (!written) throw new OpError("forbidden", `${sub} は削除済みです`);
-    return { session: { sub, access: family.access }, refresh: family.refresh };
+    return { session: { sub, access: family.access }, refresh: family.refresh, webui };
   }
 
   /** Rotate a family from a refresh token, wherever it was minted.
@@ -730,7 +802,10 @@ export class Auth {
    * a family minted elsewhere is carried there rather than done here — two
    * instances rotating one family in parallel would merge by last write and
    * read exactly like a stolen token being replayed (DR-0001 §2.4). */
-  async refreshToken(value: Base64Url, from: RefreshFrom = {}): Promise<MintedSession> {
+  async refreshToken(
+    value: Base64Url,
+    from: RefreshFrom & { origin?: string | null } = {},
+  ): Promise<MintedSession> {
     const held = this.deps.records.byRefresh(value);
     if (held === undefined) {
       // Not the standing generation, nor the one before it. Either it never was
@@ -739,6 +814,10 @@ export class Auth {
       await this.#refuseReuse(value);
       throw new OpError("auth_invalid", "この refresh token は使えません");
     }
+    // The page asking is held to the family's own web UI, as the handshake
+    // that presents its access token is (contract, DR-0029).
+    const webui = webuiOf(held.body);
+    this.#cameFrom(webui, from.origin);
     if (held.body.iss !== this.deps.self) {
       // What the carrier observed goes with the value: the person is at the
       // other end of this instance's connection and not the issuer's, so these
@@ -757,10 +836,18 @@ export class Auth {
         } satisfies AuthRotateArgs,
         AuthRotateResultSchema,
       );
-      return { session: { sub: answer.sub, access: answer.access }, refresh: answer.refresh };
+      return {
+        session: { sub: answer.sub, access: answer.access },
+        refresh: answer.refresh,
+        webui,
+      };
     }
     const rotated = await this.rotate(value, from);
-    return { session: { sub: rotated.sub, access: rotated.access }, refresh: rotated.refresh };
+    return {
+      session: { sub: rotated.sub, access: rotated.access },
+      refresh: rotated.refresh,
+      webui,
+    };
   }
 
   /** A value that works nowhere. If it was once some family's, the family is
@@ -818,6 +905,7 @@ export class Auth {
       kind: "token_family",
       sub: held.body.sub,
       iss: this.deps.self,
+      webui: webuiOf(held.body),
       access,
       refresh: { value: token(), expires_at: at + REFRESH_TTL_MS },
       // Written by this instance because it is the family's `iss`, and only for
@@ -876,11 +964,18 @@ export class Auth {
 
   // --- connections (DR-0001 §2.5) ---
 
-  /** Whether an access token opens a connection, and until when. */
-  admits(access: Base64Url): { sub: Subject; expiresAt: Timestamp } | undefined {
+  /** Whether an access token opens a connection, until when, and from which
+   * page.
+   *
+   * The web UI is stated so the handshake can hold the browser's `Origin` to
+   * it: a token says who the person is and nothing about what is holding it,
+   * and the family it belongs to is where that is written down (contract,
+   * `TokenFamily.webui`). A family with none names no page, so nothing it
+   * minted opens a connection. */
+  admits(access: Base64Url): { sub: Subject; expiresAt: Timestamp; webui: WebUi } | undefined {
     const family = this.deps.records.byAccess(access);
-    if (family === undefined) return undefined;
-    return { sub: family.sub, expiresAt: family.access.expires_at };
+    if (family === undefined || family.webui === undefined) return undefined;
+    return { sub: family.sub, expiresAt: family.access.expires_at, webui: family.webui };
   }
 
   /** Take a connection an access token opened, and close it when the token runs
@@ -1113,6 +1208,18 @@ export function claimsOf(token: string): RegisterClaims {
   ) {
     throw new OpError("auth_invalid", "登録 URL の token に発行者がありません");
   }
+  // The two URLs are read before anything has vouched for them — an origin and
+  // a relying party are derived from one of them to verify the ceremony with —
+  // so they are held to the contract's spelling here rather than handed to a
+  // URL parser that would fault on a caller's string.
+  for (const [name, schema, url] of [
+    ["endpoint", EndpointSchema, held.endpoint],
+    ["webui", WebUiSchema, held.webui],
+  ] as const) {
+    if (validationErrors(schema, url).length > 0) {
+      throw new OpError("auth_invalid", `登録 URL の token の ${name} が base URL ではありません`);
+    }
+  }
   return held as RegisterClaims;
 }
 
@@ -1132,11 +1239,6 @@ function challengeIn(clientDataJson: Base64Url): Base64Url {
   return challenge;
 }
 
-/** The host an endpoint names, which is the relying party by default (DR-0001 §2.3). */
-export function hostOf(endpoint: Endpoint): string {
-  return new URL(endpoint).hostname;
-}
-
 /** Whether a request that arrived at this path was made to this endpoint.
  *
  * The endpoint's own path, compared exactly: `https://h/` and
@@ -1151,8 +1253,18 @@ export function servesPath(endpoint: Endpoint, path: string): boolean {
   return new URL(endpoint).pathname === path;
 }
 
-/** The origin an endpoint is served from, which is what a browser writes into
- * `clientDataJSON.origin`. */
-export function originOf(endpoint: Endpoint): string {
-  return new URL(endpoint).origin;
+/** The web UI a credential or a family names.
+ *
+ * A record written before credentials were held to a web UI has none, and
+ * there is no value to compare an origin or a relying party with. The contract
+ * has no migration for it: the record is invalid and the person registers
+ * again (DR-0029). */
+function webuiOf(held: { webui?: WebUi }): WebUi {
+  if (held.webui === undefined) {
+    throw new OpError(
+      "auth_invalid",
+      "この登録は web UI を持たないので使えません。登録し直してください",
+    );
+  }
+  return held.webui;
 }

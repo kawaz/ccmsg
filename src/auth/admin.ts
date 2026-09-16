@@ -1,4 +1,4 @@
-import type { Endpoint, Subject } from "@ccmsg/protocol";
+import type { Endpoint, Subject, WebUi } from "@ccmsg/protocol";
 import { failure, OpError, reply, type DispatchResult } from "../dispatch/index.ts";
 import type { Auth } from "./auth.ts";
 
@@ -18,6 +18,10 @@ export type AdminRequest =
       readonly admin: "passkey_add";
       readonly request_id: string;
       readonly endpoint?: Endpoint;
+      /** Where the URL sends the person: the base URL the web UI is published
+       * at. Absent on an instance that serves its own, where the endpoint is
+       * that URL (contract, `RegisterClaims.webui`). */
+      readonly webui?: WebUi;
       readonly name?: string;
       readonly sub?: Subject;
     }
@@ -73,6 +77,7 @@ export async function handleAdmin(
           request.request_id,
           auth.issue({
             ...(request.endpoint === undefined ? {} : { endpoint: request.endpoint }),
+            ...(request.webui === undefined ? {} : { webui: request.webui }),
             ...(request.name === undefined ? {} : { label: request.name }),
             ...(request.sub === undefined ? {} : { sub: request.sub }),
           }),
