@@ -112,11 +112,12 @@ export async function handleAuth(
   const route = authRouteOf(url.pathname);
   if (route === undefined) return undefined;
   const origin = request.headers.get("origin");
-  // A page from an origin this instance is not one of is refused before
+  // A page at an origin none of this instance's web UIs are is refused before
   // anything else, including the preflight that would tell it to try. Compared
-  // whole rather than by domain: `/auth/refresh` answers with a person's access
-  // token, and a browser attaches the cookie it is asked for by domain, so a
-  // sibling subdomain let in here could read that token (DR-0001 §2.3).
+  // whole rather than by domain: the refresh route answers with a person's
+  // access token, and a browser attaches the cookie it is asked for by domain,
+  // so a sibling subdomain let in here could read that token (contract,
+  // DR-0029).
   if (origin !== null && !deps.auth.knownOrigins().includes(origin)) {
     return new Response("Forbidden", { status: 403 });
   }
