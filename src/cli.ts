@@ -254,7 +254,10 @@ const ROOT: Command = {
               summary: "登録用 URL と 6 桁コードを 1 組発行する (10 分で失効)",
               usage: "ccmsg daemon passkey add <unit> [endpoint] [--webui <URL>] [--name <ラベル>]",
               options: [
-                ["[endpoint]", "登録先の公開 base URL (末尾 /)。既定はこの instance の endpoint"],
+                [
+                  "[endpoint]",
+                  "この instance の公開 base URL (末尾 /)。mesh に載っていない instance だけ指定する",
+                ],
                 [
                   "--webui <URL>",
                   "URL で人を送る先の webui の base URL (末尾 /)。既定は endpoint 自身",
