@@ -9,6 +9,7 @@ import {
   type RestartingEvent,
   type Sid,
   type Timestamp,
+  originOf,
 } from "@ccmsg/protocol";
 import {
   callerOf,
@@ -1204,11 +1205,10 @@ export class Instance {
 /** Who may reach the WebSocket at all (DESIGN §2.1): an address the operator named.
  *
  * An empty `source_ips` leaves the addresses to the bind, which for the default
- * loopback host is this machine. The `Origin` a request carries is not read:
- * a WebSocket is authorized by the access token it presents (DR-0001 §2.5), and
- * an allowlist of pages would be a second answer to a question the token has
- * already answered — one the operator has to keep in step with every URL the
- * instance is reached through.
+ * loopback host is this machine. No list of pages is configured: which page may
+ * hold a token is the token's own family to say, and the handshake compares the
+ * `Origin` with what that family names (contract, DR-0029) — an operator keeps
+ * nothing in step with it.
  *
  * The address does not say who came either. Every connection that is not a
  * peer's presents a token, and a handshake without one is refused rather than
@@ -1246,6 +1246,19 @@ function entryPolicy(
       const admitted = held?.admits(presented.slice(TOKEN_PROTOCOL.length));
       if (admitted === undefined) {
         return { ok: false, reason: "this access token is not accepted" };
+      }
+      // Which page is holding the token. The browser writes the `Origin` on an
+      // upgrade as it does on a request, and a page's own script cannot; the
+      // family the token belongs to names the web UI it was minted at, and a
+      // page from anywhere else is refused however good the token is. A
+      // handshake stating no `Origin` is refused the same way — every gate has
+      // to be passed, and a caller with nothing to compare has not passed this
+      // one (contract, DR-0029).
+      //
+      // Refused as an upgrade that does not happen: there is no connection yet
+      // to answer an error frame on.
+      if (request.headers.get("origin") !== originOf(admitted.webui)) {
+        return { ok: false, reason: "this connection is not from the page the token was made at" };
       }
       // The handshake echoes the subprotocol it selected: a browser fails a
       // connection whose reply names none of what it asked for.
