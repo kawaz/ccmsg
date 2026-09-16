@@ -31,6 +31,21 @@ const OP_OF: Record<Route, OpName> = {
   refresh: "auth.token.refresh",
 };
 
+/** What a `Sec-Fetch-Site` may say for one of these to be a page's request.
+ *
+ * The three relations a fetch made by a page has to the site it is going to
+ * (Fetch Metadata). The fourth value the specification defines, `none`, is a
+ * request with no initiator — what a person typing an address produces, and
+ * what a user-initiated operation does — which is not how any of these ops is
+ * reached. Named as the set that passes rather than as the one value that does
+ * not, so a value outside the specification is refused rather than admitted by
+ * having no rule against it.
+ *
+ * It is a gate and not a proof of a browser: what it shows is that a caller
+ * writing the header wrote one of the values a browser would (contract,
+ * DR-0028). */
+const FETCH_SITES = ["same-origin", "same-site", "cross-site"];
+
 /** Cap on an `/auth/*` body. Everything these take is a handful of base64url
  * fields; an attestation object is a few hundred bytes. */
 const MAX_BODY_BYTES = 64 * 1024;
@@ -132,23 +147,23 @@ export async function handleAuth(
         };
   // The three ops that decide an identity are held to two headers a page's own
   // script cannot write: an `Origin`, which the op compares with the web UI the
-  // claims or the record name, and a `Sec-Fetch-Site` that is anything but
-  // `none`. Either one absent is a mismatch and not an exemption — every gate
-  // has to be passed, and a caller with nothing to compare has not passed it.
-  // The answer is the one every binding gives, saying that the exchange was
-  // refused and not which gate refused it; which one is written to the log,
-  // where the operator rather than the caller reads it (contract, DR-0029 /
-  // DR-0028).
+  // claims or the record name, and a `Sec-Fetch-Site` naming one of the three
+  // relations a request made by a page can have to the site it went to. Either
+  // one absent is a mismatch and not an exemption — every gate has to be
+  // passed, and a caller with nothing to compare has not passed it. The answer
+  // is the one every binding gives, saying that the exchange was refused and
+  // not which gate refused it; which one is written to the log, where the
+  // operator rather than the caller reads it (contract, DR-0029 / DR-0028).
   //
   // `auth.challenge` is not among them: it is asked before there is anything to
   // compare a caller with, and what it hands out can only be spent by its
   // issuer against one of the three. It answers the CORS set like the rest.
   if (route !== "challenge" && request.method !== "OPTIONS") {
     const site = request.headers.get("sec-fetch-site");
-    const missing =
-      origin === null ? "Origin" : site === null || site === "none" ? "Sec-Fetch-Site" : undefined;
-    if (missing !== undefined) {
-      deps.log?.("an auth request states no page it came from", { route, header: missing, site });
+    const gate =
+      origin === null ? "Origin" : !FETCH_SITES.includes(site ?? "") ? "Sec-Fetch-Site" : undefined;
+    if (gate !== undefined) {
+      deps.log?.("an auth request states no page it came from", { route, header: gate, site });
       return refusal("auth_invalid", "この要求は受け付けられません", cors);
     }
   }

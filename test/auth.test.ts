@@ -724,11 +724,24 @@ describe("what a registration or an assertion is refused for", () => {
     });
     expect(await refusedFor(noOrigin)).toBe("auth_invalid");
     expect(await refusedFor(await post(at, "register", body, { site: null }))).toBe("auth_invalid");
-    // `none` is a request the person typed in themselves rather than one a page
-    // made, which is not how any of these are reached.
-    expect(await refusedFor(await post(at, "register", body, { site: "none" }))).toBe(
-      "auth_invalid",
-    );
+    // `none` is a request with no initiator — what a person typing an address
+    // produces — which is not how any of these is reached. So is a value the
+    // specification does not define: what passes is named, rather than what
+    // does not.
+    for (const site of ["none", "same-domain", "", "SAME-ORIGIN"]) {
+      expect(await refusedFor(await post(at, "register", body, { site }))).toBe("auth_invalid");
+    }
+    // The three relations a page's own fetch can have to where it went are what
+    // passes. Asked with a body the op's schema refuses, so that what is
+    // observed is the gate letting the request through rather than a
+    // registration being spent.
+    for (const site of ["same-origin", "same-site", "cross-site"]) {
+      const answer = await post(at, "register", {}, { site });
+      expect(answer.status).toBe(400);
+      expect(((await answer.json()) as { error: { code: string } }).error.code).toBe(
+        "invalid_args",
+      );
+    }
     // The same body, with what a browser would have written, is taken.
     expect((await post(at, "register", body)).status).toBe(200);
   });
