@@ -167,7 +167,7 @@ export class Topics {
     // value before it: a frame that replaces one instance's value supersedes
     // the one waiting under that instance's name, and nothing else does. The
     // rule is the same one suppression asks, read in one place (M5).
-    const fold = replaces(topic) ? `${topic} ${instance}` : undefined;
+    const fold = replaces(topic) ? `${topic}\u0000${instance}` : undefined;
     let outcome: PublishOutcome = "ok";
     for (const conn of this.#subscribers.get(topic) ?? []) {
       if (!holds(conn, to)) continue;
