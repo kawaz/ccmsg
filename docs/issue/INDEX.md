@@ -25,6 +25,7 @@ wire の契約は [kawaz/ccmsg-protocol](https://github.com/kawaz/ccmsg-protocol
 
 | date | category | status | slug | 概要 |
 |---|---|---|---|---|
+| 2026-09-16 | task | open | [dependency-update-visibility](./2026-09-16-dependency-update-visibility.md) | `tldts` (public suffix list を内蔵、same-site 判定に使用) のように更新を見逃すと挙動が古くな… |
 | 2026-09-16 | design | open | [dr-0008-inbox-snapshot-for-people](./2026-09-16-dr-0008-inbox-snapshot-for-people.md) | DR-0008 §2.5 は sid なし接続に空 snapshot と決めているが、実装は人に全 inbox を非消費 view で返す… |
 | 2026-09-16 | task | open | [dr-0001-superseded-by-contract-origin](./2026-09-16-dr-0001-superseded-by-contract-origin.md) | 契約 DR-0027/DR-0028 で DR-0001 の rp_id/cookie/WS Origin 節が置き換わる、実装反映と同じ commi… |
 | 2026-09-16 | design | open | [refresh-token-store-layer](./2026-09-16-refresh-token-store-layer.md) | refresh token (TokenFamily) のサーバ側置き場をストア層で抽象化する |
