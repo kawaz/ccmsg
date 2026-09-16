@@ -20,15 +20,7 @@
 
 ## 裁定待ち
 
-### CT-Q11 webui の origin と instance の endpoint を分けられるようにするか (契約 + daemon + webui)
-
-kawaz 2026-09-16: webui で開いている URL と接続先 endpoint は異なってよいはず。CORS / cookie / CSP / 攻撃の可能性まで含めて設計拡張を検討。
-
-層ごとの整理: WS 接続には CORS が効かず (ブラウザは `Origin` を送るだけ)、認証は subprotocol の token (契約は `Origin` を見ない)。HTTP の認証 op (passkey register / assert / token refresh) には CORS が効く。cookie は使っていないので cross-site cookie の問題は無い。webui の CSP `connect-src` は allowlist で build するか全許可。本質は信頼の向きが逆転すること (今: endpoint が配る webui を信じる → 分けると: どこかから読んだ webui のコードに自分の instance の token を渡す)。daemon で防げるのは origin 束縛と CORS allowlist まで。
-
-- [ ] a: 分ける。credential に hosting site の origin を持たせる。WebAuthn の制約 (passkey は `rpId` に束縛され、登録も認証も `rpId` が page の origin のドメインと一致する page でしか実行できない) から、credential ごとに origin は 1 つ (`rpId` = hosting origin のドメイン、instance は `{credential, origin, endpoint}` を保持。2 つの hosting site を使う人は credential も 2 つ)。`clientDataJSON.origin` は ceremony のたびに検証済みなので、record に origin を書くのは WebAuthn が既に持つ束縛を索引に写すだけ。WS の handshake は token の claims の origin と `Origin` ヘッダの一致で通し、HTTP 認証 op はその endpoint に登録済みの origin 集合で CORS に答える。一覧の管理 UI は不要 (登録した場所がそのまま許可)。webui は `connect-src` を allowlist で build (統括推し)
-- [ ] b: 分けない (endpoint が配る webui だけ)。現状維持
-- [ ] c: 分けるが origin 束縛は入れない (token だけ)。漏れた token を他 origin のページから使える経路が残る
+(なし)
 
 ## 確認待ち
 
