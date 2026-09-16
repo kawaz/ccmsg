@@ -1180,7 +1180,9 @@ describe("where the registration URL points (§2.2)", () => {
     // `http` at a host a browser does not treat as trustworthy, and an address
     // literal under either scheme.
     for (const webui of [
+      "http://example.com/",
       "http://ui.example.test/",
+      "https://10.0.0.1/",
       "https://198.51.100.9/",
       "https://[2001:db8::1]/",
       "http://198.51.100.9/",
@@ -1244,7 +1246,12 @@ describe("a credential is good from one web UI (DR-0029)", () => {
     );
     // The same assertion from the page it was made at is taken.
     expect((await post(at, "assert", { credential, challenge })).status).toBe(200);
+    // Which page that is: the endpoint itself, an instance serving its own web
+    // UI at the loopback address this host is certainly reached at. `http`
+    // there is what a ceremony runs at on the machine it is written on
+    // (contract, `WebUi`).
     expect(issued.webui).toBe(servedAt(at));
+    expect(issued.webui).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/$/);
   });
 
   test("a handshake from another page does not open a connection", async () => {
