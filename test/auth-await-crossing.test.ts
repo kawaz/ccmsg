@@ -22,8 +22,8 @@ import { trackRoot } from "./harness.ts";
 
 const SELF: InstanceId = "0".repeat(32);
 const PEER: InstanceId = "f".repeat(32);
-const ENDPOINT = "http://ui.example/" as const;
-const ORIGIN = "http://ui.example";
+const ENDPOINT = "https://ui.example/" as const;
+const ORIGIN = "https://ui.example";
 
 const roots: string[] = [];
 

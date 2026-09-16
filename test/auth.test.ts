@@ -840,7 +840,7 @@ describe("the registration URL runs out (§2.2)", () => {
     const auth = new Auth({
       self: "0".repeat(32),
       records: new AuthRecords({ dir, self: "0".repeat(32), publish: () => {}, now: () => now }),
-      endpoint: () => "http://ui.example/",
+      endpoint: () => "https://ui.example/",
       unit: "unit",
       now: () => now,
     });
@@ -868,7 +868,7 @@ describe("the registration URL runs out (§2.2)", () => {
     const deps = {
       self: "0".repeat(32),
       records,
-      endpoint: () => "http://ui.example/" as const,
+      endpoint: () => "https://ui.example/" as const,
       unit: "unit",
     };
     await records.write("credential/unit-3/abc", {
@@ -877,8 +877,8 @@ describe("the registration URL runs out (§2.2)", () => {
       credential_id: "abc",
       public_key: "k",
       user_handle: "u",
-      endpoint: "http://ui.example/",
-      webui: "http://ui.example/",
+      endpoint: "https://ui.example/",
+      webui: "https://ui.example/",
       registered_at: 1,
     });
     // A restart is a new Auth over the same records, and it must not hand the
@@ -972,8 +972,8 @@ describe("what a peer's records may and may not do (§2.4, §2.6)", () => {
       credential_id: "abc",
       public_key: "k",
       user_handle: "u",
-      endpoint: "http://ui.example/",
-      webui: "http://ui.example/",
+      endpoint: "https://ui.example/",
+      webui: "https://ui.example/",
       registered_at: 1,
     });
     const removal = await records.merge([
@@ -998,8 +998,8 @@ describe("what a peer's records may and may not do (§2.4, §2.6)", () => {
               credential_id: "abc",
               public_key: "k",
               user_handle: "u",
-              endpoint: "http://ui.example/",
-              webui: "http://ui.example/",
+              endpoint: "https://ui.example/",
+              webui: "https://ui.example/",
               registered_at: 1,
             },
           },
@@ -1163,6 +1163,55 @@ describe("where the registration URL points (§2.2)", () => {
     );
     expect(() => auth.issue({ webui: "https://UI.example.test/" as never })).toThrow(/base URL/);
   });
+
+  test("a web UI is a URL a ceremony can run at, which is narrower than an endpoint", () => {
+    // The authenticator's rules rather than this instance's taste: a ceremony
+    // needs a secure context, and a relying party is a domain. A URL no
+    // ceremony can run at would be a credential that could never have been made
+    // (contract, `WebUi`).
+    const dir = mkdtempSync(join(tmpdir(), "ccmsg-auth-webui-domain-"));
+    const self = "0".repeat(32);
+    const auth = new Auth({
+      self,
+      records: new AuthRecords({ dir, self, publish: () => {} }),
+      endpoint: () => "https://mba.example.test/",
+      unit: "unit",
+    });
+    // `http` at a host a browser does not treat as trustworthy, and an address
+    // literal under either scheme.
+    for (const webui of [
+      "http://ui.example.test/",
+      "https://198.51.100.9/",
+      "https://[2001:db8::1]/",
+      "http://198.51.100.9/",
+    ]) {
+      expect(() => auth.issue({ webui: webui as never })).toThrow(/base URL/);
+    }
+    // `https` anywhere, and `http` on the loopback names, which is what makes a
+    // web UI runnable on the machine it is being written on.
+    for (const webui of [
+      "https://ui.example.test/ccmsg/",
+      "http://localhost:3000/",
+      "http://127.0.0.1:8080/",
+      "http://[::1]:8080/",
+    ]) {
+      expect(auth.issue({ webui: webui as never }).webui).toBe(webui);
+    }
+    // An endpoint is not held to any of that: it is dialled rather than opened,
+    // so an address literal is an address like any other.
+    const dialled = new Auth({
+      self,
+      records: new AuthRecords({ dir, self, publish: () => {} }),
+      endpoint: () => undefined,
+      unit: "unit",
+    });
+    expect(
+      dialled.issue({
+        endpoint: "https://198.51.100.9/" as never,
+        webui: "https://ui.example.test/" as never,
+      }).endpoint,
+    ).toBe("https://198.51.100.9/");
+  });
 });
 
 describe("a credential is good from one web UI (DR-0029)", () => {
@@ -1182,12 +1231,12 @@ describe("a credential is good from one web UI (DR-0029)", () => {
     // own word for where this one came from is held to it. A page elsewhere is
     // refused before the signature is looked at — and so is one that says
     // nothing, which the carrier refuses outright.
-    at.instance.auth.issue({ endpoint: servedAt(at), webui: "http://ui.example/" as never });
+    at.instance.auth.issue({ endpoint: servedAt(at), webui: "https://ui.example/" as never });
     const elsewhere = await post(
       at,
       "assert",
       { credential, challenge },
-      { origin: "http://ui.example" },
+      { origin: "https://ui.example" },
     );
     expect(elsewhere.status).toBe(401);
     expect(((await elsewhere.json()) as { error: { code: string } }).error.code).toBe(
