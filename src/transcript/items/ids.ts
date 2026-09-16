@@ -14,7 +14,10 @@ import { fields as fieldsOf, type Item } from "./item.ts";
 export function ledger(items: readonly Item[]): DumpIds {
   const found = new Map<string, DumpIdEntry>();
   const note = (entry: DumpIdEntry): void => {
-    const at = `${entry.kind}\u0000${entry.id}`;
+    // The kind is one of a fixed set of words and carries no `|` (contract,
+    // `DumpIdKind`), so the first one is where the key divides — an id, which
+    // may be anything a harness wrote, cannot make two pairs read alike.
+    const at = `${entry.kind}|${entry.id}`;
     const known = found.get(at);
     // A later sighting of the same id is a later state of it — an agent seen
     // running and then finished — so what it says is taken over what was known

@@ -75,7 +75,11 @@ export class SandboxGrants {
   ): Promise<SandboxGrantResult> {
     const at = await this.paths.locate(args, viewer);
     const root = at.kind === "external" ? at.real : dirname(at.real);
-    const scope = `${args.sid}\u0000${at.kind}\u0000${root}`;
+    // The two halves that are held to a spelling come first — a session id is
+    // a uuid and a kind is one of three words (contract, `Sid` / `PathKind`) —
+    // so the first two `|` are where the key divides and the root, which is a
+    // path and may carry anything, is what is left.
+    const scope = `${args.sid}|${at.kind}|${root}`;
     const existing = this.#live(this.#byScope.get(scope), now);
     const grant: Grant = existing ?? {
       gid: newGid(),
