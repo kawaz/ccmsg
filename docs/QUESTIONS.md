@@ -20,26 +20,7 @@
 
 ## 裁定待ち
 
-### CT-Q13 DR-0027 / DR-0028 の監査で出た 3 点 (契約 + daemon)
-
-fable-high の監査 (`/tmp/contract-origin-audit.md`) で、裁定の文からは決まらない点が 3 つ。α / β / γ は独立。
-
-α: **`Origin` を送らない client が access token で接続してきた時**。DR-0027 の案は「非 browser client は束縛の対象外」だが、access token で開く接続は browser の person client だけ (CLI は UDS) なので、免除すると却下案 c (origin 束縛なし) が非 browser に限って復活する。
-
-- [ ] α-a: `Origin` 不在は不一致として upgrade を拒否する (統括推し。token を持つのは browser だけなので免除する相手が居ない)
-- [ ] α-b: 不在は束縛の対象外として通す (DR-0027 の現状)
-
-β: **既存の credential record (origin フィールドが無い) の扱い**。契約は `origin` 必須なので古い record は `auth.records` で schema に落ちる。
-
-- [ ] β-a: 契約は必須のまま、daemon が読む時に不在の `origin` を endpoint の origin で埋める (統括推し。旧 record は page origin = endpoint の時に登録されたものなので推測ではなく事実。`rp_id` の Optional も同じ扱いで外せる)
-- [ ] β-b: 契約側で `origin` を Optional にして不在は endpoint の origin とみなす (契約に旧形式の名残が残る)
-- [ ] β-c: 旧 record を捨てて登録し直す (4 instance とも kawaz の手元なので可能だが、設計としては a で足りる)
-
-γ: **CORS の許可集合に足した「生きている登録 URL が名指す origin」を、受け手 instance が知る手段**。preflight と最初の `auth.challenge` は登録 token を運ばず、DR-0021 は登録 URL の検査を発行者だけに限り、DR-0020 の複製 record は credential / family の 2 種だけ。endpoint の後ろに複数 instance (LB) が居ると、発行者以外は登録 URL の origin を知らない。
-
-- [ ] γ-a: 登録 URL は発行 instance の endpoint を名指し、登録はその instance にしか届かない前提を DR に明記する (統括推し。今の運用は 1 endpoint = 1 instance で、LB 下の複数 instance は設計に無い。要る時に複製を足す)
-- [ ] γ-b: 未消費の登録 (token と origin) も複製 record に加える (DR-0020 の 2 種を 3 種に)
-
+(なし)
 
 ## 確認待ち
 
