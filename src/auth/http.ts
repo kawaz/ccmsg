@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { getDomain } from "tldts";
 import {
   type AuthAssertArgs,
   type AuthTokenRefreshArgs,
@@ -291,22 +292,26 @@ function setCookie(deps: AuthRoutesDeps, url: URL, minted: MintedSession): Recor
 /** Whether the page and this endpoint are one site, which is what decides
  * whether the refresh cookie ever crosses one (DR-0028).
  *
- * A site is a scheme and a registrable domain, and the registrable part of a
- * host is only knowable from the public suffix list — which this instance does
- * not carry, and which would be a table to keep current for a value read on
- * every exchange. Hosts are compared whole instead: equal hosts are one site
- * under any suffix list, and anything else is treated as another one.
+ * A site is a scheme and a registrable domain, and which part of a host is
+ * registrable is only knowable from the public suffix list — the same list the
+ * browser deciding whether to send this cookie reads, so this instance reads it
+ * too rather than approximating it. The list's private section is included,
+ * because a browser includes it: `a.github.io` and `b.github.io` are two sites
+ * to one, and a cookie set as though they were one would simply not be sent.
  *
- * Design rationale: the approximation errs one way only. Two hosts under one
- * registrable domain (`ui.example.net` and `mba.example.net`) are one site and
- * are read here as two, so their cookie is partitioned where it need not have
- * been — which a browser still sends, the partition being that same site. The
- * opposite mistake, reading two sites as one and setting a cookie that crosses
- * between them unpartitioned, cannot be made. */
+ * A host with no registrable domain — an address literal, `localhost`, a name
+ * under no public suffix — falls back to the host itself, which is the finest
+ * thing that can be said about it and the safe one: two such hosts are two
+ * sites unless they are the same host. */
 function sameSite(webui: string, endpoint: string): boolean {
   const page = new URL(webui);
   const here = new URL(endpoint);
-  return page.protocol === here.protocol && page.hostname === here.hostname;
+  if (page.protocol !== here.protocol) return false;
+  return siteOf(page.hostname) === siteOf(here.hostname);
+}
+
+function siteOf(host: string): string {
+  return getDomain(host, { allowPrivateDomains: true }) ?? host;
 }
 
 function answer(

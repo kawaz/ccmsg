@@ -1171,13 +1171,16 @@ describe("a credential is good from one web UI (DR-0029)", () => {
 
   test("the refresh cookie is partitioned where the page is at another site", async () => {
     // Which site the page belongs to is what decides it, and nothing else: the
-    // same endpoint answers both people (DR-0028).
+    // same endpoint answers every one of these people (DR-0028). A site is a
+    // scheme and a registrable domain, read off the same public suffix list the
+    // browser reads — including its private section, which is what makes two
+    // hosts under one of those suffixes two sites.
     const dir = mkdtempSync(join(tmpdir(), "ccmsg-auth-cookie-site-"));
     const self = "0".repeat(32);
     const auth = new Auth({
       self,
       records: new AuthRecords({ dir, self, publish: () => {} }),
-      endpoint: () => "https://mba.example.test/",
+      endpoint: () => "https://mba.example.net/",
       unit: "unit",
     });
     const cookieFor = async (webui: string, sub: string): Promise<string> => {
@@ -1187,7 +1190,7 @@ describe("a credential is good from one web UI (DR-0029)", () => {
       const minted = await auth.mint(sub, webui as never);
       const name = cookieName(self, sub);
       const answer = await handleAuth(
-        new Request("https://mba.example.test/auth/refresh", {
+        new Request("https://mba.example.net/auth/refresh", {
           method: "POST",
           headers: {
             "content-type": "application/json",
@@ -1203,18 +1206,59 @@ describe("a credential is good from one web UI (DR-0029)", () => {
       return answer?.headers.get("set-cookie") ?? "";
     };
 
-    const here = await cookieFor("https://mba.example.test/", "same-site");
-    expect(here).toContain("SameSite=Strict");
-    expect(here).not.toContain("Partitioned");
-
-    const across = await cookieFor("https://ui.example.test/ccmsg/", "cross-site");
-    expect(across).toContain("SameSite=None");
-    expect(across).toContain("Partitioned");
-    // Both are the browser's to keep and nobody's to read.
-    for (const cookie of [here, across]) {
+    const strict = async (webui: string, sub: string): Promise<boolean> => {
+      const cookie = await cookieFor(webui, sub);
+      // Whichever it is, it is the browser's to keep and nobody's to read.
       expect(cookie).toContain("HttpOnly");
       expect(cookie).toContain("Secure");
-    }
+      if (cookie.includes("SameSite=Strict")) {
+        expect(cookie).not.toContain("Partitioned");
+        return true;
+      }
+      expect(cookie).toContain("SameSite=None");
+      expect(cookie).toContain("Partitioned");
+      return false;
+    };
+
+    // The endpoint's own page, and another host under the same registrable
+    // domain: one site, so the cookie is not partitioned.
+    expect(await strict("https://mba.example.net/", "itself")).toBe(true);
+    expect(await strict("https://ui.example.net/ccmsg/", "sibling")).toBe(true);
+    // Another registrable domain is another site.
+    expect(await strict("https://example.org/ccmsg/", "elsewhere")).toBe(false);
+    // And so is a host under a public suffix that is not this endpoint's: the
+    // list's private section is what says `a.github.io` and `b.github.io` are
+    // two sites rather than two hosts of one.
+    expect(await strict("https://a.github.io/", "pages")).toBe(false);
+  });
+
+  test("two hosts under one public suffix are two sites to the cookie as well", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ccmsg-auth-cookie-suffix-"));
+    const self = "0".repeat(32);
+    const auth = new Auth({
+      self,
+      records: new AuthRecords({ dir, self, publish: () => {} }),
+      endpoint: () => "https://b.github.io/",
+      unit: "unit",
+    });
+    auth.issue({ webui: "https://a.github.io/" as never });
+    const minted = await auth.mint("neighbour", "https://a.github.io/" as never);
+    const name = cookieName(self, "neighbour");
+    const answer = await handleAuth(
+      new Request("https://b.github.io/auth/refresh", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          origin: "https://a.github.io",
+          "sec-fetch-site": "cross-site",
+          cookie: `${name}=${minted.refresh.value}`,
+        },
+        body: "{}",
+      }),
+      { auth, self },
+    );
+    expect(answer?.status).toBe(200);
+    expect(answer?.headers.get("set-cookie")).toContain("Partitioned");
   });
 
   test("a credential written before the field existed is invalid rather than migrated", async () => {
