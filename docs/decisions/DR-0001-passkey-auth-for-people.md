@@ -24,7 +24,7 @@ WS の入口は entry token (state ディレクトリの 0600 file) で守って
 
 `ccmsg daemon passkey add <unit> [endpoint]` で登録用の一意 URL を 1 つ発行する。認証の単位は **登録時の endpoint URL** で、別のホスト (alias / LB 名) から入りたければその endpoint で登録し直す (passkey を複数ホストで使い回す構成は持たない)。`unit` は instance (= config home) の名前。`endpoint` は省略で起動時に確定した自分の endpoint、指定すれば利用者が proxy で用意した任意の URL (別名の追加登録用)。mesh を持たない instance は endpoint を持たないので、指定が要る。
 
-- URL は `<endpoint>#register=<jwt>` (webui は endpoint の直下に配られている)。claims は `{ iss (instance id), sub, unit, endpoint, rp_id, exp (10 分), jti }`。`sub` は利用者の識別子で既定は `<unit>-<連番>`
+- URL は `<webui>#register=<jwt>` で、人を送る先が webui。claims は `{ iss (instance id), sub, unit, endpoint, webui, exp (10 分), jti, user_id }`。webui の既定は endpoint 自身 (自分で webui を配る通常形)、別の場所に配られているなら `passkey add --webui <URL>` で名指す。`sub` は利用者の識別子で既定は `<unit>-<連番>`
 - 署名は **登録ごとの乱数 secret による HMAC** (検証者 = 発行者なので公開鍵は要らない)。secret は発行 instance のメモリにだけ置き `exp` で破棄する。永続鍵は持たない
 - webui は `/auth/challenge` で challenge を取り、`navigator.credentials.create()` (`residentKey: "preferred"`、`userVerification: "required"`、`user.id` = jwt の `user_id` (発行 instance が sub ごとに決める乱数 16 byte。record に保存し、認証の `userHandle` と照合する)、`rp.id` = jwt の `rp_id`) を行い、credential と jwt を jwt の `endpoint` の `/auth/register` に POST する
 - 受けた instance は `iss` が自分なら HMAC で jwt を検証する (`jti` と challenge の消費は WebAuthn 検証が通った後。ブラウザ側の一時的な失敗 1 回で URL が焼けないように)。WebAuthn 登録の検証 (L2 §7.1): `clientDataJSON.type` = `webauthn.create`、`challenge` = 発行した値、`origin` が claims の `endpoint` の origin と完全一致、`crossOrigin` が `true` でないこと (Chrome 系は常に `false` を送る) と `topOrigin` が無いこと、`authData.rpIdHash` = sha256(`rp_id`)、UP と UV の flag、`fmt` = `none` で `attStmt` が空、credential id が既存 record と重複しないこと。通ったら `{ sub, unit, credential id, COSE 公開鍵, user.id, 登録時刻 }` を **credential record** として保存する。`iss` が自分でなければ `iss` へ転送する (§2.6)
@@ -37,9 +37,11 @@ WS の入口は entry token (state ディレクトリの 0600 file) で守って
 
 - **ホスト PC の FIDO 承認**: 発行 instance は `/auth/register` を受けても完了せず保留し、`passkey add` を実行中の CLI に登録内容 (名前 / 端末 / コード / 時刻) を提示して OS の生体認証 (macOS は LocalAuthentication) を要求、CLI からの承認で完了する。離席中の第三者による登録を防ぐ。承認の起点を CLI に置くのは、登録がローカルに閉じている §2.2 の性質をそのまま延ばすため
 
-### 2.3 RP ID は endpoint のホスト
+### 2.3 credential が何に縛られるか
 
-WebAuthn の RP ID は origin ではなく domain で、passkey は「今開いているページの effective domain か、その registrable suffix」でしか作成・利用できない。`rp_id` は登録時の endpoint のホストで、webui はその endpoint と同じホストから配られる (通常形)。`clientDataJSON.origin` は record の `endpoint` の origin と**完全一致**で検査する (rp_id の suffix では判定しない)。config に origin の一覧は持たない。認証は record の `endpoint` (base URL 全体、パス prefix 込み) に束ねる: `clientDataJSON.origin` が endpoint の origin と一致し、request が届いた URL のパス prefix が endpoint のパスと一致すること。`https://h.example/` と `https://h.example/personal/` は別の endpoint で、それぞれ登録する (mesh-peer-auth の `iss` / `aud` が origin でなく URL 完全一致なのと同じ粒度)。
+> Superseded: 契約 `ccmsg-protocol` の DR-0029 (credential は endpoint と webui の 2 つに縛られ、比べる値はどちらも URL から導く) に置き換わった。
+
+credential は endpoint (どの instance に入ってよいか) と webui (どの page から来てよいか) の 2 つを持ち、origin と RP ID はその webui の URL から毎回導く (`originOf` / `rpIdOf`)。`rp_id` も origin も record には持たない。endpoint の束縛 (`https://h.example/` と `https://h.example/personal/` は別の endpoint で、それぞれ登録する) は変わらない。
 
 ### 2.4 token は record に紐づく opaque 値、family は単一 writer
 
@@ -51,8 +53,8 @@ WebAuthn の RP ID は origin ではなく domain で、passkey は「今開い�
 - **アクセストークンは family に 1 本で、その人が開いている複数のページ (タブ) が共有する。** rotate は refresh cookie を毎回回すが、アクセストークンは残り寿命が TTL の半分を切るまで据え置き、それ以降だけ mint し直す。毎回差し替えると、あるタブの読み込みが他のタブの持つトークンを無効にしてしまう (残り半分は、新しい値に気づくための猶予として最大に取れる閾値)
 - アクセストークンは数時間、リフレッシュトークンは数日。rotate は使うたび。family は退役した refresh 値のハッシュを本来の exp まで保持し、**どの世代の値でも再利用を見たら family を失効させる**。直前 1 世代だけは再送の猶予として (猶予時間内に限り) 前回の答えを返す
 - アクセストークンは WS の handshake に subprotocol `ccmsg.token.<値>` で載せる (サーバは選んだ subprotocol を echo する。proxy が `Sec-WebSocket-Protocol` を透過することが要件)。ブラウザはメモリにだけ持つ
-- リフレッシュトークンは **httpOnly cookie**。名前は `__Secure-ccmsg-<sha256(instance id + "\n" + sub) の先頭 16 hex>`、値は opaque、`HttpOnly; Secure; SameSite=Strict; Path=<request のパスから /auth/ までの prefix>`。`Path` は帯域と露出面を絞るためで認可境界ではない (同一 origin の JS は任意パスに fetch できる)
-- 認証と refresh は endpoint の `/auth/` 配下の HTTP (webui は endpoint と同一 origin に配られるので通常 CORS は発生しない。許可する origin は credential record / 未使用の登録 URL / 自分の endpoint の origin との**完全一致**だけで、rp_id の suffix では許可しない = 兄弟サブドメインのページが cookie 付きで `/auth/refresh` を叩き access token を読む穴を開けない。webui を endpoint と別サブドメインに置く構成は非対応)。状態を変える `/auth/*` は `Origin` がその集合に一致することを要求し、未認証で叩けるので rate limit を持つ (mesh-peer-auth §6 の鍵取得と同型)
+- リフレッシュトークンは **httpOnly cookie**。名前は `__Secure-ccmsg-<sha256(instance id + "\n" + sub) の先頭 16 hex>`、値は opaque、`Path=<request のパスから /auth/ までの prefix>`。`Path` は帯域と露出面を絞るためで認可境界ではない (同一 origin の JS は任意パスに fetch できる)。`SameSite` の決め方は契約 `ccmsg-protocol` の DR-0028 に置き換わった (webui と endpoint が same-site なら `SameSite=Strict`、cross-site なら `SameSite=None; Partitioned`。属性の組み立ては daemon の持ち物)
+- 認証と refresh は endpoint の `/auth/` 配下の HTTP。許可する origin の集合と、webui を endpoint と別の site に置く構成は契約 `ccmsg-protocol` の DR-0029 / DR-0028 に置き換わった (集合 = 登録済み credential の webui の origin + その instance 自身が発行して生きている登録 URL の webui の origin。identity を決める 3 op は `Origin` と `Sec-Fetch-Site` の 2 ヘッダに照らされ、どちらも不在は不一致)。未認証で叩けるので rate limit を持つ (mesh-peer-auth §6 の鍵取得と同型)
 - `https://h/` と `https://h/personal/` は別 endpoint なので登録も別で、cookie の Path (`/auth/` と `/personal/auth/`) も分かれる
 - 期限切れの family は `iss` が消す (単一 writer なので GC も担う)
 - LB で challenge の発行と応答の instance が違う時は、**応答を受けた instance が assertion を検証**し、challenge の消費だけを発行者へ問い合わせる。mint する family の `iss` は応答を受けた instance
@@ -87,7 +89,7 @@ tombstone: `passkey remove` は sub 単位の tombstone を credential と全 fa
 
 ### 2.8 entry token の廃止
 
-state ディレクトリの `entry.token` と subprotocol / `?token=` による照合は削除する。`entry.origins` も削除する (WS は access token で認可するので `Origin` を見る理由が無く、WebAuthn と CORS は record の endpoint の origin で束縛できる)。`entry` に残るのは bind (host / port) と `source_ips` だけ。UDS (到達 = 権限) / mesh (TLS + `iss`/`aud` + proof) / webhook (Bearer) は変わらない。
+state ディレクトリの `entry.token` と subprotocol / `?token=` による照合は削除する。`entry.origins` も削除する (設定に page の一覧は持たない)。WS が `Origin` を見ないという判断は契約 `ccmsg-protocol` の DR-0029 に置き換わった (upgrade は token の family が持つ webui の origin と照合し、`Origin` 不在も不一致として upgrade を拒否する)。`entry` に残るのは bind (host / port) と `source_ips` だけ。UDS (到達 = 権限) / mesh (TLS + `iss`/`aud` + proof) / webhook (Bearer) は変わらない。
 
 ### 2.9 契約の変更 (世代 3)
 
