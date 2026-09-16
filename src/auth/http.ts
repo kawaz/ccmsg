@@ -120,12 +120,20 @@ export async function handleAuth(
   if (origin !== null && !deps.auth.knownOrigins().includes(origin)) {
     return new Response("Forbidden", { status: 403 });
   }
-  // These routes change state and are reachable before anything is proven, so
-  // an `Origin` is required rather than merely compared (DR-0001 §2.4): a
-  // request carrying none is not a page this instance serves, and admitting it
-  // would leave the comparison above optional to whoever is making the call.
-  if (origin === null && request.method !== "OPTIONS") {
-    return new Response("Forbidden", { status: 403 });
+  // The three ops that decide an identity are held to two headers a page's own
+  // script cannot write: an `Origin`, which is compared with the web UI the
+  // claims or the record name, and a `Sec-Fetch-Site` that is anything but
+  // `none`. Either one absent is a mismatch and not an exemption — every gate
+  // has to be passed, and a caller with nothing to compare has not passed it
+  // (contract, DR-0029 / DR-0028).
+  //
+  // `auth.challenge` is not among them: it is asked before there is anything to
+  // compare a caller with, and what it hands out can only be spent by its
+  // issuer against one of the three. It answers the CORS set like the rest.
+  if (route !== "challenge" && request.method !== "OPTIONS") {
+    if (origin === null) return new Response("Forbidden", { status: 403 });
+    const site = request.headers.get("sec-fetch-site");
+    if (site === null || site === "none") return new Response("Forbidden", { status: 403 });
   }
   const cors: Record<string, string> =
     origin === null
@@ -179,6 +187,10 @@ export async function handleAuth(
     // compared against. Observed here rather than taken from the body: a caller
     // stating which instance it reached would be stating the answer.
     path: endpointPath(url.pathname),
+    // The browser's own word for where the page was served from, which the op
+    // holds to the web UI its claims or its record name. `null` is a request
+    // that carried none, which is a mismatch rather than an absent check.
+    origin,
   };
   try {
     switch (route) {
@@ -186,11 +198,11 @@ export async function handleAuth(
         return answer(deps.auth.challenge(), cors);
       case "register": {
         const minted = await deps.auth.register(args as unknown as AuthRegisterArgs, seen);
-        return answer(minted.session, cors, setCookie(deps, url.pathname, minted));
+        return answer(minted.session, cors, setCookie(deps, url, minted));
       }
       case "assert": {
         const minted = await deps.auth.assert(args as unknown as AuthAssertArgs, seen);
-        return answer(minted.session, cors, setCookie(deps, url.pathname, minted));
+        return answer(minted.session, cors, setCookie(deps, url, minted));
       }
       case "refresh": {
         const held = refreshCookie(request, deps);
@@ -202,8 +214,9 @@ export async function handleAuth(
           ...(reason === undefined ? {} : { reason }),
           ...(seen.ip === undefined ? {} : { ip: seen.ip }),
           ...(seen.userAgent === undefined ? {} : { userAgent: seen.userAgent }),
+          origin: seen.origin,
         });
-        return answer(minted.session, cors, setCookie(deps, url.pathname, minted));
+        return answer(minted.session, cors, setCookie(deps, url, minted));
       }
     }
   } catch (cause) {
@@ -246,23 +259,53 @@ function refreshCookie(request: Request, deps: AuthRoutesDeps): string | undefin
  * The refresh token is answered by the op to its caller rather than left in a
  * slot on the domain, so two exchanges in flight cannot hand one caller the
  * other's token. */
-function setCookie(
-  deps: AuthRoutesDeps,
-  pathname: string,
-  minted: MintedSession,
-): Record<string, string> {
+function setCookie(deps: AuthRoutesDeps, url: URL, minted: MintedSession): Record<string, string> {
   const name = cookieName(deps.self, minted.session.sub);
   const maxAge = Math.max(0, Math.floor((minted.refresh.expires_at - Date.now()) / 1000));
+  // Where this endpoint is published, which is the site the cookie belongs to.
+  // The configured address rather than the one observed: a proxy in front of
+  // this instance is what a browser actually reached, and the endpoint is what
+  // that address is (DESIGN §7.1). An instance the mesh names none for is
+  // reached at the address it was asked at.
+  const endpoint = deps.auth.endpoint() ?? url.origin;
   return {
     "set-cookie": [
       `${name}=${minted.refresh.value}`,
       "HttpOnly",
       "Secure",
-      "SameSite=Strict",
-      `Path=${cookiePath(pathname)}`,
+      ...(sameSite(minted.webui, endpoint)
+        ? ["SameSite=Strict"]
+        : // A page at another site: the browser sends this only as a cookie
+          // partitioned by the top-level site it was set under, which is what
+          // keeps a session taken at one site from being carried to another.
+          // A browser that does not partition is not an environment this is
+          // spoken over, so there is no second spelling for one (DR-0028).
+          ["SameSite=None", "Partitioned"]),
+      `Path=${cookiePath(url.pathname)}`,
       `Max-Age=${String(maxAge)}`,
     ].join("; "),
   };
+}
+
+/** Whether the page and this endpoint are one site, which is what decides
+ * whether the refresh cookie ever crosses one (DR-0028).
+ *
+ * A site is a scheme and a registrable domain, and the registrable part of a
+ * host is only knowable from the public suffix list — which this instance does
+ * not carry, and which would be a table to keep current for a value read on
+ * every exchange. Hosts are compared whole instead: equal hosts are one site
+ * under any suffix list, and anything else is treated as another one.
+ *
+ * Design rationale: the approximation errs one way only. Two hosts under one
+ * registrable domain (`ui.example.net` and `mba.example.net`) are one site and
+ * are read here as two, so their cookie is partitioned where it need not have
+ * been — which a browser still sends, the partition being that same site. The
+ * opposite mistake, reading two sites as one and setting a cookie that crosses
+ * between them unpartitioned, cannot be made. */
+function sameSite(webui: string, endpoint: string): boolean {
+  const page = new URL(webui);
+  const here = new URL(endpoint);
+  return page.protocol === here.protocol && page.hostname === here.hostname;
 }
 
 function answer(
