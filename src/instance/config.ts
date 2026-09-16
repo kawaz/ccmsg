@@ -7,7 +7,13 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, isAbsolute, join, relative } from "node:path";
-import { type DumpPreset, type Endpoint, TranscriptItemSelector } from "@ccmsg/protocol";
+import {
+  type DumpPreset,
+  type Endpoint,
+  Endpoint as EndpointSchema,
+  TranscriptItemSelector,
+  validationErrors,
+} from "@ccmsg/protocol";
 import { DEFAULT_HARNESS, type Harness, HARNESSES, isHarness } from "../harness/index.ts";
 import { ID } from "./identity.ts";
 import { parseCidr } from "./client.ts";
@@ -393,16 +399,19 @@ function readEndpoints(
       at(file, `${where}.id must be an instance id`);
       continue;
     }
-    if (typeof endpoint !== "string" || !ENDPOINT.test(endpoint)) {
+    const address = typeof endpoint === "string" ? normalized(endpoint) : undefined;
+    if (address === undefined) {
       at(file, `${where}.endpoint must be an http:// or https:// base URL ending in /`);
       continue;
     }
     if (rows.some((row) => row.id === id)) at(file, `${where}.id repeats ${id}`);
-    else if (rows.some((row) => row.endpoint === endpoint)) {
+    else if (rows.some((row) => row.endpoint === address)) {
       // Two entries at one address would each be this instance to whoever
       // dialled it, and neither could be told from the other (DESIGN §7.1).
-      at(file, `${where}.endpoint repeats ${endpoint}`);
-    } else rows.push({ id, endpoint: endpoint as Endpoint });
+      // Compared after both have been brought to the one spelling, so an
+      // address written twice in two ways is still one address.
+      at(file, `${where}.endpoint repeats ${address}`);
+    } else rows.push({ id, endpoint: address });
   }
   return rows;
 }
@@ -826,20 +835,45 @@ function flagOf(file: string, at: string, raw: unknown, fallback: boolean): bool
   return raw;
 }
 
-/** An endpoint as the contract spells it: the instance's public base URL, with
- * the trailing slash and no route of its own. What hangs below it — `ws`,
- * `mesh/*`, `auth/*`, `webhook/*` — is a route rather than part of the address
- * (contract, `Endpoint`). */
-const ENDPOINT = /^https?:\/\/[^\s?#]*\/$/;
+/** An endpoint as the contract spells it, or nothing.
+ *
+ * The contract holds an endpoint to one spelling per address, because every use
+ * of it is a comparison: the trailing slash, a lowercase scheme and host, a
+ * punycode spelling of an international one, and the scheme's own port left out
+ * (contract, `Endpoint`). What an operator writes is brought to that spelling
+ * here rather than refused for its case, and what cannot be brought to it —
+ * a route of its own, a query, a userinfo — is not an endpoint.
+ *
+ * Normalizing at the read is what keeps the rest of this instance comparing
+ * strings: a value that reached a record or a peer's handshake in a second
+ * spelling would never match the address it names. */
+export function normalized(raw: string): Endpoint | undefined {
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return undefined;
+  }
+  const address = `${url.origin}${url.pathname}`;
+  if (validationErrors(EndpointSchema, address).length > 0) return undefined;
+  // What the parser dropped on the way rather than spelled differently: a
+  // fragment, a query and a userinfo each say something about a request, and an
+  // address that carried one meant something this is not.
+  if (url.search !== "" || url.hash !== "" || url.username !== "" || url.password !== "") {
+    return undefined;
+  }
+  return address as Endpoint;
+}
 
 function endpointOf(file: string, at: string, raw: unknown): Endpoint {
-  if (typeof raw !== "string" || !ENDPOINT.test(raw)) {
+  const address = typeof raw === "string" ? normalized(raw) : undefined;
+  if (address === undefined) {
     throw new ConfigError(
       file,
       `${at} must be an http:// or https:// base URL ending in /, got ${String(raw)}`,
     );
   }
-  return raw as Endpoint;
+  return address;
 }
 
 /** `terminal_gateway`'s shape, matched to the contract's `HelloResult` so a
