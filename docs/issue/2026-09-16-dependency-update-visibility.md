@@ -23,7 +23,7 @@ origin: 自リポ TODO
 
 `tldts` (public suffix list を内蔵、same-site 判定に使用) のように更新を見逃すと挙動が古くなる依存があるので、パッケージ更新の見逃し防止を CI 周りに入れる。
 
-推し: Dependabot の `.github/dependabot.yml` (package-ecosystem bun、週次) で更新 PR を出す。CI を fail させる形 (`bun outdated` で落とす) は無関係な更新でも赤くなるので採らない。
+確定形 (kawaz 2026-09-16「ローカル実行時はすぐ直せるので完全に止めてよい」): ローカルの `just ci` (push の gate) に `bun outdated` を入れ、直接依存に更新があれば fail させる (その場で `bun update` して直す)。registry に到達できない時は fail させず「未確認」と表示して通す。推移依存は対象外。GitHub 側の CI は止めず、Dependabot の週次 PR (`.github/dependabot.yml`, package-ecosystem bun) で見える化する。
 
 ## 背景
 
@@ -33,5 +33,8 @@ origin: 自リポ TODO
 
 ## 受け入れ条件
 
+- [ ] ローカルの `just ci` に `bun outdated` チェックを追加し、直接依存の更新があれば fail させる
+- [ ] registry 到達不可時は fail させず「未確認」表示で通す
+- [ ] 推移依存は対象外とする
 - [ ] `.github/dependabot.yml` (package-ecosystem bun、週次) を追加し、更新 PR が出る状態にする
-- [ ] CI を fail させる形は採らない
+- [ ] GitHub 側の CI は fail させない
