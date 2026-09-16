@@ -44,3 +44,10 @@ DR-0008 の状態列を入れる作業中に `/tmp/dr-index-status-report.md` �
 - [ ] 正としなかった側を書き換える (DR を実装に合わせて改訂 or Superseded 注記、あるいは実装を空 snapshot に戻す)
 - [ ] `docs/DESIGN.md:564` の記述が最終的な正本と一致していることを確認する
 - [ ] `/tmp/dr-index-status-report.md` に列挙されている残り 4 件 (daemon 3 件 + 契約 1 件) をこの issue または別 issue に転記する
+
+## 同種の drift (実装が先に進み DR が古い。状態判定には効かせていない)
+
+- daemon DR-0006 §2.6: dump 形式の数が実装と違う
+- daemon DR-0009 §2.1: 分類の所在が実装と違う
+- daemon DR-0014 §2.1: 封筒の欄数が実装と違う
+- 契約 DR-0026 §2: `starting` の定義が実装より緩い。実装は `HARNESS_COMMANDS = ["claude", "codex"]` の argv0 判定で更に絞る。DR 本文に `HARNESS_COMMANDS` を書き足すのが筋 (契約リポ)
