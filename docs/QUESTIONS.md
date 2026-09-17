@@ -20,17 +20,13 @@
 
 ## 裁定待ち
 
-### WS-Q3〜Q4 webui の画面全体の状態機械 (webui DR-0004、💭 提案) の未決
+### WS-Q3 webui の画面全体の状態機械 (webui DR-0004、💭 提案) の未決
 
 webui `docs/decisions/DR-0004-one-state-machine-decides-what-the-screen-is.md` §7。8 つの姿 (offline / registering / authenticating / connecting / receiving / live / stale / outdated) を `phase` (computed 1 本) が答え、`App.tsx` は switch するだけ。各項の a が統括推し。
 
-WS-Q3 接続後 (`live`) に登録 URL を開いたら `live` を隠すか
-- [ ] a: 登録の画面を上に出し、`live` は後ろに残す (登録成功で endpoint を採るまでは切断しない。監査の修正と一致)
-- [ ] b: 今の挙動 (workspace ごと消える)
-
-WS-Q4 接続後のみの画面 (例 `/settings`) に未接続で来た時に URL を書き換えるか
-- [ ] a: 書き換えない。未接続の姿を出し、接続できたらその URL の画面へ (深いリンクを壊さない)
-- [ ] b: 書き換えてトップへ
+WS-Q3 接続済みで workspace を見ている最中に、同じタブで登録 URL (`…/#register=…`、例: 2 本目の passkey を足す) を開いたら画面をどうするか
+- [ ] a: 登録画面を上に重ね、workspace は後ろに残す。接続も切らない (画面にあるものを消さない)
+- [ ] b: 今の実装のまま、workspace を登録画面に置き換える (やめると戻る)
 
 
 ## 確認待ち
