@@ -22,8 +22,12 @@
 
 ### WU-Q3 webui のキーバインドの修飾キーの綴り (webui DR-0003 §5 Q4)
 
-kawaz 2026-09-17: 「Mod」は何のキーか分からない。ブラウザで区別できるもの、各エディタの慣習、表示の翻訳表、Command と Control をまとめてよいかを調査中 (webui `docs/research/2026-09-17-key-binding-notation.md`)。結果が出たら選択肢を再提示する。
+研究: webui `docs/research/2026-09-17-key-binding-notation.md`。Command と Control は論理 OR でまとめない (mac では別キー)。抽象指定は「今の platform の主要修飾子 1 つに解決」の意味 (Electron `CommandOrControl` / Zed `platform-`)。
 
+- [ ] a: `Primary` + 個別指定 (`Meta` / `Ctrl`) を併設。`Primary` は mac では Meta、他では Control の 1 つに解決。内部は `{ code, modifiers }`、入力は `Primary+Shift+KeyK` (`CmdOrCtrl` を入力の別名に)、表示は mac `⌘⇧K` / 他 `Ctrl+Shift+K`、照合は `KeyboardEvent.code`。悪い面: 抽象語 1 つを覚える、platform 解決の規則が内部に増える (統括推し)
+- [ ] b: OS 別の既定表 (`Meta+…` と `Ctrl+…` だけ、設定 section を OS ごとに)。悪い面: 同じ意図を二度書く、持ち運び時に欠落
+- [ ] c: 個別指定だけの単一表。悪い面: 同じ action に重複 binding、一覧が冗長
+- 正規名を `Primary` でなく `CmdOrCtrl` にする案もあり (長いが意味が自明)
 
 ## 確認待ち
 
