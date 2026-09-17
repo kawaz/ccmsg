@@ -20,7 +20,26 @@
 
 ## 裁定待ち
 
-(なし)
+### WS-Q1〜Q4 webui の画面全体の状態機械 (webui DR-0004、💭 提案) の未決
+
+webui `docs/decisions/DR-0004-one-state-machine-decides-what-the-screen-is.md` §7。8 つの姿 (offline / registering / authenticating / connecting / receiving / live / stale / outdated) を `phase` (computed 1 本) が答え、`App.tsx` は switch するだけ。各項の a が統括推し。
+
+WS-Q1 未接続の時に小さい設定 (言語 / light-dark) を置くか
+- [ ] a: 置かない。未接続は接続フォームと認証だけ。light / dark は OS 追従 (`color-scheme`) で足りる。設定は接続後のみ (接続バー issue の裁定と一致、DR-0003 の「未接続の子: 言語 / face の切替 (任意)」は削る)
+- [ ] b: 言語と light / dark の切替だけ未接続にも置く
+
+WS-Q2 `outdated` (契約の世代ずれ、再読み込みが要る) は後ろにある画面を隠すか
+- [ ] a: 隠す。終端の姿で、再読み込み以外にできることが無い (古い画面を触れると壊れた状態で操作させる)
+- [ ] b: 帯だけ出して後ろは残す
+
+WS-Q3 接続後 (`live`) に登録 URL を開いたら `live` を隠すか
+- [ ] a: 登録の画面を上に出し、`live` は後ろに残す (登録成功で endpoint を採るまでは切断しない。監査の修正と一致)
+- [ ] b: 今の挙動 (workspace ごと消える)
+
+WS-Q4 接続後のみの画面 (例 `/settings`) に未接続で来た時に URL を書き換えるか
+- [ ] a: 書き換えない。未接続の姿を出し、接続できたらその URL の画面へ (深いリンクを壊さない)
+- [ ] b: 書き換えてトップへ
+
 
 ## 確認待ち
 
