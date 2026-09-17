@@ -20,6 +20,34 @@
 
 ## 裁定待ち
 
+### CU-Q1〜Q6 契約 DR-0030 (identity はユーザ、instance は所有物、💭 提案) の未決
+
+契約 `docs/decisions/DR-0030-identity-is-a-user-who-owns-instances.md` §未決。各項の a が統括推し。
+
+CU-Q1 refresh の rotate をどの instance でもできるようにするか (HA で発行 instance が落ちている時)
+- [ ] a: 所有者の instance ならどこでも rotate できる。悪い面: 並行 rotate の世代競合を LWW で決めると、消えた側の提示が replay と区別できず family の失効が誤発火しうる (猶予中の前世代を複数許して緩めると replay 検知が弱まる)
+- [ ] b: 現行 (`iss` だけが書き、他は転送)。`iss` が落ちている間は refresh できず再 assert (UV) に落ちる
+
+CU-Q2 一覧 op の名前
+- [ ] a: `auth.account.read` (ユーザ / passkey / 所有 instance の 3 つを答えるので、どれか 1 つを名前にしない)
+- [ ] b: `auth.self.read` / `auth.user.read` / `auth.credentials.read` のどれか
+
+CU-Q3 所有を外す操作を誰が持つか
+- [ ] a: CLI と認証済みチャンネルの両方。ただし「今入っている instance の所有を自分で外す」は塞ぐ
+- [ ] b: CLI だけ
+
+CU-Q4 ユーザが `display_name` を持つか
+- [ ] a: 持つ (所有者が複数いる instance の一覧で user id 22 文字だけでは見分けられない)
+- [ ] b: 持たない
+
+CU-Q5 1 つの instance が複数の所有者を持ってよいか
+- [ ] a: よい (所有 record は複数行、`granted_by` を持つ)
+- [ ] b: 1 人だけ (record は instance ごとに 1 行の上書き)
+
+CU-Q6 `auth.enroll` (2 台目の instance をユーザに紐付ける) でも 6 桁を要るか
+- [ ] a: 要る (assert は「本人か」を確かめるだけで、「この instance を足すと今その端末で判断したか」は 6 桁が唯一の材料)
+- [ ] b: 要らない (URL の所持 + 既存 passkey の UV で足りる)
+
 ### WS-Q3 webui の画面全体の状態機械 (webui DR-0004、💭 提案) の未決
 
 webui `docs/decisions/DR-0004-one-state-machine-decides-what-the-screen-is.md` §7。8 つの姿 (offline / registering / authenticating / connecting / receiving / live / stale / outdated) を `phase` (computed 1 本) が答え、`App.tsx` は switch するだけ。各項の a が統括推し。
