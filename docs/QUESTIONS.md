@@ -30,14 +30,6 @@ WS-Q6 ログアウトで人の好み (色 / 設定) も消すか
 - [ ] a: 残す (identity に紐づかないローカルの好み)
 - [ ] b: 全部消す
 
-### WS-Q3 webui の画面全体の状態機械 (webui DR-0004、💭 提案) の未決
-
-webui `docs/decisions/DR-0004-one-state-machine-decides-what-the-screen-is.md` §7。8 つの姿 (offline / registering / authenticating / connecting / receiving / live / stale / outdated) を `phase` (computed 1 本) が答え、`App.tsx` は switch するだけ。各項の a が統括推し。
-
-WS-Q3 接続済みで workspace を見ている最中に、同じタブで登録 URL (`…/#register=…`、例: 2 本目の passkey を足す) を開いたら画面をどうするか
-- [ ] a: 登録画面を上に重ね、workspace は後ろに残す。接続も切らない (画面にあるものを消さない)
-- [ ] b: 今の実装のまま、workspace を登録画面に置き換える (やめると戻る)
-
 
 ## 確認待ち
 
