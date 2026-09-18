@@ -1316,12 +1316,14 @@ function enrolmentLines(body: Record<string, unknown>): string[] {
     url?: string;
     code?: string;
     user?: string;
+    display_name?: string;
     instances?: readonly string[];
   };
   return [
     `URL : ${issued.url ?? ""}`,
     `code: ${issued.code ?? ""}`,
     ...(issued.user === undefined ? [] : [`user: ${issued.user}`]),
+    ...(issued.display_name === undefined ? [] : [`name: ${issued.display_name}`]),
     ...(issued.instances !== undefined && issued.instances.length > 0
       ? [`所有 (登録が成立したら書かれる): ${issued.instances.join(", ")}`]
       : []),

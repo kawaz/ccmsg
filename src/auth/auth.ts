@@ -221,6 +221,9 @@ export interface IssuedEnrolment {
    * are written when the ceremony succeeds and not before, so a URL nobody
    * spends leaves nothing behind. */
   readonly instances: InstanceId[];
+  /** What the authenticator will be told to call the account, which the person
+   * may still change on the form. */
+  readonly display_name?: string;
 }
 
 /** The person's authentication: the enrolment URLs this instance issued, the
@@ -314,17 +317,15 @@ export class Auth {
     }
     this.#spelled("origin", origin, OriginSchema);
     const at = this.#now();
-    // What the page will call this account in the authenticator, and what the
-    // person will see there ever after. A passkey manager keeps the account
-    // name it was given at creation and shows it in its own list, so a URL that
-    // named nothing would put a random handle in front of the person every time
-    // they signed in (`PERSON_LABEL`). For somebody who already exists it is
-    // the name they read themselves by; for a new person it is what the
-    // operator wrote on the URL, and the short default where they wrote
-    // nothing.
-    const label =
-      options.label ??
-      (options.user === undefined ? undefined : this.deps.records.user(options.user)?.display_name);
+    // What the page will call this account in the authenticator. A passkey
+    // manager keeps the name it was given at creation and shows it in its own
+    // list, so a URL that carried none would put a random handle in front of
+    // the person every time they signed in (`PERSON_LABEL`). For somebody who
+    // already exists it is the name they read themselves by, so a second key
+    // joins the same account; for a new person it is what the operator wrote,
+    // and the person may still say otherwise on the form.
+    const known = options.user === undefined ? undefined : this.deps.records.user(options.user);
+    const displayName = known?.display_name ?? options.label;
     const commonFields = {
       iss: this.deps.self,
       instance: this.deps.self,
@@ -332,7 +333,8 @@ export class Auth {
       endpoint,
       expires_at: at + (options.ttl ?? REGISTER_TTL_MS),
       jti: randomBytes(16).toString("base64url"),
-      ...(label === undefined ? {} : { issued_label: label }),
+      ...(options.label === undefined ? {} : { issued_label: options.label }),
+      ...(displayName === undefined ? {} : { display_name: displayName }),
     };
     // Which instances this URL hands over. Decided here, at the terminal, where
     // "the peers this instance knows of" is a question a person can see the
@@ -360,6 +362,7 @@ export class Auth {
       endpoint,
       rp_id: hostOf(origin),
       instances,
+      ...(displayName === undefined ? {} : { display_name: displayName }),
     };
   }
 
@@ -645,11 +648,15 @@ export class Auth {
     // The person, written once. A URL naming somebody who already exists is a
     // passkey being added to them, and their record stands as it is — the name
     // they gave themselves and the instant they were made are theirs.
+    // Adding a passkey to somebody who exists does not rename them: the account
+    // it joins is one they have already named.
     if (this.deps.records.user(claims.user) === undefined) {
       const user: UserRecord = {
         kind: "user",
         user: claims.user,
-        display_name: claims.issued_label ?? PERSON_LABEL,
+        // What the person settled on the form, the URL's starting point where
+        // they said nothing, and the short default where nobody did.
+        display_name: args.display_name ?? claims.display_name ?? PERSON_LABEL,
         created_at: at,
       };
       if (!(await this.deps.records.write(userKey(claims.user), user, at))) {

@@ -141,6 +141,10 @@ export async function handleAdmin(
             request.request_id,
             await auth.issue({
               purpose: "add_owner",
+              // Named only so the URL can carry what this person is called: an
+              // `add_owner` claims no user, since who arrives is what the
+              // assertion says (contract, `EnrollClaims`).
+              user,
               ...(request.origin === undefined ? {} : { origin: request.origin }),
               ...(request.endpoint === undefined ? {} : { endpoint: request.endpoint }),
               ...(request.name === undefined ? {} : { label: request.name }),
