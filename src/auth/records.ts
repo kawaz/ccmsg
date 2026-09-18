@@ -303,6 +303,23 @@ export class AuthRecords {
     return undefined;
   }
 
+  /** The family a value names, of whichever generation and whether or not that
+   * generation has run out.
+   *
+   * What signing out asks, and it asks less than a refresh does: a value past
+   * its own expiry still names the family it was minted for, and leaving is
+   * what an expiry comes to anyway, so the one thing to answer is which family
+   * the cookie is about (contract, DR-0030 §5). A value no family here holds is
+   * answered by nothing, as it is on a refresh. */
+  naming(value: Base64Url): { key: string; body: TokenFamily } | undefined {
+    for (const held of this.families()) {
+      if (equalStrings(held.body.refresh.value, value)) return held;
+      const before = held.body.previous_refresh;
+      if (before !== undefined && equalStrings(before.value, value)) return held;
+    }
+    return undefined;
+  }
+
   /** Fail one family, which is what a replayed token does to the whole of it.
    *
    * A tombstone rather than an expired record. A peer that was partitioned when

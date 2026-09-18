@@ -851,7 +851,7 @@ describe("the origins this instance answers for (contract, DR-0030 §9)", () => 
     // `enroll` is among them: it is answerable only where the credential has
     // already replicated, so the origin to compare against is exactly what such
     // an instance has.
-    for (const route of ["enroll", "assert", "refresh"]) {
+    for (const route of ["enroll", "assert", "refresh", "signout"]) {
       expect([route, await preflight(route, stranger)]).toEqual([route, 403]);
       expect([route, await preflight(route, at.origin)]).toEqual([route, 204]);
     }
@@ -867,6 +867,7 @@ describe("the origins this instance answers for (contract, DR-0030 §9)", () => 
     expect((await post(at, "enroll", {}, { origin: stranger })).status).toBe(403);
     expect((await post(at, "assert", {}, { origin: stranger })).status).toBe(403);
     expect((await post(at, "refresh", {}, { origin: stranger })).status).toBe(403);
+    expect((await post(at, "signout", {}, { origin: stranger })).status).toBe(403);
   });
 
   test("a preflight from a page an owner made a passkey at is answered with credentials allowed", async () => {
@@ -2231,7 +2232,7 @@ describe("a credential is good from one origin (contract, DR-0030 §2)", () => {
 });
 
 describe("the two headers every route that decides an identity is held to (contract, DR-0030 §9)", () => {
-  test("register, enroll, assert and refresh each refuse a page that states no origin, another page's, or a fetch site outside the three", async () => {
+  test("register, enroll, assert, refresh and signout each refuse a page that states no origin, another page's, or a fetch site outside the three", async () => {
     // Laid out route by route rather than shown on one of them: the gate is
     // one piece of code in the carrier, and what could be wrong is a route
     // that reaches the op without passing it, which only the row for that
@@ -2283,7 +2284,9 @@ describe("the two headers every route that decides an identity is held to (contr
     };
     const cookie = mintedCookie(response, cookieName(user));
 
-    const bodies: Record<string, unknown> = { register, enroll, assert, refresh: {} };
+    // `signout` is last, its own answer being the end of the family the rest
+    // of the rows are driven with.
+    const bodies: Record<string, unknown> = { register, enroll, assert, refresh: {}, signout: {} };
     const gates: [string, { origin?: string | null; site?: string | null }][] = [
       ["no Origin", { origin: null }],
       ["the Origin of another page", { origin: elsewhere }],
@@ -2605,5 +2608,132 @@ describe("what the command line does to people (DR-0001 §2.2)", () => {
     expect(at.instance.auth.records.user(user)).toBeDefined();
     expect(at.instance.auth.records.owns(user, at.instance.self)).toBe(true);
     expect((await asserting(at, authenticator)).status).toBe(403);
+  });
+});
+
+describe("signing out ends the family (contract, `auth.signout`)", () => {
+  test("the cookie names the family, the family goes, and the reply is where the cookie is expired", async () => {
+    const at = await serving();
+    const { user, response } = await registered(at);
+    const name = cookieName(user);
+    const cookie = mintedCookie(response, name);
+    const session = (await response.json()) as { access: { value: string } };
+    await connected(at, session.access.value);
+    expect(at.instance.auth.heldCounts.connections).toBe(1);
+
+    const answer = await post(at, "signout", {}, { cookie });
+    expect(answer.status).toBe(200);
+    // Nothing in the body: what the call is for happens beside it.
+    expect(await answer.json()).toEqual({});
+    const header = answer.headers.get("set-cookie") ?? "";
+    expect(header.startsWith(`${name}=`)).toBe(true);
+    expect(header).toContain("Max-Age=0");
+    expect(header).toContain("HttpOnly");
+    // The browser drops a cookie only where the path is the one it filed it
+    // under, so this is written by the rules the minting one is.
+    expect(header).toContain(`Path=${cookiePath("/auth/signout")}`);
+
+    // The family is gone, the token it answered for opens nothing, and the
+    // connection it was holding is closed.
+    expect(at.instance.auth.records.families()).toEqual([]);
+    expect(at.instance.auth.admits(session.access.value)).toBeUndefined();
+    expect(at.instance.auth.heldCounts.connections).toBe(0);
+    // The person and their passkey stand: what ended was one sign-in.
+    expect(at.instance.auth.records.user(user)).toBeDefined();
+    expect(at.instance.auth.records.owns(user, at.instance.self)).toBe(true);
+
+    // The same cookie a second time names nothing any more.
+    expect((await post(at, "signout", {}, { cookie })).status).toBe(401);
+  });
+
+  test("a caller with no cookie and one with a value nobody minted are refused, and nothing is written", async () => {
+    const at = await serving();
+    const { user, response } = await registered(at);
+    const name = cookieName(user);
+    const session = (await response.json()) as { access: { value: string } };
+
+    for (const cookie of [undefined, `${name}=not-a-token-anybody-minted`]) {
+      const answer = await post(at, "signout", {}, cookie === undefined ? {} : { cookie });
+      expect(answer.status).toBe(401);
+      expect(((await answer.json()) as { error: { code: string } }).error.code).toBe(
+        "auth_invalid",
+      );
+      // A refusal writes nothing: the family that is standing goes on standing.
+      expect(answer.headers.get("set-cookie")).toBeNull();
+      expect(at.instance.auth.admits(session.access.value)?.user).toBe(user);
+    }
+  });
+
+  test("a value past its own expiry still names the family it was minted for", async () => {
+    // What an expired value names is the family it was minted for, and leaving
+    // is what an expiry comes to anyway — so the generation in grace is
+    // answered after that grace has run out, where a refresh would refuse it.
+    let now = 1_000_000;
+    const { auth } = unit({ now: () => now });
+    await auth.grant(TEST_USER, [SELF], { kind: "instance", instance: SELF });
+    const minted = await auth.mint(TEST_USER, ORIGIN);
+    await auth.refreshToken(minted.refresh.value);
+    now += PREVIOUS_GRACE_MS + 1;
+
+    const ended = await auth.signout(minted.refresh.value, { origin: ORIGIN });
+    expect(ended).toEqual({ user: TEST_USER, origin: ORIGIN });
+    expect(auth.records.families()).toEqual([]);
+    expect(auth.admits(minted.session.access.value)).toBeUndefined();
+  });
+
+  test("ownership is not asked, and the page is held to the family's origin", async () => {
+    const { auth } = unit();
+    await auth.grant(TEST_USER, [SELF], { kind: "instance", instance: SELF });
+    const minted = await auth.mint(TEST_USER, ORIGIN);
+    // A cookie standing to its expiry because the ownership was taken away
+    // would be a door that cannot be closed, so leaving asks no right to enter.
+    await auth.revoke(TEST_USER, SELF);
+    expect(auth.records.owns(TEST_USER, SELF)).toBe(false);
+
+    expect(
+      await refusal(auth.signout(minted.refresh.value, { origin: "https://elsewhere.example" })),
+    ).toBe("auth_invalid");
+    expect(await refusal(auth.signout(minted.refresh.value, { origin: null }))).toBe(
+      "auth_invalid",
+    );
+    expect(auth.records.families()).toHaveLength(1);
+
+    await auth.signout(minted.refresh.value, { origin: ORIGIN });
+    expect(auth.records.families()).toEqual([]);
+  });
+
+  test("the mark reaches the peers, and closes the connections the person holds there", async () => {
+    // Signing out at whichever instance the page reached is the whole of it:
+    // a connection left open on a peer would be the person signed out of
+    // nothing, which is what replicating the mark is for.
+    const { peers, settled } = linked([
+      { self: SELF, endpoint: ENDPOINT },
+      { self: OTHER_INSTANCE, endpoint: "https://next.example/" },
+    ]);
+    const [here, next] = peers as [Auth, Auth];
+    await knownAt(here, ORIGIN);
+    await here.grant(TEST_USER, [next.self], { kind: "instance", instance: here.self });
+    const minted = await here.mint(TEST_USER, ORIGIN);
+    await settled();
+    const conn = new TestConn();
+    let closed = false;
+    conn.onClose(() => {
+      closed = true;
+    });
+    next.hold(
+      conn,
+      next.admits(minted.session.access.value) as { user: UserId; expiresAt: number },
+    );
+
+    // Answered at the instance that did not mint it, as a rotation is.
+    await next.signout(minted.refresh.value, { origin: ORIGIN });
+    await settled();
+
+    expect(closed).toBe(true);
+    expect(next.heldCounts.connections).toBe(0);
+    expect(here.admits(minted.session.access.value)).toBeUndefined();
+    expect(next.admits(minted.session.access.value)).toBeUndefined();
+    // The person still owns both instances: what ended was the family.
+    expect(here.records.owns(TEST_USER, here.self)).toBe(true);
   });
 });

@@ -15,13 +15,15 @@ import {
 import { OpError } from "../dispatch/index.ts";
 import type { Auth, MintedSession } from "./auth.ts";
 
-/** The five ops the contract carries over HTTP, and the path each is at.
+/** The six ops the contract carries over HTTP, and the path each is at.
  *
  * They are `needs_hello: false` ops like `hello` is, run before there is an
  * identity to check, and the carrier is what makes them reachable from a page
  * that has no connection yet — a `request_id` is synthesized here because
- * there is no envelope to carry one (DR-0001 §2.9). */
-const ROUTES = ["challenge", "register", "enroll", "assert", "refresh"] as const;
+ * there is no envelope to carry one (DR-0001 §2.9). The last of them is here
+ * for the half a connection cannot do either: a cookie is expired in a reply
+ * and nowhere else (contract, `auth.signout`). */
+const ROUTES = ["challenge", "register", "enroll", "assert", "refresh", "signout"] as const;
 type Route = (typeof ROUTES)[number];
 
 /** Which op each route carries. The route is a name a proxy can see; the op is
@@ -32,6 +34,7 @@ const OP_OF: Record<Route, OpName> = {
   enroll: "auth.enroll",
   assert: "auth.assert",
   refresh: "auth.token.refresh",
+  signout: "auth.signout",
 };
 
 /** The routes every origin may reach.
@@ -161,9 +164,9 @@ export async function handleAuth(
           "access-control-allow-credentials": "true",
           vary: "Origin",
         };
-  // The four ops that decide an identity are held to two headers a page's own
-  // script cannot write: an `Origin`, which the op compares with the origin the
-  // claims or the record name, and a `Sec-Fetch-Site` naming one of the three
+  // The ops with something to be held against are held to two headers a page's
+  // own script cannot write: an `Origin`, which the op compares with the origin
+  // the claims, the record or the family name, and a `Sec-Fetch-Site` naming one of the three
   // relations a request made by a page can have to the site it went to. Either
   // one absent is a mismatch and not an exemption — every gate has to be
   // passed, and a caller with nothing to compare has not passed it. The answer
@@ -258,6 +261,17 @@ export async function handleAuth(
         });
         return answer(minted.session, cors, setCookie(request, url, minted));
       }
+      case "signout": {
+        const held = signoutCookie(request, deps);
+        if (held === undefined) {
+          return refusal("auth_invalid", "この要求には refresh token がありません", cors);
+        }
+        const ended = await deps.auth.signout(held, { origin: seen.origin });
+        // Nothing in the body: what the call is for is the family being gone
+        // and the cookie being expired here, which is the only place it can be
+        // (contract, `auth.signout`).
+        return answer({}, cors, expireCookie(request, url, ended));
+      }
     }
   } catch (cause) {
     if (cause instanceof OpError) return refusal(cause.code, cause.message, cors);
@@ -266,27 +280,38 @@ export async function handleAuth(
   }
 }
 
-/** The refresh token this request carries.
- *
- * Every cookie under the shared prefix is tried, because the rest of the name is
- * a digest of a person and the caller has not said who they are yet. A browser
- * holding two people's cookies presents both, and the one that belongs to a
- * family this instance holds is the one meant (contract, DR-0030 §5). */
+/** The refresh token this request carries: the value a family here still
+ * stands on, of the ones the browser presented. */
 function refreshCookie(request: Request, deps: AuthRoutesDeps): string | undefined {
-  const header = request.headers.get("cookie");
-  if (header === null) return undefined;
-  for (const part of header.split(";")) {
-    const at = part.indexOf("=");
-    if (at === -1) continue;
-    const name = part.slice(0, at).trim();
-    if (!name.startsWith("__Secure-ccmsg-")) continue;
-    const value = part.slice(at + 1).trim();
-    if (deps.auth.records.byRefresh(value) !== undefined) return value;
-  }
+  const carried = refreshCookies(request);
+  const standing = carried.find((value) => deps.auth.records.byRefresh(value) !== undefined);
+  if (standing !== undefined) return standing;
   // None of them is a standing token. A value some family retired is answered
   // with in preference to any other, so that a token rotated away is seen as
-  // the replay it is rather than as an absent cookie — and every cookie is
-  // looked at, a browser holding two people's presenting both.
+  // the replay it is rather than as an absent cookie.
+  return carried.find((value) => deps.auth.retired(value)) ?? carried[0];
+}
+
+/** The cookie a sign-out is about.
+ *
+ * The one a family here names, of whatever generation and past its expiry as
+ * well — that being all this op asks of a value (contract, `auth.signout`).
+ * Where none is named, the first is answered with so the refusal is the one the
+ * op has rather than an absent cookie. */
+function signoutCookie(request: Request, deps: AuthRoutesDeps): string | undefined {
+  const carried = refreshCookies(request);
+  return carried.find((value) => deps.auth.records.naming(value) !== undefined) ?? carried[0];
+}
+
+/** Every value the browser presented under the shared prefix.
+ *
+ * All of them, because the rest of the name is a digest of a person and the
+ * caller has not said who they are yet: a browser holding two people's cookies
+ * presents both, and which one is meant is settled by the records (contract,
+ * DR-0030 §5). */
+function refreshCookies(request: Request): string[] {
+  const header = request.headers.get("cookie");
+  if (header === null) return [];
   const carried: string[] = [];
   for (const part of header.split(";")) {
     const at = part.indexOf("=");
@@ -294,7 +319,7 @@ function refreshCookie(request: Request, deps: AuthRoutesDeps): string | undefin
       carried.push(part.slice(at + 1).trim());
     }
   }
-  return carried.find((value) => deps.auth.retired(value)) ?? carried[0];
+  return carried;
 }
 
 /** The `Set-Cookie` for what the op just minted.
@@ -303,8 +328,36 @@ function refreshCookie(request: Request, deps: AuthRoutesDeps): string | undefin
  * slot on the domain, so two exchanges in flight cannot hand one caller the
  * other's token. */
 function setCookie(request: Request, url: URL, minted: MintedSession): Record<string, string> {
-  const name = cookieName(minted.session.user);
-  const maxAge = Math.max(0, Math.floor((minted.refresh.expires_at - Date.now()) / 1000));
+  return cookieFor(request, url, {
+    user: minted.session.user,
+    origin: minted.origin,
+    value: minted.refresh.value,
+    maxAge: Math.max(0, Math.floor((minted.refresh.expires_at - Date.now()) / 1000)),
+  });
+}
+
+/** The `Set-Cookie` that takes the cookie away, which is the half of signing
+ * out that only a reply can do: the cookie is HttpOnly, so the page that asked
+ * cannot clear it (contract, `auth.signout`).
+ *
+ * Written by the same rules the minting one is — a browser drops a cookie only
+ * where the name, the host and the path are the ones it filed it under, and
+ * `SameSite` is read the same way so the reply carrying this is one the cookie
+ * was sent with in the first place. */
+function expireCookie(
+  request: Request,
+  url: URL,
+  ended: { user: UserId; origin: string },
+): Record<string, string> {
+  return cookieFor(request, url, { ...ended, value: "", maxAge: 0 });
+}
+
+function cookieFor(
+  request: Request,
+  url: URL,
+  cookie: { user: UserId; origin: string; value: string; maxAge: number },
+): Record<string, string> {
+  const name = cookieName(cookie.user);
   // The site the cookie belongs to, which is the address the browser actually
   // reached rather than the one the mesh names. A cookie is filed by the host
   // it was set at, and behind a load balancer that host is the balancer's — the
@@ -322,10 +375,10 @@ function setCookie(request: Request, url: URL, minted: MintedSession): Record<st
   const endpoint = arrivedAt(request) ?? url.origin;
   return {
     "set-cookie": [
-      `${name}=${minted.refresh.value}`,
+      `${name}=${cookie.value}`,
       "HttpOnly",
       "Secure",
-      ...(sameSite(minted.origin, endpoint)
+      ...(sameSite(cookie.origin, endpoint)
         ? ["SameSite=Strict"]
         : // A page at another site: the browser sends this only as a cookie
           // partitioned by the top-level site it was set under, which is what
@@ -334,7 +387,7 @@ function setCookie(request: Request, url: URL, minted: MintedSession): Record<st
           // spoken over, so there is no second spelling for one (DR-0028).
           ["SameSite=None", "Partitioned"]),
       `Path=${cookiePath(url.pathname)}`,
-      `Max-Age=${String(maxAge)}`,
+      `Max-Age=${String(cookie.maxAge)}`,
     ].join("; "),
   };
 }

@@ -1117,6 +1117,37 @@ export class Auth {
     }
   }
 
+  /** End a family, which is the whole of what signing out is (contract,
+   * `auth.signout`).
+   *
+   * The cookie names it and nothing else is taken, a caller able to state the
+   * value being a caller able to read it. Written wherever the call lands, as a
+   * rotation is: the family is replicated and every instance its owner owns may
+   * write it. Whether the person still owns this one is not asked — leaving
+   * takes no right to enter, and a cookie standing to its expiry because the
+   * ownership was taken away would be a door that cannot be closed.
+   *
+   * A value no family here names is refused and nothing is written, which is
+   * the answer a refresh of one gets. A value past its own expiry is not
+   * refused: what it names is the family it was minted for.
+   *
+   * The mark closes the connections the person holds here and reaches the
+   * peers' over the records topic, a connection outliving the family it was
+   * admitted on being the sign-out not having happened. */
+  async signout(
+    value: Base64Url,
+    from: { origin?: string | null } = {},
+  ): Promise<{ user: UserId; origin: Origin }> {
+    const held = this.deps.records.naming(value);
+    if (held === undefined) throw new OpError("auth_invalid", "この refresh token は使えません");
+    // The page asking is held to the family's own origin, as a refresh is.
+    this.#cameFrom(held.body.origin, from.origin);
+    await this.deps.records.fail(held.key);
+    this.#openedWith.delete(held.key);
+    this.disconnect(held.body.user);
+    return { user: held.body.user, origin: held.body.origin };
+  }
+
   // --- connections ---
 
   /** Whether an access token opens a connection, until when, from which page,
