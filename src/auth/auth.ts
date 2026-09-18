@@ -1,46 +1,50 @@
 import { createHash, createHmac, randomBytes, randomInt } from "node:crypto";
 import type {
+  AssertionCredential,
+  AuthAccountReadResult,
   AuthAssertArgs,
   AuthChallenge,
   AuthChallengeResult,
-  AuthRecord,
+  AuthCredentialRemoveArgs,
+  AuthEnrollArgs,
   AuthExtendArgs,
-  AuthRefreshReason,
   AuthExtendResult,
+  AuthOwnershipRemoveArgs,
+  AuthRecord,
+  AuthRefreshReason,
   AuthRegisterArgs,
   AuthResolveArgs,
   AuthResolveResult,
-  AuthRotateArgs,
-  AuthRotateResult,
   AuthSession,
   Base64Url,
   CredentialRecord,
+  EnrollClaims,
   Endpoint,
+  GrantedBy,
   InstanceId,
-  RegisterClaims,
-  Subject,
+  InstanceInfo,
+  Origin,
   Timestamp,
   TokenFamily,
-  WebUi,
+  UserId,
+  UserRecord,
 } from "@ccmsg/protocol";
 import {
   AUTH_CHALLENGE_TTL_MS,
   AuthResolveResult as AuthResolveResultSchema,
-  AuthRotateResult as AuthRotateResultSchema,
   Endpoint as EndpointSchema,
-  originOf,
+  EnrollClaims as EnrollClaimsSchema,
+  Origin as OriginSchema,
   REGISTER_TTL_MS,
-  rpIdOf,
+  UserId as UserIdSchema,
   validationErrors,
-  WebUi as WebUiSchema,
 } from "@ccmsg/protocol";
 import { type HandlerInput, OpError, type Requester } from "../dispatch/index.ts";
-import { AuthRecords, credentialKey, familyKey } from "./records.ts";
+import { AuthRecords, credentialKey, familyKey, ownershipKey, userKey } from "./records.ts";
 import {
   base64UrlDecode,
   base64UrlEncode,
   checkPublicKey,
-  equalBytes,
   equalStrings,
   verifyAssertion,
   verifyRegistration,
@@ -79,11 +83,11 @@ export const PREVIOUS_GRACE_MS = 60_000;
  * page may go on holding a token whose family has already moved on. */
 export const ACCESS_KEEP_MS = ACCESS_TTL_MS / 2;
 
-/** How many times a six-digit code may be got wrong before the registration URL
+/** How many times a six-digit code may be got wrong before the enrolment URL
  * is spent.
  *
- * Five, because the code is what stands between a leaked URL and a
- * registration: a million codes and five tries is a chance no one plays for,
+ * Five, because the code is what stands between a leaked URL and an
+ * enrolment: a million codes and five tries is a chance no one plays for,
  * while a person mistyping twice still gets in. */
 export const CODE_ATTEMPTS = 5;
 
@@ -96,26 +100,40 @@ export const CODE_ATTEMPTS = 5;
 export const AUTH_RATE_LIMIT = 30;
 export const AUTH_RATE_WINDOW_MS = 1_000;
 
-/** One registration URL that has been issued and not yet spent.
+/** The fragment an enrolment URL carries what it authorizes in.
+ *
+ * One name for both purposes, because the claims say which of the two this is
+ * and a page that read the purpose off the fragment as well would have two
+ * answers able to disagree. A fragment rather than a query: it is never sent to
+ * a server, so the token reaches the page and nothing else. */
+export const ENROLL_FRAGMENT = "enroll";
+
+/** One enrolment URL that has been issued and not yet spent.
  *
  * Everything here dies with the process. The secret signs one URL and nothing
  * else, so there is no key to keep, rotate or protect — a restart loses it and
  * the remedy is to issue another URL (DR-0001 §2.2). */
 interface Pending {
-  readonly claims: RegisterClaims;
+  readonly claims: EnrollClaims;
   readonly secret: Buffer;
   readonly code: string;
   attempts: number;
 }
 
-/** One challenge this instance issued, good once (DR-0001 §2.6). */
+/** One challenge this instance issued, good once. */
 interface Issued {
   readonly expiresAt: Timestamp;
 }
 
 /** What a person's connection carries once an access token opened it. */
 export interface AuthorizedConn {
-  readonly sub: Subject;
+  readonly user: UserId;
+  /** The passkey this session was opened with, where this instance saw it
+   * happen. What `auth_in_use` is decided by, and memory alone: it is a fact
+   * about a live session rather than about the person, so nothing replicates it
+   * and a restart leaves the question unanswerable — which is answered as "not
+   * in use", the refusal being a courtesy rather than a boundary. */
+  readonly credential?: Base64Url;
   expiresAt: Timestamp;
   /** The close scheduled for the deadline, cleared when the connection goes so
    * a departed connection leaves no timer behind. */
@@ -125,15 +143,19 @@ export interface AuthorizedConn {
 export interface AuthDeps {
   readonly self: InstanceId;
   readonly records: AuthRecords;
-  /** Where this instance is reached, which a registration URL is issued against
-   * when the operator names none. */
+  /** Where this instance is reached, which an enrolment URL names as the
+   * address the page posts to when the operator names none. */
   readonly endpoint: () => Endpoint | undefined;
-  /** The instance's name as a person operates it, carried in the URL for
-   * display. */
+  /** The instance's name as a person operates it, for the terminal that issued
+   * a URL to say which instance it was. */
   readonly unit: string;
-  /** Ask another instance one of the two ops only its issuer can answer.
-   * Absent on an instance with no mesh, where an issuer that is not us is an
-   * issuer that cannot be reached. */
+  /** The mesh as this instance sees it: who the peers are, which is what
+   * granting every peer at once walks, and where each is reached, which is what
+   * a person reading their own instances back is shown. */
+  readonly instances?: () => InstanceInfo[];
+  /** Ask another instance the one op only its issuer can answer. Absent on an
+   * instance with no mesh, where an issuer that is not us is an issuer that
+   * cannot be reached. */
   readonly ask?: (to: InstanceId, op: string, args: Record<string, unknown>) => Promise<unknown>;
   readonly now?: () => Timestamp;
   readonly log?: (msg: string, fields?: Record<string, unknown>) => void;
@@ -150,9 +172,9 @@ export interface AuthDeps {
 export interface MintedSession {
   readonly session: AuthSession;
   readonly refresh: { readonly value: Base64Url; readonly expires_at: Timestamp };
-  /** The web UI the family is held to, which is what the carrier reads to know
+  /** The origin the family is held to, which is what the carrier reads to know
    * whether its cookie crosses sites (DR-0028). */
-  readonly webui: WebUi;
+  readonly origin: Origin;
 }
 
 /** What is known about the client that asked for a refresh: its own word for
@@ -167,29 +189,32 @@ export interface RefreshFrom {
   readonly userAgent?: string;
 }
 
-/** What a registration URL is, as the command that made it prints it. */
-export interface IssuedRegistration {
-  readonly sub: Subject;
+/** What an enrolment URL is, as the command that made it prints it. */
+export interface IssuedEnrolment {
+  /** Which of the two this URL authorizes: making the person, or handing them
+   * this instance. */
+  readonly purpose: EnrollClaims["purpose"];
   readonly url: string;
   readonly code: string;
-  /** The WebAuthn user handle this subject is known by, which the page creates
-   * the credential against. It is also inside the URL's claims; it is stated
-   * here so the command that issued the URL can show what it settled. */
-  readonly user_id: Base64Url;
+  /** The person this URL is for. Stated for `create_user`, where the issuer
+   * settles the handle the authenticator will keep; absent for `add_owner`,
+   * where who arrives is what the assertion says. */
+  readonly user?: UserId;
   readonly expires_at: Timestamp;
+  readonly instance: InstanceId;
+  readonly origin: Origin;
   readonly endpoint: Endpoint;
-  /** Where the URL sends the person, which is the page the credential will be
-   * made by. */
-  readonly webui: WebUi;
-  /** The relying party the page will create the credential under, read off the
-   * web UI's URL (contract, `rpIdOf`). Stated so the command that issued the
-   * URL can show what the browser will be asked for; it is a derived value and
-   * is kept nowhere. */
+  /** The relying party the page will create or use the credential under, which
+   * is the origin's host. Stated so the command can show what the browser will
+   * be asked for; it is derived and is kept nowhere. */
   readonly rp_id: string;
+  /** The grantings this command wrote as it issued the URL, which is what
+   * `--all` widened. */
+  readonly granted: InstanceId[];
 }
 
-/** The person's authentication: the registration URLs this instance issued, the
- * challenges it holds, and the tokens it minted (DR-0001 §2.2-§2.6).
+/** The person's authentication: the enrolment URLs this instance issued, the
+ * challenges it holds, and the tokens it minted.
  *
  * What is written down is the records; everything here is memory, and every
  * one of those is short-lived by design. */
@@ -197,6 +222,9 @@ export class Auth {
   readonly #pending = new Map<string, Pending>();
   readonly #challenges = new Map<Base64Url, Issued>();
   readonly #authorized = new Map<Requester, AuthorizedConn>();
+  /** Which passkey each family was opened with, for as long as this process
+   * runs (`AuthorizedConn.credential`). */
+  readonly #openedWith = new Map<string, Base64Url>();
   #window = 0;
   #served = 0;
 
@@ -204,6 +232,10 @@ export class Auth {
 
   get records(): AuthRecords {
     return this.deps.records;
+  }
+
+  get self(): InstanceId {
+    return this.deps.self;
   }
 
   /** Where this instance is published, for the carrier that has to know which
@@ -217,171 +249,249 @@ export class Auth {
     return (this.deps.now ?? Date.now)();
   }
 
-  // --- issuing a registration URL (DR-0001 §2.2) ---
+  // --- issuing an enrolment URL ---
 
-  /** Make one registration URL and the code that goes with it.
+  /** Make one enrolment URL and the code that goes with it, and write the
+   * grantings it comes with.
    *
    * The two halves reach the browser by different routes: the URL is carried
    * there by whoever was given it, and the code is only ever shown on the
-   * terminal this ran on. Somebody holding the URL alone cannot register. */
-  issue(options: {
+   * terminal this ran on. Somebody holding the URL alone cannot spend it.
+   *
+   * The grantings are written here rather than when the ceremony completes.
+   * A `create_user` URL names the person before it is carried anywhere, so the
+   * instances they are to own can be settled at the terminal — which is where
+   * "every peer this instance knows of" is a set anyone can see. Behind a load
+   * balancer the ceremony may land on a peer that knows nothing of what was
+   * asked for here, and grantings written there would be whatever that peer
+   * happened to know instead. A granting for a person who never registers
+   * admits nobody: there is no user and no credential to answer with. */
+  async issue(options: {
+    readonly purpose: EnrollClaims["purpose"];
+    readonly origin?: Origin;
     readonly endpoint?: Endpoint;
-    readonly webui?: WebUi;
     readonly label?: string;
-    readonly sub?: Subject;
-  }): IssuedRegistration {
-    const mine = this.deps.endpoint();
-    const endpoint = options.endpoint ?? mine;
+    /** The person a `create_user` URL is for. Stated to add a passkey to
+     * somebody who already exists — the handle is theirs and the credential
+     * count is what grows — and left out to make a new person. */
+    readonly user?: UserId;
+    readonly ttl?: number;
+    /** Grant every peer this instance knows of, not only this one. */
+    readonly all?: boolean;
+  }): Promise<IssuedEnrolment> {
+    const endpoint = options.endpoint ?? this.deps.endpoint();
     if (endpoint === undefined) {
       throw new OpError(
         "invalid_args",
-        "この instance には endpoint が無いので、登録先の URL を引数で渡してください",
+        "この instance には endpoint が無いので、page の送り先を引数で渡してください",
       );
     }
-    // An operator types these, so they are read here rather than trusted: an
-    // address that is not a base URL would be written into the record and be
-    // compared, forever after, against a request that can never match it.
-    this.#baseUrl("endpoint", EndpointSchema, endpoint);
-    // A registration URL names this instance's own endpoint and no other. The
-    // secret that signed it and the count of tries against the six digits are
-    // here, so a registration only ever completes here — a URL sending somebody
-    // to a neighbour would be one that cannot be spent where it points
-    // (contract, DR-0029). Stating one is for the instance the mesh names no
-    // address for, which has none of its own to use.
-    if (mine !== undefined && endpoint !== mine) {
+    // The address the page posts to. It is not compared with anything by
+    // whoever receives the answer (contract, `EnrollClaims.endpoint`), so what
+    // is checked here is only that it is an address at all — a string that is
+    // not one would be a URL the page could not use.
+    this.#spelled("endpoint", endpoint, EndpointSchema);
+    // Where the person is sent, which is the one place the ceremony may be
+    // held. It defaults to this endpoint's own origin, an instance serving its
+    // own web UI being the ordinary case; a UI published anywhere else is named
+    // here. An endpoint no ceremony could run at — a bare address, a host
+    // nothing calls trustworthy — has no origin to fall back on, and the
+    // operator names one.
+    const origin = options.origin ?? originOf(endpoint);
+    if (origin === undefined) {
       throw new OpError(
         "invalid_args",
-        `登録 URL が名乗れるのはこの instance の endpoint (${mine}) だけです`,
+        `${endpoint} は passkey を作れる origin ではないので、--origin で page の origin を渡してください`,
       );
     }
-    // The page the credential will be made by. It defaults to the endpoint
-    // because an instance that serves its own web UI is the ordinary case; a UI
-    // published anywhere else is named here, and the URL a person is handed is
-    // that UI's rather than this instance's (contract, `RegisterClaims.webui`).
-    const webui = (options.webui ?? endpoint) as WebUi;
-    this.#baseUrl("webui", WebUiSchema, webui);
-    // The relying party and the origin are both read off that URL, every time
-    // they are needed, rather than settled here and carried (contract,
-    // `originOf` / `rpIdOf`).
-    const rpId = rpIdOf(webui);
-    const sub = options.sub ?? this.#nextSubject();
-    if (this.deps.records.removed(sub)) {
-      throw new OpError("forbidden", `${sub} は削除済みなので、この名前では登録できません`);
-    }
+    this.#spelled("origin", origin, OriginSchema);
     const at = this.#now();
-    const claims: RegisterClaims = {
+    const common = {
       iss: this.deps.self,
-      sub,
-      unit: this.deps.unit,
+      instance: this.deps.self,
+      origin,
       endpoint,
-      webui,
-      expires_at: at + REGISTER_TTL_MS,
+      expires_at: at + (options.ttl ?? REGISTER_TTL_MS),
       jti: randomBytes(16).toString("base64url"),
-      user_id: this.#userIdFor(sub),
       ...(options.label === undefined ? {} : { issued_label: options.label }),
     };
+    const claims: EnrollClaims =
+      options.purpose === "create_user"
+        ? { ...common, purpose: "create_user", user: options.user ?? newUserId() }
+        : { ...common, purpose: "add_owner" };
     const secret = randomBytes(32);
     const code = String(randomInt(0, 1_000_000)).padStart(6, "0");
     this.#pending.set(claims.jti, { claims, secret, code, attempts: 0 });
+    // A URL that makes a person also settles which instances they will own. An
+    // addition is the other way round: who arrives is what the assertion says,
+    // so the granting waits for it.
+    const granted =
+      claims.purpose === "create_user"
+        ? await this.grant(claims.user, this.targets(options.all === true), {
+            kind: "instance",
+            instance: this.deps.self,
+          })
+        : [];
     return {
-      sub,
-      // The web UI is where the person is sent; the endpoint is named inside
-      // the claims, because the registration has to come back to the instance
-      // that holds the secret and the code (contract, DR-0029).
-      url: `${webui}#register=${sign(claims, secret)}`,
+      purpose: claims.purpose,
+      url: `${origin}/#${ENROLL_FRAGMENT}=${sign(claims, secret)}`,
       code,
-      user_id: claims.user_id,
+      ...(claims.purpose === "create_user" ? { user: claims.user } : {}),
       expires_at: claims.expires_at,
+      instance: claims.instance,
+      origin,
       endpoint,
-      webui,
-      rp_id: rpId,
+      rp_id: hostOf(origin),
+      granted,
     };
   }
 
-  /** Read one base URL an operator stated, in the contract's own spelling. */
-  #baseUrl(name: string, schema: Parameters<typeof validationErrors>[0], url: string): void {
-    const problems = validationErrors(schema, url);
-    if (problems.length > 0) {
-      throw new OpError(
-        "invalid_args",
-        `${name} は末尾が / の http(s) base URL です (${url}): ${problems.join("; ")}`,
-      );
-    }
+  /** Read one value an operator typed, in the contract's own spelling.
+   *
+   * An operator types these, so they are read here rather than trusted: a value
+   * that is not what the contract spells would be written into a record and be
+   * compared, forever after, against something that can never match it. */
+  #spelled(name: string, value: string, schema: Parameters<typeof validationErrors>[0]): void {
+    const problems = validationErrors(schema, value);
+    if (problems.length === 0) return;
+    throw new OpError(
+      "invalid_args",
+      `${name} の綴りが契約と合いません (${value}): ${problems.join("; ")}`,
+    );
   }
 
-  /** The WebAuthn user handle this subject is known by.
+  /** The instances a granting is written for: this one, and every peer this
+   * instance knows of when `--all` asked.
    *
-   * Settled once per subject and reused for every later registration of it: the
-   * authenticator keeps the handle beyond this instance's reach, so a second
-   * value for one person would show up on their device as a second account
-   * (contract, `RegisterClaims.user_id`). A subject that already has a
-   * credential is registered against the handle that credential carries; a
-   * subject in the middle of another registration, against the one that
-   * registration named.
-   *
-   * Sixteen bytes, which is what the specification recommends and what the page
-   * would otherwise have had to choose. */
-  #userIdFor(sub: Subject): Base64Url {
-    for (const record of this.deps.records.credentials()) {
-      if (record.sub === sub) return record.user_handle;
+   * Peers are written from here because they are the same kind of thing this
+   * instance is — each trusts the others equally — and because a new instance
+   * would otherwise need somebody to walk to it (contract, `OwnershipRecord`). */
+  targets(all: boolean): InstanceId[] {
+    if (!all) return [this.deps.self];
+    const known = new Set<InstanceId>([this.deps.self]);
+    for (const row of this.deps.instances?.() ?? []) {
+      if (row.id !== undefined) known.add(row.id);
     }
-    for (const held of this.#pending.values()) {
-      if (held.claims.sub === sub) return held.claims.user_id;
-    }
-    return base64UrlEncode(randomBytes(16));
+    return [...known];
   }
 
-  /** The next `<unit>-N` nobody holds.
-   *
-   * Read from the records rather than counted in memory: a counter would start
-   * at one again after a restart and hand the next person a name somebody
-   * already has, which would be a second person under one subject rather than a
-   * new one. A name a removal took is skipped too — the tombstone over it
-   * refuses every later write, so issuing it would produce a URL that cannot
-   * complete.
-   *
-   * The pending registrations count as taken as well: two URLs made before
-   * either is spent are two people. */
-  #nextSubject(): Subject {
-    const prefix = `${this.deps.unit}-`;
-    const taken = new Set<string>();
-    for (const record of this.deps.records.credentials()) taken.add(record.sub);
-    for (const held of this.#pending.values()) taken.add(held.claims.sub);
-    let highest = 0;
-    for (const sub of taken) {
-      if (!sub.startsWith(prefix)) continue;
-      const counted = Number(sub.slice(prefix.length));
-      if (Number.isInteger(counted) && counted > highest) highest = counted;
+  /** Hand one person a set of instances, one granting each. Already owning one
+   * is not an error and writes nothing: ownership is held or not held, and a
+   * second granting of the same thing widens nothing. */
+  async grant(
+    user: UserId,
+    instances: readonly InstanceId[],
+    by: GrantedBy,
+  ): Promise<InstanceId[]> {
+    const written: InstanceId[] = [];
+    const at = this.#now();
+    for (const instance of instances) {
+      if (this.deps.records.owns(user, instance)) continue;
+      const grant = base64UrlEncode(randomBytes(16));
+      const body = {
+        kind: "ownership" as const,
+        user,
+        instance,
+        grant,
+        granted_at: at,
+        granted_by: by,
+      };
+      if (await this.deps.records.write(ownershipKey(instance, user, grant), body, at)) {
+        written.push(instance);
+      }
     }
-    for (let next = highest + 1; ; next += 1) {
-      const sub = `${prefix}${String(next)}`;
-      if (!taken.has(sub) && !this.deps.records.removed(sub)) return sub;
+    return written;
+  }
+
+  /** Let one instance go: every granting of it to this person is marked, there
+   * being no shape for ending one of two grantings of the same thing (contract,
+   * `auth.ownership.remove`). */
+  async revoke(user: UserId, instance: InstanceId): Promise<number> {
+    const grants = this.deps.records.grantsOf(user, instance);
+    if (grants.length === 0) {
+      throw new OpError("not_found", `${user} は ${instance} を持っていません`);
     }
+    for (const held of grants) await this.deps.records.erase(held.key);
+    if (instance === this.deps.self) this.disconnect(user);
+    return grants.length;
+  }
+
+  /** The people this instance holds, newest first. */
+  users(): UserRecord[] {
+    return this.deps.records.users().sort((left, right) => right.created_at - left.created_at);
   }
 
   /** The credentials a person may read back, newest registration first. */
-  list(): CredentialRecord[] {
+  credentials(user?: UserId): CredentialRecord[] {
     return this.deps.records
       .credentials()
+      .filter((record) => user === undefined || record.user === user)
       .sort((left, right) => right.registered_at - left.registered_at);
   }
 
-  /** Remove one person: the tombstones, and every connection they hold. */
-  async remove(sub: Subject): Promise<{ records: AuthRecord[]; closed: number }> {
-    const records = await this.deps.records.remove(sub);
-    return { records, closed: this.disconnect(sub) };
+  /** What one person is: who they are, what answers for them, and what they own
+   * (contract, `auth.account.read`). */
+  account(user: UserId): AuthAccountReadResult {
+    const held = this.deps.records.user(user);
+    if (held === undefined) throw new OpError("not_found", `${user} は居ません`);
+    const endpoints = new Map<InstanceId, Endpoint>();
+    for (const row of this.deps.instances?.() ?? []) {
+      if (row.id !== undefined && row.endpoint !== undefined) endpoints.set(row.id, row.endpoint);
+    }
+    const mine = this.deps.endpoint();
+    if (mine !== undefined) endpoints.set(this.deps.self, mine);
+    return {
+      user: held,
+      credentials: this.credentials(user).map(({ public_key: _key, ...rest }) => rest),
+      instances: this.deps.records
+        .ownerships()
+        .filter((record) => record.user === user)
+        .sort((left, right) => left.granted_at - right.granted_at)
+        .map((record) => {
+          const endpoint = endpoints.get(record.instance);
+          return {
+            instance: record.instance,
+            ...(endpoint === undefined ? {} : { endpoint }),
+            granted_at: record.granted_at,
+            ...(record.granted_by === undefined ? {} : { granted_by: record.granted_by }),
+          };
+        }),
+    };
   }
 
-  /** Close every connection one person holds.
+  /** Give one person a name they read themselves by. It authenticates nothing
+   * (contract, `UserRecord.display_name`). */
+  async rename(user: UserId, name: string): Promise<UserRecord> {
+    const held = this.deps.records.user(user);
+    if (held === undefined) throw new OpError("not_found", `${user} は居ません`);
+    const renamed: UserRecord = { ...held, display_name: name };
+    if (!(await this.deps.records.write(userKey(user), renamed))) {
+      throw new OpError("forbidden", `${user} は削除済みです`);
+    }
+    return renamed;
+  }
+
+  /** Take one passkey off. The origin it was made at leaves the allowed set
+   * with the last credential naming it, which is the only way an origin ever
+   * leaves (contract, `auth.credential.remove`). */
+  async removeCredential(user: UserId, credentialId: Base64Url): Promise<void> {
+    const held = this.deps.records.credential(credentialId);
+    if (held === undefined || held.user !== user) {
+      throw new OpError("not_found", "その passkey はありません");
+    }
+    await this.deps.records.erase(credentialKey(held.credential_id));
+  }
+
+  /** Close every connection one person holds here.
    *
-   * The other half of a removal, and the half that has to run whoever decided
-   * it: a tombstone that arrived from a peer revokes the same person here, and
-   * a connection left open on a revoked credential is the removal not having
-   * happened (DR-0001 §2.6). Failing a family reaches this the same way. */
-  disconnect(sub: Subject): number {
+   * The other half of a revocation, and the half that has to run whoever
+   * decided it: a granting marked at a peer revokes the same person here, and a
+   * connection left open on one is the revocation not having happened. Failing
+   * a family reaches this the same way. */
+  disconnect(user: UserId): number {
     let closed = 0;
     for (const [conn, held] of this.#authorized) {
-      if (held.sub !== sub) continue;
+      if (held.user !== user) continue;
       clearTimeout(held.timer);
       this.#authorized.delete(conn);
       conn.close();
@@ -390,13 +500,26 @@ export class Auth {
     return closed;
   }
 
-  /** Take what a peer wrote on `auth.records`, and act on the removals in it. */
+  /** Take what a peer wrote on `auth.records`, and act on the removals in it.
+   *
+   * What a mark ends is read against this instance: a person who no longer owns
+   * this one cannot hold a connection to it, and one whose family was failed
+   * has no tokens to hold it with. Losing an instance somewhere else ends
+   * nothing here. */
   async merge(records: readonly AuthRecord[]): Promise<void> {
-    const { removed } = await this.deps.records.merge(records);
-    for (const sub of removed) this.disconnect(sub);
+    const { revoked } = await this.deps.records.merge(records);
+    for (const user of new Set(revoked)) {
+      if (!this.deps.records.owns(user, this.deps.self)) this.disconnect(user);
+    }
+    for (const [conn, held] of this.#authorized) {
+      if (this.deps.records.owns(held.user, this.deps.self)) continue;
+      clearTimeout(held.timer);
+      this.#authorized.delete(conn);
+      conn.close();
+    }
   }
 
-  // --- challenges (DR-0001 §2.6) ---
+  // --- challenges ---
 
   challenge(): AuthChallengeResult {
     this.#forget();
@@ -416,8 +539,7 @@ export class Auth {
   }
 
   /** Spend a challenge wherever it was issued: here, or at the instance the
-   * caller says issued it (DR-0001 §2.4, behind a load balancer either may be
-   * reached). */
+   * caller says issued it (behind a load balancer either may be reached). */
   async #spendAnywhere(challenge: AuthChallenge): Promise<void> {
     if (challenge.issuer === this.deps.self) {
       this.spend(challenge.challenge);
@@ -453,6 +575,148 @@ export class Auth {
     return ask(iss, op, args);
   }
 
+  // --- making a user, and adding an instance to one ---
+
+  /** Verify a registration, write the person and the passkey down.
+   *
+   * The enrolment URL is checked where its secret is, which may be another
+   * instance; everything else — the WebAuthn verification, the records — is
+   * done here, by whoever the browser reached (contract, DR-0030 §4). */
+  async register(
+    args: AuthRegisterArgs,
+    from: { ip?: string; userAgent?: string; origin?: string | null } = {},
+  ): Promise<MintedSession> {
+    // What the URL says about itself, before anything has vouched for it. It is
+    // read to know which origin the credential should have been made at;
+    // nothing is decided by it, because the same fields come back authenticated
+    // below and the two are held to each other.
+    const stated = claimsOf(args.token);
+    if (stated.purpose !== "create_user") {
+      throw new OpError("auth_invalid", "この登録 URL は passkey を作るためのものではありません");
+    }
+    // The page has to be the one the URL sends people to. What the carrier
+    // observed of it is held to the same value the ceremony is, and a request
+    // that states no origin has not passed this gate.
+    this.#cameFrom(stated.origin, from.origin);
+    // What the page answered, verified before anything is spent: a challenge is
+    // good once, so consuming it for a message that then fails to verify would
+    // let a caller burn challenges without ever holding a credential (m9).
+    const challenge = challengeIn(args.credential.client_data_json);
+    const verified = refusable(() =>
+      verifyRegistration(args.credential, {
+        challenge,
+        origin: stated.origin,
+        rpId: hostOf(stated.origin),
+      }),
+    );
+    // A key nothing can verify with is a credential that can never be used, and
+    // finding that out at the person's next sign-in leaves a record nobody can
+    // explain (M8).
+    await refusableAsync(() => checkPublicKey(base64UrlDecode(verified.publicKey)));
+    // Only now is the URL spent. It is good once, like the challenge, so
+    // consuming it for a message that then failed to verify would let a caller
+    // burn enrolments without ever holding a credential (m9).
+    const claims = await this.#claimsOf(args.token, args.code);
+    if (claims.purpose !== "create_user" || claims.origin !== stated.origin) {
+      throw new OpError("auth_invalid", "登録 URL が名乗る内容が一致しません");
+    }
+    await this.#spendStated(challenge, args.challenge);
+    if (this.deps.records.credential(verified.credentialId) !== undefined) {
+      throw new OpError("auth_invalid", "この credential は既に登録されています");
+    }
+    const at = this.#now();
+    // The person, written once. A URL naming somebody who already exists is a
+    // passkey being added to them, and their record stands as it is — the name
+    // they gave themselves and the instant they were made are theirs.
+    if (this.deps.records.user(claims.user) === undefined) {
+      const user: UserRecord = { kind: "user", user: claims.user, created_at: at };
+      if (!(await this.deps.records.write(userKey(claims.user), user, at))) {
+        throw new OpError("forbidden", `${claims.user} は削除済みです`);
+      }
+    }
+    const record: CredentialRecord = {
+      kind: "credential",
+      user: claims.user,
+      credential_id: verified.credentialId,
+      public_key: verified.publicKey,
+      origin: claims.origin,
+      sign_count: verified.signCount,
+      // What the authenticator said about backing this credential up, kept
+      // because it decides what removing the line costs the person and nothing
+      // else: neither flag is ever read to admit or refuse an exchange.
+      backup_eligible: verified.backupEligible,
+      backup_state: verified.backupState,
+      ...(claims.issued_label === undefined ? {} : { issued_label: claims.issued_label }),
+      ...(args.device_label === undefined ? {} : { device_label: args.device_label }),
+      registered_at: at,
+      ...(from.ip === undefined ? {} : { registered_ip: from.ip }),
+      ...(from.userAgent === undefined ? {} : { registered_user_agent: from.userAgent }),
+    };
+    // The write is the last word on whether the passkey stands: a removal that
+    // landed while the issuer was being asked refuses the key, and a session
+    // minted over a credential that was never written down would be the removal
+    // not having happened (DR-0015 §2.5).
+    if (!(await this.deps.records.write(credentialKey(verified.credentialId), record, at))) {
+      throw new OpError("forbidden", "この credential は削除済みです");
+    }
+    return this.mint(claims.user, claims.origin, verified.credentialId);
+  }
+
+  /** Take one instance as a person's own, on the strength of a passkey they
+   * already hold and the six digits shown at that instance's terminal.
+   *
+   * Already owning it is a success that writes nothing: ownership is held or
+   * not held, and refusing would read to the person as a mistyped code
+   * (contract, DR-0030 §4). */
+  async enroll(
+    args: AuthEnrollArgs,
+    from: { ip?: string; userAgent?: string; origin?: string | null } = {},
+  ): Promise<MintedSession> {
+    const stated = claimsOf(args.token);
+    if (stated.purpose !== "add_owner") {
+      throw new OpError("auth_invalid", "この URL は instance を足すためのものではありません");
+    }
+    // Where the person was sent, which is what the browser has to say it came
+    // from. The ceremony itself is held to the credential's own origin below:
+    // an assertion happens where the passkey lives (contract, DR-0030 §9).
+    this.#cameFrom(stated.origin, from.origin);
+    const { record, signCount } = await this.#asserted(args.credential, args.challenge.challenge);
+    const claims = await this.#claimsOf(args.token, args.code);
+    if (claims.purpose !== "add_owner" || claims.origin !== stated.origin) {
+      throw new OpError("auth_invalid", "この URL が名乗る内容が一致しません");
+    }
+    await this.#spendAnywhere(args.challenge);
+    await this.#used(record, signCount, from);
+    await this.grant(record.user, [claims.instance], { kind: "user", user: record.user });
+    return this.mint(record.user, record.origin, record.credential_id);
+  }
+
+  /** What an enrolment URL authorized.
+   *
+   * Only its issuer can say, because only the issuer holds the secret that
+   * signed it — and the six digits are held beside that secret. So the digits
+   * travel there unjudged: an instance that decided them itself would let
+   * somebody spread guesses across the mesh without any of them counting
+   * against the URL (contract, `AuthResolveArgs`). Nothing is spent here.
+   *
+   * The claims come back from the issuer having been checked and consumed, and
+   * everything after this — the WebAuthn verification, the records — is done by
+   * whichever instance the browser actually reached. */
+  async #claimsOf(token: string, code: string): Promise<EnrollClaims> {
+    const stated = claimsOf(token);
+    if (stated.iss === this.deps.self) return this.resolveEnrolment(token, code);
+    const answer = await this.#answerOf<AuthResolveResult>(
+      stated.iss,
+      "auth.resolve",
+      { kind: "claims", token, code } satisfies AuthResolveArgs,
+      AuthResolveResultSchema,
+    );
+    if (answer.kind !== "claims") {
+      throw new OpError("auth_invalid", "この URL の発行者が別のものを答えました");
+    }
+    return answer.claims;
+  }
+
   /** Ask the issuer, and read its answer against the contract before anything
    * turns on it.
    *
@@ -477,153 +741,29 @@ export class Auth {
     return answer as T;
   }
 
-  // --- registration (DR-0001 §2.2) ---
-
-  /** Verify a registration and write the credential down.
-   *
-   * The registration URL is checked where its secret is, which may be another
-   * instance; everything else — the WebAuthn verification, the record — is done
-   * here, by whoever the browser reached (DR-0001 §2.6). */
-  async register(
-    args: AuthRegisterArgs,
-    from: { ip?: string; userAgent?: string; path?: string; origin?: string | null } = {},
-  ): Promise<MintedSession> {
-    // What the URL says about itself, before anything has vouched for it. It is
-    // read to know which relying party the credential should have been made
-    // under; nothing is decided by it, because the same fields come back
-    // authenticated below and the two are held to each other.
-    const stated = claimsOf(args.token);
-    // The endpoint this URL was issued for is where it may be spent: a
-    // registration posted to a neighbour sharing the host is a registration at
-    // an instance the URL never named (contract, `CredentialRecord.endpoint`).
-    this.#servedHere(stated.endpoint, from.path);
-    // The page has to be the one the URL sends people to. What the carrier
-    // observed of it is held to the same value the ceremony is (contract,
-    // DR-0029), and a request that states no origin has not passed this gate.
-    this.#cameFrom(stated.webui, from.origin);
-    // What the page answered, verified before anything is spent: a challenge is
-    // good once, so consuming it for a message that then fails to verify would
-    // let a caller burn challenges without ever holding a credential (m9).
-    const challenge = challengeIn(args.credential.client_data_json);
-    const verified = refusable(() =>
-      verifyRegistration(args.credential, {
-        challenge,
-        origin: originOf(stated.webui),
-        rpId: rpIdOf(stated.webui),
-      }),
-    );
-    // A key nothing can verify with is a credential that can never be used, and
-    // finding that out at the person's next sign-in leaves a record nobody can
-    // explain (M8).
-    await refusableAsync(() => checkPublicKey(base64UrlDecode(verified.publicKey)));
-    // Only now is the URL spent. It is good once, like the challenge, so
-    // consuming it for a message that then failed to verify would let a caller
-    // burn registrations without ever holding a credential (m9). What comes
-    // back is the authenticated form of what was read above, and the relying
-    // party the credential was actually checked against has to be the one the
-    // issuer authorized.
-    const claims = await this.#claimsOf(args);
-    // The ceremony was verified against what the token said about itself, so
-    // the two have to be the same two URLs the issuer authorized: a credential
-    // checked against one web UI and written down under another would be a
-    // record that says something nobody checked.
-    if (claims.webui !== stated.webui || claims.endpoint !== stated.endpoint) {
-      throw new OpError("auth_invalid", "登録 URL が名乗る宛先が一致しません");
-    }
-    if (this.deps.records.removed(claims.sub)) {
-      throw new OpError("forbidden", `${claims.sub} は削除済みです`);
-    }
-    // The challenge is stated beside the credential when the page knows who
-    // issued it. Where it is not, this instance is the only one that can spend
-    // it — and one it does not hold is a challenge from somewhere it cannot
-    // ask about (contract, `AuthRegisterArgs.challenge`).
-    await this.#spendStated(challenge, args.challenge);
-    if (this.deps.records.credential(verified.credentialId) !== undefined) {
-      throw new OpError("auth_invalid", "この credential は既に登録されています");
-    }
-    const at = this.#now();
-    const record: CredentialRecord = {
-      kind: "credential",
-      sub: claims.sub,
-      credential_id: verified.credentialId,
-      public_key: verified.publicKey,
-      user_handle: claims.user_id,
-      endpoint: claims.endpoint,
-      webui: claims.webui,
-      sign_count: verified.signCount,
-      // What the authenticator said about backing this credential up, kept
-      // because it decides what removing the line costs the person and nothing
-      // else: neither flag is ever read to admit or refuse an exchange.
-      backup_eligible: verified.backupEligible,
-      backup_state: verified.backupState,
-      ...(claims.issued_label === undefined ? {} : { issued_label: claims.issued_label }),
-      ...(args.device_label === undefined ? {} : { device_label: args.device_label }),
-      registered_at: at,
-      ...(from.ip === undefined ? {} : { registered_ip: from.ip }),
-      ...(from.userAgent === undefined ? {} : { registered_user_agent: from.userAgent }),
-    };
-    // The write is the last word on whether the person still exists: a removal
-    // that landed while the issuer was being asked refuses the key, and a
-    // session minted over a credential that was never written down would be the
-    // removal not having happened (DR-0015 §2.5).
-    const written = await this.deps.records.write(
-      credentialKey(claims.sub, verified.credentialId),
-      record,
-      at,
-    );
-    if (!written) throw new OpError("forbidden", `${claims.sub} は削除済みです`);
-    return this.mint(claims.sub, claims.webui);
-  }
-
-  /** What a registration URL authorized.
-   *
-   * Only its issuer can say, because only the issuer holds the secret that
-   * signed it — and the six digits are held beside that secret. So the digits
-   * travel there unjudged: an instance that decided them itself would let
-   * somebody spread guesses across the mesh without any of them counting
-   * against the URL (contract, `AuthResolveArgs`). Nothing is spent here.
-   *
-   * The claims come back from the issuer having been checked and consumed, and
-   * everything after this — the WebAuthn verification, the record — is done by
-   * whichever instance the browser actually reached (DR-0001 §2.6). */
-  async #claimsOf(args: AuthRegisterArgs): Promise<RegisterClaims> {
-    const stated = claimsOf(args.token);
-    if (stated.iss === this.deps.self) return this.resolveRegistration(args.token, args.code);
-    const answer = await this.#answerOf<AuthResolveResult>(
-      stated.iss,
-      "auth.resolve",
-      { kind: "register", token: args.token, code: args.code } satisfies AuthResolveArgs,
-      AuthResolveResultSchema,
-    );
-    if (answer.kind !== "register") {
-      throw new OpError("auth_invalid", "登録 URL の発行者が別のものを答えました");
-    }
-    return answer.claims;
-  }
-
-  /** Check a registration URL against the secret that signed it, and spend it.
+  /** Check an enrolment URL against the secret that signed it, and spend it.
    *
    * Only the issuer can run this, which is what `auth.resolve` is for. The code
    * is checked here too: it was issued with the secret and is held beside it,
    * and letting another instance check it would be putting the one defence
    * against a leaked URL somewhere the URL's holder could reach. */
-  resolveRegistration(token: string, code?: string): RegisterClaims {
+  resolveEnrolment(token: string, code?: string): EnrollClaims {
     const stated = claimsOf(token);
     const held = this.#pending.get(stated.jti);
     if (held === undefined) {
-      throw new OpError("auth_expired", "この登録 URL は使えません。再発行してください");
+      throw new OpError("auth_expired", "この URL は使えません。再発行してください");
     }
     if (held.claims.expires_at <= this.#now()) {
       this.#pending.delete(stated.jti);
-      throw new OpError("auth_expired", "この登録 URL は期限切れです。再発行してください");
+      throw new OpError("auth_expired", "この URL は期限切れです。再発行してください");
     }
     if (!equalStrings(token, sign(held.claims, held.secret))) {
-      throw new OpError("auth_invalid", "この登録 URL の署名が合いません");
+      throw new OpError("auth_invalid", "この URL の署名が合いません");
     }
     if (code === undefined || !equalStrings(code, held.code)) {
       held.attempts += 1;
       // The URL itself is spent once the tries are gone, so guessing the code
-      // costs the whole registration rather than one attempt (DR-0001 §2.2).
+      // costs the whole enrolment rather than one attempt (DR-0001 §2.2).
       if (held.attempts >= CODE_ATTEMPTS) {
         this.#pending.delete(stated.jti);
         throw new OpError(
@@ -637,38 +777,53 @@ export class Auth {
     return held.claims;
   }
 
-  // --- assertion (DR-0001 §2.5) ---
+  // --- assertion ---
 
   async assert(
     args: AuthAssertArgs,
-    from: { ip?: string; userAgent?: string; path?: string; origin?: string | null } = {},
+    from: { ip?: string; userAgent?: string; origin?: string | null } = {},
   ): Promise<MintedSession> {
-    const record = this.deps.records.credential(args.credential.raw_id);
+    const { record, signCount } = await this.#asserted(
+      args.credential,
+      args.challenge.challenge,
+      from.origin,
+    );
+    // Which instance the person reached is not compared with anything; whether
+    // they own it is the whole of what admits them (contract, DR-0030 §3).
+    if (!this.deps.records.owns(record.user, this.deps.self)) {
+      this.#log("a person asserted at an instance they do not own", { user: record.user });
+      throw refused();
+    }
+    await this.#spendAnywhere(args.challenge);
+    await this.#used(record, signCount, from);
+    return this.mint(record.user, record.origin, record.credential_id);
+  }
+
+  /** Verify one assertion against the credential it names, without spending
+   * anything. Shared by signing in and by taking an instance, which differ in
+   * what they do with the answer rather than in how it is checked.
+   *
+   * `origin` is what the carrier observed, held to the credential's own: an
+   * assertion happens at the page the passkey was made at. It is left out where
+   * the caller has already compared something else (an enrolment holds the
+   * header to the URL's origin). */
+  async #asserted(
+    credential: AssertionCredential,
+    challenge: Base64Url,
+    origin?: string | null,
+  ): Promise<{ record: CredentialRecord; signCount: number }> {
+    const record = this.deps.records.credential(credential.raw_id);
     if (record === undefined) {
       throw new OpError("auth_invalid", "この credential は登録されていません");
     }
-    // A record naming no web UI names no page it may be used from, and there
-    // is nothing to compare an origin with. It is not a credential this
-    // contract can accept: the person registers again (contract, DR-0029), and
-    // `docs/runbooks/passkeys-webui-binding.md` is how it is taken off.
-    const webui = webuiOf(record);
-    // The endpoint the credential was registered for, and no other: two
-    // instances may share a host, and this is what keeps one's credential from
-    // being a way into the other (contract, `CredentialRecord.endpoint`).
-    this.#servedHere(record.endpoint, from.path);
-    // Which page the credential may be used from, held to the same value the
-    // ceremony inside it is (contract, DR-0029).
-    this.#cameFrom(webui, from.origin);
+    if (origin !== undefined) this.#cameFrom(record.origin, origin);
     // A resident credential answers with the handle it was created against,
     // which is how a person is found without having named an account. It is
     // held to what the registration settled: a handle naming somebody else is
     // an authenticator answering for a credential that is not the one this
-    // record describes (contract, `RegisterClaims.user_id`).
-    const handle = args.credential.user_handle;
-    if (
-      handle !== undefined &&
-      !equalBytes(base64UrlDecode(handle), base64UrlDecode(record.user_handle))
-    ) {
+    // record describes (contract, `UserId`).
+    const handle = credential.user_handle;
+    if (handle !== undefined && !equalStrings(handle, record.user)) {
       throw new OpError("auth_invalid", "この assertion は別の利用者の handle を名乗っています");
     }
     // Verified before the challenge is spent, for the reason a registration is
@@ -676,28 +831,31 @@ export class Auth {
     // a caller can burn at will.
     const { signCount } = await refusableAsync(() =>
       verifyAssertion(
-        args.credential,
+        credential,
         {
           publicKey: record.public_key,
           ...(record.sign_count === undefined ? {} : { signCount: record.sign_count }),
         },
-        {
-          challenge: args.challenge.challenge,
-          origin: originOf(webui),
-          rpIds: [rpIdOf(webui)],
-        },
+        { challenge, origin: record.origin, rpIds: [hostOf(record.origin)] },
       ),
     );
-    await this.#spendAnywhere(args.challenge);
-    // Read again after the waits, and written on what stands now rather than on
-    // what was read before them: a removal may have taken the credential, and
-    // another assertion of the same credential may have finished first. The
-    // counter is held to the standing record the way it was held to the one
-    // read above — a reading that no longer advances it is the reading a copy
-    // of the credential would make, whichever of the two arrived first — so
-    // the earlier assertion cannot put its lower count back over the later
-    // one's (DR-0015 §2.5).
-    const standing = this.deps.records.credential(args.credential.raw_id);
+    return { record, signCount };
+  }
+
+  /** Write down that a credential answered, on the record as it stands now.
+   *
+   * Read again after the waits: a removal may have taken the credential, and
+   * another assertion of the same one may have finished first. The counter is
+   * held to the standing record the way it was held to the one read before — a
+   * reading that no longer advances it is the reading a copy of the credential
+   * would make, whichever of the two arrived first — so the earlier assertion
+   * cannot put its lower count back over the later one's (DR-0015 §2.5). */
+  async #used(
+    record: CredentialRecord,
+    signCount: number,
+    from: { ip?: string; userAgent?: string },
+  ): Promise<Timestamp> {
+    const standing = this.deps.records.credential(record.credential_id);
     if (standing === undefined) {
       throw new OpError("auth_invalid", "この credential は登録されていません");
     }
@@ -706,7 +864,7 @@ export class Auth {
     }
     const at = this.#now();
     const written = await this.deps.records.write(
-      credentialKey(standing.sub, standing.credential_id),
+      credentialKey(standing.credential_id),
       {
         ...standing,
         sign_count: signCount,
@@ -716,227 +874,127 @@ export class Auth {
       },
       at,
     );
-    if (!written) throw new OpError("forbidden", `${standing.sub} は削除済みです`);
-    return this.mint(standing.sub, webuiOf(standing));
-  }
-
-  /** Refuse an exchange that arrived somewhere other than the endpoint it is
-   * about.
-   *
-   * Two halves, because an endpoint is a base URL and both parts of it say
-   * something (contract, DR-0029). The scheme and authority say which instance:
-   * a credential is replicated to every instance in the mesh, so without this a
-   * record made at one would be a way into its neighbour — the page, the
-   * ceremony and the relying party are all the first instance's and none of
-   * them would notice. The path says which of the instances published at one
-   * origin: `https://h/` and `https://h/personal/` are two.
-   *
-   * Design rationale: the authority compared is the one this instance is
-   * published at rather than one read off the request. A proxy in front of it
-   * terminates the TLS and rewrites the host, so what arrives says little about
-   * which URL was dialled, and which instance was meant is settled by the
-   * address the proxy forwarded to (DR-0001 §2.7) — which is this one. An
-   * instance the mesh names no address for has nothing to compare and is held
-   * to the path alone; it is reached at one address, its own socket's.
-   *
-   * The path is the carrier's observation, so a caller cannot state it. A
-   * carrier that observes none — the mesh, where the issuer is asked about a
-   * URL rather than posted to — states nothing and is not held to a path it
-   * never had. */
-  #servedHere(endpoint: Endpoint, path: string | undefined): void {
-    const mine = this.deps.endpoint();
-    if (mine !== undefined && originOf(endpoint) !== originOf(mine)) {
-      this.#log("an exchange named another instance's endpoint", { endpoint, mine });
-      throw refused();
-    }
-    if (path !== undefined && !servesPath(endpoint, path)) {
-      this.#log("an exchange arrived under another path than its endpoint's", { endpoint, path });
-      throw refused();
-    }
+    if (!written) throw new OpError("forbidden", "この credential は削除済みです");
+    return at;
   }
 
   /** Write down which check refused an exchange. The answer says only that it
-   * was refused (contract, DR-0029): the operator reading the log is the one
-   * who may know which gate it was, and the caller is not. */
+   * was refused: the operator reading the log is the one who may know which
+   * gate it was, and the caller is not. */
   #log(msg: string, fields: Record<string, unknown>): void {
     this.deps.log?.(msg, fields);
   }
 
-  /** Refuse an exchange that came from a page other than the web UI it is
+  /** Refuse an exchange that came from a page other than the origin it is
    * about.
    *
    * The `Origin` is the browser's own word for where the page was served from,
-   * which its script cannot write, and it is compared with the origin read off
-   * the web UI the claims or the record name. A request that states none is a
-   * mismatch rather than an exemption: every gate has to be passed, and a
-   * caller with nothing to compare has not passed this one (contract,
-   * DR-0029).
+   * which its script cannot write. A request that states none is a mismatch
+   * rather than an exemption: every gate has to be passed, and a caller with
+   * nothing to compare has not passed this one (contract, DR-0030 §9).
    *
    * `undefined` is a carrier that observes no header at all — the mesh, where
    * the issuer is asked about a URL rather than posted to — and is not held to
-   * one it never had. `null` is an HTTP request that carried none.
-   */
-  #cameFrom(webui: WebUi, origin: string | null | undefined): void {
-    if (origin === undefined) return;
-    if (origin !== originOf(webui)) {
-      this.#log("an exchange came from a page other than its web UI", { webui, origin });
+   * one it never had. `null` is an HTTP request that carried none. */
+  #cameFrom(origin: Origin, stated: string | null | undefined): void {
+    if (stated === undefined) return;
+    if (stated !== origin) {
+      this.#log("an exchange came from a page other than its own origin", { origin, stated });
       throw refused();
     }
   }
 
-  /** The origins whose pages may read these answers: the web UIs this
-   * instance's credentials were made at, and the ones its outstanding
-   * registration URLs name (contract, DR-0029).
+  /** The origins whose pages may read the answers of everything but the two
+   * enrolment routes: the origins the owners of this instance made their
+   * passkeys at (contract, DR-0030 §9).
    *
    * Nothing is configured and no list is kept: a registration is what adds an
-   * origin and the removal of the last credential at one is what takes it away.
-   * The URLs this instance holds are the other half, and the only half, of how
-   * a first registration at a new web UI is answered at all — there is no
-   * credential naming it yet. They are this instance's own knowledge and
-   * travel nowhere, so a registration only completes where it was issued.
+   * origin, and the removal of the last credential at one is what takes it
+   * away. The enrolment routes need no entry here and have none — they are open
+   * to every origin, because behind a load balancer the page's first POST lands
+   * wherever it lands, and what guards an enrolment is the token, the digits
+   * and the issuer's count of tries rather than CORS.
    *
-   * Read by the HTTP carrier, which compares them whole. Not the relying party:
-   * an RP ID is a domain, so a page at any host under it would be let in — and
-   * the refresh route answers a cookie the browser attaches by domain, so a
-   * sibling subdomain admitted here would read a person's access token.
-   *
-   * A credential with no web UI names no page and adds no origin; it is a
-   * record this contract cannot accept, and the person registers again. */
+   * Compared whole rather than by domain: an RP ID is a domain, so a page at
+   * any host under it would be let in — and the refresh route answers a cookie
+   * the browser attaches by domain, so a sibling subdomain admitted here would
+   * read a person's access token. */
   knownOrigins(): string[] {
-    // What has run out is not held any more, so its page is not one this
-    // instance answers for: the contract's set is the URLs still live.
-    this.#forget();
     const origins = new Set<string>();
     for (const record of this.deps.records.credentials()) {
-      if (record.webui !== undefined) origins.add(originOf(record.webui));
+      if (this.deps.records.owns(record.user, this.deps.self)) origins.add(record.origin);
     }
-    for (const held of this.#pending.values()) origins.add(originOf(held.claims.webui));
     return [...origins];
   }
 
-  // --- tokens (DR-0001 §2.4) ---
+  // --- tokens ---
 
   /** Make a family for this person, minted by this instance.
    *
-   * The web UI comes from the credential that answered and is carried on the
+   * The origin comes from the credential that answered and is carried on the
    * family: a token says who the person is and nothing about what is holding
    * it, and this is what a connection presenting it is then held to (contract,
-   * `TokenFamily.webui`). */
-  async mint(sub: Subject, webui: WebUi): Promise<MintedSession> {
+   * `TokenFamily.origin`). */
+  async mint(user: UserId, origin: Origin, credential?: Base64Url): Promise<MintedSession> {
     const at = this.#now();
     const family: TokenFamily = {
       kind: "token_family",
-      sub,
+      user,
       iss: this.deps.self,
-      webui,
+      origin,
       access: { value: token(), expires_at: at + ACCESS_TTL_MS },
       refresh: { value: token(), expires_at: at + REFRESH_TTL_MS },
     };
-    const id = randomBytes(8).toString("hex");
-    // A family the records refused is a person whose removal stands over the
-    // key. Tokens answered for it would open connections nothing written down
-    // admits, so the refusal is the answer.
-    const written = await this.deps.records.write(familyKey(sub, id), family, at);
-    if (!written) throw new OpError("forbidden", `${sub} は削除済みです`);
-    return { session: { sub, access: family.access }, refresh: family.refresh, webui };
+    const key = familyKey(randomBytes(8).toString("hex"));
+    // A family the records refused is one a mark stands over. Tokens answered
+    // for it would open connections nothing written down admits, so the refusal
+    // is the answer.
+    if (!(await this.deps.records.write(key, family, at))) {
+      throw new OpError("forbidden", `${user} は削除済みです`);
+    }
+    if (credential !== undefined) this.#openedWith.set(key, credential);
+    return { session: { user, access: family.access }, refresh: family.refresh, origin };
   }
 
   /** Rotate a family from a refresh token, wherever it was minted.
    *
-   * A family is written by its `iss` alone, so a rotation that landed here for
-   * a family minted elsewhere is carried there rather than done here — two
-   * instances rotating one family in parallel would merge by last write and
-   * read exactly like a stolen token being replayed (DR-0001 §2.4). */
+   * Written here rather than carried to the instance that minted it: every
+   * instance the person owns holds the family and may write it, which is what
+   * keeps a refresh working while the minting instance is down. Two of them
+   * rotating at once is a collision the losing generation does not survive, and
+   * the client it belonged to signs in again (contract, DR-0030 §5). */
   async refreshToken(
     value: Base64Url,
     from: RefreshFrom & { origin?: string | null } = {},
   ): Promise<MintedSession> {
     const held = this.deps.records.byRefresh(value);
     if (held === undefined) {
-      // Not the standing generation, nor the one before it. Either it never was
-      // one, or it is a value that has already been rotated away — which is a
-      // token being reused, and fails the family it belongs to.
-      await this.#refuseReuse(value);
+      // Either a value no family ever issued, or one this family retired. Only
+      // the second is a replay, and only it fails anything: the losing side of
+      // two parallel rotations holds a value the family also knows nothing of,
+      // and failing on that would take down every other page of the same
+      // person whenever two instances rotated at once.
+      await this.#failReplayed(value);
       throw new OpError("auth_invalid", "この refresh token は使えません");
     }
-    // The page asking is held to the family's own web UI, as the handshake
-    // that presents its access token is (contract, DR-0029).
-    const webui = webuiOf(held.body);
-    this.#cameFrom(webui, from.origin);
-    if (held.body.iss !== this.deps.self) {
-      // What the carrier observed goes with the value: the person is at the
-      // other end of this instance's connection and not the issuer's, so these
-      // are only knowable here, and a rotation forwarded without them would be
-      // remembered as a time and nothing else. The issuer writes them
-      // unchecked, as it does the ones it observes itself (contract,
-      // `AuthRotateArgs`).
-      const answer = await this.#answerOf<AuthRotateResult>(
-        held.body.iss,
-        "auth.rotate",
-        {
-          refresh_token: value,
-          ...(from.reason === undefined ? {} : { reason: from.reason }),
-          ...(from.ip === undefined ? {} : { ip: from.ip }),
-          ...(from.userAgent === undefined ? {} : { user_agent: from.userAgent }),
-        } satisfies AuthRotateArgs,
-        AuthRotateResultSchema,
-      );
-      return {
-        session: { sub: answer.sub, access: answer.access },
-        refresh: answer.refresh,
-        webui,
-      };
-    }
-    const rotated = await this.rotate(value, from);
-    return {
-      session: { sub: rotated.sub, access: rotated.access },
-      refresh: rotated.refresh,
-      webui,
-    };
-  }
-
-  /** A value that works nowhere. If it was once some family's, the family is
-   * failed — by its `iss`, which is the only instance that may write it.
-   *
-   * A family this instance minted is failed here. One minted elsewhere is
-   * failed by asking that instance to rotate the value: it will find the same
-   * thing this instance did, and fail its own family. Forwarding rather than
-   * writing is what keeps the single writer single; an issuer that cannot be
-   * reached leaves the refusal as the whole of the answer. */
-  async #refuseReuse(value: Base64Url): Promise<void> {
-    const owner = this.deps.records.owning(value, digestOf(value));
-    if (owner === undefined) return;
-    if (owner.body.iss === this.deps.self) {
-      await this.#failReused(value);
-      return;
-    }
-    try {
-      await this.#atIssuer(owner.body.iss, "auth.rotate", {
-        refresh_token: value,
-      } satisfies AuthRotateArgs);
-    } catch {
-      // Whatever the issuer said, or that it said nothing: the caller is
-      // refused either way, and this instance has no standing to fail a family
-      // it does not write.
-    }
-  }
-
-  /** Rotate a family this instance minted. The one writer's own operation, and
-   * what `auth.rotate` runs on its behalf. */
-  async rotate(value: Base64Url, from: RefreshFrom = {}): Promise<AuthRotateResult> {
-    const held = this.deps.records.byRefresh(value);
-    if (held === undefined) {
-      await this.#failReused(value);
-      throw new OpError("auth_invalid", "この refresh token は使えません");
-    }
-    if (held.body.iss !== this.deps.self) {
-      throw new OpError("auth_invalid", `この family を書けるのは ${held.body.iss} だけです`);
+    // The page asking is held to the family's own origin, as the handshake that
+    // presents its access token is.
+    this.#cameFrom(held.body.origin, from.origin);
+    if (!this.deps.records.owns(held.body.user, this.deps.self)) {
+      this.#log("a refresh arrived at an instance its person does not own", {
+        user: held.body.user,
+      });
+      throw refused();
     }
     // Answering the previous generation with the standing pair rather than
     // rotating again: the client that retries is asking for the answer it
     // missed, and rotating on a retry would spend a generation per lost reply.
     if (held.previous) {
-      return { sub: held.body.sub, access: held.body.access, refresh: held.body.refresh };
+      return {
+        session: { user: held.body.user, access: held.body.access },
+        refresh: held.body.refresh,
+        origin: held.body.origin,
+      };
     }
     const at = this.#now();
     // The refresh token rotates every time; the access token is the family's
@@ -947,16 +1005,12 @@ export class Auth {
         ? held.body.access
         : { value: token(), expires_at: at + ACCESS_TTL_MS };
     const rotated: TokenFamily = {
-      kind: "token_family",
-      sub: held.body.sub,
-      iss: this.deps.self,
-      webui: webuiOf(held.body),
+      ...held.body,
       access,
       refresh: { value: token(), expires_at: at + REFRESH_TTL_MS },
-      // Written by this instance because it is the family's `iss`, and only for
-      // the rotation that just happened — the caller's word about why, and
-      // where it was asked from, are a hint for the person reading their own
-      // sessions back and are never checked (contract, `TokenFamily`).
+      // The caller's word about why, and where it was asked from, are a hint
+      // for the person reading their own sessions back and are never checked
+      // (contract, `TokenFamily.last_refresh`).
       last_refresh: {
         at,
         ...(from.reason === undefined ? {} : { reason: from.reason }),
@@ -968,66 +1022,80 @@ export class Auth {
       // it would have been accepted, so that presenting it later is recognised
       // as this family's token rather than as a stranger's. The digest travels
       // with the family, so the memory survives this instance restarting and
-      // holds wherever the reused value is presented (contract, `TokenFamily`).
+      // holds wherever the reused value is presented.
       retired: retire(held.body, at),
     };
     await this.deps.records.write(held.key, rotated, at);
-    return { sub: rotated.sub, access: rotated.access, refresh: rotated.refresh };
+    return {
+      session: { user: rotated.user, access: rotated.access },
+      refresh: rotated.refresh,
+      origin: rotated.origin,
+    };
   }
 
-  /** A value that is nobody's standing token but was somebody's: the family it
-   * belonged to is failed, because a token in use twice is a token that was
-   * taken (DR-0001 §2.4).
+  /** A value some family retired: the family is failed, because a token in use
+   * after it was rotated away is a token that was taken.
    *
-   * Recognised three ways: the standing refresh token past its expiry, the one
-   * before it past its grace, and any generation this instance rotated away
-   * while it has been running. A value older than what any of those covers
-   * matches nothing and is refused as a stranger. */
-  async #failReused(value: Base64Url): Promise<void> {
-    const digest = digestOf(value);
-    const now = this.#now();
-    for (const held of this.deps.records.families()) {
-      if (held.body.iss !== this.deps.self) continue;
-      const before = held.body.previous_refresh;
-      const stale =
-        equalStrings(held.body.refresh.value, value) ||
-        (before !== undefined && equalStrings(before.value, value)) ||
-        (held.body.retired ?? []).some(
-          (one) => one.expires_at > now && equalStrings(one.hash, digest),
-        );
-      if (!stale) continue;
+   * Matching a retired digest is the only thing that fails a family. A value no
+   * family knows anything about was never issued by any of them — which is also
+   * what the losing side of two parallel rotations holds — and refusing the
+   * call is the whole of the answer (contract, `TokenFamily.retired`). */
+  async #failReplayed(value: Base64Url): Promise<void> {
+    for (const held of this.deps.records.retiring(digestOf(value))) {
       this.deps.log?.("a refresh token was reused after it was rotated away", {
-        sub: held.body.sub,
+        user: held.body.user,
       });
       await this.deps.records.fail(held.key);
+      this.#openedWith.delete(held.key);
       // The tokens are gone, and so is what they were holding open: a
       // connection that outlived the family it was admitted on would be the
       // stolen token still working.
-      this.disconnect(held.body.sub);
+      this.disconnect(held.body.user);
     }
   }
 
-  // --- connections (DR-0001 §2.5) ---
+  // --- connections ---
 
-  /** Whether an access token opens a connection, until when, and from which
-   * page.
+  /** Whether an access token opens a connection, until when, from which page,
+   * and with which passkey.
    *
-   * The web UI is stated so the handshake can hold the browser's `Origin` to
+   * The origin is stated so the handshake can hold the browser's `Origin` to
    * it: a token says who the person is and nothing about what is holding it,
-   * and the family it belongs to is where that is written down (contract,
-   * `TokenFamily.webui`). A family with none names no page, so nothing it
-   * minted opens a connection. */
-  admits(access: Base64Url): { sub: Subject; expiresAt: Timestamp; webui: WebUi } | undefined {
-    const family = this.deps.records.byAccess(access);
-    if (family === undefined || family.webui === undefined) return undefined;
-    return { sub: family.sub, expiresAt: family.access.expires_at, webui: family.webui };
+   * and the family it belongs to is where that is written down. Ownership is
+   * read here too — a person who no longer owns this instance holds tokens that
+   * open nothing on it. */
+  admits(
+    access: Base64Url,
+  ): { user: UserId; expiresAt: Timestamp; origin: Origin; credential?: Base64Url } | undefined {
+    const family = this.deps.records
+      .families()
+      .find(
+        ({ body }) =>
+          equalStrings(body.access.value, access) && body.access.expires_at > this.#now(),
+      );
+    if (family === undefined) return undefined;
+    if (!this.deps.records.owns(family.body.user, this.deps.self)) return undefined;
+    const credential = this.#openedWith.get(family.key);
+    return {
+      user: family.body.user,
+      expiresAt: family.body.access.expires_at,
+      origin: family.body.origin,
+      ...(credential === undefined ? {} : { credential }),
+    };
   }
 
   /** Take a connection an access token opened, and close it when the token runs
    * out. The client is expected to have extended it before then; one that did
    * not is the one this is for. */
-  hold(conn: Requester, admitted: { sub: Subject; expiresAt: Timestamp }): void {
-    const held: AuthorizedConn = { sub: admitted.sub, expiresAt: admitted.expiresAt };
+  hold(
+    conn: Requester,
+    admitted: { user: UserId; expiresAt: Timestamp; credential?: Base64Url },
+  ): void {
+    const held: AuthorizedConn = {
+      user: admitted.user,
+      ...(admitted.credential === undefined ? {} : { credential: admitted.credential }),
+      expiresAt: admitted.expiresAt,
+    };
     this.#authorized.set(conn, held);
     conn.onClose(() => {
       // The timer goes with the connection: a close scheduled for a socket that
@@ -1036,6 +1104,16 @@ export class Auth {
       this.#authorized.delete(conn);
     });
     this.#deadline(conn, held);
+  }
+
+  /** Who is at the other end of one connection, for the ops that act on the
+   * caller's own records and name nobody. */
+  held(conn: Requester): AuthorizedConn {
+    const standing = this.#authorized.get(conn);
+    if (standing === undefined) {
+      throw new OpError("auth_invalid", "この接続は token で開かれたものではありません");
+    }
+    return standing;
   }
 
   #deadline(conn: Requester, held: AuthorizedConn): void {
@@ -1062,25 +1140,22 @@ export class Auth {
     return this.#authorized.get(conn)?.expiresAt;
   }
 
-  /** Extend a live connection with a token got from `/auth/refresh` (DR-0001 §2.5). */
+  /** Extend a live connection with a token got from `/auth/refresh`. */
   extend(conn: Requester, args: AuthExtendArgs): AuthExtendResult {
-    const held = this.#authorized.get(conn);
-    if (held === undefined) {
-      throw new OpError("auth_invalid", "この接続は token で開かれたものではありません");
-    }
+    const held = this.held(conn);
     const admitted = this.admits(args.access_token);
     if (admitted === undefined) throw new OpError("auth_expired", "この access token は使えません");
     // A token belonging to somebody else does not extend this connection: the
     // connection is one person's, and a second person's token would move its
     // deadline without changing who it speaks as.
-    if (admitted.sub !== held.sub) {
+    if (admitted.user !== held.user) {
       throw new OpError("auth_invalid", "この access token は別の利用者のものです");
     }
     held.expiresAt = admitted.expiresAt;
     return { auth_expires_at: admitted.expiresAt };
   }
 
-  // --- the rate limit the unauthenticated routes share (DR-0001 §2.4) ---
+  // --- the rate limit the unauthenticated routes share ---
 
   allowRequest(): boolean {
     const now = this.#now();
@@ -1106,7 +1181,7 @@ export class Auth {
 
   /** What is held per exchange right now, so a test can state that a finished
    * registration leaves nothing behind. */
-  get held(): { pending: number; challenges: number; connections: number } {
+  get heldCounts(): { pending: number; challenges: number; connections: number } {
     this.#forget();
     return {
       pending: this.#pending.size,
@@ -1116,12 +1191,36 @@ export class Auth {
   }
 }
 
-/** The three ops an instance answers on a person's behalf, and the two it
- * answers for another instance. */
+/** The ops an instance answers on a person's connection, and the one it answers
+ * for another instance. */
 export function authHandlers(auth: Auth) {
   return {
     "auth.extend": (input: HandlerInput): AuthExtendResult =>
       auth.extend(input.conn, input.args as unknown as AuthExtendArgs),
+    "auth.account.read": (input: HandlerInput): AuthAccountReadResult =>
+      auth.account(auth.held(input.conn).user),
+    "auth.ownership.remove": async (input: HandlerInput): Promise<Record<string, never>> => {
+      const { instance } = input.args as unknown as AuthOwnershipRemoveArgs;
+      const held = auth.held(input.conn);
+      // The instance this connection is on is the one it cannot let go of:
+      // a person removing their own footing would be cutting the call they are
+      // making. Another instance they own, or the command line, does it
+      // (contract, `auth.ownership.remove`).
+      if (instance === auth.self) {
+        throw new OpError("auth_in_use", "今つないでいる instance は、この接続からは手放せません");
+      }
+      await auth.revoke(held.user, instance);
+      return {};
+    },
+    "auth.credential.remove": async (input: HandlerInput): Promise<Record<string, never>> => {
+      const { credential_id: credentialId } = input.args as unknown as AuthCredentialRemoveArgs;
+      const held = auth.held(input.conn);
+      if (held.credential !== undefined && equalStrings(held.credential, credentialId)) {
+        throw new OpError("auth_in_use", "今つないでいる passkey は、この接続からは消せません");
+      }
+      await auth.removeCredential(held.user, credentialId);
+      return {};
+    },
     "auth.resolve": (input: HandlerInput): AuthResolveResult => {
       const args = input.args as unknown as AuthResolveArgs;
       if (args.kind === "challenge") {
@@ -1130,19 +1229,8 @@ export function authHandlers(auth: Auth) {
       }
       // The digits arrive unjudged from wherever the browser landed, and are
       // checked here — this is the instance holding both the secret that signed
-      // the URL and the count of tries against it (DR-0001 §2.2).
-      return { kind: "register", claims: auth.resolveRegistration(args.token, args.code) };
-    },
-    "auth.rotate": (input: HandlerInput): Promise<AuthRotateResult> => {
-      const args = input.args as unknown as AuthRotateArgs;
-      // The receiving instance's account of the person, taken as stated: it is
-      // the only one that saw them, and `last_refresh` is a hint nothing is
-      // decided by (contract, `AuthRotateArgs`).
-      return auth.rotate(args.refresh_token, {
-        ...(args.reason === undefined ? {} : { reason: args.reason }),
-        ...(args.ip === undefined ? {} : { ip: args.ip }),
-        ...(args.user_agent === undefined ? {} : { userAgent: args.user_agent }),
-      });
+      // the URL and the count of tries against it.
+      return { kind: "claims", claims: auth.resolveEnrolment(args.token, args.code) };
     },
   };
 }
@@ -1218,54 +1306,77 @@ function token(): Base64Url {
   return base64UrlEncode(randomBytes(32));
 }
 
-/** Sign the claims with the secret made for this one registration.
+/** A person's id, which is the WebAuthn user handle itself: sixteen bytes,
+ * settled once and never derived from anything (contract, `UserId`). */
+function newUserId(): UserId {
+  return base64UrlEncode(randomBytes(16));
+}
+
+/** The origin an endpoint is published at, where a ceremony could be held
+ * there at all.
+ *
+ * `undefined` for an address a passkey could never be made against — an
+ * address literal, a plain-http host that is not the loopback — which is a
+ * perfectly good endpoint and no origin this contract will hold a credential
+ * to (contract, `Origin`). The operator names one instead. */
+function originOf(endpoint: Endpoint): Origin | undefined {
+  const origin = new URL(endpoint).origin;
+  return validationErrors(OriginSchema, origin).length === 0 ? origin : undefined;
+}
+
+/** The relying party a credential at this origin is made under: the origin's
+ * host, and nothing wider.
+ *
+ * WebAuthn would allow a suffix of it, which would let every host under that
+ * suffix answer for this one. Holding it to the host is this contract's rule
+ * rather than the specification's (contract, `CredentialRecord.origin`). */
+export function hostOf(origin: Origin): string {
+  return new URL(origin).hostname;
+}
+
+/** Sign the claims with the secret made for this one enrolment.
  *
  * A JWS with HS256, because the value travels in a URL fragment and has to
  * survive being carried there: the shape is the conventional one, and the
  * verifier is the issuer itself, so nothing about it is a key anyone else
  * needs (DR-0001 §2.2). */
-function sign(claims: RegisterClaims, secret: Buffer): string {
+function sign(claims: EnrollClaims, secret: Buffer): string {
   const header = Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT" })).toString("base64url");
   const body = Buffer.from(JSON.stringify(claims)).toString("base64url");
   const signing = `${header}.${body}`;
   return `${signing}.${createHmac("sha256", secret).update(signing).digest("base64url")}`;
 }
 
-/** What a registration token says about itself, before anything has checked it.
+/** What an enrolment token says about itself, before anything has checked it.
  *
- * Read to find the issuer, which is who can check the rest. Nothing here is
- * believed: an issuer a caller made up names an instance that holds no such
- * registration, which is a refusal. */
-export function claimsOf(token: string): RegisterClaims {
+ * Read to find the issuer, which is who can check the rest, and to know which
+ * origin the ceremony has to be held at. Nothing here is believed: an issuer a
+ * caller made up names an instance that holds no such enrolment, which is a
+ * refusal. It is read against the contract's own shape rather than field by
+ * field — an origin is derived from it to verify a ceremony with, and a value
+ * that is not one would be handed to a URL parser as a caller's string. */
+export function claimsOf(token: string): EnrollClaims {
   const parts = token.split(".");
-  if (parts.length !== 3) throw new OpError("auth_invalid", "登録 URL の token が壊れています");
+  if (parts.length !== 3) throw new OpError("auth_invalid", "この URL の token が壊れています");
   let claims: unknown;
   try {
     claims = JSON.parse(Buffer.from(parts[1] as string, "base64url").toString("utf8"));
   } catch {
-    throw new OpError("auth_invalid", "登録 URL の token が読めません");
+    throw new OpError("auth_invalid", "この URL の token が読めません");
   }
-  const held = claims as Partial<RegisterClaims>;
-  if (
-    typeof held.iss !== "string" ||
-    typeof held.jti !== "string" ||
-    typeof held.sub !== "string"
-  ) {
-    throw new OpError("auth_invalid", "登録 URL の token に発行者がありません");
+  if (validationErrors(EnrollClaimsSchema, claims).length > 0) {
+    throw new OpError("auth_invalid", "この URL の token の中身が契約の形ではありません");
   }
-  // The two URLs are read before anything has vouched for them — an origin and
-  // a relying party are derived from one of them to verify the ceremony with —
-  // so they are held to the contract's spelling here rather than handed to a
-  // URL parser that would fault on a caller's string.
-  for (const [name, schema, url] of [
-    ["endpoint", EndpointSchema, held.endpoint],
-    ["webui", WebUiSchema, held.webui],
-  ] as const) {
-    if (validationErrors(schema, url).length > 0) {
-      throw new OpError("auth_invalid", `登録 URL の token の ${name} が base URL ではありません`);
-    }
+  return claims as EnrollClaims;
+}
+
+/** Read one person's id an operator typed, which is a value the contract spells
+ * exactly one way. */
+export function userIdOf(stated: string): UserId {
+  if (validationErrors(UserIdSchema, stated).length > 0) {
+    throw new OpError("invalid_args", `${stated} は利用者の id ではありません`);
   }
-  return held as RegisterClaims;
+  return stated;
 }
 
 /** The challenge a client data object states, read before anything is verified
@@ -1284,36 +1395,12 @@ function challengeIn(clientDataJson: Base64Url): Base64Url {
   return challenge;
 }
 
-/** Whether a request that arrived at this path was made to this endpoint.
- *
- * The endpoint's own path, compared exactly: `https://h/` and
- * `https://h/personal/` are two instances that may share a host, so a
- * credential registered for one is not a way into the other (contract,
- * `CredentialRecord.endpoint`). The prefix a proxy leaves on the front is what
- * the carrier already stripped down to when it found the route.
- *
- * Whether the origin matches is asked separately: the two together are what
- * bind a credential to one instance. */
-export function servesPath(endpoint: Endpoint, path: string): boolean {
-  return new URL(endpoint).pathname === path;
-}
-
-/** The web UI a credential or a family names.
- *
- * A record that names none has no value to compare an origin or a relying
- * party with. The contract has no migration for it: the record is invalid and
- * the person registers again (DR-0029). */
-function webuiOf(held: { webui?: WebUi }): WebUi {
-  if (held.webui === undefined) throw refused();
-  return held.webui;
-}
-
 /** How every one of these binding checks answers.
  *
  * One refusal for all of them, saying that the exchange was not accepted and
  * not which gate it failed: what a caller learns from "the page was wrong"
- * rather than "the endpoint was" is which value to try next (contract,
- * DR-0029). */
+ * rather than "the instance was" is which value to try next (contract,
+ * DR-0030 §9). */
 function refused(): OpError {
   return new OpError("auth_invalid", "この要求は受け付けられません");
 }
