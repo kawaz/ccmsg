@@ -2,24 +2,26 @@ import { createHash } from "node:crypto";
 import { getDomain } from "tldts";
 import {
   type AuthAssertArgs,
+  type AuthEnrollArgs,
   type AuthTokenRefreshArgs,
   type AuthRegisterArgs,
   type ErrorCode,
   type InstanceId,
   OP_SCHEMAS,
   type OpName,
+  type UserId,
   validationErrors,
 } from "@ccmsg/protocol";
 import { OpError } from "../dispatch/index.ts";
 import type { Auth, MintedSession } from "./auth.ts";
 
-/** The four ops the contract carries over HTTP, and the path each is at.
+/** The five ops the contract carries over HTTP, and the path each is at.
  *
  * They are `needs_hello: false` ops like `hello` is, run before there is an
  * identity to check, and the carrier is what makes them reachable from a page
  * that has no connection yet — a `request_id` is synthesized here because
  * there is no envelope to carry one (DR-0001 §2.9). */
-const ROUTES = ["challenge", "register", "assert", "refresh"] as const;
+const ROUTES = ["challenge", "register", "enroll", "assert", "refresh"] as const;
 type Route = (typeof ROUTES)[number];
 
 /** Which op each route carries. The route is a name a proxy can see; the op is
@@ -27,9 +29,24 @@ type Route = (typeof ROUTES)[number];
 const OP_OF: Record<Route, OpName> = {
   challenge: "auth.challenge",
   register: "auth.register",
+  enroll: "auth.enroll",
   assert: "auth.assert",
   refresh: "auth.token.refresh",
 };
+
+/** The routes an enrolment URL is spent on, which every origin may reach.
+ *
+ * Behind a load balancer the page's first POST lands wherever the balancer
+ * sends it, and the instance it lands on has never heard of the origin the URL
+ * names — there is no credential for it yet. What guards an enrolment is the
+ * token, the six digits and the issuer's count of tries against them; CORS
+ * guards nothing here, and a list it could be checked against would only make
+ * the enrolment fail on whichever instance was reached (contract, DR-0030 §9).
+ *
+ * `challenge` is among them because the page has to ask for one before it can
+ * begin, and what it hands out can only be spent by its issuer against one of
+ * the checked ops. */
+const OPEN_TO_EVERY_ORIGIN: readonly Route[] = ["challenge", "register", "enroll"];
 
 /** What a `Sec-Fetch-Site` may say for one of these to be a page's request.
  *
@@ -63,16 +80,6 @@ export function authRouteOf(pathname: string): Route | undefined {
   return (ROUTES as readonly string[]).includes(name) ? (name as Route) : undefined;
 }
 
-/** The endpoint path a request arrived under: everything before its `auth/`.
- *
- * What a credential's endpoint is compared against, so that `https://h/` and
- * `https://h/personal/` are two instances rather than two spellings of one
- * (contract, `CredentialRecord.endpoint`). */
-export function endpointPath(pathname: string): string {
-  const at = pathname.lastIndexOf("/auth/");
-  return at === -1 ? "/" : pathname.slice(0, at + 1);
-}
-
 /** The cookie path for a request: everything up to and including its `/auth/`.
  *
  * It narrows what the browser sends where, and nothing more — same-origin
@@ -84,14 +91,18 @@ export function cookiePath(pathname: string): string {
   return at === -1 ? "/" : pathname.slice(0, at + "/auth/".length);
 }
 
-/** What a person's refresh cookie is called on this instance.
+/** What a person's refresh cookie is called.
  *
- * Named after the instance and the subject so that two instances behind one
- * origin, and two people at one browser, do not overwrite each other's. The
- * digest is what keeps the id and the subject out of a header a page can
- * read. */
-export function cookieName(instance: InstanceId, sub: string): string {
-  const digest = createHash("sha256").update(`${instance}\n${sub}`).digest("hex").slice(0, 16);
+ * Named after the person and nobody else. An instance in the name would mean
+ * that a cookie set by one instance behind a load balancer is not recognised as
+ * its own by the next one the browser reaches — the family is replicated and
+ * every owned instance may rotate it, so the name has to be the same wherever
+ * that happens (contract, DR-0030 §5). Two people at one browser still get one
+ * cookie each, which is what the name has to tell apart.
+ *
+ * The digest is what keeps the person's id out of a header a page can read. */
+export function cookieName(user: UserId): string {
+  const digest = createHash("sha256").update(user).digest("hex").slice(0, 16);
   return `__Secure-ccmsg-${digest}`;
 }
 
@@ -128,13 +139,18 @@ export async function handleAuth(
   const route = authRouteOf(url.pathname);
   if (route === undefined) return undefined;
   const origin = request.headers.get("origin");
-  // A page at an origin none of this instance's web UIs are is refused before
-  // anything else, including the preflight that would tell it to try. Compared
-  // whole rather than by domain: the refresh route answers with a person's
-  // access token, and a browser attaches the cookie it is asked for by domain,
-  // so a sibling subdomain let in here could read that token (contract,
-  // DR-0029).
-  if (origin !== null && !deps.auth.knownOrigins().includes(origin)) {
+  // A page at an origin none of this instance's owners made a passkey at is
+  // refused before anything else, including the preflight that would tell it to
+  // try. Compared whole rather than by domain: the refresh route answers with a
+  // person's access token, and a browser attaches the cookie it is asked for by
+  // domain, so a sibling subdomain let in here could read that token. The
+  // enrolment routes are open to every origin instead, for the reason
+  // `OPEN_TO_EVERY_ORIGIN` gives.
+  if (
+    origin !== null &&
+    !OPEN_TO_EVERY_ORIGIN.includes(route) &&
+    !deps.auth.knownOrigins().includes(origin)
+  ) {
     return new Response("Forbidden", { status: 403 });
   }
   const cors: Record<string, string> =
@@ -145,8 +161,8 @@ export async function handleAuth(
           "access-control-allow-credentials": "true",
           vary: "Origin",
         };
-  // The three ops that decide an identity are held to two headers a page's own
-  // script cannot write: an `Origin`, which the op compares with the web UI the
+  // The four ops that decide an identity are held to two headers a page's own
+  // script cannot write: an `Origin`, which the op compares with the origin the
   // claims or the record name, and a `Sec-Fetch-Site` naming one of the three
   // relations a request made by a page can have to the site it went to. Either
   // one absent is a mismatch and not an exemption — every gate has to be
@@ -207,12 +223,8 @@ export async function handleAuth(
   const seen = {
     ...(from.ip === undefined ? {} : { ip: from.ip }),
     ...(userAgent === undefined ? {} : { userAgent }),
-    // Where the request actually arrived, which is what an endpoint's path is
-    // compared against. Observed here rather than taken from the body: a caller
-    // stating which instance it reached would be stating the answer.
-    path: endpointPath(url.pathname),
     // The browser's own word for where the page was served from, which the op
-    // holds to the web UI its claims or its record name. `null` is a request
+    // holds to the origin its claims or its record name. `null` is a request
     // that carried none, which is a mismatch rather than an absent check.
     origin,
   };
@@ -222,6 +234,10 @@ export async function handleAuth(
         return answer(deps.auth.challenge(), cors);
       case "register": {
         const minted = await deps.auth.register(args as unknown as AuthRegisterArgs, seen);
+        return answer(minted.session, cors, setCookie(deps, url, minted));
+      }
+      case "enroll": {
+        const minted = await deps.auth.enroll(args as unknown as AuthEnrollArgs, seen);
         return answer(minted.session, cors, setCookie(deps, url, minted));
       }
       case "assert": {
@@ -284,7 +300,7 @@ function refreshCookie(request: Request, deps: AuthRoutesDeps): string | undefin
  * slot on the domain, so two exchanges in flight cannot hand one caller the
  * other's token. */
 function setCookie(deps: AuthRoutesDeps, url: URL, minted: MintedSession): Record<string, string> {
-  const name = cookieName(deps.self, minted.session.sub);
+  const name = cookieName(minted.session.user);
   const maxAge = Math.max(0, Math.floor((minted.refresh.expires_at - Date.now()) / 1000));
   // Where this endpoint is published, which is the site the cookie belongs to.
   // The configured address rather than the one observed: a proxy in front of
@@ -297,7 +313,7 @@ function setCookie(deps: AuthRoutesDeps, url: URL, minted: MintedSession): Recor
       `${name}=${minted.refresh.value}`,
       "HttpOnly",
       "Secure",
-      ...(sameSite(minted.webui, endpoint)
+      ...(sameSite(minted.origin, endpoint)
         ? ["SameSite=Strict"]
         : // A page at another site: the browser sends this only as a cookie
           // partitioned by the top-level site it was set under, which is what
@@ -325,8 +341,8 @@ function setCookie(deps: AuthRoutesDeps, url: URL, minted: MintedSession): Recor
  * under no public suffix — falls back to the host itself, which is the finest
  * thing that can be said about it and the safe one: two such hosts are two
  * sites unless they are the same host. */
-function sameSite(webui: string, endpoint: string): boolean {
-  const page = new URL(webui);
+function sameSite(origin: string, endpoint: string): boolean {
+  const page = new URL(origin);
   const here = new URL(endpoint);
   if (page.protocol !== here.protocol) return false;
   return siteOf(page.hostname) === siteOf(here.hostname);
