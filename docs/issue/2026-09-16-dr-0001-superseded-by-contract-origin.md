@@ -3,7 +3,7 @@ title: DR-0001 の rp_id/cookie/WS Origin 節を契約 DR-0029/DR-0028 で Super
 status: open
 category: task
 created: 2026-09-16T12:22:57+09:00
-last_read:
+last_read: 2026-09-18T10:18:54+09:00
 open_entered: 2026-09-16T12:22:57+09:00
 wip_entered:
 blocked_entered:
