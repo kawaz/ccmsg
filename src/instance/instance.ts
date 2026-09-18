@@ -9,7 +9,6 @@ import {
   type RestartingEvent,
   type Sid,
   type Timestamp,
-  originOf,
 } from "@ccmsg/protocol";
 import {
   callerOf,
@@ -65,7 +64,7 @@ import {
   Transport,
   type UpgradeDecision,
 } from "../transport/index.ts";
-import { Instances, Mesh, MESH_PROTOCOL } from "../mesh/index.ts";
+import { Instances, Mesh, MESH_PROTOCOL, meshView } from "../mesh/index.ts";
 import {
   Gateway,
   gatewayCapabilities,
@@ -697,7 +696,6 @@ export class Instance {
     // derived from anything else this instance holds (DESIGN §2.5).
     const records = new AuthRecords({
       dir: recordsDir(paths.stateDir),
-      self: this.self,
       ...(now === undefined ? {} : { now }),
       publish: (written) => {
         this.#topics.publish("auth.records", { records: written });
@@ -709,6 +707,7 @@ export class Instance {
       records,
       endpoint: () => this.#mesh?.self,
       unit: paths.key,
+      instances: () => meshView(this.self, this.#mesh?.self, this.#mesh),
       ...(this.#mesh === undefined
         ? {}
         : { ask: (to, op, args) => (this.#mesh as Mesh).ask(to, op, args) }),
@@ -891,7 +890,11 @@ export class Instance {
    * held until that token runs out (DR-0001 §2.5); a peer's is the mesh's. */
   accepted(conn: Requester, info: { readonly auth?: AuthorizedUpgrade }): void {
     if (info.auth === undefined) return;
-    this.#auth.hold(conn, { sub: info.auth.sub, expiresAt: info.auth.expiresAt });
+    this.#auth.hold(conn, {
+      user: info.auth.user,
+      expiresAt: info.auth.expiresAt,
+      ...(info.auth.credential === undefined ? {} : { credential: info.auth.credential }),
+    });
   }
 
   /** Every bound WebSocket address, as `host:port`. */
@@ -1257,7 +1260,7 @@ function entryPolicy(
       //
       // Refused as an upgrade that does not happen: there is no connection yet
       // to answer an error frame on.
-      if (request.headers.get("origin") !== originOf(admitted.webui)) {
+      if (request.headers.get("origin") !== admitted.origin) {
         return { ok: false, reason: "this connection is not from the page the token was made at" };
       }
       // The handshake echoes the subprotocol it selected: a browser fails a

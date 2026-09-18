@@ -40,8 +40,11 @@ export type UpgradeDecision =
 
 /** What a person's connection was let in as. */
 export interface AuthorizedUpgrade {
-  readonly sub: string;
+  readonly user: string;
   readonly expiresAt: number;
+  /** The passkey the session behind this token was opened with, where this
+   * instance saw it happen. */
+  readonly credential?: string;
 }
 
 /** Accepts everything. A listener given no policy is open to whatever can reach

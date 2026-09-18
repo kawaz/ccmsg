@@ -496,9 +496,9 @@ export class Mesh {
 
   /** Ask another instance one op, as this instance rather than for anybody.
    *
-   * What the person's authentication needs of a peer (`auth.resolve`,
-   * `auth.rotate`) is a fact only its issuer holds, asked for by the instance
-   * that needs it — so the `caller` is this instance's own role, and the
+   * What the person's authentication needs of a peer (`auth.resolve`) is a
+   * fact only its issuer holds — an enrolment URL's secret, a challenge — asked
+   * for by the instance that needs it — so the `caller` is this instance's own role, and the
    * request travels the ordinary forwarding path (DESIGN §7.3, DR-0001 §2.6).
    *
    * The body of the reply is answered, and a refusal is thrown as the error the
