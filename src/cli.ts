@@ -1746,6 +1746,9 @@ export async function pushed(
 ): Promise<unknown> {
   const text = event.tool_message?.trim();
   if (text === undefined || text === "") return { pushed: false };
+  // Started before the line goes anywhere, and not waited for: the speech is
+  // what a person in the room hears, and the sooner it begins the less of it
+  // lands after they have stopped listening.
   const spoken = spoke(text, spawn);
   let sent = false;
   try {
@@ -1754,13 +1757,17 @@ export async function pushed(
   } catch {
     // No instance, or one that refused: the person in the room still hears it.
   }
-  return { pushed: true, spoken: await spoken, sent };
+  return { pushed: true, spoken, sent };
 }
 
-/** Say it aloud, and answer whether the machine could. */
-async function spoke(text: string, spawn: Spawn): Promise<boolean> {
+/** Start it being said aloud, and answer whether the machine could begin.
+ *
+ * Whether it finished is not answered, and could not be: the speech is
+ * deliberately left to outlive this process (`spawnSpeech`). */
+function spoke(text: string, spawn: Spawn): boolean {
   try {
-    return (await spawn([process.env["CCMSG_SAY_BIN"] ?? SYSTEM_SAY, text]).exited) === 0;
+    spawn([process.env["CCMSG_SAY_BIN"] ?? SYSTEM_SAY, text]);
+    return true;
   } catch {
     return false;
   }
@@ -2041,10 +2048,28 @@ async function exchange(
 
 /** How a speech process is started. Named so a test can watch the arguments
  * without the machine making a sound. */
-export type Spawn = (command: string[]) => { exited: Promise<number> };
+export type Spawn = (command: string[]) => void;
 
-const spawnSpeech: Spawn = (command) =>
-  Bun.spawn(command, { stdin: "ignore", stdout: "ignore", stderr: "ignore" });
+/** Start the speech and let go of it.
+ *
+ * Detached, holding none of this process's streams, and released from its event
+ * loop. This runs inside a tool hook, and the harness kills a hook that has not
+ * returned by its timeout — five seconds for `PostToolUse`, which at the default
+ * rate is about thirteen characters of Japanese. A `say` waited for inside that
+ * hook is killed with it, so the sentence is cut off mid-word: anything worth
+ * saying is longer than the hook that said it.
+ *
+ * Design rationale: a child normally outliving its parent is a leak. Here it is
+ * the point — the process exists to make a sound, the sound is the whole of its
+ * effect, and nothing downstream reads its outcome. */
+const spawnSpeech: Spawn = (command) => {
+  Bun.spawn(command, {
+    stdin: "ignore",
+    stdout: "ignore",
+    stderr: "ignore",
+    detached: true,
+  }).unref();
+};
 
 /** Long options and what is left over.
  *

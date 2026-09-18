@@ -295,14 +295,18 @@ describe("ccmsg peers / ccmsg agents", () => {
 });
 
 describe("a notification the session pushed", () => {
-  /** A speech binary that makes no sound and remembers what it was asked. */
-  function fake(exitCode = 0): { spawn: Spawn; commands: string[][] } {
+  /** A speech binary that makes no sound and remembers what it was asked.
+   *
+   * `missing` is a binary that is not there, which is what a machine that
+   * cannot speak looks like: the spawn throws where the process would have
+   * started. */
+  function fake(missing = false): { spawn: Spawn; commands: string[][] } {
     const commands: string[][] = [];
     return {
       commands,
       spawn: (command) => {
         commands.push(command);
-        return { exited: Promise.resolve(exitCode) };
+        if (missing) throw new Error("no such file or directory");
       },
     };
   }
@@ -329,7 +333,7 @@ describe("a notification the session pushed", () => {
     const at = await instance();
     env("CLAUDE_CODE_SESSION_ID", SID);
     env("CCMSG_SAY_BIN", "/nowhere/say");
-    const speech = fake(3);
+    const speech = fake(true);
     const answered = await pushed({ sid: SID, tool_message: "声は出ない" }, speech.spawn);
     expect(speech.commands[0]?.[0]).toBe("/nowhere/say");
     // The line still reached the page, which is the other half of telling
@@ -354,6 +358,34 @@ describe("a notification the session pushed", () => {
       sent: false,
     });
     expect(speech.commands).toEqual([["/usr/bin/say", "誰も聞いていない"]]);
+  });
+
+  test("the speech outlives the hook that started it, so nothing waits for it", async () => {
+    // A `PostToolUse` hook is killed at its timeout and takes its children with
+    // it, which cuts the sentence off mid-word — five seconds is about thirteen
+    // characters of Japanese. So the process is started and released, and what
+    // is answered is that it began rather than that it finished.
+    const root = mkdtempSync(join(tmpdir(), "ccmsg-cli-"));
+    dirs.push(root);
+    env("CLAUDE_CONFIG_DIR", join(root, "home"));
+    env("CCMSG_STATE_DIR", join(root, "state"));
+    env("CCMSG_CACHE_DIR", join(root, "cache"));
+    env("CCMSG_CONFIG_DIR", join(root, "config"));
+    env("CLAUDE_CODE_SESSION_ID", SID);
+
+    const commands: string[][] = [];
+    // A speech that never ends. Reading its outcome at all would be waiting for
+    // it, and this test would then never finish.
+    const endless = ((command: string[]) => {
+      commands.push(command);
+      return { exited: new Promise<number>(() => undefined) };
+    }) as unknown as Spawn;
+    expect(await pushed({ sid: SID, tool_message: "終わらない話" }, endless)).toEqual({
+      pushed: true,
+      spoken: true,
+      sent: false,
+    });
+    expect(commands).toEqual([["/usr/bin/say", "終わらない話"]]);
   });
 
   test("a tool call with nothing to say is nothing to do", async () => {
