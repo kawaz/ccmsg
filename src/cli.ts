@@ -299,7 +299,7 @@ const ROOT: Command = {
             ["--all", "知っている peers 全部の所有を足す"],
             [
               "--enroll",
-              "record を書く代わりに URL と 6 桁を出す (その人をまだ知らない instance 用。本人が既存 passkey で assert する)",
+              "record を直接書く代わりに URL と 6 桁を出す (その人をまだ知らない instance 用。本人が既存 passkey で assert した時に所有が書かれる)",
             ],
             ["--origin <origin>", "--enroll の時に人を送る page の origin"],
             ["--ttl <秒>", "--enroll の時の URL の寿命 (既定 600)"],
@@ -1187,14 +1187,6 @@ async function userAdd(args: readonly string[]): Promise<unknown> {
   if (user === undefined) {
     throw new CommandError("invalid_args", "使い方: ccmsg user add <user-id> [--all] [--enroll]");
   }
-  if (parsed.flags.has("enroll") && parsed.flags.has("all")) {
-    // The URL is spent wherever the browser lands, which may be a peer that
-    // never heard what this terminal was asked for. The grantings `--all` would
-    // write are this instance's knowledge and do not travel with the URL, so
-    // the two cannot be honoured together; `user add <user-id> --all` writes
-    // them directly, which is what it is for (contract, DR-0030 §4).
-    throw new CommandError("invalid_args", "--enroll と --all は一緒には使えません");
-  }
   const answer = await adminAsk({
     admin: "user_add",
     user,
@@ -1324,14 +1316,14 @@ function enrolmentLines(body: Record<string, unknown>): string[] {
     url?: string;
     code?: string;
     user?: string;
-    granted?: readonly string[];
+    instances?: readonly string[];
   };
   return [
     `URL : ${issued.url ?? ""}`,
     `code: ${issued.code ?? ""}`,
     ...(issued.user === undefined ? [] : [`user: ${issued.user}`]),
-    ...(issued.granted !== undefined && issued.granted.length > 0
-      ? [`所有: ${issued.granted.join(", ")}`]
+    ...(issued.instances !== undefined && issued.instances.length > 0
+      ? [`所有 (登録が成立したら書かれる): ${issued.instances.join(", ")}`]
       : []),
     "URL は browser へ、code は別の経路で本人に渡してください。",
   ];

@@ -217,9 +217,10 @@ export interface IssuedEnrolment {
    * is the origin's host. Stated so the command can show what the browser will
    * be asked for; it is derived and is kept nowhere. */
   readonly rp_id: string;
-  /** The grantings this command wrote as it issued the URL, which is what
-   * `--all` widened. */
-  readonly granted: InstanceId[];
+  /** The instances this URL hands over, which is what `--all` widened. They
+   * are written when the ceremony succeeds and not before, so a URL nobody
+   * spends leaves nothing behind. */
+  readonly instances: InstanceId[];
 }
 
 /** The person's authentication: the enrolment URLs this instance issued, the
@@ -267,14 +268,12 @@ export class Auth {
    * there by whoever was given it, and the code is only ever shown on the
    * terminal this ran on. Somebody holding the URL alone cannot spend it.
    *
-   * The grantings are written here rather than when the ceremony completes.
-   * A `create_user` URL names the person before it is carried anywhere, so the
-   * instances they are to own can be settled at the terminal — which is where
-   * "every peer this instance knows of" is a set anyone can see. Behind a load
-   * balancer the ceremony may land on a peer that knows nothing of what was
-   * asked for here, and grantings written there would be whatever that peer
-   * happened to know instead. A granting for a person who never registers
-   * admits nobody: there is no user and no credential to answer with. */
+   * The instances the URL hands over are settled here and carried in its
+   * claims; the grantings themselves are written by whichever instance the
+   * ceremony lands on, once it succeeds. Writing them now would leave a
+   * granting naming somebody no user record answers for behind every URL that
+   * was never spent — inert, since nothing could authenticate as them, and
+   * indistinguishable from one that means something. */
   async issue(options: {
     readonly purpose: EnrollClaims["purpose"];
     readonly origin?: Origin;
@@ -326,7 +325,7 @@ export class Auth {
     const label =
       options.label ??
       (options.user === undefined ? undefined : this.deps.records.user(options.user)?.display_name);
-    const common = {
+    const commonFields = {
       iss: this.deps.self,
       instance: this.deps.self,
       origin,
@@ -335,6 +334,14 @@ export class Auth {
       jti: randomBytes(16).toString("base64url"),
       ...(label === undefined ? {} : { issued_label: label }),
     };
+    // Which instances this URL hands over. Decided here, at the terminal, where
+    // "the peers this instance knows of" is a question a person can see the
+    // answer to; carried in the claims because behind a load balancer the
+    // ceremony lands wherever it lands, and an instance writing the grantings it
+    // happened to know of would answer a different question than the one that
+    // was asked (contract, `EnrollClaims.instances`).
+    const instances = this.targets(options.all === true);
+    const common = { ...commonFields, ...(instances.length > 1 ? { instances } : {}) };
     const claims: EnrollClaims =
       options.purpose === "create_user"
         ? { ...common, purpose: "create_user", user: options.user ?? newUserId() }
@@ -342,16 +349,6 @@ export class Auth {
     const secret = randomBytes(32);
     const code = String(randomInt(0, 1_000_000)).padStart(6, "0");
     this.#pending.set(claims.jti, { claims, secret, code, attempts: 0 });
-    // A URL that makes a person also settles which instances they will own. An
-    // addition is the other way round: who arrives is what the assertion says,
-    // so the granting waits for it.
-    const granted =
-      claims.purpose === "create_user"
-        ? await this.grant(claims.user, this.targets(options.all === true), {
-            kind: "instance",
-            instance: this.deps.self,
-          })
-        : [];
     return {
       purpose: claims.purpose,
       url: `${origin}/#${ENROLL_FRAGMENT}=${sign(claims, secret)}`,
@@ -362,7 +359,7 @@ export class Auth {
       origin,
       endpoint,
       rp_id: hostOf(origin),
-      granted,
+      instances,
     };
   }
 
@@ -684,6 +681,14 @@ export class Auth {
     if (!(await this.deps.records.write(credentialKey(verified.credentialId), record, at))) {
       throw new OpError("forbidden", "この credential は削除済みです");
     }
+    // The instances the URL handed over, written now that the ceremony stands.
+    // `granted_by` is the instance that issued the URL rather than this one:
+    // what a reader of the list wants to know is where the decision was made,
+    // and behind a load balancer this instance is only where the answer landed.
+    await this.grant(claims.user, handedOver(claims), {
+      kind: "instance",
+      instance: claims.iss,
+    });
     return this.mint(claims.user, claims.origin, verified.credentialId);
   }
 
@@ -712,7 +717,7 @@ export class Auth {
     }
     await this.#spendAnywhere(args.challenge);
     await this.#used(record, signCount, from);
-    await this.grant(record.user, [claims.instance], { kind: "user", user: record.user });
+    await this.grant(record.user, handedOver(claims), { kind: "user", user: record.user });
     return this.mint(record.user, record.origin, record.credential_id);
   }
 
@@ -1329,6 +1334,15 @@ function digestOf(value: Base64Url): string {
 /** A token: 32 bytes of randomness, spelled the way everything on this wire is. */
 function token(): Base64Url {
   return base64UrlEncode(randomBytes(32));
+}
+
+/** The instances an enrolment URL hands over.
+ *
+ * Absent names the issuer's own instance alone, which `instance` already says;
+ * naming the field is how a URL hands over more than one (contract,
+ * `EnrollClaims.instances`). */
+function handedOver(claims: EnrollClaims): InstanceId[] {
+  return claims.instances ?? [claims.instance];
 }
 
 /** A person's id, which is the WebAuthn user handle itself: sixteen bytes,

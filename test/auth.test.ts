@@ -289,6 +289,14 @@ function linked(
       records,
       endpoint: () => endpoint,
       unit: self.slice(0, 4),
+      // Each peer sees the whole set, which is what `--all` walks.
+      instances: () =>
+        instances.map((row) => ({
+          id: row.self,
+          endpoint: row.endpoint,
+          host: "test",
+          reachable: true,
+        })),
       ask: (to, op, args) => {
         const target = peers.find((peer) => peer.self === to);
         if (target === undefined) {
@@ -336,6 +344,62 @@ async function registeredAt(auth: Auth, options: { origin?: Origin; user?: UserI
   const minted = await auth.register({ token: tokenOf(issued.url), code: issued.code, credential });
   return { issued, user, authenticator, minted };
 }
+
+describe("what an enrolment URL hands over (contract, `EnrollClaims.instances`)", () => {
+  test("the set is decided where the URL was made, and written where the ceremony lands", async () => {
+    const { peers, settled } = linked([
+      { self: SELF, endpoint: ENDPOINT },
+      { self: OTHER_INSTANCE, endpoint: "https://next.example/" },
+    ]);
+    const [here, next] = peers as [Auth, Auth];
+    // Asked for at this terminal, where "the peers this instance knows of" is a
+    // question a person can see the answer to.
+    const issued = await here.issue({ purpose: "create_user", origin: ORIGIN, all: true });
+    expect(issued.instances).toEqual([SELF, OTHER_INSTANCE]);
+    // Nothing is granted yet: a URL nobody spends leaves no granting behind.
+    expect(here.records.ownerships()).toEqual([]);
+
+    // The ceremony lands on the peer, which knows nothing of what was asked for
+    // here and reads it out of the claims.
+    const user = issued.user as UserId;
+    const authenticator = new SoftAuthenticator(issued.rp_id);
+    const challenge = here.challenge();
+    const credential = await authenticator.create({
+      challenge: challenge.challenge,
+      origin: issued.origin,
+      userId: user,
+    });
+    await next.register({
+      token: tokenOf(issued.url),
+      code: issued.code,
+      challenge,
+      credential,
+    });
+    await settled();
+    for (const auth of [here, next]) {
+      expect(auth.records.owns(user, SELF)).toBe(true);
+      expect(auth.records.owns(user, OTHER_INSTANCE)).toBe(true);
+    }
+    // Who decided is the instance that made the URL, not the one the answer
+    // happened to reach.
+    for (const record of next.records.ownerships()) {
+      expect(record.granted_by).toEqual({ kind: "instance", instance: SELF });
+    }
+  });
+
+  test("a URL naming nothing hands over the one instance that issued it", async () => {
+    const { peers } = linked([
+      { self: SELF, endpoint: ENDPOINT },
+      { self: OTHER_INSTANCE, endpoint: "https://next.example/" },
+    ]);
+    const [here] = peers as [Auth, Auth];
+    const issued = await here.issue({ purpose: "create_user", origin: ORIGIN });
+    expect(issued.instances).toEqual([SELF]);
+    const { user } = await registeredAt(here, { origin: ORIGIN });
+    expect(here.records.owns(user, SELF)).toBe(true);
+    expect(here.records.owns(user, OTHER_INSTANCE)).toBe(false);
+  });
+});
 
 describe("making a person (contract, DR-0030 §4)", () => {
   test("the URL and the code are two halves, and only both together register", async () => {
@@ -409,8 +473,8 @@ describe("making a person (contract, DR-0030 §4)", () => {
 
     // The three records one registration leaves: the person, keyed by the
     // handle the authenticator holds; the passkey, naming them and the origin
-    // it was made at; and the granting of this instance, which the URL wrote
-    // as it was issued.
+    // it was made at; and the granting of the instance the URL handed over,
+    // written now that the ceremony stands.
     const { records } = at.instance.auth;
     expect(records.user(user)).toMatchObject({ kind: "user", user });
     const [record] = records.credentials();
@@ -437,8 +501,6 @@ describe("making a person (contract, DR-0030 §4)", () => {
     const second = await registered(at, { user: first.user });
     expect(second.response.status).toBe(200);
     expect(second.issued.user).toBe(first.user);
-    // The URL wrote no granting: the person already held this instance.
-    expect(second.issued.granted).toEqual([]);
 
     const { records } = at.instance.auth;
     expect(records.users().map((held) => held.user)).toEqual([first.user]);
@@ -2184,12 +2246,12 @@ describe("what the command line does to people (DR-0001 §2.2)", () => {
       name: "for the laptop",
     });
     const user = created["user"] as UserId;
-    expect(created).toMatchObject({ purpose: "create_user", granted: [at.instance.self] });
+    expect(created).toMatchObject({ purpose: "create_user", instances: [at.instance.self] });
     expect(created["url"]).toContain("#enroll=");
     expect(user).toMatch(/^[A-Za-z0-9_-]{21}[AQgw]$/);
-    // The grantings are written as the URL is issued, so a load balancer
-    // landing the ceremony on a peer changes nothing about what was granted.
-    expect(auth.records.owns(user, at.instance.self)).toBe(true);
+    // Nothing is granted until the ceremony stands: a URL nobody spends leaves
+    // no granting naming a person no user record answers for.
+    expect(auth.records.owns(user, at.instance.self)).toBe(false);
     const authenticator = new SoftAuthenticator(created["rp_id"] as string);
     const challenge = (await (await post(at, "challenge", {})).json()) as { challenge: string };
     const made = await post(at, "register", {
@@ -2202,6 +2264,7 @@ describe("what the command line does to people (DR-0001 §2.2)", () => {
       }),
     });
     expect(made.status).toBe(200);
+    expect(auth.records.owns(user, at.instance.self)).toBe(true);
     // What the terminal wrote about who the URL was for is on the passkey.
     expect(auth.records.credentials()[0]?.issued_label).toBe("for the laptop");
 
@@ -2220,7 +2283,7 @@ describe("what the command line does to people (DR-0001 §2.2)", () => {
       enroll: true,
       endpoint: servedAt(at),
     });
-    expect(adding).toMatchObject({ purpose: "add_owner", granted: [] });
+    expect(adding).toMatchObject({ purpose: "add_owner", instances: [at.instance.self] });
     expect("user" in adding).toBe(false);
 
     expect(

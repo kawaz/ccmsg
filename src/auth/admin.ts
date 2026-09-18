@@ -145,6 +145,7 @@ export async function handleAdmin(
               ...(request.endpoint === undefined ? {} : { endpoint: request.endpoint }),
               ...(request.name === undefined ? {} : { label: request.name }),
               ...(request.ttl === undefined ? {} : { ttl: request.ttl }),
+              ...(request.all === undefined ? {} : { all: request.all }),
             }),
           );
         }
