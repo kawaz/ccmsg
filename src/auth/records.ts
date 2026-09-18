@@ -7,79 +7,82 @@ import type {
   Base64Url,
   CredentialRecord,
   InstanceId,
-  Subject,
+  OwnershipRecord,
   Timestamp,
   TokenFamily,
+  UserId,
+  UserRecord,
 } from "@ccmsg/protocol";
-import { FAMILY_TOMBSTONE_RETENTION_MS } from "@ccmsg/protocol";
+import {
+  AuthRecord as AuthRecordSchema,
+  FAMILY_TOMBSTONE_RETENTION_MS,
+  validationErrors,
+} from "@ccmsg/protocol";
 import { base64UrlDecode, equalBytes, equalStrings } from "./webauthn.ts";
 
 export const AUTH_DIR = "auth";
 const RECORDS_FILE = "records.json";
 
-/** Where a credential and a family live in the replicated set.
+/** Where each of the four records lives in the replicated set (contract,
+ * `AuthRecord`).
  *
- * Both are under the subject they belong to, which is what makes a removal
- * expressible: a person is removed as a person, and the mark that says so has
- * to refuse every key their credentials and tokens could be written under —
- * including ones this instance has never seen, held by a peer that is
- * partitioned right now (DR-0001 §2.6). A tombstone therefore stands for a
- * prefix rather than for one key. */
-/** A subject as a path segment.
+ * Every key names exactly what a tombstone over it removes, and nothing is
+ * nested under anything else: a person is not a prefix their credentials and
+ * tokens hang from. That is what lets one credential answer at every instance
+ * its owner holds — the credential is keyed by its own id and says which person
+ * it is for, rather than sitting under them. */
+export function userKey(user: UserId): string {
+  return `user/${user}`;
+}
+
+export function credentialKey(credentialId: Base64Url): string {
+  return `credential/${credentialId}`;
+}
+
+/** One granting of one instance to one person.
  *
- * A `Subject` is whatever the operator asked for, separators included, and the
- * keys here are matched by prefix — so an unescaped `a/b` would sit under the
- * mark for `a`, and removing one person would remove another. Escaping is what
- * keeps one subject to one segment. */
-function segment(sub: Subject): string {
-  return encodeURIComponent(sub);
+ * The granting's own id is the last segment, and that is the whole reason it
+ * exists: a tombstone refuses every later write to its key without end, so a
+ * key made of the instance and the person alone would make the first removal
+ * final. With the id, giving an instance up ends one granting and taking it
+ * again begins another (contract, `OwnershipRecord.grant`). */
+export function ownershipKey(instance: InstanceId, user: UserId, grant: Base64Url): string {
+  return `ownership/${instance}/${user}/${grant}`;
 }
 
-export function credentialKey(sub: Subject, credentialId: Base64Url): string {
-  return `${credentialPrefix(sub)}/${credentialId}`;
-}
-
-export function familyKey(sub: Subject, id: string): string {
-  return `${familyPrefix(sub)}/${id}`;
-}
-
-export function credentialPrefix(sub: Subject): string {
-  return `credential/${segment(sub)}`;
-}
-
-export function familyPrefix(sub: Subject): string {
-  return `family/${segment(sub)}`;
-}
-
-/** Whether a tombstone's key covers another key: the key itself, or anything
- * written beneath it. */
-function covers(tombstone: string, key: string): boolean {
-  return key === tombstone || key.startsWith(`${tombstone}/`);
+export function familyKey(id: string): string {
+  return `family/${id}`;
 }
 
 export interface RecordsDeps {
   /** Where the set is written down (DESIGN §2.5). */
   readonly dir: string;
-  /** This instance's id, which is the one thing that makes a record arriving
-   * from a peer refusable on sight: a family this instance minted is written by
-   * this instance alone (DR-0001 §2.4). */
-  readonly self: InstanceId;
   /** Hand what this instance wrote to the peers, on the `auth.records` topic. */
   readonly publish: (records: readonly AuthRecord[]) => void;
   readonly now?: () => Timestamp;
 }
 
-/** The credentials, token families and removals every instance holds a copy of
- * (DR-0001 §2.6).
+/** What a merge took in, for the caller that has to act on it: the people whose
+ * connections a removal has ended. */
+export interface Merged {
+  readonly changed: number;
+  /** The people an arriving tombstone revoked something of — an ownership, a
+   * family, or the person themselves. Whether any given connection has to go is
+   * the caller's to decide; what is answered here is who was touched. */
+  readonly revoked: UserId[];
+}
+
+/** The users, credentials, ownerships, token families and removals every
+ * instance holds a copy of (contract, `auth.records`).
  *
  * Last write wins per key, with one exception that is the whole reason a
  * removal is a record rather than an absence: a tombstone refuses every later
- * write to the keys it covers, so a peer coming back from a partition cannot
- * carry a revoked credential in as news.
+ * write to its key, so a peer coming back from a partition cannot carry a
+ * revoked credential or granting in as news.
  *
- * Written down for the same reason the store is (DESIGN §2.5): none of it is derived
- * from anything else this instance holds. A credential exists nowhere but here
- * and in the authenticator, and losing a family logs its person out. */
+ * Written down for the same reason the store is (DESIGN §2.5): none of it is
+ * derived from anything else this instance holds. A credential exists nowhere
+ * but here and in the authenticator, and losing a family logs its person out. */
 export class AuthRecords {
   readonly #records = new Map<string, AuthRecord>();
 
@@ -99,36 +102,17 @@ export class AuthRecords {
    * Answers whether the set moved, which is what decides whether the change is
    * worth writing down and passing on. */
   accept(record: AuthRecord): boolean {
+    // Read against the contract before anything is keyed by it. What arrives
+    // here is a peer's word or a file from before this contract's generation,
+    // and this contract has one generation and no compatibility path: a body
+    // shaped otherwise names nothing this instance can act on, and holding it
+    // would put a record nobody can read in every later snapshot.
+    if (validationErrors(AuthRecordSchema, record).length > 0) return false;
     const held = this.#records.get(record.key);
     if (held !== undefined && held.updated_at >= record.updated_at) return false;
-    if (this.#refused(record)) return false;
+    if (held?.body.kind === "tombstone") return false;
     this.#records.set(record.key, record);
-    if (record.body.kind === "tombstone") this.#sweepUnder(record.key);
     return true;
-  }
-
-  /** Whether a tombstone standing over this key refuses it.
-   *
-   * A tombstone is itself refused by another tombstone covering it, so two
-   * removals of the same subject do not fight; the newer one simply does not
-   * displace the older, which `accept` has already settled by instant. */
-  #refused(record: AuthRecord): boolean {
-    for (const held of this.#records.values()) {
-      if (held.body.kind !== "tombstone") continue;
-      if (held.key === record.key) continue;
-      if (covers(held.key, record.key)) return true;
-    }
-    return false;
-  }
-
-  /** Drop what a fresh tombstone covers. The mark alone would be enough to
-   * refuse later writes, but leaving the records themselves in place would
-   * leave a removed person's key usable by this instance. */
-  #sweepUnder(tombstone: string): void {
-    for (const [key, held] of this.#records) {
-      if (held.body.kind === "tombstone") continue;
-      if (covers(tombstone, key)) this.#records.delete(key);
-    }
   }
 
   /** Write one record of this instance's own, and tell the mesh.
@@ -157,57 +141,65 @@ export class AuthRecords {
 
   /** Take a batch a peer sent.
    *
-   * Answers the subjects a removal arrived for, because a tombstone means more
-   * than a record going away: the person it names has connections open here,
-   * and they are theirs no longer (DR-0001 §2.6).
-   *
-   * A family this instance minted is refused whatever the peer says about it.
-   * This instance is its only writer, so a copy coming back is a copy of an
-   * older state — which is exactly what a failed family looks like from a peer
-   * that has not heard yet, and taking it would undo the failure. */
-  async merge(records: readonly AuthRecord[]): Promise<{ changed: number; removed: Subject[] }> {
+   * Answers the people a removal arrived for, because a tombstone means more
+   * than a record going away: whoever it names may have connections open here,
+   * and a connection left standing on a revoked granting is the removal not
+   * having happened. */
+  async merge(records: readonly AuthRecord[]): Promise<Merged> {
     let changed = 0;
-    const removed: Subject[] = [];
+    const revoked: UserId[] = [];
     for (const record of records) {
-      if (record.body.kind === "token_family" && record.body.iss === this.deps.self) continue;
+      const wasHeld = this.#records.get(record.key);
       if (!this.accept(record)) continue;
       changed += 1;
-      if (record.body.kind === "tombstone") removed.push(record.body.sub);
+      if (record.body.kind !== "tombstone") continue;
+      // What the mark removed is read from what stood under it a moment ago:
+      // the key alone says which record went, and the person it belonged to is
+      // in the body that is now gone.
+      const user = userOf(wasHeld);
+      if (user !== undefined) revoked.push(user);
     }
     if (changed > 0) await this.#persist();
-    return { changed, removed };
+    return { changed, revoked };
   }
 
-  /** Remove one person: their credentials and every token they hold.
-   *
-   * Two marks rather than one because the two halves are kept for different
-   * lengths of time. A family expires with its refresh token, so the mark over
-   * it only has to outlive the longest one; a credential has no expiry of its
-   * own, so the mark over it has none either (DR-0001 §2.6). */
-  async remove(sub: Subject): Promise<AuthRecord[]> {
+  /** Put a mark over one key. What it removes is what the key names, and
+   * nothing under it: a granting rather than a person, one passkey rather than
+   * every passkey (contract, `AuthTombstone`). */
+  async erase(key: string, keep?: number): Promise<AuthRecord | undefined> {
+    if (this.#records.get(key) === undefined) return undefined;
     const at = this.#now();
-    const credential: AuthTombstone = { kind: "tombstone", sub, deleted_at: at };
-    const family: AuthTombstone = {
+    const body: AuthTombstone = {
       kind: "tombstone",
-      sub,
       deleted_at: at,
-      expires_at: at + FAMILY_TOMBSTONE_RETENTION_MS,
+      ...(keep === undefined ? {} : { expires_at: at + keep }),
     };
-    const marks: AuthRecord[] = [
-      { key: credentialPrefix(sub), updated_at: at, body: credential },
-      { key: familyPrefix(sub), updated_at: at, body: family },
-    ];
-    for (const mark of marks) this.accept(mark);
+    const held = this.#records.get(key);
+    const stamped = held === undefined ? at : Math.max(at, held.updated_at + 1);
+    const record: AuthRecord = { key, updated_at: stamped, body };
+    this.#records.set(key, record);
     await this.#persist();
-    this.deps.publish(marks);
-    return marks;
+    this.deps.publish([record]);
+    return record;
   }
 
-  /** Whether this subject has been removed, which is what a registration for
-   * one has to be refused by. */
-  removed(sub: Subject): boolean {
-    const held = this.#records.get(credentialPrefix(sub));
-    return held?.body.kind === "tombstone";
+  /** Whether a mark stands over this key, which is what a write to it has to be
+   * refused by. */
+  removed(key: string): boolean {
+    return this.#records.get(key)?.body.kind === "tombstone";
+  }
+
+  user(user: UserId): UserRecord | undefined {
+    const held = this.#records.get(userKey(user));
+    return held?.body.kind === "user" ? held.body : undefined;
+  }
+
+  users(): UserRecord[] {
+    const found: UserRecord[] = [];
+    for (const record of this.#records.values()) {
+      if (record.body.kind === "user") found.push(record.body);
+    }
+    return found;
   }
 
   credentials(): CredentialRecord[] {
@@ -219,8 +211,7 @@ export class AuthRecords {
   }
 
   /** The credential an assertion names. Looked up by the id the authenticator
-   * signed, which is what lets a person authenticate without naming a subject
-   * (DR-0001 §2.5).
+   * signed, which is what lets a person authenticate without naming anybody.
    *
    * Compared as bytes rather than as text: base64url is not a canonical
    * spelling — padding may or may not be there, and a decoder accepts more than
@@ -232,6 +223,38 @@ export class AuthRecords {
     return this.credentials().find((record) =>
       equalBytes(base64UrlDecode(record.credential_id), wanted),
     );
+  }
+
+  ownerships(): OwnershipRecord[] {
+    const found: OwnershipRecord[] = [];
+    for (const record of this.#records.values()) {
+      if (record.body.kind === "ownership") found.push(record.body);
+    }
+    return found;
+  }
+
+  /** Whether this person owns this instance, which is the whole of what admits
+   * them to it.
+   *
+   * Any granting still alive answers it. A pair may hold more than one — the
+   * person was added from two places, or given the instance back after letting
+   * it go — and the question is whether they hold it at all rather than how
+   * often (contract, `OwnershipRecord.grant`). */
+  owns(user: UserId, instance: InstanceId): boolean {
+    return this.ownerships().some((record) => record.user === user && record.instance === instance);
+  }
+
+  /** Every granting of one instance to one person, which is what letting it go
+   * has to put a mark over — all of them, there being no shape for ending one
+   * of two grantings of the same thing. */
+  grantsOf(user: UserId, instance: InstanceId): { key: string; body: OwnershipRecord }[] {
+    const found: { key: string; body: OwnershipRecord }[] = [];
+    for (const record of this.#records.values()) {
+      if (record.body.kind !== "ownership") continue;
+      if (record.body.user !== user || record.body.instance !== instance) continue;
+      found.push({ key: record.key, body: record.body });
+    }
+    return found;
   }
 
   families(): { key: string; body: TokenFamily }[] {
@@ -255,7 +278,7 @@ export class AuthRecords {
    * The generation before the standing one is answered as `previous` rather
    * than refused: a client whose rotation was lost on the way retries with the
    * value it still holds, and that is not a replay (contract, `TokenFamily`).
-   * Anything older matches nothing here, and the caller fails the family. */
+   * Anything older matches nothing here. */
   byRefresh(
     value: Base64Url,
     now: Timestamp = this.#now(),
@@ -272,41 +295,32 @@ export class AuthRecords {
     return undefined;
   }
 
-  /** Fail one family, which is what a reused token does to the whole of it.
+  /** Fail one family, which is what a replayed token does to the whole of it.
    *
-   * A tombstone rather than an expired record. The family's `iss` is its only
-   * writer, but a peer that was partitioned when this happened still holds the
-   * live copy, and an ordinary record would let that copy come back as the
-   * newer write when the partition heals. A mark refuses every later write to
-   * the key, which is exactly what a revoked family needs. It is kept for the
-   * same seven days a removal's is: past the longest refresh token, there is
-   * nothing left for a returning peer to revive. */
+   * A tombstone rather than an expired record. A peer that was partitioned when
+   * this happened still holds the live copy, and an ordinary record would let
+   * that copy come back as the newer write when the partition heals. A mark
+   * refuses every later write to the key, which is exactly what a revoked
+   * family needs. It is kept for the same seven days a removal's is: past the
+   * longest refresh token, there is nothing left for a returning peer to
+   * revive. */
   async fail(key: string): Promise<void> {
     const held = this.#records.get(key);
     if (held === undefined || held.body.kind !== "token_family") return;
-    const at = this.#now();
-    await this.write(key, {
-      kind: "tombstone",
-      sub: held.body.sub,
-      deleted_at: at,
-      expires_at: at + FAMILY_TOMBSTONE_RETENTION_MS,
-    });
+    await this.erase(key, FAMILY_TOMBSTONE_RETENTION_MS);
   }
 
-  /** The family a value once belonged to, in any generation and whether or not
-   * that generation has run out.
+  /** The family a value was retired by, recognised the one way a replay is: the
+   * digest a family wrote down when it rotated that value away.
    *
-   * What `byRefresh` answers is a token that still works. This answers a token
-   * that was this family's — which is what a reused value looks like, and what
-   * says which instance is allowed to do anything about it (DR-0001 §2.4). */
-  owning(value: Base64Url, digest: string): { key: string; body: TokenFamily } | undefined {
-    for (const held of this.families()) {
-      const before = held.body.previous_refresh;
-      if (equalStrings(held.body.refresh.value, value)) return held;
-      if (before !== undefined && equalStrings(before.value, value)) return held;
-      if ((held.body.retired ?? []).some((one) => equalStrings(one.hash, digest))) return held;
-    }
-    return undefined;
+   * A value no family knows anything about is answered by nothing here. It was
+   * never issued by any of them — which is also what the losing side of two
+   * parallel rotations holds — and refusing the call is the whole of the
+   * answer (contract, `TokenFamily.retired`). */
+  retiring(digest: string, now: Timestamp = this.#now()): { key: string; body: TokenFamily }[] {
+    return this.families().filter(({ body }) =>
+      (body.retired ?? []).some((one) => one.expires_at > now && equalStrings(one.hash, digest)),
+    );
   }
 
   /** Every record, for the snapshot a peer's subscription is answered with. */
@@ -315,8 +329,9 @@ export class AuthRecords {
     return [...this.#records.values()];
   }
 
-  /** Drop what has run out: a family past its refresh token, and a family's
-   * tombstone past its retention. A credential's tombstone is kept without end.
+  /** Drop what has run out: a family past its refresh token, and a mark past
+   * its retention. A credential's and an ownership's marks are kept without
+   * end.
    *
    * Read rather than swept, like the store's own removals: nothing here runs on
    * a timer (M3), and a record that outlives its window until the next read is
@@ -362,11 +377,9 @@ export class AuthRecords {
       return;
     }
     if (!Array.isArray(parsed)) return;
-    for (const record of parsed as AuthRecord[]) {
-      if (typeof record?.key === "string" && typeof record.updated_at === "number") {
-        this.#records.set(record.key, record);
-      }
-    }
+    // Each one through the same gate a peer's record goes through, so a file
+    // written before this contract's generation leaves nothing behind.
+    for (const record of parsed as AuthRecord[]) this.accept(record);
     this.#expire();
   }
 
@@ -405,12 +418,14 @@ export class AuthRecords {
   }
 }
 
+/** Who a record belonged to, for a mark that has just replaced it. */
+function userOf(record: AuthRecord | undefined): UserId | undefined {
+  const body = record?.body;
+  if (body === undefined || body.kind === "tombstone") return undefined;
+  return body.user;
+}
+
 /** Where the records live under a state directory. */
 export function recordsDir(stateDir: string): string {
   return join(stateDir, AUTH_DIR);
-}
-
-/** Whether an instance is the one allowed to write this family (DR-0001 §2.4). */
-export function writes(family: TokenFamily, self: InstanceId): boolean {
-  return family.iss === self;
 }
