@@ -276,13 +276,21 @@ const ROOT: Command = {
           name: "create",
           summary: "人を作る URL と 6 桁コードを 1 組発行する (既定 10 分で失効)",
           usage:
-            "ccmsg user create [--origin <origin>] [--name <ラベル>] [--all] [--ttl <秒>] [--format <形>]",
+            "ccmsg user create [--origin <origin>] [--endpoint <url>] [--name <名前>] [--label <メモ>] [--all] [--ttl <秒>] [--format <形>]",
           options: [
             [
               "--origin <origin>",
               "人を送る page の origin (末尾スラッシュ無し)。既定はこの instance の endpoint の origin",
             ],
-            ["--name <ラベル>", "誰宛に発行した URL かの管理ラベル"],
+            [
+              "--endpoint <url>",
+              "page が POST する base URL (末尾 /)。LB の住所でよい。既定はこの instance の endpoint",
+            ],
+            [
+              "--name <名前>",
+              "登録画面と認証器に出るアカウント名の初期値 (本人が登録画面で書き換えられる)",
+            ],
+            ["--label <メモ>", "誰宛に発行した URL かの管理メモ。本人には見えず passkey に残る"],
             ["--all", "作られる人に、知っている peers 全部の所有を書く"],
             ["--ttl <秒>", "URL の寿命 (既定 600)"],
             ["--format <形>", "json か text"],
@@ -294,16 +302,30 @@ const ROOT: Command = {
           name: "add",
           summary: "既に居る人に、この instance の所有を足す",
           usage:
-            "ccmsg user add <user-id> [--all] [--enroll] [--origin <origin>] [--ttl <秒>] [--format <形>]",
+            "ccmsg user add <user-id> [--all] [--enroll] [--origin <origin>] [--endpoint <url>] [--label <メモ>] [--ttl <秒>] [--format <形>]",
           options: [
             ["--all", "知っている peers 全部の所有を足す"],
             [
               "--enroll",
-              "record を直接書く代わりに URL と 6 桁を出す (その人をまだ知らない instance 用。本人が既存 passkey で assert した時に所有が書かれる)",
+              "record を直接書く代わりに URL と 6 桁を出す (本人が既存 passkey で assert した時に所有が書かれる)",
             ],
             ["--origin <origin>", "--enroll の時に人を送る page の origin"],
+            ["--endpoint <url>", "--enroll の時に page が POST する base URL (末尾 /)"],
+            ["--label <メモ>", "--enroll の時の管理メモ"],
             ["--ttl <秒>", "--enroll の時の URL の寿命 (既定 600)"],
             ["--format <形>", "json か text"],
+          ],
+          notes: [
+            {
+              title: "どちらの経路も、この instance がその人を複製で知っている必要がある:",
+              docs: [
+                ["(既定)", "所有 record を 1 行書く。知らない id は not_found で断る"],
+                [
+                  "--enroll",
+                  "assert の検証に公開鍵が要るので、着弾する instance が複製でその人を知っていること。mesh の外は別の mesh なので ccmsg user create",
+                ],
+              ],
+            },
           ],
           run: (args) => userAdd(args),
         },
@@ -321,6 +343,7 @@ const ROOT: Command = {
           options: [
             ["--all", "知っている peers 全部の所有を外す"],
             ["--yes", "確認を省く"],
+            ["--format <形>", "json か text"],
           ],
           run: (args) => userRemove(args),
         },
@@ -339,15 +362,27 @@ const ROOT: Command = {
               name: "add",
               summary: "既に居る人に passkey を 1 本足す URL と 6 桁を出す",
               usage:
-                "ccmsg user passkey add <user-id> [--origin <origin>] [--name <ラベル>] [--ttl <秒>] [--format <形>]",
+                "ccmsg user passkey add <user-id> [--origin <origin>] [--endpoint <url>] [--label <メモ>] [--ttl <秒>] [--format <形>]",
               options: [
                 [
                   "--origin <origin>",
                   "人を送る page の origin。既定はこの instance の endpoint の origin",
                 ],
-                ["--name <ラベル>", "誰宛に発行した URL かの管理ラベル"],
+                ["--endpoint <url>", "page が POST する base URL (末尾 /)"],
+                ["--label <メモ>", "誰宛に発行した URL かの管理メモ"],
                 ["--ttl <秒>", "URL の寿命 (既定 600)"],
                 ["--format <形>", "json か text"],
+              ],
+              notes: [
+                {
+                  title: "アカウント名は変えない:",
+                  docs: [
+                    [
+                      "(名前)",
+                      "既に居る人に足すので、その人が今読んでいる名前がそのまま認証器に渡る。変えるのは ccmsg user rename",
+                    ],
+                  ],
+                },
               ],
               run: (args) => passkeyAdd(args),
             },
@@ -1170,11 +1205,13 @@ function formatted(
  * anything the instance hands out — so that holding the URL is not enough to
  * register (DR-0001 §2.2). */
 async function userCreate(args: readonly string[]): Promise<unknown> {
-  const parsed = options(args, ["origin", "name", "ttl", "format"], ["all"]);
+  const parsed = options(args, ["origin", "endpoint", "name", "label", "ttl", "format"], ["all"]);
   const answer = await adminAsk({
     admin: "user_create",
     ...named(parsed, "origin"),
+    ...named(parsed, "endpoint"),
     ...named(parsed, "name"),
+    ...named(parsed, "label"),
     ...ttlOf(parsed.named.get("ttl")),
     ...(parsed.flags.has("all") ? { all: true } : {}),
   });
@@ -1182,7 +1219,7 @@ async function userCreate(args: readonly string[]): Promise<unknown> {
 }
 
 async function userAdd(args: readonly string[]): Promise<unknown> {
-  const parsed = options(args, ["origin", "ttl", "name", "format"], ["all", "enroll"]);
+  const parsed = options(args, ["origin", "endpoint", "ttl", "label", "format"], ["all", "enroll"]);
   const [user] = parsed.rest;
   if (user === undefined) {
     throw new CommandError("invalid_args", "使い方: ccmsg user add <user-id> [--all] [--enroll]");
@@ -1193,7 +1230,8 @@ async function userAdd(args: readonly string[]): Promise<unknown> {
     ...(parsed.flags.has("all") ? { all: true } : {}),
     ...(parsed.flags.has("enroll") ? { enroll: true } : {}),
     ...named(parsed, "origin"),
-    ...named(parsed, "name"),
+    ...named(parsed, "endpoint"),
+    ...named(parsed, "label"),
     ...ttlOf(parsed.named.get("ttl")),
   });
   return formatted(answer, parsed.named.get("format"), (body) =>
@@ -1258,7 +1296,7 @@ async function userRename(args: readonly string[]): Promise<unknown> {
  * grows is the number of passkeys, and the person is one either way (contract,
  * DR-0030 §4). */
 async function passkeyAdd(args: readonly string[]): Promise<unknown> {
-  const parsed = options(args, ["origin", "name", "ttl", "format"]);
+  const parsed = options(args, ["origin", "endpoint", "label", "ttl", "format"]);
   const [user] = parsed.rest;
   if (user === undefined) {
     throw new CommandError("invalid_args", "使い方: ccmsg user passkey add <user-id>");
@@ -1267,7 +1305,8 @@ async function passkeyAdd(args: readonly string[]): Promise<unknown> {
     admin: "user_create",
     user,
     ...named(parsed, "origin"),
-    ...named(parsed, "name"),
+    ...named(parsed, "endpoint"),
+    ...named(parsed, "label"),
     ...ttlOf(parsed.named.get("ttl")),
   });
   return formatted(answer, parsed.named.get("format"), enrolmentLines);
