@@ -179,6 +179,8 @@ greeting の応答は `upstream.terminal_gateway` が設定されている insta
 
 **user id は WebAuthn の user handle であり、その人を作った URL の発行者が 1 度決める。** `create_user` の jwt に載せ、ページはそれで credential を作り、handle を名乗る assertion は credential の `user` に照合する。authenticator は handle を instance の手の届かない場所に保存するので、同じ人に 2 つの値を配ると端末上で 2 つのアカウントに見えてしまう。以後の passkey は全てその人が既に持つ handle に対して作り、`add_owner` の URL は handle を運ばない — 誰が来るかは assertion が言う。
 
+**認証器に渡すアカウント名は人が読む名前であって、handle ではない。** passkey manager は ceremony で渡されたアカウント名を保存し、その鍵を並べる場所で表示する。1Password での実測 (2026-09-18) では、保存されるのは `user.name` だけで — `user.displayName` は保存されず、アイテム名は registrable domain が使われ、`rp.name` は使われない。つまり人が一覧から自分のアカウントを見分けられるかは `user.name` 1 つに懸かっており、ここに handle を置けば、サインインのたびに 16 byte の乱数が本人の前に出ることになる。ページは名前を jwt の `issued_label` から読む: 人を作る URL ではそれが `ccmsg user create --name` に書かれた値、既に居る人に passkey を足す URL ではその人が自分を読む `display_name`、どちらも言われていなければ短い既定の語である。`displayName` には同じ値を渡し (保存はされないが、browser 自身の ceremony UI が読む)、`rp.name` はサービスの名前とする。登録が成立すると同じ値がその人の `display_name` の初期値になり、以後は `ccmsg user rename` がそれを変える。**rename は manager には届かない**: manager が表示するのは鍵が作られた時に決まった値で、直す手段は browser 側にしかない (Chrome の `signalCurrentUserDetails`。存在する環境でだけ呼ぶ)。
+
 **ユーザ / credential / 所有 / token family とその tombstone は `auth.records` topic で複製する** (`user/<user>`、`credential/<credential_id>`、`ownership/<instance>/<user>/<grant>`、`family/<id>`)。§7.4 の relay には乗らない — element 粒度なので「instance ごとの全体値」が無く、受け取る側が key で畳む。roles は `instance` だけで、relay が `caller` を付ける他の topic と違い**instance のまま購読する**: 人が読める場所に置けば token がそのまま漏れる。削除は tombstone で、何を消すかは key が言い、その下の何も巻き込まない — granting 1 つ、passkey 1 本、family 1 つ。tombstone はその key への以後の書き込みを拒む (LWW の例外)。credential と所有の tombstone に保持期限は無く、family のそれは 7 日。
 
 ## 4. セッションと run

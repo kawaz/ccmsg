@@ -19,10 +19,12 @@ import {
   Auth,
   AuthRecords,
   authHandlers,
+  claimsOf,
   cookieName,
   cookiePath,
   handleAdmin,
   handleAuth,
+  PERSON_LABEL,
   PREVIOUS_GRACE_MS,
 } from "../src/auth/index.ts";
 import { SoftAuthenticator } from "./authenticator.ts";
@@ -130,12 +132,13 @@ function tokenOf(url: string): string {
  * exists adds a passkey to them instead. */
 async function registered(
   at: { instance: Instance; origin: string },
-  options: { backup?: { eligible: boolean; state: boolean }; user?: UserId } = {},
+  options: { backup?: { eligible: boolean; state: boolean }; user?: UserId; label?: string } = {},
 ) {
   const issued = await at.instance.auth.issue({
     purpose: "create_user",
     endpoint: servedAt(at),
     ...(options.user === undefined ? {} : { user: options.user }),
+    ...(options.label === undefined ? {} : { label: options.label }),
   });
   const user = issued.user as UserId;
   const authenticator = new SoftAuthenticator(issued.rp_id);
@@ -359,6 +362,34 @@ describe("making a person (contract, DR-0030 §4)", () => {
     // came with stands, and admits nobody until they exist.
     expect(at.instance.auth.records.user(issued.user as UserId)).toBeUndefined();
     expect(at.instance.auth.records.credentials()).toEqual([]);
+  });
+
+  test("the name the URL carries is what the authenticator is told to call the account", async () => {
+    // A passkey manager keeps the account name the ceremony was given and shows
+    // it wherever the key is listed, so the page reads it off the claims rather
+    // than putting the handle there — sixteen random bytes is the one thing a
+    // person must not see in that list. What the operator wrote on the URL is
+    // what they are called until they say otherwise.
+    const at = await serving();
+    const named = await registered(at, { label: "kawaz" });
+    expect(claimsOf(named.issued.url.split("#enroll=")[1] as string).issued_label).toBe("kawaz");
+    expect(at.instance.auth.records.user(named.user)?.display_name).toBe("kawaz");
+
+    // Nothing written, and the short default stands rather than an empty name.
+    const plain = await serving();
+    const anonymous = await registered(plain);
+    expect(plain.instance.auth.records.user(anonymous.user)?.display_name).toBe(PERSON_LABEL);
+
+    // A second URL for somebody who exists carries the name they read
+    // themselves by, so a manager asked to store a second passkey stores it
+    // under the same account rather than under the operator's first note.
+    await at.instance.auth.rename(named.user, "kawaz (work)");
+    const again = await at.instance.auth.issue({
+      purpose: "create_user",
+      endpoint: servedAt(at),
+      user: named.user,
+    });
+    expect(claimsOf(again.url.split("#enroll=")[1] as string).issued_label).toBe("kawaz (work)");
   });
 
   test("a registration makes the person, their passkey and their granting, and signs them in", async () => {

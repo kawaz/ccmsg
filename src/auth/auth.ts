@@ -100,6 +100,15 @@ export const CODE_ATTEMPTS = 5;
 export const AUTH_RATE_LIMIT = 30;
 export const AUTH_RATE_WINDOW_MS = 1_000;
 
+/** What a person is called where nobody has said.
+ *
+ * A passkey manager stores the account name the ceremony was given and shows it
+ * wherever the key is listed, so something has to be there — and a person's id
+ * is sixteen random bytes, which is the one thing it must not be. Short, and
+ * about the service rather than about them, because that is all that is known
+ * at the moment the URL is made; `user rename` is how it becomes their own. */
+export const PERSON_LABEL = "ccmsg";
+
 /** The fragment an enrolment URL carries what it authorizes in.
  *
  * One name for both purposes, because the claims say which of the two this is
@@ -306,6 +315,17 @@ export class Auth {
     }
     this.#spelled("origin", origin, OriginSchema);
     const at = this.#now();
+    // What the page will call this account in the authenticator, and what the
+    // person will see there ever after. A passkey manager keeps the account
+    // name it was given at creation and shows it in its own list, so a URL that
+    // named nothing would put a random handle in front of the person every time
+    // they signed in (`PERSON_LABEL`). For somebody who already exists it is
+    // the name they read themselves by; for a new person it is what the
+    // operator wrote on the URL, and the short default where they wrote
+    // nothing.
+    const label =
+      options.label ??
+      (options.user === undefined ? undefined : this.deps.records.user(options.user)?.display_name);
     const common = {
       iss: this.deps.self,
       instance: this.deps.self,
@@ -313,7 +333,7 @@ export class Auth {
       endpoint,
       expires_at: at + (options.ttl ?? REGISTER_TTL_MS),
       jti: randomBytes(16).toString("base64url"),
-      ...(options.label === undefined ? {} : { issued_label: options.label }),
+      ...(label === undefined ? {} : { issued_label: label }),
     };
     const claims: EnrollClaims =
       options.purpose === "create_user"
@@ -629,7 +649,12 @@ export class Auth {
     // passkey being added to them, and their record stands as it is — the name
     // they gave themselves and the instant they were made are theirs.
     if (this.deps.records.user(claims.user) === undefined) {
-      const user: UserRecord = { kind: "user", user: claims.user, created_at: at };
+      const user: UserRecord = {
+        kind: "user",
+        user: claims.user,
+        display_name: claims.issued_label ?? PERSON_LABEL,
+        created_at: at,
+      };
       if (!(await this.deps.records.write(userKey(claims.user), user, at))) {
         throw new OpError("forbidden", `${claims.user} は削除済みです`);
       }
