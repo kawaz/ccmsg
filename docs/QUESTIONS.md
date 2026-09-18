@@ -20,6 +20,16 @@
 
 ## 裁定待ち
 
+### WS-Q5〜Q6 webui DR-0004 (状態機械) の追加の未決
+
+WS-Q5 ログアウトで family を失効させる op を契約に足す (`auth.signout` 相当)
+- [ ] a: 足す (refresh cookie は HttpOnly でページから消せず、サーバの応答で期限切れにする必要がある)
+- [ ] b: 足さない (ログアウトはローカルの保存を消すだけ、family は期限まで生きる)
+
+WS-Q6 ログアウトで人の好み (色 / 設定) も消すか
+- [ ] a: 残す (identity に紐づかないローカルの好み)
+- [ ] b: 全部消す
+
 ### WS-Q3 webui の画面全体の状態機械 (webui DR-0004、💭 提案) の未決
 
 webui `docs/decisions/DR-0004-one-state-machine-decides-what-the-screen-is.md` §7。8 つの姿 (offline / registering / authenticating / connecting / receiving / live / stale / outdated) を `phase` (computed 1 本) が答え、`App.tsx` は switch するだけ。各項の a が統括推し。
