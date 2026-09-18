@@ -20,64 +20,66 @@ WS の入口は entry token (state ディレクトリの 0600 file) で守って
 - 引っ越し = state を移す → 新 URL で起動 → 各 peer の `peers` を書き換える。record / token / mid は無効にならない
 - 契約の `instance` の意味が「endpoint URL 完全一致」から「opaque な id」に変わるので **世代を 2 → 3 に上げる**。`hello` の応答と `peers` frame の instance 一覧に `endpoint` を別フィールドで持つ。一覧の `id` は handshake が成立するまで未知なので optional (endpoint だけ分かっている peer も一覧に出す)。mesh を持たない instance は名乗る URL が無いので `hello.endpoint` も optional
 
-### 2.2 登録はローカルからしかできない
+### 2.2 人を作るのはローカルからしかできない
 
-`ccmsg daemon passkey add <unit> [endpoint] [--webui <URL>]` で登録用の一意 URL を 1 つ発行する。認証の単位は **登録時の endpoint URL と webui** で、別のホスト (alias / LB 名) から入りたければその endpoint で登録し直す (passkey を複数ホストで使い回す構成は持たない)。`unit` は instance (= config home) の名前。**登録 URL が名乗る endpoint は発行した instance 自身のもの**で、他の instance の endpoint は名乗れない (契約 DR-0029。secret も 6 桁の試行回数も発行者にしか無いので、登録は発行者に届いた時だけ成立する)。`endpoint` の指定は mesh に載っておらず自分の endpoint を持たない instance 用。
+`ccmsg user create [--origin <origin>] [--all]` で登録用の一意 URL を 1 つ発行する。**認証の単位は人**で、その人が持っている instance に入れる (契約 DR-0030)。`--origin` は人を送る page の origin で、既定はこの instance の endpoint の origin。
 
-- URL は `<webui>#register=<jwt>` で、人を送る先が webui。claims は `{ iss (instance id), sub, unit, endpoint, webui, exp (10 分), jti, user_id }`。webui の既定は endpoint 自身 (自分で webui を配る通常形)、別の場所に配られているなら `passkey add --webui <URL>` で名指す。`sub` は利用者の識別子で既定は `<unit>-<連番>`
+既に居る人にこの instance を持たせる経路が 2 本ある。`ccmsg user add <user-id>` は所有 record を 1 行書くだけで browser を要らない (mesh の複製でその人を既に知っている場合)。`ccmsg user add <user-id> --enroll` は所有者を足す URL と 6 桁を出し、本人が既存 passkey で assert する (その人をまだ知らない instance 用)。どちらも新しい passkey は作らない。
+
+- URL は `<origin>/#enroll=<jwt>` で、人を送る先が origin の直下。claims は `EnrollClaims` = `{ iss (instance id), purpose (`create_user` | `add_owner`), instance, origin, endpoint, expires_at (既定 10 分), jti, user_id (create_user だけ), issued_label? }`。`endpoint` は page が POST する宛先であって**照合しない** (LB の住所でよく、どの instance に着弾しても成立する)
 - 署名は **登録ごとの乱数 secret による HMAC** (検証者 = 発行者なので公開鍵は要らない)。secret は発行 instance のメモリにだけ置き `exp` で破棄する。永続鍵は持たない
-- webui は `/auth/challenge` で challenge を取り、`navigator.credentials.create()` (`residentKey: "preferred"`、`userVerification: "required"`、`user.id` = jwt の `user_id` (発行 instance が sub ごとに決める乱数 16 byte。record に保存し、認証の `userHandle` と照合する)、`rp.id` = jwt の `webui` から導く `rpIdOf` (= その host)) を行い、credential と jwt を jwt の `endpoint` の `/auth/register` に POST する
-- 受けた instance は `iss` が自分なら HMAC で jwt を検証する (`jti` と challenge の消費は WebAuthn 検証が通った後。ブラウザ側の一時的な失敗 1 回で URL が焼けないように)。WebAuthn 登録の検証 (L2 §7.1): `clientDataJSON.type` = `webauthn.create`、`challenge` = 発行した値、`origin` が claims の `webui` の `originOf` と完全一致、`crossOrigin` が `true` でないこと (Chrome 系は常に `false` を送る) と `topOrigin` が無いこと、`authData.rpIdHash` = sha256(`rpIdOf(webui)`)、UP と UV の flag、`fmt` = `none` で `attStmt` が空、credential id が既存 record と重複しないこと。通ったら `{ sub, unit, credential id, COSE 公開鍵, user.id, 登録時刻 }` を **credential record** として保存する。`iss` が自分でなければ `iss` へ転送する (§2.6)
+- page は `/auth/challenge` で challenge を取り、`navigator.credentials.create()` (`residentKey: "preferred"`、`userVerification: "required"`、`user.id` = jwt の `user_id` (= その人の id そのもの。乱数 16 byte で、発行 instance が人を作る時に 1 度決める)、`rp.id` = jwt の `origin` の host) を行い、credential と jwt と 6 桁を jwt の `endpoint` の `/auth/register` に POST する
+- **受けた instance が自分で検査し、自分で record を書き、自分で応答する** (発行 instance でなくてよい)。WebAuthn 登録の検証 (L2 §7.1): `clientDataJSON.type` = `webauthn.create`、`challenge` = 発行した値、`origin` が claims の `origin` と完全一致、`crossOrigin` が `true` でないこと (Chrome 系は常に `false` を送る) と `topOrigin` が無いこと、`authData.rpIdHash` = sha256(claims の `origin` の host)、UP と UV の flag、`fmt` = `none` で `attStmt` が空、credential id が既存 record と重複しないこと。通ったら user record・credential record・所有 record を書く。発行者に問うのは**発行者のメモリにしか無い物だけ** (jwt の真正・`jti`・期限・6 桁と試行回数) で、`auth.resolve` で転送する (§2.6)
+- 所有 record は **URL を出した時点で**書く (`--all` なら、その時点で知っている peers 全部)。人を作る URL は誰のための物かを先に名乗るので、どの instance を持たせるかは端末で決まる。LB の裏で ceremony が別の peer に着弾しても、そこが知っている peers ではなくここで決めた集合が書かれる
 - `iss` が再起動していれば secret が消えて失敗する。登録に fallback は無く、CLI で URL を発行し直す (エラー文言は「登録 URL を再発行してください」)
-- リモートからの登録経路は無い。復旧も CLI だけ。`passkey list` / `passkey remove <sub>`
-- **保守情報**: 名前は 2 つあり意味が違う。`passkey add --name <ラベル>` は管理者が「誰宛に発行した URL か」を記す管理ラベル (jwt に載せる)、登録ページの名前入力は利用者が「どの端末の passkey か」を記す端末ラベル (複数端末を持つ利用者が自分の一覧から保守するためのもの)。credential record は `issued_label` / `device_label` / `user_agent` / `registered_at` / `registered_from` (IP) / `last_used_at` を持ち、`passkey list` はこれを並べる
-- **CLI 提示コード**: `passkey add` が 6 桁のコードを表示し (URL には含めない。登録の一次 secret と一緒に発行 instance が保持)、ページはそれを入力させ `/auth/register` に添える。URL を持っているだけでは登録できない (URL 漏洩への防御)。jwt から導出したコードを両方に表示して目視照合する形は「端末が CLI の隣にある」確認にしかならないので採らない
+- リモートから人を作る経路は無い。復旧も CLI だけ。`user list` / `user remove <user-id>` / `user passkey list <user-id>` / `user passkey remove <credential-id>`
+- **保守情報**: 名前は 2 つあり意味が違う。`--name <ラベル>` は管理者が「誰宛に発行した URL か」を記す管理ラベル (jwt に載せる)、登録ページの名前入力は利用者が「どの端末の passkey か」を記す端末ラベル (複数端末を持つ利用者が自分の一覧から保守するためのもの)。credential record は `issued_label` / `device_label` / `user_agent` / `registered_at` / `registered_ip` / `last_used_at` を持ち、`user passkey list` はこれを並べる
+- **CLI 提示コード**: URL を出すコマンドが 6 桁のコードを表示し (URL には含めない。登録の一次 secret と一緒に発行 instance が保持)、ページはそれを入力させ `/auth/register` に添える。URL を持っているだけでは登録できない (URL 漏洩への防御)。jwt から導出したコードを両方に表示して目視照合する形は「端末が CLI の隣にある」確認にしかならないので採らない
 
 #### 任意のゲート (最低限プロトコルの上に独立に積む。ccmsg では後続)
 
-- **ホスト PC の FIDO 承認**: 発行 instance は `/auth/register` を受けても完了せず保留し、`passkey add` を実行中の CLI に登録内容 (名前 / 端末 / コード / 時刻) を提示して OS の生体認証 (macOS は LocalAuthentication) を要求、CLI からの承認で完了する。離席中の第三者による登録を防ぐ。承認の起点を CLI に置くのは、登録がローカルに閉じている §2.2 の性質をそのまま延ばすため
+- **ホスト PC の FIDO 承認**: 発行 instance は `/auth/register` を受けても完了せず保留し、URL を出した CLI に登録内容 (名前 / 端末 / コード / 時刻) を提示して OS の生体認証 (macOS は LocalAuthentication) を要求、CLI からの承認で完了する。離席中の第三者による登録を防ぐ。承認の起点を CLI に置くのは、登録がローカルに閉じている §2.2 の性質をそのまま延ばすため
 
 ### 2.3 credential が何に縛られるか
 
-> Superseded: 契約 `ccmsg-protocol` の DR-0029 (credential は endpoint と webui の 2 つに縛られ、比べる値はどちらも URL から導く) に置き換わった。
-
-credential は endpoint (どの instance に入ってよいか) と webui (どの page から来てよいか) の 2 つを持ち、origin と RP ID はその webui の URL から毎回導く (`originOf` / `rpIdOf`)。`rp_id` も origin も record には持たない。endpoint の束縛 (`https://h.example/` と `https://h.example/personal/` は別の endpoint で、それぞれ登録する) は変わらない。
+> Superseded: 契約 `ccmsg-protocol` の DR-0030 に置き換わった。credential が持つ束縛は **`origin` 1 つ** (どの page から来てよいか) で、RP ID はその origin の host。どの instance に入ってよいかは credential の問いではなく、**所有 record** が答える。同じ origin の別 path は browser が見分けないので、1 つの host に複数 instance を出す形は持たない (host を分ける)。
 
 ### 2.4 token は record に紐づく opaque 値、family は単一 writer
 
 アクセストークン / リフレッシュトークンは署名しない。乱数 (base64url、padding なし) を **token family** に入れて保存し、検証は lookup で行う。
 
-- family = `{ id, sub, iss (mint した instance id), access: { value, exp }, refresh: { value, exp }, 直前世代の refresh }`。**family を書けるのはその `iss` だけ** (単一 writer)。refresh の rotate は必ず `iss` へ転送し、`iss` が落ちていれば passkey 認証で別 instance が新しい family を mint する。これで LWW 複製との衝突 (別 instance で並行 rotate → 合流で片方が消えて誤失効) が起きない
-- family の失効 (再利用検知) は family tombstone (7 日) として複製し、分断中の peer が持つ stale copy も復帰後に失効させる。退役 refresh 値の提示を `iss` でない instance が受けた時は `iss` へ転送して検知する (単一 writer のまま)
+- family = `{ user, iss (mint した instance id), origin, access: { value, exp }, refresh: { value, exp }, 直前世代の refresh, retired }`。**所有されているどの instance でも書ける** (契約 DR-0030)。`iss` は mint した記録であって書き手を制限しない。rotate は着弾した instance がその場で書き、転送しない
+- 並行 rotate が競合したら、負けた側の端末が持つ値は family のどの世代にも無い値になる。**知らない値の提示は `auth_invalid` で断るだけで、family は失効させない**。負けた側は passkey で入り直す
+- family の失効 (再利用検知) は family tombstone (7 日) として複製し、分断中の peer が持つ stale copy も復帰後に失効させる。**失効させるのは `retired` の digest に一致した時だけ**で、それが replay の検知そのもの
 - credential record は登録後 `iss` を要らなくする (複製済みなので問い合わせ不要)。`iss` を持つのは challenge と family (短命) だけで、instance id は固定なので引っ越しでも変わらない
 - **アクセストークンは family に 1 本で、その人が開いている複数のページ (タブ) が共有する。** rotate は refresh cookie を毎回回すが、アクセストークンは残り寿命が TTL の半分を切るまで据え置き、それ以降だけ mint し直す。毎回差し替えると、あるタブの読み込みが他のタブの持つトークンを無効にしてしまう (残り半分は、新しい値に気づくための猶予として最大に取れる閾値)
 - アクセストークンは数時間、リフレッシュトークンは数日。rotate は使うたび。family は退役した refresh 値のハッシュを本来の exp まで保持し、**どの世代の値でも再利用を見たら family を失効させる**。直前 1 世代だけは再送の猶予として (猶予時間内に限り) 前回の答えを返す
 - アクセストークンは WS の handshake に subprotocol `ccmsg.token.<値>` で載せる (サーバは選んだ subprotocol を echo する。proxy が `Sec-WebSocket-Protocol` を透過することが要件)。ブラウザはメモリにだけ持つ
-- リフレッシュトークンは **httpOnly cookie**。名前は `__Secure-ccmsg-<sha256(instance id + "\n" + sub) の先頭 16 hex>`、値は opaque、`Path=<request のパスから /auth/ までの prefix>`。`Path` は帯域と露出面を絞るためで認可境界ではない (同一 origin の JS は任意パスに fetch できる)。`SameSite` の決め方は契約 `ccmsg-protocol` の DR-0028 に置き換わった (webui と endpoint が same-site なら `SameSite=Strict`、cross-site なら `SameSite=None; Partitioned`。属性の組み立ては daemon の持ち物)
-- 認証と refresh は endpoint の `/auth/` 配下の HTTP。許可する origin の集合と、webui を endpoint と別の site に置く構成は契約 `ccmsg-protocol` の DR-0029 / DR-0028 に置き換わった (集合 = 登録済み credential の webui の origin + その instance 自身が発行して生きている登録 URL の webui の origin。identity を決める 3 op は `Origin` と `Sec-Fetch-Site` の 2 ヘッダに照らされ、どちらも不在は不一致)。未認証で叩けるので rate limit を持つ (mesh-peer-auth §6 の鍵取得と同型)
-- `https://h/` と `https://h/personal/` は別 endpoint なので登録も別で、cookie の Path (`/auth/` と `/personal/auth/`) も分かれる
-- 期限切れの family は `iss` が消す (単一 writer なので GC も担う)
+- リフレッシュトークンは **httpOnly cookie**。名前は `__Secure-ccmsg-<sha256(user id) の先頭 16 hex>` で **instance を含めない** (契約 DR-0030。family は複製され所有されているどの instance でも rotate できるので、名前が instance で変わると LB の裏で自分の cookie を認識できない)、値は opaque、`Path=<request のパスから /auth/ までの prefix>`。`Path` は帯域と露出面を絞るためで認可境界ではない (同一 origin の JS は任意パスに fetch できる)。`SameSite` の決め方は契約 `ccmsg-protocol` の DR-0028 に置き換わった (credential の origin と endpoint が same-site なら `SameSite=Strict`、cross-site なら `SameSite=None; Partitioned`。属性の組み立ては daemon の持ち物)
+- 認証と refresh は endpoint の `/auth/` 配下の HTTP。許可する origin の集合は契約 `ccmsg-protocol` の DR-0030 / DR-0028 に置き換わった (**登録系の 3 経路 (`challenge` / `register` / `enroll`) は全 origin に開き**、それ以外 (`assert` / `refresh`) の集合は「この instance の所有者たちの credential の origin」。identity を決める 4 op は `Origin` と `Sec-Fetch-Site` の 2 ヘッダに照らされ、どちらも不在は不一致)。未認証で叩けるので rate limit を持つ (mesh-peer-auth §6 の鍵取得と同型)
+- 期限切れの family は読んだ時点で落ちる (時計で掃かない)
 - LB で challenge の発行と応答の instance が違う時は、**応答を受けた instance が assertion を検証**し、challenge の消費だけを発行者へ問い合わせる。mint する family の `iss` は応答を受けた instance
 
 ### 2.5 接続の期限
 
-認証済みの WS はアクセストークンの `exp` までが期限 (`hello` の応答の `auth_expires_at`。UDS の user 接続には付かない)。クライアントは `exp` 前に `/auth/refresh` で新しいアクセストークンを得て、同じ接続上の `auth_refresh` op で期限を延ばす (切断しない)。怠った接続は instance が `exp` で切る。切られたら refresh → 再接続、refresh が無効なら passkey 認証 (`/auth/challenge` → `navigator.credentials.get()` → `/auth/assert`、record は `rawId` で引き `sub` は任意) → 新しい family → 再接続。`passkey remove` は該当 sub の family を全部失効させ、その sub で認証済みの WS を切る。
+認証済みの WS はアクセストークンの `exp` までが期限 (`hello` の応答の `auth_expires_at`。UDS の user 接続には付かない)。クライアントは `exp` 前に `/auth/refresh` で新しいアクセストークンを得て、同じ接続上の `auth.extend` op で期限を延ばす (切断しない)。怠った接続は instance が `exp` で切る。切られたら refresh → 再接続、refresh が無効なら passkey 認証 (`/auth/challenge` → `navigator.credentials.get()` → `/auth/assert`、record は `rawId` で引き、誰かを名乗る必要は無い) → 新しい family → 再接続。所有を外すと、その instance でその人が開いている WS が切れる。
 
-認証 (L2 §7.2) の検証: `type` = `webauthn.get`、`challenge`、`origin` が record の `endpoint` の origin と完全一致、request のパス prefix が endpoint のパスと一致、`crossOrigin` が `true` でないこと、`topOrigin` 無し、`rpIdHash`、UP と UV、`userHandle` が record の `user_id` と一致、署名 (`authData || sha256(clientDataJSON)`) を ES256 (+ RS256 / Ed25519)。signCount は record の値が非 0 なら提示値 > record を要求し (提示 0 も退行として拒否)、record が 0 なら提示値をそのまま保存する (同期 passkey は常に 0)。counter は credential record の一部で、認証を受けた instance が書く (record は LWW で複製され、退行検知は最終的に整合すればよい)。
+認証 (L2 §7.2) の検証: `type` = `webauthn.get`、`challenge`、`origin` が record の `origin` と完全一致、`crossOrigin` が `true` でないこと、`topOrigin` 無し、`rpIdHash` が sha256(record の `origin` の host)、UP と UV、`userHandle` が record の `user` と一致、そして**その人がこの instance の所有者であること**、署名 (`authData || sha256(clientDataJSON)`) を ES256 (+ RS256 / Ed25519)。signCount は record の値が非 0 なら提示値 > record を要求し (提示 0 も退行として拒否)、record が 0 なら提示値をそのまま保存する (同期 passkey は常に 0)。counter は credential record の一部で、認証を受けた instance が書く (record は LWW で複製され、退行検知は最終的に整合すればよい)。
 
 ### 2.6 record の複製と `iss` への問い合わせ
 
-credential record と token family は peer 間で複製する。載せ先は **`kv` ではなく専用 topic `auth_records`** (`roles: ["instance"]`、element 粒度、LWW + tombstone。`kv` は user role が読み書きでき token が漏れる)。session / user role は購読も読み書きもできない。
+user record・credential record・所有 record・token family は peer 間で複製する。載せ先は **`kv` ではなく専用 topic `auth.records`** (`roles: ["instance"]`、element 粒度、LWW + tombstone。`kv` は user role が読み書きでき token が漏れる)。session / user role は購読も読み書きもできない。
 
-知らない値を受けた instance は発行者 (`iss` = instance id) へ問い合わせる。契約に instance 間 op を 2 つ (`auth_resolve` = jwt / challenge の検証と消費、`auth_rotate` = family の rotate。どちらも plane `common`、`roles: ["instance"]`、`needs_hello: true`、`locality: owner_instance`) 足し、`to_instance = iss` で §7.3 の転送経路に載せる。`auth_records` は relay の `caller` を付けず instance role のまま購読する (relay が `caller: user` を付ける他の topic と違う)。問い合わせが要る場面は 3 つ:
+知らない値を受けた instance は発行者 (`iss` = instance id) へ問い合わせる。契約の instance 間 op は `auth.resolve` (jwt / challenge の検証と消費。plane `common`、`roles: ["instance"]`、`needs_hello: true`、`locality: owner_instance`) の 1 つで、`to_instance = iss` で §7.3 の転送経路に載せる。`auth.records` は relay の `caller` を付けず instance role のまま購読する (relay が `caller: user` を付ける他の topic と違う)。問い合わせが要る場面は 2 つ:
 
-- 登録 jwt の検証 (HMAC secret は `iss` にしかない)
+- 登録 jwt と 6 桁の検証 (HMAC secret も試行回数も `iss` にしかない)
 - WebAuthn の challenge (発行 instance の id を challenge に含め、返ってきた側がそこへ転送して照合する。LB で発行と応答の instance が違ってよい。challenge は 16 byte 以上の乱数 + 発行者、寿命 5 分、使い切り)
-- token family の lookup / rotate (単一 writer なので rotate は常に転送)
 
-`iss` が落ちていれば refresh か passkey 認証に落ちる。侵害された peer にこれらが token を返す点は「token は mesh 内の共有秘密」の前提どおりで、新しい穴ではない。
+`iss` が落ちていれば URL を出し直す。token family は複製済みで所有されているどの instance でも書けるので、問い合わせは要らない。侵害された peer にこれらが token を返す点は「token は mesh 内の共有秘密」の前提どおりで、新しい穴ではない。
 
-tombstone: `passkey remove` は sub 単位の tombstone を credential と全 family に打ち、tombstone はその key への以後の書き込みを拒む (LWW の例外。分断中の instance が復活させられない)。**credential の tombstone は保持期限を持たない** (sub ごと数十 byte。7 日超の分断から復帰した peer の snapshot で credential が復活するのを防ぐ)。family は refresh の exp で自然失効するので tombstone は 7 日で足りる。
+tombstone: 対象を名指すフィールドを持たず、**打たれた key が何を消したかを言う** (契約 DR-0030)。key は `user/<user>` / `credential/<credential_id>` / `ownership/<instance>/<user>/<grant>` / `family/<id>` の 4 種で、tombstone はその key への以後の書き込みを拒む (LWW の例外。分断中の instance が復活させられない)。**credential と所有の tombstone は保持期限を持たない** (7 日超の分断から復帰した peer の snapshot で復活するのを防ぐ)。family は refresh の exp で自然失効するので tombstone は 7 日で足りる。
+
+所有を「外して足し直す」が出来るのは、granting が毎回新しい乱数 id を持ち、それが key の末尾に入るため。外す = その (instance, user) の生きている granting 全部に tombstone、足し直す = 新しい key への 1 行。
 
 ### 2.7 ルートの mount と自分の endpoint
 
@@ -89,19 +91,19 @@ tombstone: `passkey remove` は sub 単位の tombstone を credential と全 fa
 
 ### 2.8 entry token の廃止
 
-state ディレクトリの `entry.token` と subprotocol / `?token=` による照合は削除する。`entry.origins` も削除する (設定に page の一覧は持たない)。WS が `Origin` を見ないという判断は契約 `ccmsg-protocol` の DR-0029 に置き換わった (upgrade は token の family が持つ webui の origin と照合し、`Origin` 不在も不一致として upgrade を拒否する)。`entry` に残るのは bind (host / port) と `source_ips` だけ。UDS (到達 = 権限) / mesh (TLS + `iss`/`aud` + proof) / webhook (Bearer) は変わらない。
+state ディレクトリの `entry.token` と subprotocol / `?token=` による照合は削除する。`entry.origins` も削除する (設定に page の一覧は持たない)。WS が `Origin` を見ないという判断は契約 `ccmsg-protocol` の DR-0030 に置き換わった (upgrade は token の family が持つ `origin` と照合し、`Origin` 不在も不一致として upgrade を拒否する。加えてその人がこの instance の所有者であることを照らす)。`entry` に残るのは bind (host / port) と `source_ips` だけ。UDS (到達 = 権限) / mesh (TLS + `iss`/`aud` + proof) / webhook (Bearer) は変わらない。
 
 ### 2.9 契約の変更 (世代 3)
 
 - `instance` は opaque id。`hello` 応答と `peers` の instance 一覧に `endpoint`。`mid` の `<instance>` も id
-- HTTP 経路 `/auth/challenge` / `/auth/register` / `/auth/assert` / `/auth/refresh` は「`needs_hello: false` の op を HTTP で運ぶもの」として op 属性表に載せる (M1 原則: 認可の分岐を表の外に置かない)。identity 未確定の接続から呼べる点は `hello` と同じ扱いで、`request_id` は HTTP の carrier 側が合成する
-- WS op `auth_refresh` (接続の期限を延ばす)、instance 間 op `auth_resolve` / `auth_rotate`、topic `auth_records`
+- HTTP 経路 `/auth/challenge` / `/auth/register` / `/auth/enroll` / `/auth/assert` / `/auth/refresh` は「`needs_hello: false` の op を HTTP で運ぶもの」として op 属性表に載せる (M1 原則: 認可の分岐を表の外に置かない)。identity 未確定の接続から呼べる点は `hello` と同じ扱いで、`request_id` は HTTP の carrier 側が合成する
+- WS op `auth.extend` (接続の期限を延ばす) / `auth.account.read` / `auth.ownership.remove` / `auth.credential.remove`、instance 間 op `auth.resolve`、topic `auth.records`
 - `InstanceId` と `Endpoint` の型分離、`MeshHello` に id
 - `hello` 応答に `auth_expires_at` (optional)
 
 ### 2.10 転送する認証 op が運ぶもの
 
-`auth_resolve` の `register` は jwt と **6 桁コード**を運び、発行 instance が jwt / コード / 試行回数を検証する (受けた instance は何も消費しない)。`user_id` は発行 instance が sub ごとに決めて jwt に載せる。
+`auth.resolve` の `claims` は jwt と **6 桁コード**を運び、発行 instance が jwt / コード / 試行回数を検証する (受けた instance は何も消費しない)。`user_id` は発行 instance が人を作る時に 1 度決めて jwt に載せる。
 
 ### 2.11 実装は自前
 
@@ -121,7 +123,7 @@ WebAuthn の検証は library を入れずに書く (kawaz 判断)。
 | 人の認証を前段 (caddy forward_auth / tailscale identity) に寄せる | 前段の構成が利用者ごとに違い、daemon が「誰か」を知る形が揃わない。passkey は daemon 自身が判定でき、前段は透過でよい |
 | instance の永続鍵で token を署名する | 管理物 (鍵の保管・rotate・配布) が増える。record の lookup + `iss` への問い合わせで同じことが鍵なしで出来る |
 | record を `kv` に載せる | `kv` は user role が読み書きでき、token (共有秘密) が漏れ、record の改竄で権限昇格できる |
-| token family を複数 instance が書く | LWW 複製との合流で rotate が消え、再利用検知が誤発火する |
+| credential を endpoint に縛る | LB の FQDN がどの endpoint とも一致せず、HA の裏に入れない。複製した record を隣の instance が使えないので、複製の目的が果たされない (契約 DR-0030) |
 | token を localStorage に置く | XSS 1 つで長期 token が抜ける。httpOnly cookie は same-site で送れる |
 | アクセストークンの `exp` で必ず切断する | 画面が周期的に瞬く。同じ接続で延ばす op を置き、切るのは怠った時だけ |
 | `self` を config に持つ | probe で確定できるものを設定にすると、同じリストを全 instance に配れる性質が壊れる。proxy 越しでも probe は Host を見ないので成立する |
@@ -132,6 +134,6 @@ WebAuthn の検証は library を入れずに書く (kawaz 判断)。
 
 ## 4. 影響
 
-- 契約 major (世代 3): `instance` の意味、`endpoint`、auth 経路 / op / topic → daemon (instance id の生成と保存、自分の endpoint の probe による確定、ルートの末尾照合、CLI `passkey add|list|remove`、`/auth/*`、WebAuthn 検証、cookie、family、`auth_records` の複製、entry token 削除) → webui (登録画面、passkey 認証、refresh、token をメモリに)
-- 設計 §3.1 (WS の entry token → passkey)、§3.6 (永続化に instance id / credential record / token family を足す。id は資源ハンドルでなく identity、auth records は kv と同じく派生値でない。§11.3 の「増やさない」検査もこれに合わせる)、§7.1 (probe による自己識別はそのまま。id を名乗る手順を足す)、§8.2 (`peers` に自分の URL を含める = 全 instance 同じリスト)、§9 (人の認証は本 DR) を書き換える
+- 契約 major (世代 3): `instance` の意味、`endpoint`、auth 経路 / op / topic → daemon (instance id の生成と保存、自分の endpoint の probe による確定、ルートの末尾照合、CLI `user create|add|list|remove|rename` と `user passkey add|list|remove`、`/auth/*`、WebAuthn 検証、cookie、family、`auth.records` の複製、entry token 削除) → webui (登録画面、passkey 認証、refresh、token をメモリに)
+- 設計 §3.1 (WS の entry token → passkey)、§3.6 (永続化に instance id / user record / credential record / 所有 record / token family を足す。id は資源ハンドルでなく identity、auth records は kv と同じく派生値でない。§11.3 の「増やさない」検査もこれに合わせる)、§7.1 (probe による自己識別はそのまま。id を名乗る手順を足す)、§8.2 (`peers` に自分の URL を含める = 全 instance 同じリスト)、§9 (人の認証は本 DR) を書き換える
 - `docs/issue/2026-09-09-mesh-tls-trust-root.md` は「TLS 終端は proxy、daemon の listener は plain のまま」で扱いが変わる (別途更新)
