@@ -245,49 +245,126 @@ const ROOT: Command = {
           run: (args) => supervised("supervise_status", args, true),
         },
         {
-          name: "passkey",
-          summary: "この config home の instance に登録された passkey を扱う",
-          usage: "ccmsg daemon passkey <subcommand>",
-          children: [
-            {
-              name: "add",
-              summary: "登録用 URL と 6 桁コードを 1 組発行する (10 分で失効)",
-              usage: "ccmsg daemon passkey add <unit> [endpoint] [--webui <URL>] [--name <ラベル>]",
-              options: [
-                [
-                  "[endpoint]",
-                  "この instance の公開 base URL (末尾 /)。mesh に載っていない instance だけ指定する",
-                ],
-                [
-                  "--webui <URL>",
-                  "URL で人を送る先の webui の base URL (末尾 /)。既定は endpoint 自身",
-                ],
-                ["--name <ラベル>", "誰宛に発行した URL かの管理ラベル"],
-              ],
-              run: (args) => passkeyAdd(args),
-            },
-            {
-              name: "list",
-              summary: "登録済みの credential を、新しい順に並べる",
-              usage: "ccmsg daemon passkey list [unit]",
-              bare: true,
-              run: (args) => passkeyAsk(args[0], { admin: "passkey_list" }),
-            },
-            {
-              name: "remove",
-              summary: "利用者を消す (credential と token を失効させ、その WS を切る)",
-              usage: "ccmsg daemon passkey remove <sub> [unit]",
-              run: (args) => passkeyRemove(args),
-            },
-          ],
-        },
-        {
           name: "log",
           summary: "instance の daemon.log を出す (--all は行に id を足して多重化)",
           usage: "ccmsg daemon log [name | id | dir] | --all [--follow]",
           options: [["--follow", "書き足される行を待ち続ける (Ctrl-C で終わり)"]],
           bare: true,
           run: (args) => daemonLog(args),
+        },
+      ],
+    },
+    {
+      name: "user",
+      summary: "この instance を持つ人と、その passkey",
+      usage: "ccmsg user <subcommand>",
+      notes: [
+        {
+          title: "identity は人で、instance はその人の持ち物:",
+          docs: [
+            ["<user-id>", "人の id (WebAuthn の user handle そのもの、22 文字)"],
+            [
+              "--all",
+              "この instance が今知っている peers 全部に所有を書く (既定はこの instance だけ)",
+            ],
+            ["--format json|text", "出力の形 (既定は json)"],
+          ],
+        },
+      ],
+      children: [
+        {
+          name: "create",
+          summary: "人を作る URL と 6 桁コードを 1 組発行する (既定 10 分で失効)",
+          usage:
+            "ccmsg user create [--origin <origin>] [--name <ラベル>] [--all] [--ttl <秒>] [--format <形>]",
+          options: [
+            [
+              "--origin <origin>",
+              "人を送る page の origin (末尾スラッシュ無し)。既定はこの instance の endpoint の origin",
+            ],
+            ["--name <ラベル>", "誰宛に発行した URL かの管理ラベル"],
+            ["--all", "作られる人に、知っている peers 全部の所有を書く"],
+            ["--ttl <秒>", "URL の寿命 (既定 600)"],
+            ["--format <形>", "json か text"],
+          ],
+          bare: true,
+          run: (args) => userCreate(args),
+        },
+        {
+          name: "add",
+          summary: "既に居る人に、この instance の所有を足す",
+          usage:
+            "ccmsg user add <user-id> [--all] [--enroll] [--origin <origin>] [--ttl <秒>] [--format <形>]",
+          options: [
+            ["--all", "知っている peers 全部の所有を足す"],
+            [
+              "--enroll",
+              "record を書く代わりに URL と 6 桁を出す (その人をまだ知らない instance 用。本人が既存 passkey で assert する)",
+            ],
+            ["--origin <origin>", "--enroll の時に人を送る page の origin"],
+            ["--ttl <秒>", "--enroll の時の URL の寿命 (既定 600)"],
+            ["--format <形>", "json か text"],
+          ],
+          run: (args) => userAdd(args),
+        },
+        {
+          name: "list",
+          summary: "人を、その passkey と所有 instance と一緒に並べる",
+          usage: "ccmsg user list [user-id] [--format <形>]",
+          bare: true,
+          run: (args) => userList(args),
+        },
+        {
+          name: "remove",
+          summary: "人が持っている instance を手放させる (その人の接続を切る)",
+          usage: "ccmsg user remove <user-id> [--all] [--yes] [--format <形>]",
+          options: [
+            ["--all", "知っている peers 全部の所有を外す"],
+            ["--yes", "確認を省く"],
+          ],
+          run: (args) => userRemove(args),
+        },
+        {
+          name: "rename",
+          summary: "人が自分を見分けるための名前を付け直す (認証には効かない)",
+          usage: "ccmsg user rename <user-id> <display-name> [--format <形>]",
+          run: (args) => userRename(args),
+        },
+        {
+          name: "passkey",
+          summary: "一人の passkey を足す・並べる・消す",
+          usage: "ccmsg user passkey <subcommand>",
+          children: [
+            {
+              name: "add",
+              summary: "既に居る人に passkey を 1 本足す URL と 6 桁を出す",
+              usage:
+                "ccmsg user passkey add <user-id> [--origin <origin>] [--name <ラベル>] [--ttl <秒>] [--format <形>]",
+              options: [
+                [
+                  "--origin <origin>",
+                  "人を送る page の origin。既定はこの instance の endpoint の origin",
+                ],
+                ["--name <ラベル>", "誰宛に発行した URL かの管理ラベル"],
+                ["--ttl <秒>", "URL の寿命 (既定 600)"],
+                ["--format <形>", "json か text"],
+              ],
+              run: (args) => passkeyAdd(args),
+            },
+            {
+              name: "list",
+              summary: "一人の passkey を、新しい順に並べる",
+              usage: "ccmsg user passkey list <user-id> [--format <形>]",
+              run: (args) => passkeyList(args),
+            },
+            {
+              name: "remove",
+              summary: "passkey を 1 本消す",
+              usage: "ccmsg user passkey remove <credential-id> [--yes] [--format <形>]",
+              options: [["--yes", "確認を省く"]],
+              run: (args) => passkeyRemove(args),
+            },
+          ],
         },
       ],
     },
@@ -1024,13 +1101,17 @@ async function serviceOp(
   };
 }
 
-/** The passkey commands, which are asked of the instance itself rather than of
+/** The `user` commands, which are asked of the instance itself rather than of
  * the supervisor.
  *
- * They travel on that instance's unix socket and nowhere else: registration is
- * local by design (DR-0001 §2.2), and reaching that address is what says the
+ * They travel on that instance's unix socket and nowhere else: making a person
+ * is local by design (DR-0001 §2.2), and reaching that address is what says the
  * caller is on the machine. They are not ops of the contract for the same
- * reason — the contract is what reaches an instance over a network. */
+ * reason — the contract is what reaches an instance over a network.
+ *
+ * Which instance is the config home this CLI is pointed at
+ * (`CLAUDE_CONFIG_DIR`), the way every other command here is: an instance is
+ * not named twice. */
 /** One administrative request, on one instance's own unix socket. */
 async function askInstance(target: Target, request: Record<string, unknown>) {
   const conn = await connect(target.paths.socket);
@@ -1050,47 +1131,216 @@ async function askInstance(target: Target, request: Record<string, unknown>) {
   }
 }
 
-async function passkeyAsk(unit: string | undefined, request: Record<string, unknown>) {
-  return await askInstance(
-    targetFor(process.env, (await dirOf(unit)) ?? resolveConfigHome()),
-    request,
-  );
+async function adminAsk(request: Record<string, unknown>) {
+  return await askInstance(targetFor(process.env, resolveConfigHome()), request);
 }
 
-/** `ccmsg daemon passkey add`: one registration URL, and the code that goes
- * with it.
+/** How long an enrolment URL lives, as the operator stated it in seconds. */
+function ttlOf(stated: string | undefined): Record<string, number> {
+  if (stated === undefined) return {};
+  const seconds = Number(stated);
+  if (!Number.isFinite(seconds) || seconds <= 0) {
+    throw new CommandError("invalid_args", `--ttl は秒数です (${stated})`);
+  }
+  return { ttl: Math.floor(seconds * 1000) };
+}
+
+/** What the six digits and the URL are printed as.
+ *
+ * `text` is here because the two halves are meant to travel by different routes
+ * and a person reads them off a terminal to do it: JSON is what a program
+ * consumes, and a human copying a URL into a browser and reading a code out
+ * loud is doing neither (DR-0001 §2.2). */
+function formatted(
+  answer: Record<string, unknown>,
+  format: string | undefined,
+  lines: (body: Record<string, unknown>) => string[],
+): unknown {
+  if (format === undefined || format === "json") return answer;
+  if (format !== "text") {
+    throw new CommandError("invalid_args", `--format は json か text です (${format})`);
+  }
+  process.stdout.write(`${lines(answer).join("\n")}\n`);
+  return undefined;
+}
+
+/** `ccmsg user create`: one enrolment URL, and the code that goes with it.
  *
  * Both are printed here and the code is nowhere else — not in the URL, not in
  * anything the instance hands out — so that holding the URL is not enough to
  * register (DR-0001 §2.2). */
-async function passkeyAdd(args: readonly string[]): Promise<unknown> {
-  const parsed = options(args, ["name", "webui"]);
-  const [unit, endpoint] = parsed.rest;
-  if (unit === undefined) {
+async function userCreate(args: readonly string[]): Promise<unknown> {
+  const parsed = options(args, ["origin", "name", "ttl", "format"], ["all"]);
+  const answer = await adminAsk({
+    admin: "user_create",
+    ...named(parsed, "origin"),
+    ...named(parsed, "name"),
+    ...ttlOf(parsed.named.get("ttl")),
+    ...(parsed.flags.has("all") ? { all: true } : {}),
+  });
+  return formatted(answer, parsed.named.get("format"), enrolmentLines);
+}
+
+async function userAdd(args: readonly string[]): Promise<unknown> {
+  const parsed = options(args, ["origin", "ttl", "name", "format"], ["all", "enroll"]);
+  const [user] = parsed.rest;
+  if (user === undefined) {
+    throw new CommandError("invalid_args", "使い方: ccmsg user add <user-id> [--all] [--enroll]");
+  }
+  if (parsed.flags.has("enroll") && parsed.flags.has("all")) {
+    // The URL is spent wherever the browser lands, which may be a peer that
+    // never heard what this terminal was asked for. The grantings `--all` would
+    // write are this instance's knowledge and do not travel with the URL, so
+    // the two cannot be honoured together; `user add <user-id> --all` writes
+    // them directly, which is what it is for (contract, DR-0030 §4).
+    throw new CommandError("invalid_args", "--enroll と --all は一緒には使えません");
+  }
+  const answer = await adminAsk({
+    admin: "user_add",
+    user,
+    ...(parsed.flags.has("all") ? { all: true } : {}),
+    ...(parsed.flags.has("enroll") ? { enroll: true } : {}),
+    ...named(parsed, "origin"),
+    ...named(parsed, "name"),
+    ...ttlOf(parsed.named.get("ttl")),
+  });
+  return formatted(answer, parsed.named.get("format"), (body) =>
+    body["url"] === undefined
+      ? [`${String(body["user"])} に所有を足しました: ${(body["granted"] as string[]).join(", ")}`]
+      : enrolmentLines(body),
+  );
+}
+
+async function userList(args: readonly string[]): Promise<unknown> {
+  const parsed = options(args, ["format"]);
+  const [user] = parsed.rest;
+  const answer = await adminAsk({ admin: "user_list", ...(user === undefined ? {} : { user }) });
+  return formatted(answer, parsed.named.get("format"), (body) =>
+    (body["users"] as AccountLine[]).map(
+      (account) =>
+        `${account.user.user}${account.user.display_name === undefined ? "" : ` (${account.user.display_name})`}  passkey ${String(account.credentials.length)}  instance ${String(account.instances.length)}`,
+    ),
+  );
+}
+
+async function userRemove(args: readonly string[]): Promise<unknown> {
+  const parsed = options(args, ["format"], ["all", "yes"]);
+  const [user] = parsed.rest;
+  if (user === undefined) {
+    throw new CommandError("invalid_args", "使い方: ccmsg user remove <user-id> [--all] [--yes]");
+  }
+  // Letting an instance go closes that person's connections to it, and a person
+  // who let go of their last one has no way back in but a new enrolment URL. So
+  // it is said twice, once by the operator (DR-0030 §3).
+  if (!parsed.flags.has("yes")) {
     throw new CommandError(
       "invalid_args",
-      "使い方: ccmsg daemon passkey add <unit> [endpoint] [--webui <URL>] [--name <ラベル>]",
+      `${user} の所有を外すと、その人の接続が切れます。続けるなら --yes を付けてください`,
     );
   }
-  const name = parsed.named.get("name");
-  // Where the URL sends the person. An instance that serves its own web UI
-  // needs none of this; one whose UI is published elsewhere names it, and the
-  // credential is made at that page and usable from nowhere else (DR-0029).
-  const webui = parsed.named.get("webui");
-  return await passkeyAsk(unit, {
-    admin: "passkey_add",
-    ...(endpoint === undefined ? {} : { endpoint }),
-    ...(webui === undefined ? {} : { webui }),
-    ...(name === undefined ? {} : { name }),
+  const answer = await adminAsk({
+    admin: "user_remove",
+    user,
+    ...(parsed.flags.has("all") ? { all: true } : {}),
   });
+  return formatted(answer, parsed.named.get("format"), (body) => [
+    `${String(body["user"])} の所有を外しました: ${(body["released"] as string[]).join(", ")}`,
+  ]);
+}
+
+async function userRename(args: readonly string[]): Promise<unknown> {
+  const parsed = options(args, ["format"]);
+  const [user, name] = parsed.rest;
+  if (user === undefined || name === undefined) {
+    throw new CommandError("invalid_args", "使い方: ccmsg user rename <user-id> <display-name>");
+  }
+  const answer = await adminAsk({ admin: "user_rename", user, display_name: name });
+  return formatted(answer, parsed.named.get("format"), (body) => [
+    `${user} は ${String(body["display_name"])} になりました`,
+  ]);
+}
+
+/** `ccmsg user passkey add`: an enrolment URL for a person who already exists.
+ *
+ * The same ceremony as making them, against the handle they already have: what
+ * grows is the number of passkeys, and the person is one either way (contract,
+ * DR-0030 §4). */
+async function passkeyAdd(args: readonly string[]): Promise<unknown> {
+  const parsed = options(args, ["origin", "name", "ttl", "format"]);
+  const [user] = parsed.rest;
+  if (user === undefined) {
+    throw new CommandError("invalid_args", "使い方: ccmsg user passkey add <user-id>");
+  }
+  const answer = await adminAsk({
+    admin: "user_create",
+    user,
+    ...named(parsed, "origin"),
+    ...named(parsed, "name"),
+    ...ttlOf(parsed.named.get("ttl")),
+  });
+  return formatted(answer, parsed.named.get("format"), enrolmentLines);
+}
+
+async function passkeyList(args: readonly string[]): Promise<unknown> {
+  const parsed = options(args, ["format"]);
+  const [user] = parsed.rest;
+  if (user === undefined) {
+    throw new CommandError("invalid_args", "使い方: ccmsg user passkey list <user-id>");
+  }
+  const answer = await adminAsk({ admin: "passkey_list", user });
+  return formatted(answer, parsed.named.get("format"), (body) =>
+    (body["credentials"] as { credential_id: string; origin: string; device_label?: string }[]).map(
+      (record) =>
+        `${record.credential_id}  ${record.origin}${record.device_label === undefined ? "" : `  ${record.device_label}`}`,
+    ),
+  );
 }
 
 async function passkeyRemove(args: readonly string[]): Promise<unknown> {
-  const [sub, unit] = args;
-  if (sub === undefined) {
-    throw new CommandError("invalid_args", "使い方: ccmsg daemon passkey remove <sub> [unit]");
+  const parsed = options(args, ["format"], ["yes"]);
+  const [credentialId] = parsed.rest;
+  if (credentialId === undefined) {
+    throw new CommandError("invalid_args", "使い方: ccmsg user passkey remove <credential-id>");
   }
-  return await passkeyAsk(unit, { admin: "passkey_remove", sub });
+  if (!parsed.flags.has("yes")) {
+    throw new CommandError(
+      "invalid_args",
+      "passkey を消すと、その端末からは入れなくなります。続けるなら --yes を付けてください",
+    );
+  }
+  return await adminAsk({ admin: "passkey_remove", credential_id: credentialId });
+}
+
+/** One account as `user list` answers it. */
+interface AccountLine {
+  readonly user: { readonly user: string; readonly display_name?: string };
+  readonly credentials: readonly unknown[];
+  readonly instances: readonly unknown[];
+}
+
+/** The two halves of an enrolment, as a terminal prints them. */
+function enrolmentLines(body: Record<string, unknown>): string[] {
+  const issued = body as {
+    url?: string;
+    code?: string;
+    user?: string;
+    granted?: readonly string[];
+  };
+  return [
+    `URL : ${issued.url ?? ""}`,
+    `code: ${issued.code ?? ""}`,
+    ...(issued.user === undefined ? [] : [`user: ${issued.user}`]),
+    ...(issued.granted !== undefined && issued.granted.length > 0
+      ? [`所有: ${issued.granted.join(", ")}`]
+      : []),
+    "URL は browser へ、code は別の経路で本人に渡してください。",
+  ];
+}
+
+/** One named option, where it was stated. */
+function named(parsed: { named: Map<string, string> }, name: string): Record<string, string> {
+  const value = parsed.named.get(name);
+  return value === undefined ? {} : { [name]: value };
 }
 
 /** `ccmsg daemon log`: what one instance wrote down, or what all of them did.
