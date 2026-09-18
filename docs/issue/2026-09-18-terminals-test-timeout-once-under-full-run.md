@@ -23,6 +23,8 @@ origin: 自リポ TODO
 
 2026-09-18、DR-0030 の daemon 反映中に観測 (auth とは無関係)。全体テストで 1 回だけ `test/terminals.test.ts` の "say a terminal opened and closed, and say so before they exist" が 5004ms で timeout した。その後 3 回連続実行と単体実行では通っている。原因は未特定 (調査未完了)。
 
+2026-09-18、auth.signout 実装中にも全体走行 (`just ci`) で 1 回だけ 1 fail を観測した。テスト名は取得できず (tail のみ確認、ログ未保存)。以後 `bun test` 3 連続 + `just ci` 1 回の計 4 走行はいずれも 1215 pass 0 fail。同型の単発 timeout かは未確認 (調査未完了)。
+
 ## 背景
 
 test-integrity により flaky 扱いにしない。待っている事象 (hyoui socket dir の `fs.watch` の発火、terminals topic の snapshot) が固定 timeout に頼っていないか確認し、事象で待つ形に直す。
