@@ -20,13 +20,9 @@
 
 ## 裁定待ち
 
-### CU-Q1〜Q6 契約 DR-0030 (identity はユーザ、instance は所有物、💭 提案) の未決
+### CU-Q2〜Q6 契約 DR-0030 (identity はユーザ、instance は所有物、💭 提案) の未決
 
 契約 `docs/decisions/DR-0030-identity-is-a-user-who-owns-instances.md` §未決。各項の a が統括推し。
-
-CU-Q1 refresh の rotate をどの instance でもできるようにするか (HA で発行 instance が落ちている時)
-- [ ] a: 所有者の instance ならどこでも rotate できる。悪い面: 並行 rotate の世代競合を LWW で決めると、消えた側の提示が replay と区別できず family の失効が誤発火しうる (猶予中の前世代を複数許して緩めると replay 検知が弱まる)
-- [ ] b: 現行 (`iss` だけが書き、他は転送)。`iss` が落ちている間は refresh できず再 assert (UV) に落ちる
 
 CU-Q2 一覧 op の名前
 - [ ] a: `auth.account.read` (ユーザ / passkey / 所有 instance の 3 つを答えるので、どれか 1 つを名前にしない)
