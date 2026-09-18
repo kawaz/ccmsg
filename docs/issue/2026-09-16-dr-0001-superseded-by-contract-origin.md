@@ -43,18 +43,22 @@ origin: 契約 v2.2.0 反映作業
 
 DR-0029 は archive され、契約側の置き換え先は DR-0030 (identity はユーザ、instance はその人の所有物) になった。以下は DR-0030 との整合を基準にした条件。
 
-- [x] DR-0001 §2.2 が「人を作るのはローカルからしかできない」に更新されている (CLI は `ccmsg user create` / `user add` / `user passkey add`、URL は `<origin>/#enroll=<jwt>`、claims は EnrollClaims、endpoint claim は宛先で照合しない、所有 record は URL 発行時に書く)
+- [x] DR-0001 §2.2 が「人を作るのはローカルからしかできない」に更新されている (CLI は `ccmsg user create` / `user add` / `user passkey add`、URL は `<origin>/#enroll=<jwt>`、claims は EnrollClaims、endpoint claim は宛先で照合しない、所有 record を書くのは ceremony が成立した時で書くのは着弾した instance、どの instance を渡すかは URL を出した端末が決め claims の `instances` が運ぶ、`granted_by` は URL を出した instance)
 - [x] §2.3 が「credential の束縛は origin 1 つ、instance は所有 record が答える」に更新され、置き換え先が DR-0030 と明記されている
 - [x] §2.4 の単一 writer が削除され、「所有されているどの instance でも rotate できる、転送しない、負け側は auth_invalid で family は失効させない、失効は retired 一致のみ」に更新されている
 - [x] refresh cookie 名が `__Secure-ccmsg-<sha256(user id) 先頭16hex>` (instance を含めない) に更新されている
-- [x] CORS が 2 通り (登録系は全 origin / assert・refresh は所有者たちの credential の origin) に更新されている
+- [x] CORS が 2 通り (`challenge` と `register` は全 origin、`enroll` / `assert` / `refresh` はこの instance が持つ credential record の origin、所有では絞らない) に更新されている
 - [x] §2.5/§2.6 の sub 単位 tombstone が「key が対象を言う 4 種 (user / credential / ownership / family)」に更新され、所有の granting id と足し直しの規則が追記されている
 - [x] §2.9/§2.10 の op 名が現行 (auth.enroll / auth.account.read / auth.ownership.remove / auth.credential.remove / auth.resolve、auth.rotate 廃止) に更新されている
 - [x] 現役文書 (DR-0001) から archive された DR-0029 への名指し参照が残っていない
-- [ ] WS upgrade が token の family が持つ `origin` と `Origin` ヘッダを照合し、所有者チェックも行う実装になっている (DR-0001 §90 相当、daemon 実装側の確認が必要)
-- [ ] cookie 属性 (`SameSite` を same-site/cross-site で決める、DR-0028 相当) の組み立てが daemon 実装に反映されている
-- [ ] 旧 record の扱いが裁定通り (移行せず無効、登録し直す手順を runbook に) 実装・記載されている
-- [ ] 上記の未実装項目が DR-0001 との整合を保ったまま同じ作業の中で解消されている
+- [x] WS upgrade が所有を照らす実装になっている (DR-0001 §90 相当)
+- [x] cookie 属性 (`SameSite` を same-site/cross-site で決める、DR-0028 相当) の組み立てが daemon 実装に反映されている
+- [x] 旧 record の扱いが裁定通り (契約の形でない record は file からも peer からも accept しない) 実装・記載されている
+- [x] 上記の項目が DR-0001 との整合を保ったまま同じ作業の中で解消されている
+- [x] `auth_in_use` の判定が実装されている
+- [x] rotate の writer と競合の扱いが実装されている
+- [x] 所有の再付与と tombstone が実装されている
+- [x] `user` CLI 一式が実装されている
 
 ## TODO
 
