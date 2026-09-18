@@ -20,6 +20,7 @@ import {
   AuthRecords,
   authHandlers,
   claimsOf,
+  credentialKey,
   cookieName,
   cookiePath,
   handleAdmin,
@@ -95,19 +96,21 @@ async function serving(
  *
  * The two headers a browser writes and a page's script cannot are stated as a
  * browser states them: the origin the page was served from, and a fetch that
- * did not come from outside a site (contract, DR-0028). */
+ * did not come from outside a site (contract, DR-0028). `null` for either is a
+ * request that carries no such header at all. */
 async function post(
   at: { instance: Instance; origin: string },
   route: string,
   body: unknown,
-  init: { cookie?: string; origin?: string; site?: string | null } = {},
+  init: { cookie?: string; origin?: string | null; site?: string | null } = {},
 ): Promise<Response> {
   const site = init.site === undefined ? "same-origin" : init.site;
+  const origin = init.origin === undefined ? at.origin : init.origin;
   return await fetch(`http://${at.instance.http[0] as string}/auth/${route}`, {
     method: "POST",
     headers: {
       "content-type": "application/json",
-      origin: init.origin ?? at.origin,
+      ...(origin === null ? {} : { origin }),
       ...(site === null ? {} : { "sec-fetch-site": site }),
       ...(init.cookie === undefined ? {} : { cookie: init.cookie }),
     },
@@ -136,6 +139,7 @@ async function registered(
     backup?: { eligible: boolean; state: boolean };
     user?: UserId;
     label?: string;
+    name?: string;
     displayName?: string;
   } = {},
 ) {
@@ -144,6 +148,7 @@ async function registered(
     endpoint: servedAt(at),
     ...(options.user === undefined ? {} : { user: options.user }),
     ...(options.label === undefined ? {} : { label: options.label }),
+    ...(options.name === undefined ? {} : { name: options.name }),
   });
   const user = issued.user as UserId;
   const authenticator = new SoftAuthenticator(issued.rp_id);
@@ -441,17 +446,29 @@ describe("making a person (contract, DR-0030 §4)", () => {
     // person must not see in that list. What the operator wrote is the starting
     // point, and it is apart from the note about who the URL was handed to.
     const at = await serving();
-    const named = await registered(at, { label: "for the laptop" });
+    const named = await registered(at, { name: "kawaz", label: "handed to kawaz in person" });
     const claims = claimsOf(named.issued.url.split("#enroll=")[1] as string);
-    expect(claims.display_name).toBe("for the laptop");
-    expect(claims.issued_label).toBe("for the laptop");
-    expect(at.instance.auth.records.user(named.user)?.display_name).toBe("for the laptop");
-    // The note stays on the passkey as the note it is.
-    expect(at.instance.auth.credentials(named.user)[0]?.issued_label).toBe("for the laptop");
+    // Two values, and they stay two: one is what the person is called, the
+    // other an administrator's note about who the URL went to. A single field
+    // doing both would show the note to the person as their own name.
+    expect(claims.display_name).toBe("kawaz");
+    expect(claims.issued_label).toBe("handed to kawaz in person");
+    expect(at.instance.auth.records.user(named.user)?.display_name).toBe("kawaz");
+    // The note stays on the passkey as the note it is, and nowhere else.
+    expect(at.instance.auth.credentials(named.user)[0]?.issued_label).toBe(
+      "handed to kawaz in person",
+    );
+
+    // A note with no name suggested leaves the name unsaid: the note is not
+    // a fallback for it.
+    const noted = await serving();
+    const memo = await registered(noted, { label: "the spare key" });
+    expect(claimsOf(memo.issued.url.split("#enroll=")[1] as string).display_name).toBeUndefined();
+    expect(noted.instance.auth.records.user(memo.user)?.display_name).toBe(PERSON_LABEL);
 
     // What the person settled on the form is what stands over the URL's guess.
     const said = await serving();
-    const settled = await registered(said, { label: "for the laptop", displayName: "kawaz" });
+    const settled = await registered(said, { name: "guessed", displayName: "kawaz" });
     expect(said.instance.auth.records.user(settled.user)?.display_name).toBe("kawaz");
 
     // Nothing said anywhere, and the short default stands rather than an empty
@@ -640,7 +657,9 @@ describe("taking an instance as one's own (contract, DR-0030 §4)", () => {
     expect(await enrol()).toBeUndefined();
     expect(next.records.owns(user, next.self)).toBe(true);
     const [granting] = next.records.grantsOf(user, next.self);
-    expect(granting?.body.granted_by).toEqual({ kind: "user", user });
+    // The instance that issued the URL, as a registration's is: what the list
+    // says is where the decision was made, not who happened to answer.
+    expect(granting?.body.granted_by).toEqual({ kind: "instance", instance: next.self });
     // No passkey was made: an instance is not something a credential is for.
     expect(next.records.credentials()).toHaveLength(1);
 
@@ -811,7 +830,7 @@ describe("authenticating and the tokens that follow (§2.5; contract, DR-0030 §
 });
 
 describe("the origins this instance answers for (contract, DR-0030 §9)", () => {
-  test("the enrolment routes answer any page, and the rest only the pages its owners made passkeys at", async () => {
+  test("making a person answers any page, and the rest only the pages this instance holds a passkey at", async () => {
     const at = await serving();
     await registered(at);
     const stranger = "http://elsewhere.example";
@@ -822,14 +841,17 @@ describe("the origins this instance answers for (contract, DR-0030 §9)", () => 
           headers: { origin },
         })
       ).status;
-    // Behind a load balancer the page's first POST lands wherever it lands,
-    // and the instance it lands on has no passkey at that origin yet: what
-    // guards an enrolment is the token, the digits and the issuer's count of
-    // tries, so a page nobody has registered from is let through to them.
-    for (const route of ["challenge", "register", "enroll"]) {
+    // Making a person begins where no passkey names that origin yet, so there
+    // is no set to compare the caller against: what guards it is the token, the
+    // digits and the issuer's count of tries.
+    for (const route of ["challenge", "register"]) {
       expect([route, await preflight(route, stranger)]).toEqual([route, 204]);
     }
-    for (const route of ["assert", "refresh"]) {
+    // The rest are answered only for pages this instance holds a passkey at.
+    // `enroll` is among them: it is answerable only where the credential has
+    // already replicated, so the origin to compare against is exactly what such
+    // an instance has.
+    for (const route of ["enroll", "assert", "refresh"]) {
       expect([route, await preflight(route, stranger)]).toEqual([route, 403]);
       expect([route, await preflight(route, at.origin)]).toEqual([route, 204]);
     }
@@ -842,6 +864,7 @@ describe("the origins this instance answers for (contract, DR-0030 §9)", () => 
     expect(((await registration.json()) as { error: { code: string } }).error.code).toBe(
       "invalid_args",
     );
+    expect((await post(at, "enroll", {}, { origin: stranger })).status).toBe(403);
     expect((await post(at, "assert", {}, { origin: stranger })).status).toBe(403);
     expect((await post(at, "refresh", {}, { origin: stranger })).status).toBe(403);
   });
@@ -860,12 +883,14 @@ describe("the origins this instance answers for (contract, DR-0030 §9)", () => 
     expect(answer.headers.get("access-control-allow-credentials")).toBe("true");
   });
 
-  test("an origin enters the set with its first passkey, and only an owner's passkey counts", async () => {
+  test("an origin enters the set with its first passkey, and ownership does not narrow it", async () => {
     const { auth } = unit({ endpoint: ENDPOINT });
     expect(auth.knownOrigins()).toEqual([]);
-    // A passkey of somebody who does not own this instance is no reason to
-    // answer their page: the set is the owners' origins.
-    await auth.records.write("credential/stranger", {
+    // A passkey that arrived by replication puts its page in the set even
+    // though nobody owns this instance yet. That is the point: an enrolment is
+    // answered at exactly such an instance, and a set narrowed by ownership
+    // would refuse its preflight.
+    await auth.records.write(credentialKey("stranger"), {
       kind: "credential",
       user: OTHER_USER,
       credential_id: "stranger",
@@ -873,17 +898,21 @@ describe("the origins this instance answers for (contract, DR-0030 §9)", () => 
       origin: "https://elsewhere.example",
       registered_at: 1,
     });
-    expect(auth.knownOrigins()).toEqual([]);
-    await auth.grant(OTHER_USER, [SELF], { kind: "instance", instance: SELF });
     expect(auth.knownOrigins()).toEqual(["https://elsewhere.example"]);
-    // Nothing is added by issuing a URL: the origin it names is one the
-    // enrolment routes already answer, and the others have nothing to compare
-    // a page there with until a passkey exists.
+    // Whether the person may enter is the ownership's answer, and it is asked
+    // elsewhere: letting the instance go leaves the page known and the door
+    // shut.
+    await auth.grant(OTHER_USER, [SELF], { kind: "instance", instance: SELF });
+    await auth.revoke(OTHER_USER, SELF);
+    expect(auth.knownOrigins()).toEqual(["https://elsewhere.example"]);
+    expect(auth.records.owns(OTHER_USER, SELF)).toBe(false);
+    // Nothing is added by issuing a URL: the origin it names is one `register`
+    // already answers, and the rest have nothing to compare a page there with
+    // until a passkey exists.
     await auth.issue({ purpose: "create_user", origin: "https://ui.example.test" });
     expect(auth.knownOrigins()).toEqual(["https://elsewhere.example"]);
-    // And the set follows the ownership: letting the instance go takes the
-    // page with it, and removing the passkey does the same.
-    await auth.revoke(OTHER_USER, SELF);
+    // Removing the last passkey naming it is the one way a page leaves.
+    await auth.removeCredential(OTHER_USER, "stranger");
     expect(auth.knownOrigins()).toEqual([]);
   });
 
@@ -1031,11 +1060,14 @@ describe("letting an instance go, and taking it again (contract, DR-0030 §3)", 
     expect(auth.records.removed(before?.key ?? "")).toBe(true);
     // The tokens the person holds open nothing here now, and neither does the
     // passkey — which still exists, the person having lost an instance and not
-    // a key. Over HTTP the page is refused before anything is read, no owner
-    // having a passkey there any more; the op itself refuses the assertion.
+    // a key. The page is still one this instance knows, the passkey naming it
+    // being right there, so the request is read; what refuses it is the
+    // ownership, which is the question CORS was never asked.
     expect(auth.admits(session.access.value)).toBeUndefined();
     expect(auth.records.credential(authenticator.credentialIdUrl)).toBeDefined();
-    expect((await asserting(at, authenticator)).status).toBe(403);
+    const turned = await asserting(at, authenticator);
+    expect(turned.status).toBe(401);
+    expect(((await turned.json()) as { error: { code: string } }).error.code).toBe("auth_invalid");
     const direct = auth.challenge();
     expect(
       await refusal(
@@ -1070,7 +1102,7 @@ describe("letting an instance go, and taking it again (contract, DR-0030 §3)", 
     await connected(at, next.access.value);
   });
 
-  test("a removal arriving from a peer closes the connection here, and losing another instance does not", async () => {
+  test("any mark a peer wrote about a person closes the connections they hold here", async () => {
     const { peers, settled } = linked([
       { self: SELF, endpoint: ENDPOINT },
       { self: OTHER_INSTANCE, endpoint: "https://next.example/" },
@@ -1091,19 +1123,68 @@ describe("letting an instance go, and taking it again (contract, DR-0030 §3)", 
     );
     expect(here.heldCounts.connections).toBe(1);
 
-    // The other instance let go, from over there: nothing here changes.
+    // A granting of the *other* instance, marked over there. The person still
+    // owns this one, and the connection still goes: a mark is read as being
+    // about the person rather than about the instance it named, because the
+    // one that matters most — a family failed where a replay was seen — says
+    // nothing about ownership at all. Signing in again is the cost, and it is
+    // one verification.
     await next.revoke(TEST_USER, next.self);
-    await settled();
-    expect(closed).toBe(false);
-    expect(here.heldCounts.connections).toBe(1);
-
-    // This one let go, from over there: the connection cannot outlive the
-    // granting it was admitted on.
-    await next.revoke(TEST_USER, here.self);
     await settled();
     expect(closed).toBe(true);
     expect(here.heldCounts.connections).toBe(0);
+    // The token itself is untouched: what they lost was a granting elsewhere.
+    expect(here.admits(minted.session.access.value)?.user).toBe(TEST_USER);
+
+    // And the granting this connection was admitted on, marked over there: the
+    // token stops admitting anybody too.
+    await next.revoke(TEST_USER, here.self);
+    await settled();
     expect(here.admits(minted.session.access.value)).toBeUndefined();
+  });
+
+  test("a family failed where the replay was seen closes the connections it opened here", async () => {
+    // The replay is detected at whichever instance the retired value was
+    // presented to, and behind a load balancer that is not where the pages are
+    // connected. A mark that only revoked tokens would leave the stolen
+    // session live on every peer for the rest of the access token's life,
+    // which is the whole of what replicating the mark is for.
+    let now = 2_000_000;
+    const { peers, settled } = linked(
+      [
+        { self: SELF, endpoint: ENDPOINT },
+        { self: OTHER_INSTANCE, endpoint: "https://next.example/" },
+      ],
+      { now: () => now },
+    );
+    const [here, next] = peers as [Auth, Auth];
+    await knownAt(here, ORIGIN);
+    await here.grant(TEST_USER, [next.self], { kind: "instance", instance: here.self });
+    const minted = await here.mint(TEST_USER, ORIGIN);
+    await settled();
+    const conn = new TestConn();
+    let closed = false;
+    conn.onClose(() => {
+      closed = true;
+    });
+    here.hold(
+      conn,
+      here.admits(minted.session.access.value) as { user: UserId; expiresAt: number },
+    );
+
+    // Rotated here, replayed over there, past the grace that answers a retry.
+    now += 1;
+    await here.refreshToken(minted.refresh.value);
+    await settled();
+    now += PREVIOUS_GRACE_MS + 1;
+    expect(await refusal(next.refreshToken(minted.refresh.value))).toBe("auth_invalid");
+    await settled();
+
+    expect(closed).toBe(true);
+    expect(here.heldCounts.connections).toBe(0);
+    expect(here.admits(minted.session.access.value)).toBeUndefined();
+    // The person still owns this instance: what ended was the family.
+    expect(here.records.owns(TEST_USER, here.self)).toBe(true);
   });
 });
 
@@ -2149,6 +2230,147 @@ describe("a credential is good from one origin (contract, DR-0030 §2)", () => {
   });
 });
 
+describe("the two headers every route that decides an identity is held to (contract, DR-0030 §9)", () => {
+  test("register, enroll, assert and refresh each refuse a page that states no origin, another page's, or a fetch site outside the three", async () => {
+    // Laid out route by route rather than shown on one of them: the gate is
+    // one piece of code in the carrier, and what could be wrong is a route
+    // that reaches the op without passing it, which only the row for that
+    // route would catch.
+    const at = await serving();
+    const { user, authenticator, response } = await registered(at);
+    // A page an owner made a passkey at, so a request from it reaches the op:
+    // what is observed is the op holding the header to its own origin, and not
+    // the preflight set turning the page away before that.
+    const elsewhere = "https://ui.example";
+    await knownAt(at.instance.auth, elsewhere, OTHER_USER);
+
+    // One body each route takes, made once. Nothing a refusal reaches spends
+    // the URL, the challenge or the cookie, so the same body answered with the
+    // headers a browser would have written is what shows the body was good
+    // and the headers were what refused it.
+    const challenge = async () =>
+      (await (await post(at, "challenge", {})).json()) as {
+        challenge: string;
+        issuer: string;
+        expires_at: number;
+      };
+    const newcomer = await at.instance.auth.issue({
+      purpose: "create_user",
+      endpoint: servedAt(at),
+    });
+    const first = await challenge();
+    const register = {
+      token: tokenOf(newcomer.url),
+      code: newcomer.code,
+      credential: await new SoftAuthenticator(newcomer.rp_id).create({
+        challenge: first.challenge,
+        origin: at.origin,
+        userId: newcomer.user,
+      }),
+    };
+    const adding = await at.instance.auth.issue({ purpose: "add_owner", endpoint: servedAt(at) });
+    const second = await challenge();
+    const enroll = {
+      token: tokenOf(adding.url),
+      code: adding.code,
+      challenge: second,
+      credential: await authenticator.get({ challenge: second.challenge, origin: at.origin }),
+    };
+    const third = await challenge();
+    const assert = {
+      challenge: third,
+      credential: await authenticator.get({ challenge: third.challenge, origin: at.origin }),
+    };
+    const cookie = mintedCookie(response, cookieName(user));
+
+    const bodies: Record<string, unknown> = { register, enroll, assert, refresh: {} };
+    const gates: [string, { origin?: string | null; site?: string | null }][] = [
+      ["no Origin", { origin: null }],
+      ["the Origin of another page", { origin: elsewhere }],
+      ["no Sec-Fetch-Site", { site: null }],
+      ["Sec-Fetch-Site: none", { site: "none" }],
+      ["a Sec-Fetch-Site outside the specification", { site: "same-domain" }],
+    ];
+    for (const [route, body] of Object.entries(bodies)) {
+      for (const [gate, init] of gates) {
+        const answer = await post(at, route, body, { cookie, ...init });
+        const code = ((await answer.json()) as { error?: { code?: string } }).error?.code;
+        // The one answer every gate gives, saying that the exchange was
+        // refused and not which header refused it.
+        expect([route, gate, answer.status, code]).toEqual([route, gate, 401, "auth_invalid"]);
+      }
+      expect([route, (await post(at, route, body, { cookie })).status]).toEqual([route, 200]);
+    }
+
+    // `auth.challenge` is not among them: it is asked before there is anything
+    // to compare a caller with, and what it hands out is spendable only at its
+    // issuer against one of the four.
+    expect((await post(at, "challenge", {}, { origin: null, site: "none" })).status).toBe(200);
+  });
+
+  test("an enrolment holds the Origin to the URL's page, and the ceremony to the passkey's", async () => {
+    // The two columns are different for this one op (contract, DR-0030 §9):
+    // the URL sends the person to the instance's own page, and the passkey they
+    // answer with lives at the page it was made at, which may be another.
+    const { peers, settled } = linked([
+      { self: SELF, endpoint: ENDPOINT },
+      { self: OTHER_INSTANCE, endpoint: "https://next.example/" },
+    ]);
+    const [here, next] = peers as [Auth, Auth];
+    const { user, authenticator } = await registeredAt(here);
+    await settled();
+    expect(next.records.owns(user, next.self)).toBe(false);
+    // The second instance's page is one it answers CORS for once somebody has
+    // a passkey there; the person enrolling is not that somebody.
+    await knownAt(next, "https://next.example", OTHER_USER);
+
+    const issued = await next.issue({ purpose: "add_owner" });
+    expect(issued.origin).toBe("https://next.example");
+    const challenge = next.challenge();
+    const body = JSON.stringify({
+      token: tokenOf(issued.url),
+      code: issued.code,
+      challenge,
+      // Signed at the page the passkey was made at, which is the first
+      // instance's and not the page the URL sent the person to.
+      credential: await authenticator.get({ challenge: challenge.challenge, origin: ORIGIN }),
+    });
+    const enroll = async (origin: string): Promise<Response> =>
+      (await handleAuth(
+        new Request("https://next.example/auth/enroll", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            origin,
+            "sec-fetch-site": "same-origin",
+          },
+          body,
+        }),
+        { auth: next, self: OTHER_INSTANCE },
+      )) as Response;
+
+    // The page the passkey lives at is not the page the URL is for, however
+    // much the ceremony agrees with it — and nothing is spent by the refusal.
+    const fromThePasskeysPage = await enroll(ORIGIN);
+    expect(fromThePasskeysPage.status).toBe(401);
+    expect(((await fromThePasskeysPage.json()) as { error: { code: string } }).error.code).toBe(
+      "auth_invalid",
+    );
+    expect(next.records.owns(user, next.self)).toBe(false);
+
+    // From the page the URL sent the person to, with the same assertion signed
+    // at the passkey's own page, the instance is theirs.
+    const fromTheUrlsPage = await enroll("https://next.example");
+    expect(fromTheUrlsPage.status).toBe(200);
+    expect(((await fromTheUrlsPage.json()) as { user: string }).user).toBe(user);
+    expect(next.records.owns(user, next.self)).toBe(true);
+    expect(next.records.grantsOf(user, next.self)[0]?.body.granted_by).toEqual({
+      kind: "instance",
+      instance: next.self,
+    });
+  });
+});
+
 describe("reading and pruning one's own account (contract, DR-0030 §3, §8)", () => {
   test("the account is the person, their passkeys without keys, and their instances", async () => {
     const at = await serving();
@@ -2258,7 +2480,8 @@ describe("what the command line does to people (DR-0001 §2.2)", () => {
       admin: "user_create",
       request_id: "1",
       endpoint: servedAt(at),
-      name: "for the laptop",
+      name: "kawaz",
+      label: "for the laptop",
     });
     const user = created["user"] as UserId;
     expect(created).toMatchObject({ purpose: "create_user", instances: [at.instance.self] });
@@ -2316,6 +2539,52 @@ describe("what the command line does to people (DR-0001 §2.2)", () => {
     // Nothing left to release is said so, rather than answered as done.
     const nothing = await handleAdmin({ auth }, { admin: "user_remove", request_id: "7", user });
     expect(nothing).toMatchObject({ kind: "error", response: { error: { code: "not_found" } } });
+  });
+
+  test("an instance is handed over without a URL only to somebody this instance knows", async () => {
+    // A granting for a person no user record answers for would be written
+    // down and carried to every peer, admitting nobody and reading like one
+    // that means something (contract, DR-0030 §4). The mesh is what brings
+    // the person, so the same request is refused before it arrives and
+    // answered after.
+    const { peers, settled } = linked([
+      { self: SELF, endpoint: ENDPOINT },
+      { self: OTHER_INSTANCE, endpoint: "https://next.example/" },
+    ]);
+    const [here, next] = peers as [Auth, Auth];
+    const add = async (at: Auth, user: UserId, all?: boolean) =>
+      await handleAdmin(
+        { auth: at },
+        { admin: "user_add", request_id: "1", user, ...(all === undefined ? {} : { all }) },
+      );
+
+    const unknown = await add(next, TEST_USER);
+    expect(unknown).toMatchObject({ kind: "error", response: { error: { code: "not_found" } } });
+    // `--all` walks the peers, and finds nobody to write about at any of them.
+    expect(await add(next, TEST_USER, true)).toMatchObject({
+      kind: "error",
+      response: { error: { code: "not_found" } },
+    });
+    expect(next.records.ownerships()).toEqual([]);
+    await settled();
+    expect(here.records.ownerships()).toEqual([]);
+
+    // The person made at the first instance reaches the second by replication,
+    // and from then on the granting is one line written where they are asked
+    // for.
+    const { user } = await registeredAt(here);
+    await settled();
+    expect(next.records.user(user)).toBeDefined();
+    expect(next.records.owns(user, next.self)).toBe(false);
+    expect(await add(next, user)).toMatchObject({
+      kind: "reply",
+      response: { user, granted: [next.self] },
+    });
+    expect(next.records.owns(user, next.self)).toBe(true);
+    // Somebody known who already owns the instance is answered, and nothing
+    // widens: the granting is held or not held.
+    expect(await add(next, user)).toMatchObject({ kind: "reply", response: { user, granted: [] } });
+    expect(next.records.grantsOf(user, next.self)).toHaveLength(1);
   });
 
   test("a passkey removed from the terminal answers nothing afterwards, and its origin leaves with it", async () => {

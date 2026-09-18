@@ -728,9 +728,11 @@ describe("the records the mesh shares admit a person where they are an owner (co
     const minted = await a.auth.mint(TEST_USER, originA);
     await eventually(() => b.auth.records.byAccess(minted.session.access.value) !== undefined);
     // B holds the family and the passkey, and admits nobody on them: the
-    // person owns A.
+    // person owns A. The page is one B knows, the replicated passkey naming it
+    // — which is what lets B answer an enrolment there — and knowing the page
+    // is not admitting the person.
     expect(b.auth.admits(minted.session.access.value)).toBeUndefined();
-    expect(b.auth.knownOrigins()).toEqual([]);
+    expect(b.auth.knownOrigins()).toEqual([originA]);
 
     // One granting, written at A for B — the peers trust each other equally —
     // and the token opens B on B's own handshake, which is the whole point of
@@ -840,9 +842,10 @@ describe("an enrolment completes wherever it lands (contract, DR-0030 §4)", () 
       ).status;
     };
     expect(await asserting(a)).toBe(200);
-    // Refused before anything is read: no owner of B made a passkey at that
-    // page.
-    expect(await asserting(b)).toBe(403);
+    // Read, because the replicated passkey makes that page one B knows, and
+    // then refused: the person does not own B. Which page is asking and who may
+    // enter are two questions, and only the second has an answer here.
+    expect(await asserting(b)).toBe(401);
 
     // The other URL: B hands itself to the person, and its URL is spent at A.
     // The passkey they hold asserts, the six digits say they chose B, and the

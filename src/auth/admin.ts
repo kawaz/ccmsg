@@ -22,7 +22,10 @@ export type AdminRequest =
       readonly request_id: string;
       readonly origin?: Origin;
       readonly endpoint?: Endpoint;
+      /** What to suggest the account be called. */
       readonly name?: string;
+      /** The administrator's note about who the URL was handed to. */
+      readonly label?: string;
       readonly user?: UserId;
       readonly ttl?: number;
       /** Grant every peer this instance knows of, not only this one. */
@@ -41,6 +44,7 @@ export type AdminRequest =
       readonly endpoint?: Endpoint;
       readonly ttl?: number;
       readonly name?: string;
+      readonly label?: string;
     }
   | { readonly admin: "user_list"; readonly request_id: string; readonly user?: UserId }
   | {
@@ -123,7 +127,8 @@ export async function handleAdmin(
             purpose: "create_user",
             ...(request.origin === undefined ? {} : { origin: request.origin }),
             ...(request.endpoint === undefined ? {} : { endpoint: request.endpoint }),
-            ...(request.name === undefined ? {} : { label: request.name }),
+            ...(request.name === undefined ? {} : { name: request.name }),
+            ...(request.label === undefined ? {} : { label: request.label }),
             ...(request.user === undefined ? {} : { user: userIdOf(request.user) }),
             ...(request.ttl === undefined ? {} : { ttl: request.ttl }),
             ...(request.all === undefined ? {} : { all: request.all }),
@@ -147,10 +152,21 @@ export async function handleAdmin(
               user,
               ...(request.origin === undefined ? {} : { origin: request.origin }),
               ...(request.endpoint === undefined ? {} : { endpoint: request.endpoint }),
-              ...(request.name === undefined ? {} : { label: request.name }),
+              ...(request.name === undefined ? {} : { name: request.name }),
+              ...(request.label === undefined ? {} : { label: request.label }),
               ...(request.ttl === undefined ? {} : { ttl: request.ttl }),
               ...(request.all === undefined ? {} : { all: request.all }),
             }),
+          );
+        }
+        // A granting for somebody no user record answers for would be written
+        // down and replicated, admitting nobody and indistinguishable from one
+        // that means something. Where the mesh has not carried them here yet,
+        // the URL is the route that brings them (contract, DR-0030 §4).
+        if (auth.records.user(user) === undefined) {
+          throw new OpError(
+            "not_found",
+            `${user} はここでは知られていません。mesh の複製を待つか、--enroll で URL を出してください`,
           );
         }
         const granted = await auth.grant(user, auth.targets(request.all === true), {

@@ -281,7 +281,14 @@ export class Auth {
     readonly purpose: EnrollClaims["purpose"];
     readonly origin?: Origin;
     readonly endpoint?: Endpoint;
+    /** The administrator's note about who this URL was handed to, kept on the
+     * credential and shown to nobody but whoever reads the list back. */
     readonly label?: string;
+    /** What to suggest the account be called, which the person may change on
+     * the form. Apart from `label` because one value doing both would show an
+     * administrator's private note to the person as their own name (contract,
+     * DR-0030 §4). */
+    readonly name?: string;
     /** The person a `create_user` URL is for. Stated to add a passkey to
      * somebody who already exists — the handle is theirs and the credential
      * count is what grows — and left out to make a new person. */
@@ -294,7 +301,7 @@ export class Auth {
     if (endpoint === undefined) {
       throw new OpError(
         "invalid_args",
-        "この instance には endpoint が無いので、page の送り先を引数で渡してください",
+        "この instance には endpoint が無いので、--endpoint で page の送り先を渡してください",
       );
     }
     // The address the page posts to. It is not compared with anything by
@@ -322,10 +329,10 @@ export class Auth {
     // list, so a URL that carried none would put a random handle in front of
     // the person every time they signed in (`PERSON_LABEL`). For somebody who
     // already exists it is the name they read themselves by, so a second key
-    // joins the same account; for a new person it is what the operator wrote,
-    // and the person may still say otherwise on the form.
+    // joins the same account; for a new person it is what the operator
+    // suggested, and the person may still say otherwise on the form.
     const known = options.user === undefined ? undefined : this.deps.records.user(options.user);
-    const displayName = known?.display_name ?? options.label;
+    const displayName = known?.display_name ?? options.name;
     const commonFields = {
       iss: this.deps.self,
       instance: this.deps.self,
@@ -522,20 +529,30 @@ export class Auth {
 
   /** Take what a peer wrote on `auth.records`, and act on the removals in it.
    *
-   * What a mark ends is read against this instance: a person who no longer owns
-   * this one cannot hold a connection to it, and one whose family was failed
-   * has no tokens to hold it with. Losing an instance somewhere else ends
-   * nothing here. */
+   * **Any mark naming a person ends the connections they hold here**, whether
+   * it took a granting, a passkey or a family, and whether or not they still
+   * own this instance. A family is failed where the replay was seen, and behind
+   * a load balancer that is not where the connections are: leaving them open
+   * because the person is still an owner would make replay detection work on
+   * one instance and not on its peers, which is the whole of what replicating
+   * the mark is for. Signing in again is what a person whose mark was not about
+   * them does, and it costs one verification.
+   *
+   * The sweep afterwards is the other direction: a granting taken away
+   * somewhere leaves connections here that no record admits any more, including
+   * ones whose own mark never arrived. */
   async merge(records: readonly AuthRecord[]): Promise<void> {
     const { revoked } = await this.deps.records.merge(records);
-    for (const user of new Set(revoked)) {
-      if (!this.deps.records.owns(user, this.deps.self)) this.disconnect(user);
-    }
+    for (const user of new Set(revoked)) this.disconnect(user);
     for (const [conn, held] of this.#authorized) {
       if (this.deps.records.owns(held.user, this.deps.self)) continue;
       clearTimeout(held.timer);
       this.#authorized.delete(conn);
       conn.close();
+    }
+    // A family a peer failed is one nothing here may still name.
+    for (const key of this.#openedWith.keys()) {
+      if (this.deps.records.removed(key)) this.#openedWith.delete(key);
     }
   }
 
@@ -724,7 +741,10 @@ export class Auth {
     }
     await this.#spendAnywhere(args.challenge);
     await this.#used(record, signCount, from);
-    await this.grant(record.user, handedOver(claims), { kind: "user", user: record.user });
+    // The instance that issued the URL, as a registration's is: what a reader
+    // of the list wants to know is where the decision was made, and behind a
+    // load balancer this instance is only where the answer landed.
+    await this.grant(record.user, handedOver(claims), { kind: "instance", instance: claims.iss });
     return this.mint(record.user, record.origin, record.credential_id);
   }
 
@@ -942,26 +962,25 @@ export class Auth {
   }
 
   /** The origins whose pages may read the answers of everything but the two
-   * enrolment routes: the origins the owners of this instance made their
-   * passkeys at (contract, DR-0030 §9).
+   * routes that make a person: the origins of every credential this instance
+   * holds (contract, DR-0030 §9).
+   *
+   * Not narrowed by who owns this instance. What this set answers is whether
+   * the page is one this instance knows, and whether the person may enter is
+   * the ownership record's answer — asking a preflight to carry both would
+   * refuse it at exactly the instance where an enrolment is meant to succeed,
+   * one holding the credential by replication with no granting yet.
    *
    * Nothing is configured and no list is kept: a registration is what adds an
-   * origin, and the removal of the last credential at one is what takes it
-   * away. The enrolment routes need no entry here and have none — they are open
-   * to every origin, because behind a load balancer the page's first POST lands
-   * wherever it lands, and what guards an enrolment is the token, the digits
-   * and the issuer's count of tries rather than CORS.
+   * origin, and the removal of the last credential naming it is what takes it
+   * away.
    *
    * Compared whole rather than by domain: an RP ID is a domain, so a page at
    * any host under it would be let in — and the refresh route answers a cookie
    * the browser attaches by domain, so a sibling subdomain admitted here would
    * read a person's access token. */
   knownOrigins(): string[] {
-    const origins = new Set<string>();
-    for (const record of this.deps.records.credentials()) {
-      if (this.deps.records.owns(record.user, this.deps.self)) origins.add(record.origin);
-    }
-    return [...origins];
+    return [...new Set(this.deps.records.credentials().map((record) => record.origin))];
   }
 
   // --- tokens ---
@@ -991,6 +1010,13 @@ export class Auth {
     }
     if (credential !== undefined) this.#openedWith.set(key, credential);
     return { session: { user, access: family.access }, refresh: family.refresh, origin };
+  }
+
+  /** Whether some family retired this value, which is what a replay looks
+   * like. Read by the carrier choosing between the cookies a browser presented.
+   */
+  retired(value: Base64Url): boolean {
+    return this.deps.records.retiring(digestOf(value)).length > 0;
   }
 
   /** Rotate a family from a refresh token, wherever it was minted.
