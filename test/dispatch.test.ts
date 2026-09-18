@@ -264,6 +264,14 @@ describe("the role reaches an implementation only through scope", () => {
 
   test("the ops with a scope are the ones the contract marks", () => {
     const scoped = OP_NAMES.filter((op) => opAttributes(op).scope === "role");
-    expect(scoped).toEqual(["transcript.read", "transcript.items.read", "dir.list", "file.read"]);
+    expect(scoped).toEqual([
+      "auth.account.read",
+      "auth.ownership.remove",
+      "auth.credential.remove",
+      "transcript.read",
+      "transcript.items.read",
+      "dir.list",
+      "file.read",
+    ]);
   });
 });

@@ -131,6 +131,14 @@ export class AuthRecords {
     const held = this.#records.get(key);
     const at = held === undefined ? now : Math.max(now, held.updated_at + 1);
     const record: AuthRecord = { key, updated_at: at, body };
+    // This instance's own write, so a body outside the contract is a fault here
+    // rather than a peer's word to be dropped quietly: it would be handed to
+    // every peer and refused by each of them, and the one place that could say
+    // why is this one.
+    const problems = validationErrors(AuthRecordSchema, record);
+    if (problems.length > 0) {
+      throw new Error(`auth record ${key} is not the contract's shape: ${problems.join("; ")}`);
+    }
     if (!this.accept(record)) return false;
     // Handed to the peers once it is written down, so no peer holds a record
     // this instance would not have after a restart.

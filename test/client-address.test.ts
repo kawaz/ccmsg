@@ -1,3 +1,4 @@
+import { knownAt, TEST_USER } from "./person.ts";
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -188,7 +189,7 @@ describe("what the instance keeps (DR-0001 §2.2)", () => {
       "content-type": "application/json",
       origin,
       "sec-fetch-site": "same-origin",
-      cookie: `${cookieName(at.instance.self, "someone")}=${value}`,
+      cookie: `${cookieName(TEST_USER)}=${value}`,
     };
     if (from.header !== undefined) headers["x-forwarded-for"] = from.header;
     return await at.instance.route(
@@ -199,13 +200,12 @@ describe("what the instance keeps (DR-0001 §2.2)", () => {
 
   test("a rotation behind a named proxy remembers the person's address", async () => {
     const at = await serving(["127.0.0.0/8"]);
-    // A registration URL is what makes this instance's own origin one it
-    // serves, which `/auth/*` is compared against before anything else (§2.3).
-    at.instance.auth.issue({ endpoint: `http://127.0.0.1:${String(at.port)}/` });
-    const minted = await at.instance.auth.mint(
-      "someone",
-      `http://${at.instance.http[0] as string}/`,
-    );
+    // A credential at this origin is what makes it one this instance answers
+    // for, which `/auth/refresh` is compared against before anything else
+    // (contract, DR-0030 §9). Ownership is what admits the person at all.
+    const origin = `http://${at.instance.http[0] as string}`;
+    await knownAt(at.instance.auth, origin);
+    const minted = await at.instance.auth.mint(TEST_USER, origin);
     const answered = await refresh(at, minted.refresh.value, {
       source: "127.0.0.1",
       header: "203.0.113.7",
@@ -216,13 +216,12 @@ describe("what the instance keeps (DR-0001 §2.2)", () => {
 
   test("without the proxy named, the address the listener saw is what is kept", async () => {
     const at = await serving([]);
-    // A registration URL is what makes this instance's own origin one it
-    // serves, which `/auth/*` is compared against before anything else (§2.3).
-    at.instance.auth.issue({ endpoint: `http://127.0.0.1:${String(at.port)}/` });
-    const minted = await at.instance.auth.mint(
-      "someone",
-      `http://${at.instance.http[0] as string}/`,
-    );
+    // A credential at this origin is what makes it one this instance answers
+    // for, which `/auth/refresh` is compared against before anything else
+    // (contract, DR-0030 §9). Ownership is what admits the person at all.
+    const origin = `http://${at.instance.http[0] as string}`;
+    await knownAt(at.instance.auth, origin);
+    const minted = await at.instance.auth.mint(TEST_USER, origin);
     const answered = await refresh(at, minted.refresh.value, {
       source: "127.0.0.1",
       header: "203.0.113.7",

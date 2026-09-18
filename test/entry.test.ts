@@ -1,3 +1,4 @@
+import { personToken } from "./person.ts";
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -57,8 +58,8 @@ function handshake(
     "sec-websocket-key": "dGhlIHNhbXBsZSBub25jZQ==",
   };
   // The page a browser would say it came from. Stated on every handshake,
-  // because the upgrade compares it with the web UI the token's family names
-  // (contract, DR-0029); `null` is the caller that states none.
+  // because the upgrade compares it with the origin the token's family names
+  // (contract, DR-0030 §9); `null` is the caller that states none.
   const origin = init.origin === undefined ? `http://${instance.http[0] as string}` : init.origin;
   if (origin !== null) headers["origin"] = origin;
   if (init.protocols !== undefined) headers["sec-websocket-protocol"] = init.protocols.join(", ");
@@ -95,12 +96,6 @@ describe("the handshake (§3.1)", () => {
   });
 });
 
-/** An access token for a person, as `/auth/assert` would have answered with. */
-async function personToken(instance: Instance): Promise<string> {
-  return (await instance.auth.mint("test-person", `http://${instance.http[0] as string}/`)).session
-    .access.value;
-}
-
 describe("the entry is matched at the end of the path (DR-0001 §2.7)", () => {
   test("a proxy's prefix reaches the same door, and a near miss does not", async () => {
     const instance = await serving();
@@ -123,7 +118,7 @@ describe("the entry is matched at the end of the path (DR-0001 §2.7)", () => {
 describe("who may reach the entry (§3.1)", () => {
   test("the page holding the token is what the `Origin` is held to", async () => {
     // No allowlist is configured: which page may hold a token is its own
-    // family's to say, and the handshake compares the two (contract, DR-0029).
+    // family's to say, and the handshake compares the two (contract, DR-0030 §9).
     // A token says who the person is and nothing about what is holding it, so
     // without this one that leaked would be usable from any page at all.
     const instance = await serving();

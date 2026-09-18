@@ -106,7 +106,7 @@ export async function connectWs(
 ): Promise<LineClient> {
   const lines = new Lines();
   // The `Origin` a browser puts on an upgrade, which the handshake holds to the
-  // web UI the token's family names (contract, DR-0029). The instance's own
+  // origin the token's family names (contract, DR-0030 §9). The instance's own
   // address is what a page served by it would state.
   const ws = new WebSocket(`ws://${address}/ws`, {
     protocols: token === undefined ? [] : [`ccmsg.token.${token}`],

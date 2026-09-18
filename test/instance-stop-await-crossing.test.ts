@@ -91,7 +91,10 @@ describe("an instance's stop and a request already past the door", () => {
   test("a write still in flight when the stop begins lands before the lock goes", async () => {
     const at = await serving();
     const { instance } = at;
-    const issued = instance.auth.issue({ endpoint: `http://${instance.http[0] as string}/` });
+    const issued = await instance.auth.issue({
+      purpose: "create_user",
+      endpoint: `http://${instance.http[0] as string}/`,
+    });
     const authenticator = new SoftAuthenticator(issued.rp_id);
     const challenge = (await (await post(at, "challenge", "{}"))?.json()) as {
       challenge: string;
@@ -99,9 +102,9 @@ describe("an instance's stop and a request already past the door", () => {
     const credential = await authenticator.create({
       challenge: challenge.challenge,
       origin: at.origin,
-      userId: issued.user_id,
+      userId: issued.user,
     });
-    const token = issued.url.slice(issued.url.indexOf("#register=") + "#register=".length);
+    const token = issued.url.slice(issued.url.indexOf("#enroll=") + "#enroll=".length);
     const registration = JSON.stringify({
       token,
       code: issued.code,
@@ -150,19 +153,15 @@ describe("an instance's stop and a request already past the door", () => {
       readFileSync(join(recordsDir(instance.paths.stateDir), "records.json"), "utf8"),
     ) as AuthRecord[];
     const written = records.filter((record) => record.body.kind === "credential");
-    expect(written.map((record) => record.body.kind === "credential" && record.body.sub)).toEqual([
-      issued.sub,
-    ]);
+    expect(
+      written.map((record) => (record.body.kind === "credential" ? record.body.user : undefined)),
+    ).toEqual([issued.user]);
   });
 
   test("a request that outlasts the bound is left behind by name, not waited out", async () => {
     const bound = 200;
     const at = await serving(bound);
     const { instance } = at;
-    // The route answers for the pages this instance holds a registration URL
-    // for (contract, DR-0029), and the request has to get past that to be the
-    // one in flight this is about.
-    instance.auth.issue({ endpoint: `http://${instance.http[0] as string}/` });
 
     // Held open for longer than the stop will wait. The supervisor's graceful
     // stage is what the bound protects: one request must not be able to spend

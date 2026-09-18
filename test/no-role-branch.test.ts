@@ -62,6 +62,14 @@ const SHAPED_BY_ROLE = new Set(["sessions/registry.ts", "dispatch/caller.ts"]);
 
 const ROLE_LITERAL = /"(?:session|user|instance)"/;
 const ROLE_COMPARISON = /\brole\s*[=!]==/;
+/** Where one of those words is the `kind` of a replicated record rather than a
+ * role: the authentication records are a user, a credential, an ownership, a
+ * family and a tombstone, and an ownership says whether a person or an instance
+ * put it there (contract, `AuthRecord` / `GrantedBy`). Reading a discriminant
+ * decides what a record is, and grants nobody anything — the same reason the
+ * transcript's own `"user"` is left out above. Written as a pattern rather than
+ * by excusing the files, so a real role branch appearing in them still fails. */
+const RECORD_KIND = /\bkind\b\s*(?::|[=!]==)\s*"(?:session|user|instance)"/;
 
 const SRC = new URL("../src/", import.meta.url).pathname;
 
@@ -86,6 +94,7 @@ describe("no role comparison outside the attribute table (M1)", () => {
         .split("\n")
         .map((line, i) => ({ line: line.trim(), no: i + 1 }))
         .filter(({ line }) => !line.startsWith("*") && !line.startsWith("//"))
+        .filter(({ line }) => !RECORD_KIND.test(line))
         .filter(({ line }) => ROLE_LITERAL.test(line) || ROLE_COMPARISON.test(line));
       expect(offenders).toEqual([]);
     });

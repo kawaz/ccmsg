@@ -1,3 +1,4 @@
+import { personToken } from "./person.ts";
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -214,16 +215,6 @@ async function startWith(
         body: typeof body === "string" ? body : JSON.stringify(body),
       }),
   };
-}
-
-/** An access token for a person, minted by the instance under test.
- *
- * A WebSocket handshake presents one (DR-0001 §2.5), and a test has no browser
- * and no authenticator — so it asks the instance for a session directly, which
- * is what `/auth/assert` would have answered. */
-async function personToken(instance: Instance): Promise<string> {
-  return (await instance.auth.mint("test-person", `http://${instance.http[0] as string}/`)).session
-    .access.value;
 }
 
 /** The upstream section of an instance wired to a gateway both ways. */

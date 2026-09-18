@@ -1210,8 +1210,8 @@ export class Instance {
  * An empty `source_ips` leaves the addresses to the bind, which for the default
  * loopback host is this machine. No list of pages is configured: which page may
  * hold a token is the token's own family to say, and the handshake compares the
- * `Origin` with what that family names (contract, DR-0029) — an operator keeps
- * nothing in step with it.
+ * `Origin` with what that family names (contract, DR-0030 §9) — an operator
+ * keeps nothing in step with it.
  *
  * The address does not say who came either. Every connection that is not a
  * peer's presents a token, and a handshake without one is refused rather than
@@ -1252,11 +1252,12 @@ function entryPolicy(
       }
       // Which page is holding the token. The browser writes the `Origin` on an
       // upgrade as it does on a request, and a page's own script cannot; the
-      // family the token belongs to names the web UI it was minted at, and a
+      // family the token belongs to names the origin it was minted at, and a
       // page from anywhere else is refused however good the token is. A
       // handshake stating no `Origin` is refused the same way — every gate has
       // to be passed, and a caller with nothing to compare has not passed this
-      // one (contract, DR-0029).
+      // one (contract, DR-0030 §9). Whether the person owns this instance was
+      // read with the token itself.
       //
       // Refused as an upgrade that does not happen: there is no connection yet
       // to answer an error frame on.

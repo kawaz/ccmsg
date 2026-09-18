@@ -169,7 +169,7 @@ export async function handleAuth(
   // passed, and a caller with nothing to compare has not passed it. The answer
   // is the one every binding gives, saying that the exchange was refused and
   // not which gate refused it; which one is written to the log, where the
-  // operator rather than the caller reads it (contract, DR-0029 / DR-0028).
+  // operator rather than the caller reads it (contract, DR-0030 §9 / DR-0028).
   //
   // `auth.challenge` is not among them: it is asked before there is anything to
   // compare a caller with, and what it hands out can only be spent by its
@@ -268,9 +268,10 @@ export async function handleAuth(
 
 /** The refresh token this request carries.
  *
- * Every cookie whose name has this instance's prefix is tried, because the name
- * carries a digest of the subject and the caller has not said who they are yet.
- * A browser holding two people's cookies presents both. */
+ * Every cookie under the shared prefix is tried, because the rest of the name is
+ * a digest of a person and the caller has not said who they are yet. A browser
+ * holding two people's cookies presents both, and the one that belongs to a
+ * family this instance holds is the one meant (contract, DR-0030 §5). */
 function refreshCookie(request: Request, deps: AuthRoutesDeps): string | undefined {
   const header = request.headers.get("cookie");
   if (header === null) return undefined;

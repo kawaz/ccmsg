@@ -3,9 +3,9 @@ import { randomBytes } from "node:crypto";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { AuthChallenge, InstanceId, RegisterClaims, TokenFamily } from "@ccmsg/protocol";
+import type { AuthChallenge, EnrollClaims, InstanceId, UserId } from "@ccmsg/protocol";
 import { AUTH_CHALLENGE_TTL_MS, REGISTER_TTL_MS } from "@ccmsg/protocol";
-import { Auth, AuthRecords } from "../src/auth/index.ts";
+import { Auth, AuthRecords, userKey } from "../src/auth/index.ts";
 import { OpError } from "../src/dispatch/index.ts";
 import { SoftAuthenticator } from "./authenticator.ts";
 import { trackRoot } from "./harness.ts";
@@ -82,7 +82,7 @@ function made(options: { now?: () => number } = {}): Made {
   trackRoot(dir);
   const now = options.now ?? Date.now;
   const peer = new Peer();
-  const records = new AuthRecords({ dir, self: SELF, publish: () => {}, now });
+  const records = new AuthRecords({ dir, publish: () => {}, now });
   const auth = new Auth({
     self: SELF,
     records,
@@ -108,27 +108,27 @@ async function refusal(call: Promise<unknown>): Promise<string | undefined> {
 }
 
 function tokenOf(url: string): string {
-  return url.slice(url.indexOf("#register=") + "#register=".length);
+  return url.slice(url.indexOf("#enroll=") + "#enroll=".length);
 }
 
-/** A registration URL as another instance would have issued it. Nothing here
+/** An enrolment URL as another instance would have issued it. Nothing here
  * checks the signature — only the issuer can, and the issuer is the peer. */
-function issuedElsewhere(claims: RegisterClaims): string {
+function issuedElsewhere(claims: EnrollClaims): string {
   const header = Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT" })).toString("base64url");
   const body = Buffer.from(JSON.stringify(claims)).toString("base64url");
   return `${header}.${body}.${randomBytes(32).toString("base64url")}`;
 }
 
-function peerClaims(): RegisterClaims {
+function peerClaims(): EnrollClaims {
   return {
     iss: PEER,
-    sub: "unit-1",
-    unit: "unit",
+    purpose: "create_user",
+    instance: PEER,
+    origin: ORIGIN,
     endpoint: ENDPOINT,
-    webui: ENDPOINT,
     expires_at: Date.now() + REGISTER_TTL_MS,
     jti: randomBytes(16).toString("base64url"),
-    user_id: randomBytes(16).toString("base64url"),
+    user: randomBytes(16).toString("base64url"),
   };
 }
 
@@ -140,34 +140,44 @@ function peerChallenge(): AuthChallenge {
   };
 }
 
-/** A credential registered here, at this instance, so an assertion has
- * something to answer for. */
+/** A person made here, at this instance, so an assertion has something to
+ * answer for. */
 async function registeredHere(it: Made, signCount = 0) {
-  const issued = it.auth.issue({ endpoint: ENDPOINT });
+  const issued = await it.auth.issue({ purpose: "create_user" });
+  const user = issued.user as UserId;
   const authenticator = new SoftAuthenticator(issued.rp_id);
   authenticator.signCount = signCount;
   const challenge = it.auth.challenge().challenge;
-  const credential = await authenticator.create({
-    challenge,
-    origin: ORIGIN,
-    userId: issued.user_id,
-  });
+  const credential = await authenticator.create({ challenge, origin: ORIGIN, userId: user });
   await it.auth.register({ token: tokenOf(issued.url), code: issued.code, credential });
-  return { issued, authenticator };
+  return { issued, user, authenticator };
 }
 
 describe("an issuer's answer is read against the contract before anything turns on it", () => {
-  const shapes: { name: string; answer: (claims: RegisterClaims) => unknown }[] = [
-    { name: "no claims at all", answer: () => ({ kind: "register" }) },
+  /** An answer outside the op's result is a fault between the instances; one
+   * inside it that says something other than the URL did is a refusal. Both
+   * leave nothing behind. */
+  const shapes: { name: string; code: string; answer: (claims: EnrollClaims) => unknown }[] = [
+    { name: "no claims at all", code: "internal_error", answer: () => ({ kind: "claims" }) },
     {
-      name: "a subject that is not a string",
-      answer: (claims) => ({ kind: "register", claims: { ...claims, sub: 42 } }),
+      name: "a person's id that is not sixteen bytes",
+      code: "internal_error",
+      answer: (claims) => ({ kind: "claims", claims: { ...claims, user: "somebody" } }),
     },
     {
-      name: "no endpoint",
+      name: "no origin",
+      code: "internal_error",
       answer: (claims) => {
-        const { endpoint: _endpoint, ...rest } = claims;
-        return { kind: "register", claims: rest };
+        const { origin: _origin, ...rest } = claims;
+        return { kind: "claims", claims: rest };
+      },
+    },
+    {
+      name: "a purpose the URL did not state",
+      code: "auth_invalid",
+      answer: (claims) => {
+        const { user: _user, ...rest } = claims;
+        return { kind: "claims", claims: { ...rest, purpose: "add_owner" } };
       },
     },
   ];
@@ -176,12 +186,12 @@ describe("an issuer's answer is read against the contract before anything turns 
     test(`a registration answered with ${shape.name} is refused and leaves no record`, async () => {
       const it = made();
       const claims = peerClaims();
-      const authenticator = new SoftAuthenticator(new URL(claims.webui).hostname);
+      const authenticator = new SoftAuthenticator(new URL(claims.origin).hostname);
       const challenge = it.auth.challenge().challenge;
       const credential = await authenticator.create({
         challenge,
         origin: ORIGIN,
-        userId: claims.user_id,
+        userId: claims.user,
       });
       it.peer.answer = () => shape.answer(claims);
 
@@ -189,51 +199,35 @@ describe("an issuer's answer is read against the contract before anything turns 
         await refusal(
           it.auth.register({ token: issuedElsewhere(claims), code: "123456", credential }),
         ),
-      ).toBe("internal_error");
+      ).toBe(shape.code);
 
       // Nothing was written down, nothing was spent, and what the carrier
       // reads from the records still reads.
       expect(it.peer.calls.map((call) => call.op)).toEqual(["auth.resolve"]);
+      expect(it.records.users()).toEqual([]);
       expect(it.records.credentials()).toEqual([]);
       expect(it.records.families()).toEqual([]);
       expect(existsSync(it.file)).toBe(false);
-      expect(it.auth.held.challenges).toBe(1);
-      // Nothing was registered and this instance issued no URL of its own, so
-      // there is no page it answers for: the set is what registrations and its
-      // own outstanding URLs put in it, and nothing else (contract, DR-0029).
+      expect(it.auth.heldCounts.challenges).toBe(1);
+      // Nobody was made and nobody owns this instance, so there is no page it
+      // answers for: the set is what its owners' passkeys put in it, and
+      // nothing else (contract, DR-0030 §9).
       expect(it.auth.knownOrigins()).toEqual([]);
     });
   }
-
-  test("a rotation answered without the refresh token is refused rather than passed on", async () => {
-    const it = made();
-    const now = Date.now();
-    const family: TokenFamily = {
-      kind: "token_family",
-      sub: "them",
-      iss: PEER,
-      webui: ENDPOINT,
-      access: { value: randomBytes(32).toString("base64url"), expires_at: now + 3_600_000 },
-      refresh: { value: randomBytes(32).toString("base64url"), expires_at: now + 86_400_000 },
-    };
-    await it.records.merge([{ key: "family/them/1", updated_at: now, body: family }]);
-    it.peer.answer = () => ({ sub: "them", access: family.access });
-
-    expect(await refusal(it.auth.refreshToken(family.refresh.value))).toBe("internal_error");
-    expect(it.peer.calls.map((call) => call.op)).toEqual(["auth.rotate"]);
-  });
 });
 
 describe("a write the records refused is not answered as a session", () => {
   test("a person removed while the issuer was being asked is not registered", async () => {
     const it = made();
-    const issued = it.auth.issue({ endpoint: ENDPOINT });
+    const issued = await it.auth.issue({ purpose: "create_user" });
+    const user = issued.user as UserId;
     const authenticator = new SoftAuthenticator(issued.rp_id);
     const stated = peerChallenge();
     const credential = await authenticator.create({
       challenge: stated.challenge,
       origin: ORIGIN,
-      userId: issued.user_id,
+      userId: user,
     });
     it.peer.answer = () => ({ kind: "challenge" });
     const reached = it.peer.hold();
@@ -245,24 +239,23 @@ describe("a write the records refused is not answered as a session", () => {
       credential,
     });
     await reached;
-    await it.auth.remove(issued.sub);
+    // A peer's mark over the person, landing while the challenge is being
+    // spent: the write that would have made them is refused by it.
+    const at = Date.now() + 1_000;
+    await it.records.merge([
+      { key: userKey(user), updated_at: at, body: { kind: "tombstone", deleted_at: at } },
+    ]);
     it.peer.release();
 
     expect(await refusal(pending)).toBe("forbidden");
+    expect(it.records.users()).toEqual([]);
     expect(it.records.credentials()).toEqual([]);
-    expect(it.records.families()).toEqual([]);
-  });
-
-  test("a family the records refused mints nothing", async () => {
-    const it = made();
-    await it.records.remove("gone");
-    expect(await refusal(it.auth.mint("gone", ENDPOINT))).toBe("forbidden");
     expect(it.records.families()).toEqual([]);
   });
 
   test("a credential removed while its assertion was being verified signs nobody in", async () => {
     const it = made();
-    const { issued, authenticator } = await registeredHere(it);
+    const { user, authenticator } = await registeredHere(it);
     const stated = peerChallenge();
     const credential = await authenticator.get({ challenge: stated.challenge, origin: ORIGIN });
     it.peer.answer = () => ({ kind: "challenge" });
@@ -270,19 +263,20 @@ describe("a write the records refused is not answered as a session", () => {
 
     const pending = it.auth.assert({ challenge: stated, credential });
     await reached;
-    await it.auth.remove(issued.sub);
+    await it.auth.removeCredential(user, authenticator.credentialIdUrl);
     it.peer.release();
 
     expect(await refusal(pending)).toBe("auth_invalid");
     expect(it.records.credentials()).toEqual([]);
-    expect(it.records.families()).toEqual([]);
+    // The registration's family is the only one: the assertion minted none.
+    expect(it.records.families()).toHaveLength(1);
   });
 });
 
 describe("two assertions of one credential in flight at once", () => {
   test("the one that started first and finished last does not put its count back", async () => {
     const it = made();
-    const { authenticator } = await registeredHere(it, 5);
+    const { user, authenticator } = await registeredHere(it, 5);
     const id = authenticator.credentialIdUrl;
     expect(it.records.credential(id)?.sign_count).toBe(5);
     expect(it.records.families()).toHaveLength(1);
@@ -303,7 +297,7 @@ describe("two assertions of one credential in flight at once", () => {
     const local = it.auth.challenge();
     const second = await authenticator.get({ challenge: local.challenge, origin: ORIGIN });
     const later = await it.auth.assert({ challenge: local, credential: second });
-    expect(later.session.sub).toBe(it.records.credential(id)?.sub as string);
+    expect(later.session.user).toBe(user);
     expect(it.records.credential(id)?.sign_count).toBe(7);
 
     // The first comes back to a record that has moved past it. Its 6 is now

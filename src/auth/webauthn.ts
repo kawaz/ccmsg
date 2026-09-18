@@ -83,9 +83,9 @@ export function parseAuthenticatorData(bytes: Uint8Array): AuthenticatorData {
  * 11-15): what the browser was doing, which challenge it answered, which page
  * asked, and that the answer belongs to one page rather than an embedded one.
  *
- * The origin is compared against the web UI the credential names, which is
- * where the page that runs these exchanges is served — a place of its own, and
- * not read off the endpoint (contract, DR-0029). */
+ * The origin is compared against the one the credential names, which is where
+ * the page that runs these exchanges is served — a place of its own, and not
+ * read off the endpoint (contract, `CredentialRecord.origin`). */
 export function checkClientData(
   clientDataJson: Uint8Array,
   expected: { type: string; challenge: string; origin: string },
