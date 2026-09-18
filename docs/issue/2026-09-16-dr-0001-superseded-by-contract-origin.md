@@ -41,13 +41,20 @@ origin: 契約 v2.2.0 反映作業
 
 ## 受け入れ条件
 
-- [ ] DR-0001 §42/§54/§55/§90 に Superseded by 契約 DR-0029 / DR-0028 の注記が入っている
-- [ ] credential record / TokenFamily に webui フィールドが反映されている
-- [ ] WS upgrade が Origin 一致を検査する
-- [ ] HTTP 認証 3 op が CORS 許可集合と Sec-Fetch-Site を検査する
-- [ ] cookie 属性 (SameSite 含む) が origin 関係に応じて組み立てられる
-- [ ] 旧 record が CT-Q13β の裁定通り (移行せず無効、登録し直す手順を runbook に) 扱われている
-- [ ] 上記が DR-0001 更新と同じ commit 群に含まれている
+DR-0029 は archive され、契約側の置き換え先は DR-0030 (identity はユーザ、instance はその人の所有物) になった。以下は DR-0030 との整合を基準にした条件。
+
+- [x] DR-0001 §2.2 が「人を作るのはローカルからしかできない」に更新されている (CLI は `ccmsg user create` / `user add` / `user passkey add`、URL は `<origin>/#enroll=<jwt>`、claims は EnrollClaims、endpoint claim は宛先で照合しない、所有 record は URL 発行時に書く)
+- [x] §2.3 が「credential の束縛は origin 1 つ、instance は所有 record が答える」に更新され、置き換え先が DR-0030 と明記されている
+- [x] §2.4 の単一 writer が削除され、「所有されているどの instance でも rotate できる、転送しない、負け側は auth_invalid で family は失効させない、失効は retired 一致のみ」に更新されている
+- [x] refresh cookie 名が `__Secure-ccmsg-<sha256(user id) 先頭16hex>` (instance を含めない) に更新されている
+- [x] CORS が 2 通り (登録系は全 origin / assert・refresh は所有者たちの credential の origin) に更新されている
+- [x] §2.5/§2.6 の sub 単位 tombstone が「key が対象を言う 4 種 (user / credential / ownership / family)」に更新され、所有の granting id と足し直しの規則が追記されている
+- [x] §2.9/§2.10 の op 名が現行 (auth.enroll / auth.account.read / auth.ownership.remove / auth.credential.remove / auth.resolve、auth.rotate 廃止) に更新されている
+- [x] 現役文書 (DR-0001) から archive された DR-0029 への名指し参照が残っていない
+- [ ] WS upgrade が token の family が持つ `origin` と `Origin` ヘッダを照合し、所有者チェックも行う実装になっている (DR-0001 §90 相当、daemon 実装側の確認が必要)
+- [ ] cookie 属性 (`SameSite` を same-site/cross-site で決める、DR-0028 相当) の組み立てが daemon 実装に反映されている
+- [ ] 旧 record の扱いが裁定通り (移行せず無効、登録し直す手順を runbook に) 実装・記載されている
+- [ ] 上記の未実装項目が DR-0001 との整合を保ったまま同じ作業の中で解消されている
 
 ## TODO
 
