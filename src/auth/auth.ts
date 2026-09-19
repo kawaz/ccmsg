@@ -4,6 +4,7 @@ import type {
   AuthAccountReadResult,
   AuthAssertArgs,
   AuthChallenge,
+  AuthChallengeArgs,
   AuthChallengeResult,
   AuthCredentialRemoveArgs,
   AuthEnrollArgs,
@@ -558,7 +559,11 @@ export class Auth {
 
   // --- challenges ---
 
-  challenge(): AuthChallengeResult {
+  /** Hand out a challenge, and — for a page opened from an enrolment URL —
+   * refuse before the person is shown anything if that URL can no longer be
+   * spent (contract, `AuthChallengeArgs`). */
+  async challenge(args: AuthChallengeArgs = {}): Promise<AuthChallengeResult> {
+    if (args.token !== undefined) await this.#aliveEnrolment(args.token);
     this.#forget();
     const value = base64UrlEncode(randomBytes(32));
     const expiresAt = this.#now() + AUTH_CHALLENGE_TTL_MS;
@@ -796,6 +801,62 @@ export class Auth {
       throw new OpError("internal_error", `${iss} の ${op} の答えが契約の形ではありません`);
     }
     return answer as T;
+  }
+
+  /** Whether an enrolment URL could still be spent, asked where its secret is.
+   *
+   * Every way of failing is the one refusal: a URL already spent, one past its
+   * window, one whose issuer is nobody this instance can reach, and a token
+   * that is not one at all. Telling them apart would tell somebody holding a
+   * URL they guessed at that it had once been real (contract, DR-0030 §4). The
+   * reason goes to the log, where the operator rather than the caller reads it.
+   *
+   * Nothing is spent and no attempt is counted: this is asked when a page is
+   * opened, and an enrolment that a page could exhaust by being opened would
+   * be one a link in a chat window could burn. */
+  async #aliveEnrolment(token: string): Promise<void> {
+    try {
+      const stated = claimsOf(token);
+      if (stated.iss === this.deps.self) {
+        this.checkEnrolment(token);
+        return;
+      }
+      const answer = await this.#answerOf<AuthResolveResult>(
+        stated.iss,
+        "auth.resolve",
+        { kind: "alive", token } satisfies AuthResolveArgs,
+        AuthResolveResultSchema,
+      );
+      if (answer.kind !== "alive") {
+        throw new OpError("auth_invalid", "この URL の発行者が別のものを答えました");
+      }
+    } catch (cause) {
+      this.deps.log?.("an enrolment URL was opened and is not one that could be spent", {
+        error: String(cause),
+      });
+      throw new OpError("auth_invalid", "この URL は使えません。再発行してください");
+    }
+  }
+
+  /** Check an enrolment URL without spending it: it is held here, its window
+   * has not passed, and the signature is the one this instance's secret makes.
+   *
+   * The digits are not among them — there is nothing here for them to
+   * authorize, and counting an attempt for a question that spends nothing
+   * would put the URL's one defence in reach of whoever can open the page. */
+  checkEnrolment(token: string): void {
+    const stated = claimsOf(token);
+    const held = this.#pending.get(stated.jti);
+    if (held === undefined) {
+      throw new OpError("auth_expired", "この URL は使えません。再発行してください");
+    }
+    if (held.claims.expires_at <= this.#now()) {
+      this.#pending.delete(stated.jti);
+      throw new OpError("auth_expired", "この URL は期限切れです。再発行してください");
+    }
+    if (!equalStrings(token, sign(held.claims, held.secret))) {
+      throw new OpError("auth_invalid", "この URL の署名が合いません");
+    }
   }
 
   /** Check an enrolment URL against the secret that signed it, and spend it.
@@ -1320,6 +1381,12 @@ export function authHandlers(auth: Auth) {
       if (args.kind === "challenge") {
         auth.spend(args.challenge);
         return { kind: "challenge" };
+      }
+      // Asked before a person is shown a form, and answered by not refusing:
+      // the URL is held here, unspent and inside its window.
+      if (args.kind === "alive") {
+        auth.checkEnrolment(args.token);
+        return { kind: "alive" };
       }
       // The digits arrive unjudged from wherever the browser landed, and are
       // checked here — this is the instance holding both the secret that signed

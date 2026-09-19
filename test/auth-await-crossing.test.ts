@@ -147,7 +147,7 @@ async function registeredHere(it: Made, signCount = 0) {
   const user = issued.user as UserId;
   const authenticator = new SoftAuthenticator(issued.rp_id);
   authenticator.signCount = signCount;
-  const challenge = it.auth.challenge().challenge;
+  const challenge = (await it.auth.challenge()).challenge;
   const credential = await authenticator.create({ challenge, origin: ORIGIN, userId: user });
   await it.auth.register({ token: tokenOf(issued.url), code: issued.code, credential });
   return { issued, user, authenticator };
@@ -187,7 +187,7 @@ describe("an issuer's answer is read against the contract before anything turns 
       const it = made();
       const claims = peerClaims();
       const authenticator = new SoftAuthenticator(new URL(claims.origin).hostname);
-      const challenge = it.auth.challenge().challenge;
+      const challenge = (await it.auth.challenge()).challenge;
       const credential = await authenticator.create({
         challenge,
         origin: ORIGIN,
@@ -294,7 +294,7 @@ describe("two assertions of one credential in flight at once", () => {
     // The second reads the same 5, verifies a 7, and finishes: the record
     // says 7.
     authenticator.signCount = 7;
-    const local = it.auth.challenge();
+    const local = await it.auth.challenge();
     const second = await authenticator.get({ challenge: local.challenge, origin: ORIGIN });
     const later = await it.auth.assert({ challenge: local, credential: second });
     expect(later.session.user).toBe(user);

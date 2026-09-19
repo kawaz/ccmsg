@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { getDomain } from "tldts";
 import {
   type AuthAssertArgs,
+  type AuthChallengeArgs,
   type AuthEnrollArgs,
   type AuthTokenRefreshArgs,
   type AuthRegisterArgs,
@@ -234,7 +235,7 @@ export async function handleAuth(
   try {
     switch (route) {
       case "challenge":
-        return answer(deps.auth.challenge(), cors);
+        return answer(await deps.auth.challenge(args as unknown as AuthChallengeArgs), cors);
       case "register": {
         const minted = await deps.auth.register(args as unknown as AuthRegisterArgs, seen);
         return answer(minted.session, cors, setCookie(request, url, minted));

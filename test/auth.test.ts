@@ -9,6 +9,7 @@ import {
   type InstanceId,
   type Origin,
   PROTOCOL_VERSION,
+  REGISTER_TTL_MS,
   type UserId,
 } from "@ccmsg/protocol";
 import { type Env, type Instance, isRunning, start } from "../src/instance/index.ts";
@@ -346,7 +347,7 @@ async function registeredAt(auth: Auth, options: { origin?: Origin; user?: UserI
   });
   const user = issued.user as UserId;
   const authenticator = new SoftAuthenticator(issued.rp_id);
-  const challenge = auth.challenge();
+  const challenge = await auth.challenge();
   const credential = await authenticator.create({
     challenge: challenge.challenge,
     origin: issued.origin,
@@ -374,7 +375,7 @@ describe("what an enrolment URL hands over (contract, `EnrollClaims.instances`)"
     // here and reads it out of the claims.
     const user = issued.user as UserId;
     const authenticator = new SoftAuthenticator(issued.rp_id);
-    const challenge = here.challenge();
+    const challenge = await here.challenge();
     const credential = await authenticator.create({
       challenge: challenge.challenge,
       origin: issued.origin,
@@ -592,7 +593,7 @@ describe("making a person (contract, DR-0030 §4)", () => {
     const adding = await auth.issue({ purpose: "add_owner" });
     const creating = await auth.issue({ purpose: "create_user" });
 
-    const challenge = auth.challenge();
+    const challenge = await auth.challenge();
     expect(
       await refusal(
         auth.register({
@@ -641,7 +642,7 @@ describe("taking an instance as one's own (contract, DR-0030 §4)", () => {
     const enrol = async (code?: string): Promise<string | undefined> => {
       const issued = await next.issue({ purpose: "add_owner", origin: ORIGIN });
       expect(issued.user).toBeUndefined();
-      const challenge = next.challenge();
+      const challenge = await next.challenge();
       return await refusal(
         next.enroll({
           token: tokenOf(issued.url),
@@ -678,7 +679,7 @@ describe("taking an instance as one's own (contract, DR-0030 §4)", () => {
     const stranger = new SoftAuthenticator("ui.example");
     stranger.userHandle = OTHER_USER;
     const issued = await auth.issue({ purpose: "add_owner" });
-    const challenge = auth.challenge();
+    const challenge = await auth.challenge();
     expect(
       await refusal(
         auth.enroll({
@@ -951,7 +952,7 @@ describe("the origins this instance answers for (contract, DR-0030 §9)", () => 
     const { auth } = unit({ endpoint: "https://h.example/" });
     const issued = await auth.issue({ purpose: "create_user", origin: "https://ui.example.test" });
     const authenticator = new SoftAuthenticator(issued.rp_id);
-    const challenge = auth.challenge();
+    const challenge = await auth.challenge();
     const answer = await handleAuth(
       new Request("https://h.example/auth/register", {
         method: "POST",
@@ -988,7 +989,7 @@ describe("a person is admitted only to the instances they own (contract, DR-0030
     await settled();
 
     const asserting = async (auth: Auth): Promise<string | undefined> => {
-      const challenge = auth.challenge();
+      const challenge = await auth.challenge();
       return await refusal(
         auth.assert({
           credential: await authenticator.get({ challenge: challenge.challenge, origin: ORIGIN }),
@@ -1069,7 +1070,7 @@ describe("letting an instance go, and taking it again (contract, DR-0030 §3)", 
     const turned = await asserting(at, authenticator);
     expect(turned.status).toBe(401);
     expect(((await turned.json()) as { error: { code: string } }).error.code).toBe("auth_invalid");
-    const direct = auth.challenge();
+    const direct = await auth.challenge();
     expect(
       await refusal(
         auth.assert({
@@ -2171,7 +2172,7 @@ describe("a credential is good from one origin (contract, DR-0030 §2)", () => {
         origin: "https://ui.example.test",
       });
       const authenticator = new SoftAuthenticator(rpId);
-      const challenge = auth.challenge();
+      const challenge = await auth.challenge();
       return await refusal(
         auth.register({
           token: tokenOf(issued.url),
@@ -2194,7 +2195,7 @@ describe("a credential is good from one origin (contract, DR-0030 §2)", () => {
     const { auth } = unit({ endpoint: "https://h.example/" });
     const issued = await auth.issue({ purpose: "create_user" });
     const authenticator = new SoftAuthenticator(issued.rp_id);
-    const challenge = auth.challenge();
+    const challenge = await auth.challenge();
     const credential = await authenticator.create({
       challenge: challenge.challenge,
       origin: "https://h.example",
@@ -2329,7 +2330,7 @@ describe("the two headers every route that decides an identity is held to (contr
 
     const issued = await next.issue({ purpose: "add_owner" });
     expect(issued.origin).toBe("https://next.example");
-    const challenge = next.challenge();
+    const challenge = await next.challenge();
     const body = JSON.stringify({
       token: tokenOf(issued.url),
       code: issued.code,
@@ -2735,5 +2736,129 @@ describe("signing out ends the family (contract, `auth.signout`)", () => {
     expect(next.admits(minted.session.access.value)).toBeUndefined();
     // The person still owns both instances: what ended was the family.
     expect(here.records.owns(TEST_USER, here.self)).toBe(true);
+  });
+});
+
+describe("a registration URL is checked before a form is shown (contract, DR-0030 §4)", () => {
+  test("a URL that could still be spent answers a challenge, and is not spent by the asking", async () => {
+    const { auth } = unit({ endpoint: ENDPOINT });
+    const issued = await auth.issue({ purpose: "create_user" });
+    const token = tokenOf(issued.url);
+
+    const challenge = await auth.challenge({ token });
+    expect(challenge.issuer).toBe(SELF);
+    // The URL stands as it did: asking is not spending, and the registration
+    // that follows is the one the person came for.
+    expect(auth.heldCounts.pending).toBe(1);
+    const authenticator = new SoftAuthenticator(issued.rp_id);
+    const minted = await auth.register({
+      token,
+      code: issued.code,
+      challenge,
+      credential: await authenticator.create({
+        challenge: challenge.challenge,
+        origin: issued.origin,
+        userId: issued.user as UserId,
+      }),
+    });
+    expect(minted.session.user).toBe(issued.user as UserId);
+  });
+
+  test("a URL already spent, one past its window, and one that is not a token are one refusal", async () => {
+    let now = 1_000_000;
+    const { auth } = unit({ endpoint: ENDPOINT, now: () => now });
+
+    // Spent: the person registered with it, and the page was opened again.
+    const { issued } = await registeredAt(auth);
+    expect(await refusal(auth.challenge({ token: tokenOf(issued.url) }))).toBe("auth_invalid");
+
+    // Past its window, which the claims state — and which is only half of what
+    // is checked, the other half being held at the issuer.
+    const stale = await auth.issue({ purpose: "create_user", user: OTHER_USER });
+    now += REGISTER_TTL_MS + 1;
+    expect(await refusal(auth.challenge({ token: tokenOf(stale.url) }))).toBe("auth_invalid");
+
+    // A value that is no token at all, which is the same answer again.
+    expect(await refusal(auth.challenge({ token: "not.a.token" }))).toBe("auth_invalid");
+  });
+
+  test("a URL issued elsewhere is asked of its issuer, spent or not", async () => {
+    const { peers } = linked([
+      { self: SELF, endpoint: ENDPOINT },
+      { self: OTHER_INSTANCE, endpoint: "https://next.example/" },
+    ]);
+    const [here, next] = peers as [Auth, Auth];
+    const issued = await here.issue({ purpose: "create_user", origin: ORIGIN });
+    const token = tokenOf(issued.url);
+
+    // The page landed on the peer, which holds neither the secret nor the
+    // record of the URL having been spent, and asks the instance that does.
+    const challenge = await next.challenge({ token });
+    expect(challenge.issuer).toBe(OTHER_INSTANCE);
+    expect(here.heldCounts.pending).toBe(1);
+
+    const authenticator = new SoftAuthenticator(issued.rp_id);
+    await next.register({
+      token,
+      code: issued.code,
+      challenge,
+      credential: await authenticator.create({
+        challenge: challenge.challenge,
+        origin: issued.origin,
+        userId: issued.user as UserId,
+      }),
+    });
+    // Spent at the issuer, so the peer refuses the next page opened from it.
+    expect(await refusal(next.challenge({ token }))).toBe("auth_invalid");
+  });
+
+  test("a URL whose issuer is nobody this instance can reach is the same refusal", async () => {
+    // Issued at an instance this one has no way to ask — no mesh, or a peer
+    // gone. Which of the three it was is not said: that a URL guessed at was
+    // once real is not something an answer here may carry.
+    const elsewhere = unit({ self: OTHER_INSTANCE, endpoint: "https://next.example/" }).auth;
+    const issued = await elsewhere.issue({ purpose: "create_user", origin: ORIGIN });
+    const { auth } = unit({ endpoint: ENDPOINT });
+    expect(await refusal(auth.challenge({ token: tokenOf(issued.url) }))).toBe("auth_invalid");
+  });
+
+  test("the page asks over the route it was opened at, and is refused there", async () => {
+    // End to end, because what a page holds is a URL and a fetch: the token
+    // travels in the body of the challenge it asks for, and a URL that was
+    // already used answers the one refusal before any form is filled in.
+    const at = await serving();
+    const issued = await at.instance.auth.issue({
+      purpose: "create_user",
+      origin: at.origin,
+      endpoint: servedAt(at),
+    });
+    const good = await post(at, "challenge", { token: tokenOf(issued.url) });
+    expect(good.ok).toBe(true);
+
+    const user = issued.user as UserId;
+    const authenticator = new SoftAuthenticator(issued.rp_id);
+    const challenge = (await good.json()) as { challenge: string };
+    const registered = await post(at, "register", {
+      token: tokenOf(issued.url),
+      code: issued.code,
+      credential: await authenticator.create({
+        challenge: challenge.challenge,
+        origin: at.origin,
+        userId: user,
+      }),
+    });
+    expect(registered.ok).toBe(true);
+
+    const reopened = await post(at, "challenge", { token: tokenOf(issued.url) });
+    expect(reopened.ok).toBe(false);
+    expect(((await reopened.json()) as { error: { code: string } }).error.code).toBe(
+      "auth_invalid",
+    );
+  });
+
+  test("a challenge asked for without a token checks nothing", async () => {
+    // The page signing in with a passkey that exists has no URL to be held to.
+    const { auth } = unit({ endpoint: ENDPOINT });
+    expect((await auth.challenge()).issuer).toBe(SELF);
   });
 });
