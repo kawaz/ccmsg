@@ -33,8 +33,8 @@ origin: 自リポ TODO
 
 ## 受け入れ条件
 
-- [ ] ローカルの `just ci` に `bun outdated` チェックを追加し、直接依存の更新があれば fail させる
-- [ ] registry 到達不可時は fail させず「未確認」表示で通す
-- [ ] 推移依存は対象外とする
-- [ ] `.github/dependabot.yml` (package-ecosystem bun、週次) を追加し、更新 PR が出る状態にする
-- [ ] GitHub 側の CI は fail させない
+- [x] ローカルの `just ci` に `bun outdated` チェックを追加し、直接依存の更新があれば fail させる (注記: 実装は `just ci` ではなく `just push` の deps になった。`.github/workflows/ci.yml` が `just ci` を実行しており、`ci` に足すと「GitHub 側の CI は fail させない」という裁定に反するため。outdated 検査は `just check-outdated` recipe (`scripts/check-outdated.sh`) として切り出し、`push` recipe の deps に入れた (ローカル push gate では止まる / GitHub では走らない))
+- [x] registry 到達不可時は fail させず「未確認」表示で通す (bun outdated は更新があっても registry 不達でも終了コード 0 で、不達時は無出力になり up-to-date と区別できないため、表の行の有無で判定し、行が無い場合のみ `bun info <dep> --no-cache` で registry 到達性を確認して「未確認」と「更新なし」を区別している)
+- [x] 推移依存は対象外とする (bun outdated が元から表に出さないことを実機確認済み)
+- [x] `.github/dependabot.yml` (package-ecosystem bun、週次) を追加し、更新 PR が出る状態にする
+- [x] GitHub 側の CI は fail させない
