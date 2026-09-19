@@ -447,6 +447,21 @@ describe("file.write: the inbox", () => {
     ).toBe("file_exists");
   });
 
+  test("content that is not base64 is refused rather than written short", async () => {
+    // The decoder drops what it cannot read, so this body would otherwise land
+    // as a file shorter than the one the caller meant to send.
+    expect(
+      await refusalOf(() =>
+        run("file.write", files()["file.write"], {
+          sid: SID,
+          path: "docs/inbox/mistyped.md",
+          content: "not base64 at all!!",
+        }),
+      ),
+    ).toBe("bad_request");
+    expect(existsSync(join(base, "repo/ws/docs/inbox/mistyped.md"))).toBe(false);
+  });
+
   test("a name outside the inbox is not writable", async () => {
     expect(
       await refusalOf(() =>

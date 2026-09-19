@@ -113,7 +113,7 @@ export function fileHandlers(paths: Containment, duplicated: (sid: Sid) => boole
       // replaced; the folder itself is made, since a repository that has never
       // had one is exactly where the first note goes (DR-0019 §2.1).
       await mkdir(dirname(at.real), { recursive: true });
-      await writes.to(at.real, () => create(at.real, decoded(args.content)));
+      await writes.to(at.real, () => create(at.real, decoded(args.path, args.content)));
       return { sid: args.sid, path: at.path };
     },
 
@@ -124,7 +124,7 @@ export function fileHandlers(paths: Containment, duplicated: (sid: Sid) => boole
       if (!(await isDirectory(parent))) {
         throw new OpError("not_found", `${args.path} has no folder to be created in`);
       }
-      await writes.to(at.real, () => create(at.real, decoded(args.content)));
+      await writes.to(at.real, () => create(at.real, decoded(args.path, args.content)));
       return { sid: args.sid, path: at.path };
     },
 
@@ -144,7 +144,7 @@ export function fileHandlers(paths: Containment, duplicated: (sid: Sid) => boole
         if (mtimeOf(before) !== args.expected_mtime_at || before.size !== args.expected_size) {
           throw new OpError("file_conflict", `${args.path} changed since it was read`);
         }
-        await replace(at.real, decoded(args.content));
+        await replace(at.real, decoded(args.path, args.content));
         return stat(at.real);
       });
       return {
@@ -279,9 +279,19 @@ async function bytesOf(path: string, limit: number, offset: number): Promise<Buf
 
 /** The bytes a caller handed over. Content travels as base64 whatever the file
  * holds, so every write goes through the same decoding and none of them reads
- * the string as text. */
-function decoded(content: string): Buffer {
-  return Buffer.from(content, "base64");
+ * the string as text.
+ *
+ * What is not base64 is refused rather than decoded as far as it goes: the
+ * decoder drops what it cannot read, so a mistyped body would be written as a
+ * shorter file that no one asked for. Encoding the bytes back is what says the
+ * string was base64 — nothing survives the round trip but the canonical
+ * spelling of what was decoded. */
+function decoded(path: string, content: string): Buffer {
+  const bytes = Buffer.from(content, "base64");
+  if (bytes.toString("base64") !== content) {
+    throw new OpError("bad_request", `the content for ${path} is not base64`);
+  }
+  return bytes;
 }
 
 function isBinary(bytes: Buffer): boolean {
