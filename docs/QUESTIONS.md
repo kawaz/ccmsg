@@ -30,13 +30,6 @@ webui DR-0005 の閲覧 site ([/Users/kawaz/.local/share/repos/github.com/kawaz/
 - [ ] b: 許さない (静止した物だけ描く)
 - [ ] c: 先に「閲覧 site から何が届くか」(endpoint への CORS、閲覧 site 自身の storage) を洗ってから決める
 
-### FV-Q8: 閲覧 site 側が親を確かめるか
-
-親が `postMessage` する時に `targetOrigin` を指定するのは前提として、受ける側 (閲覧 site) が「この親は webui だ」を確かめるか。確かめないと他の頁が閲覧 site を埋め込んでポートを渡せるが、渡せる物はその頁が自分で持っている接続だけ。
-
-- [x] a: `event.origin` を確かめる — **統括の推し**
-- [ ] b: 確かめない (渡せる物が自分の接続だけなので実害が無い)
-
 ## 確認待ち
 
 (なし)
