@@ -77,7 +77,7 @@ describe("file.edit: two edits of one file at once", () => {
           sid: SID,
           kind: "contained",
           path: "ws/shared.txt",
-          content,
+          content: Buffer.from(content).toString("base64"),
           ...token,
         }),
       );
@@ -114,7 +114,7 @@ describe("file.edit: two edits of one file at once", () => {
           sid: SID,
           kind: "contained",
           path: "ws/raced.txt",
-          content,
+          content: Buffer.from(content).toString("base64"),
           ...token,
         }),
       );

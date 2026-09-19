@@ -14,6 +14,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  MAX_FILE_READ_BYTES,
   type OpName,
   OP_SCHEMAS,
   opAttributes,
@@ -133,6 +134,21 @@ async function refusalOf(call: () => unknown): Promise<string> {
   throw new Error("the call was not refused");
 }
 
+/** The bytes a read answered with: content travels as base64 whatever the file
+ * holds, so a test reading text decodes the same way one reading an image does. */
+function bytesOf(read: Record<string, unknown>): Buffer {
+  return Buffer.from(read["content"] as string, "base64");
+}
+
+function textOf(read: Record<string, unknown>): string {
+  return bytesOf(read).toString("utf8");
+}
+
+/** What a write hands over, in the same container a read answers with. */
+function sent(content: string | Buffer): string {
+  return Buffer.from(content).toString("base64");
+}
+
 const files = () => handlers();
 
 describe("contained", () => {
@@ -152,10 +168,12 @@ describe("contained", () => {
     });
     expect(read).toMatchObject({
       path: "ws/hello.txt",
-      content: "hello\n",
       binary: false,
+      offset: 0,
+      length: 6,
+      size: 6,
     });
-    expect(read["truncated"]).toBe(false);
+    expect(textOf(read)).toBe("hello\n");
   });
 
   test("a symlink is listed as itself and refuses to resolve", async () => {
@@ -205,7 +223,8 @@ describe("contained", () => {
   });
 
   test("a file too large to hold in memory is answered from its head", async () => {
-    // The answer carries at most `READ_LIMIT`, so what is read is at most that.
+    // The answer carries at most `MAX_FILE_READ_BYTES`, so what is read is at
+    // most that.
     // A file past the largest buffer this runtime can allocate is the proof:
     // reading it whole cannot succeed, and answering it from its head must.
     // Sparse, so the size is the only thing about it that is large.
@@ -227,20 +246,78 @@ describe("contained", () => {
     });
 
     expect(read["size"]).toBe(stat.size);
-    expect(read["truncated"]).toBe(true);
     expect(read["binary"]).toBe(false);
-    expect((read["content"] as string).length).toBe(512 * 1024);
-    expect(read["content"]).toStartWith(marker);
+    expect(read["offset"]).toBe(0);
+    expect(read["length"]).toBe(MAX_FILE_READ_BYTES);
+    // There is more, and the numbers are what say so now that no flag does.
+    expect((read["offset"] as number) + (read["length"] as number)).toBeLessThan(stat.size);
+    expect(bytesOf(read).byteLength).toBe(MAX_FILE_READ_BYTES);
+    expect(textOf(read)).toStartWith(marker);
     rmSync(path);
   });
 
-  test("a binary file is answered without its content", async () => {
+  test("a binary file is marked as one and answered with its bytes", async () => {
     const read = await run("file.read", files()["file.read"], {
       sid: SID,
       kind: "contained",
       path: "ws/binary.dat",
     });
-    expect(read).toMatchObject({ binary: true, content: "" });
+    expect(read["binary"]).toBe(true);
+    expect([...bytesOf(read)]).toEqual([0x89, 0x50, 0x00, 0x01]);
+  });
+
+  test("a range is read from where it was asked for and clamped at the end", async () => {
+    const read = (offset: number, length?: number) =>
+      run("file.read", files()["file.read"], {
+        sid: SID,
+        kind: "contained",
+        path: "ws/hello.txt",
+        offset,
+        ...(length === undefined ? {} : { length }),
+      });
+
+    expect(textOf(await read(0, 2))).toBe("he");
+    expect(textOf(await read(2, 2))).toBe("ll");
+
+    // A range that runs past the end answers the part that overlaps.
+    const across = await read(4, 100);
+    expect(textOf(across)).toBe("o\n");
+    expect(across).toMatchObject({ offset: 4, length: 2, size: 6 });
+
+    // Entirely past it is nothing, and not an error: a caller reading to the
+    // end lands here on its last step.
+    const past = await read(6);
+    expect(past).toMatchObject({ offset: 6, length: 0, content: "", size: 6 });
+    expect(textOf(await read(99))).toBe("");
+  });
+
+  test("asking for more than one reply carries is answered with what fits", async () => {
+    const read = await run("file.read", files()["file.read"], {
+      sid: SID,
+      kind: "contained",
+      path: "ws/hello.txt",
+      length: MAX_FILE_READ_BYTES * 4,
+    });
+    expect(read["length"]).toBe(6);
+  });
+
+  test("bytes a write handed over are the bytes a read answers with", async () => {
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0xff]);
+    await run("file.create", files()["file.create"], {
+      sid: SID,
+      kind: "contained",
+      path: "ws/round-trip.png",
+      content: sent(png),
+    });
+    expect(readFileSync(join(base, "repo/ws/round-trip.png"))).toEqual(png);
+    const read = await run("file.read", files()["file.read"], {
+      sid: SID,
+      kind: "contained",
+      path: "ws/round-trip.png",
+    });
+    expect(bytesOf(read)).toEqual(png);
+    expect(read["binary"]).toBe(true);
+    rmSync(join(base, "repo/ws/round-trip.png"));
   });
 });
 
@@ -251,7 +328,7 @@ describe("workspace", () => {
       kind: "workspace",
       path: join(base, "space/doc.md"),
     });
-    expect(read["content"]).toBe("# doc\n");
+    expect(textOf(read)).toBe("# doc\n");
     expect(read["path"]).toBe(join(base, "space/doc.md"));
   });
 
@@ -275,7 +352,7 @@ describe("external", () => {
       kind: "external",
       path: join(base, "outside/named.txt"),
     });
-    expect(read["content"]).toBe("named\n");
+    expect(textOf(read)).toBe("named\n");
   });
 
   test("its neighbour in the same folder is not", async () => {
@@ -302,7 +379,7 @@ describe("the visible range differs by role (scope: role)", () => {
       { sid: SID, kind: "contained", path: "ws/hello.txt" },
       own,
     );
-    expect(read["content"]).toBe("hello\n");
+    expect(textOf(read)).toBe("hello\n");
   });
 
   test("a session reaches no other session's files", async () => {
@@ -352,7 +429,7 @@ describe("file.write: the inbox", () => {
     const write = await run("file.write", files()["file.write"], {
       sid: SID,
       path: "docs/inbox/note.md",
-      content: "note\n",
+      content: sent("note\n"),
     });
     expect(write["path"]).toBe("docs/inbox/note.md");
     expect(statSync(join(base, "repo/ws/docs/inbox/note.md")).isFile()).toBe(true);
@@ -364,7 +441,7 @@ describe("file.write: the inbox", () => {
         run("file.write", files()["file.write"], {
           sid: SID,
           path: "docs/inbox/note.md",
-          content: "again\n",
+          content: sent("again\n"),
         }),
       ),
     ).toBe("file_exists");
@@ -376,7 +453,7 @@ describe("file.write: the inbox", () => {
         run("file.write", files()["file.write"], {
           sid: SID,
           path: "elsewhere.md",
-          content: "",
+          content: sent(""),
         }),
       ),
     ).toBe("path_not_writable");
@@ -389,7 +466,7 @@ describe("file.create", () => {
       sid: SID,
       kind: "contained",
       path: "ws/sub/fresh.txt",
-      content: "fresh\n",
+      content: sent("fresh\n"),
     });
     expect(created["path"]).toBe("ws/sub/fresh.txt");
   });
@@ -401,7 +478,7 @@ describe("file.create", () => {
           sid: SID,
           kind: "contained",
           path: "ws/hello.txt",
-          content: "",
+          content: sent(""),
         }),
       ),
     ).toBe("file_exists");
@@ -414,7 +491,7 @@ describe("file.create", () => {
           sid: SID,
           kind: "contained",
           path: "ws/absent/new.txt",
-          content: "",
+          content: sent(""),
         }),
       ),
     ).toBe("not_found");
@@ -432,7 +509,7 @@ describe("file.edit", () => {
       sid: SID,
       kind: "contained",
       path: "ws/sub/deep.txt",
-      content: "deeper\n",
+      content: sent("deeper\n"),
       expected_mtime_at: read["mtime_at"],
       expected_size: read["size"],
     });
@@ -442,7 +519,7 @@ describe("file.edit", () => {
       kind: "contained",
       path: "ws/sub/deep.txt",
     });
-    expect(after["content"]).toBe("deeper\n");
+    expect(textOf(after)).toBe("deeper\n");
     expect(after["mtime_at"]).toBe(edited["mtime_at"]);
   });
 
@@ -459,7 +536,7 @@ describe("file.edit", () => {
           sid: SID,
           kind: "contained",
           path: "ws/sub/deep.txt",
-          content: "mine\n",
+          content: sent("mine\n"),
           expected_mtime_at: read["mtime_at"],
           expected_size: read["size"],
         }),
@@ -475,7 +552,7 @@ describe("file.edit", () => {
           sid: SID,
           kind: "contained",
           path: "ws/binary.dat",
-          content: "text\n",
+          content: sent("text\n"),
           expected_mtime_at: Math.floor(stat.mtimeMs),
           expected_size: stat.size,
         }),
@@ -624,13 +701,13 @@ describe("a session two processes are running", () => {
   const calls = (): Record<string, Record<string, unknown>> => ({
     "dir.list": { sid: SID, kind: "contained", path: "ws" },
     "file.read": { sid: SID, kind: "contained", path: "ws/hello.txt" },
-    "file.write": { sid: SID, path: "docs/inbox/duplicated.md", content: "note\n" },
-    "file.create": { sid: SID, kind: "contained", path: "ws/created.txt", content: "new\n" },
+    "file.write": { sid: SID, path: "docs/inbox/duplicated.md", content: sent("note\n") },
+    "file.create": { sid: SID, kind: "contained", path: "ws/created.txt", content: sent("new\n") },
     "file.edit": {
       sid: SID,
       kind: "contained",
       path: "ws/hello.txt",
-      content: "mine\n",
+      content: sent("mine\n"),
       expected_mtime_at: 0,
       expected_size: 0,
     },

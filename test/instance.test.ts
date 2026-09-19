@@ -777,7 +777,7 @@ describe("what a run leaves behind (M4)", () => {
       request_id: `file-${run}`,
       sid: SID,
       path: `docs/inbox/${run}.md`,
-      content: "a note\n",
+      content: Buffer.from("a note\n").toString("base64"),
     });
     expect((await client.next())["ok"]).toBe(true);
   }

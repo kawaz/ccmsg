@@ -12,6 +12,7 @@ import {
 import type { Dirent } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { basename, dirname, join, relative } from "node:path";
+import { MAX_FILE_READ_BYTES } from "@ccmsg/protocol";
 import type {
   DirEntry,
   DirListArgs,
@@ -37,11 +38,6 @@ import type {
 } from "@ccmsg/protocol";
 import { type HandlerInput, OpError } from "../dispatch/index.ts";
 import type { Containment, Located, Viewer } from "./containment.ts";
-
-/** How much of a file `file.read` carries. Larger files are answered with their
- * head and `truncated`, so one file can never cost the connection more than
- * this however big it grew (DR-0008 §5). */
-const READ_LIMIT = 512 * 1024;
 
 /** How much of a file decides whether it is text. A NUL in the head is what
  * separates a document from a binary here: enough to keep an image out of a
@@ -86,19 +82,26 @@ export function fileHandlers(paths: Containment, duplicated: (sid: Sid) => boole
       const at = await paths.locate(args, viewer(input));
       const stat = await existing(at);
       if (!stat.isFile()) throw new OpError("not_found", `${args.path} is not a file`);
-      // As much as the answer may carry and no more: a file larger than the
-      // limit is answered from its head, so reading it whole would cost the
-      // instance the whole of a file whose size is what the limit exists to
-      // refuse.
-      const head = await bytesOf(at.real, READ_LIMIT);
-      const binary = isBinary(head);
+      const offset = args.offset ?? 0;
+      // As much as one reply may carry and no more, whatever was asked for: the
+      // ceiling is the contract's, so a caller that asks for more is answered
+      // with what fits rather than refused.
+      const length = Math.min(args.length ?? MAX_FILE_READ_BYTES, MAX_FILE_READ_BYTES);
+      // A range past the end reads short, and one entirely past it reads
+      // nothing, which is where a caller walking to the end lands on its last
+      // step.
+      const bytes = await bytesOf(at.real, length, offset);
+      // The head of the file, not this range: what is said is whether the file
+      // is text, and a range in the middle of one is no answer to that.
+      const binary = isBinary(await bytesOf(at.real, SNIFF, 0));
       return {
         sid: args.sid,
         path: at.path,
         size: stat.size,
-        truncated: stat.size > head.byteLength,
+        offset,
+        length: bytes.byteLength,
         binary,
-        content: binary ? "" : head.toString("utf8"),
+        content: bytes.toString("base64"),
         mtime_at: mtimeOf(stat),
       };
     },
@@ -110,7 +113,7 @@ export function fileHandlers(paths: Containment, duplicated: (sid: Sid) => boole
       // replaced; the folder itself is made, since a repository that has never
       // had one is exactly where the first note goes (DR-0019 §2.1).
       await mkdir(dirname(at.real), { recursive: true });
-      await writes.to(at.real, () => create(at.real, args.content));
+      await writes.to(at.real, () => create(at.real, decoded(args.content)));
       return { sid: args.sid, path: at.path };
     },
 
@@ -121,7 +124,7 @@ export function fileHandlers(paths: Containment, duplicated: (sid: Sid) => boole
       if (!(await isDirectory(parent))) {
         throw new OpError("not_found", `${args.path} has no folder to be created in`);
       }
-      await writes.to(at.real, () => create(at.real, args.content));
+      await writes.to(at.real, () => create(at.real, decoded(args.content)));
       return { sid: args.sid, path: at.path };
     },
 
@@ -135,13 +138,13 @@ export function fileHandlers(paths: Containment, duplicated: (sid: Sid) => boole
       const after = await writes.to(at.real, async () => {
         const before = await existing(at);
         if (!before.isFile()) throw new OpError("not_found", `${args.path} is not a file`);
-        if (isBinary(await bytesOf(at.real, SNIFF))) {
+        if (isBinary(await bytesOf(at.real, SNIFF, 0))) {
           throw new OpError("not_a_text_file", `${args.path} holds binary content`);
         }
         if (mtimeOf(before) !== args.expected_mtime_at || before.size !== args.expected_size) {
           throw new OpError("file_conflict", `${args.path} changed since it was read`);
         }
-        await replace(at.real, args.content);
+        await replace(at.real, decoded(args.content));
         return stat(at.real);
       });
       return {
@@ -261,16 +264,24 @@ function mtimeOf(stat: { mtimeMs: number }): Timestamp {
   return Math.floor(stat.mtimeMs);
 }
 
-/** A file's leading bytes, at most `limit` of them. */
-async function bytesOf(path: string, limit: number): Promise<Buffer> {
+/** One range of a file's bytes: at most `limit` of them from `offset`, and
+ * fewer where the range met the end. */
+async function bytesOf(path: string, limit: number, offset: number): Promise<Buffer> {
   const handle = await open(path, "r");
   try {
     const buffer = Buffer.alloc(limit);
-    const { bytesRead } = await handle.read(buffer, 0, limit, 0);
+    const { bytesRead } = await handle.read(buffer, 0, limit, offset);
     return buffer.subarray(0, bytesRead);
   } finally {
     await handle.close();
   }
+}
+
+/** The bytes a caller handed over. Content travels as base64 whatever the file
+ * holds, so every write goes through the same decoding and none of them reads
+ * the string as text. */
+function decoded(content: string): Buffer {
+  return Buffer.from(content, "base64");
 }
 
 function isBinary(bytes: Buffer): boolean {
@@ -279,7 +290,7 @@ function isBinary(bytes: Buffer): boolean {
 
 /** Write a file that must not be there yet. The exclusive open is what decides
  * it: a check followed by a write would answer about the moment before. */
-async function create(path: string, content: string): Promise<void> {
+async function create(path: string, content: Buffer): Promise<void> {
   try {
     await writeFile(path, content, { flag: "wx" });
   } catch (cause) {
@@ -321,7 +332,7 @@ class Writes {
  * over it, so a reader sees either the old file or the new one and never a
  * half-written one. The name it lands under is unique to this write, so two
  * writes beside one file never share a staging file. */
-async function replace(path: string, content: string): Promise<void> {
+async function replace(path: string, content: Buffer): Promise<void> {
   const temporary = `${path}.ccmsg-${randomUUID()}`;
   await writeFile(temporary, content);
   try {
