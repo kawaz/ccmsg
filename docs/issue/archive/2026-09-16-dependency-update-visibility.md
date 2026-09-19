@@ -1,6 +1,6 @@
 ---
 title: 依存パッケージの更新見逃し防止を CI 周りに入れる
-status: open
+status: resolved
 category: task
 created: 2026-09-16T16:11:16+09:00
 last_read:
@@ -9,10 +9,10 @@ wip_entered:
 blocked_entered:
 pending_entered:
 discarded_entered:
-resolved_entered:
+resolved_entered: 2026-09-19T11:49:13+09:00
 discard_reason:
 pending_reason:
-close_reason:
+close_reason: ["done: just push の deps に check-outdated (scripts/check-outdated.sh、registry 不達は未確認で通す) と .github/dependabot.yml (bun 週次) を追加。just ci でなく push deps にしたのは GitHub CI が just ci を回すため"]
 blocked_by:
 origin: 自リポ TODO
 ---
