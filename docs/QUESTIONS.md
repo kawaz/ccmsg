@@ -24,7 +24,7 @@
 
 webui DR-0005 の閲覧 site ([/Users/kawaz/.local/share/repos/github.com/kawaz/ccmsg-webui/main/docs/decisions/DR-0005-a-viewing-site-draws-files-through-a-service-worker.md](/Users/kawaz/.local/share/repos/github.com/kawaz/ccmsg-webui/main/docs/decisions/DR-0005-a-viewing-site-draws-files-through-a-service-worker.md)) は webui とも endpoint とも site が違うので、閉じ込めは site の分離で効いている。許せばビルドした docs や図が動く形で見え、許さなければ描けるのは静止した物だけ。
 
-外へ出る経路は裁定済み (kawaz 2026-09-19): `_top` は sandbox 属性で塞ぐ (`allow-top-navigation` なし)、`_blank` / `window.open` も `allow-popups` なしで封じる (PWA では元々動かない)。残るのは script の可否だけ。統括の推しは a (閉じ込めは別 site + トップレベル遷移不可 + 親経由でしかバイト列が届かない、で効いている。許した上で CSP は `default-src 'self'` 相当に絞る)。
+外へ出る経路は裁定済み (kawaz 2026-09-19): `_top` は sandbox 属性で塞ぐ (`allow-top-navigation` なし)、`_blank` / `window.open` は `allow-popups` で許す (PWA で動かないのは PWA の制限として受ける)。残るのは script の可否だけ。統括の推しは a (閉じ込めは別 site + トップレベル遷移不可 + 親経由でしかバイト列が届かない、で効いている。許した上で CSP は `default-src 'self'` 相当に絞る)。
 
 - [ ] a: 許す (site の分離で足りるという判断)
 - [ ] b: 許さない (静止した物だけ描く)
