@@ -32,4 +32,15 @@ webui DR-0005 の閲覧 site ([/Users/kawaz/.local/share/repos/github.com/kawaz/
 
 ## 確認待ち
 
-(なし)
+### FV-C1: iPhone の PWA で `_blank` / `window.open` がどう動くか (FV-Q6 の前提)
+
+裁定 (FV-Q6 の外へ出る経路) は「`_blank` / `window.open` は許す、PWA で動かないのは PWA の制限として受ける」だが、iPhone の PWA での実際の挙動を見てから確定する (kawaz 2026-09-19)。統括は iPhone を触れないので実機は kawaz。
+
+手順 (1 回で足りる。`window.open` も WebKit では同じ popup 扱い): ホーム画面に追加した ccmsg の PWA で、外部 URL (`https://…`) を含む markdown を Files で開き、プレビューのリンクをタップする (md のリンクは別タブで開く作り)。
+
+- [ ] a: Safari (別アプリ) に飛ぶ
+- [ ] b: アプリ内ブラウザ (SFSafariViewController 風) で開き、閉じると PWA に戻る
+- [ ] c: 何も起きない
+- [ ] d: PWA 自身がその URL に遷移してしまう (= scope 外に出る、`_top` と同じ困り方)
+
+d なら `_blank` も塞ぐ側に倒す。a / b / c なら裁定どおり許す。
