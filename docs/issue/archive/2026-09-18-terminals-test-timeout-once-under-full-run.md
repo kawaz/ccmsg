@@ -1,6 +1,6 @@
 ---
 title: 全体テスト走行中に terminals.test.ts が 1 回だけ timeout する
-status: open
+status: resolved
 category: bug
 created: 2026-09-18T11:31:55+09:00
 last_read:
@@ -9,10 +9,10 @@ wip_entered:
 blocked_entered:
 pending_entered:
 discarded_entered:
-resolved_entered:
+resolved_entered: 2026-09-19T13:17:22+09:00
 discard_reason:
 pending_reason:
-close_reason:
+close_reason: ["done: DirectoryWatch が未作成ディレクトリ後発作成時に対象 watcher を再 arm せず socket 作成を永久に観測できなかった真因を特定、確認時と後発 watcher arm 直後の両方に再arm+再読の補償を追加 (37d42a97)、test を固定5秒競争から通知契機の観測に変更、bun test 10連続 1221 pass/0 fail・対象テスト20回反復 280 pass/0 fail で確認"]
 blocked_by:
 origin: 自リポ TODO
 ---
