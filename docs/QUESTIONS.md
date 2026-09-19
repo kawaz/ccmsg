@@ -20,7 +20,14 @@
 
 ## 裁定待ち
 
-(なし)
+### RU-Q1: 登録 URL の生死確認で、中継そのものの失敗も `auth_invalid` に畳んでよいか
+
+`auth.challenge` が登録 token を受けた時、発行者へ `auth.resolve` の `alive` で中継する ([src/auth/auth.ts](../src/auth/auth.ts) の `#aliveEnrolment`)。現状は **使用済み・期限切れ・発行元が到達不能・peer が契約外の答えを返した (本来 `internal_error`) を全部 `auth_invalid` 1 種**に畳んでいる (理由は log には出る)。契約 issue の裁定「使用済み / 期限切れ / 発行元不明を区別しない」をそのまま広げた形。
+
+懸念: 「発行 instance が落ちているだけ」も人には「この URL は使えない」と見え、再発行しても直らない状況で人が URL を捨てにいく。
+
+- [ ] a: 現状のまま (区別しない。「実在した URL か」を漏らさない側に倒す)
+- [ ] b: 中継が成立しなかった場合だけ別の答えにする (`internal_error` 等。URL の真偽は漏れないが、生死不明と使用済みが見分けられる)
 
 ## 確認待ち
 
