@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import {
   chmodSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -437,20 +438,17 @@ describe("the directories the manager binds its sockets in", () => {
     // not there when the subscription opens.
     const dir = join(root, "hyoui");
     let moved = 0;
-    const waiters: (() => void)[] = [];
+    const waiters: { ready: () => boolean; resolve: () => void }[] = [];
     const watch = hostTerminalWatch(() => {
       moved++;
-      for (const waiter of waiters.splice(0)) waiter();
+      for (const waiter of waiters.splice(0)) {
+        if (waiter.ready()) waiter.resolve();
+        else waiters.push(waiter);
+      }
     }, [dir]);
-    /** Whether the watch said anything within `budgetMs`. */
-    const reported = async (budgetMs: number): Promise<boolean> => {
-      const before = moved;
-      await Promise.race([
-        new Promise<void>((resolve) => waiters.push(resolve)),
-        Bun.sleep(budgetMs),
-      ]);
-      return moved > before;
-    };
+    /** The next report after the watched state has reached `ready`. */
+    const reported = (ready: () => boolean): Promise<void> =>
+      new Promise((resolve) => waiters.push({ ready, resolve }));
 
     watch.start();
     // Arming is itself a reason to read, once however many directories there
@@ -458,14 +456,17 @@ describe("the directories the manager binds its sockets in", () => {
     expect(moved).toBe(1);
 
     // The manager's first terminal, which makes the directory as it binds.
+    let report = reported(() => existsSync(dir));
     mkdirSync(dir, { recursive: true });
-    expect(await reported(5_000)).toBe(true);
+    await report;
     const socket = join(dir, "run-1-a.sock");
+    report = reported(() => existsSync(socket));
     writeFileSync(socket, "");
-    expect(await reported(5_000)).toBe(true);
+    await report;
     // And the terminal closing, which is the socket going away.
+    report = reported(() => !existsSync(socket));
     unlinkSync(socket);
-    expect(await reported(5_000)).toBe(true);
+    await report;
 
     watch.stop();
     const quiet = moved;

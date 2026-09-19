@@ -58,12 +58,8 @@ export class DirectoryWatch {
     if (this.#running) return;
     this.#running = true;
     this.#arm();
+    this.#confirmArm();
     this.#armAbove();
-    this.#armed = setTimeout(this.onChange, ARMED_AFTER_MS);
-    // A timer of this instance's own must not be what keeps the process up: an
-    // instance with nothing to do exits on its listeners, not on a reading it
-    // is about to make anyway.
-    this.#armed.unref?.();
     if (this.pollMs !== undefined) this.#timer = setInterval(this.onChange, this.pollMs);
     this.onChange();
   }
@@ -100,13 +96,24 @@ export class DirectoryWatch {
     }
   }
 
-  #arm(): void {
-    if (this.#watcher !== undefined) return;
+  #arm(): boolean {
+    if (this.#watcher !== undefined) return false;
     try {
       this.#watcher = watch(this.dir, this.onChange);
+      return true;
     } catch {
       this.#watcher = undefined;
+      return false;
     }
+  }
+
+  #confirmArm(): void {
+    if (this.#armed !== undefined) clearTimeout(this.#armed);
+    this.#armed = setTimeout(() => this.#moved(), ARMED_AFTER_MS);
+    // A timer of this instance's own must not be what keeps the process up: an
+    // instance with nothing to do exits on its listeners, not on a reading it
+    // is about to make anyway.
+    this.#armed.unref?.();
   }
 
   /** Watch the nearest directory above this one that exists, which is what says
@@ -136,7 +143,7 @@ export class DirectoryWatch {
    * further down, would be reported by nothing. */
   #moved(): void {
     const armed = this.#watcher !== undefined;
-    this.#arm();
+    if (this.#arm()) this.#confirmArm();
     if (!armed && this.#watcher === undefined) this.#armAbove();
     this.onChange();
   }
