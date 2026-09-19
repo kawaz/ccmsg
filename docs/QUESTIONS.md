@@ -20,15 +20,6 @@
 
 ## 裁定待ち
 
-### RB-Q2: 書き込み系の `content` も base64 に揃えるか
-
-契約 DR-0031 で `file.read` の `content` は base64 のバイト列になる ([/Users/kawaz/.local/share/repos/github.com/kawaz/ccmsg-protocol/main/docs/decisions/DR-0031-file-read-answers-bytes-in-ranges.md](/Users/kawaz/.local/share/repos/github.com/kawaz/ccmsg-protocol/main/docs/decisions/DR-0031-file-read-answers-bytes-in-ranges.md))。`file.write` / `file.create` / `file.edit` の `content` は文字列のまま。
-
-揃えないと、**読めるが書き戻せない形**のファイルが生まれる。
-
-- [ ] a: 揃える (書き込み系も base64) — **統括の推し**
-- [ ] b: 揃えない (読みだけバイト列、書き込みはテキストのまま)
-
 ### FV-Q6: 閲覧 site の CSP で script を許すか
 
 webui DR-0005 の閲覧 site ([/Users/kawaz/.local/share/repos/github.com/kawaz/ccmsg-webui/main/docs/decisions/DR-0005-a-viewing-site-draws-files-through-a-service-worker.md](/Users/kawaz/.local/share/repos/github.com/kawaz/ccmsg-webui/main/docs/decisions/DR-0005-a-viewing-site-draws-files-through-a-service-worker.md)) は webui とも endpoint とも site が違うので、閉じ込めは site の分離で効いている。許せばビルドした docs や図が動く形で見え、許さなければ描けるのは静止した物だけ。
