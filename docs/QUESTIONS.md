@@ -43,4 +43,4 @@ webui DR-0005 の閲覧 site ([/Users/kawaz/.local/share/repos/github.com/kawaz/
 - [ ] c: 何も起きない
 - [ ] d: PWA 自身がその URL に遷移してしまう (= scope 外に出る、`_top` と同じ困り方)
 
-d なら `_blank` も塞ぐ側に倒す。a / b / c なら裁定どおり許す。
+d なら `_blank` も塞ぐ側に倒す。a / b / c なら裁定どおり許す。PWA かどうかは `matchMedia('(display-mode: standalone)')` (標準) と iOS の `navigator.standalone` で判定できるので、d の場合も「PWA の時だけ `allow-popups` を外す」という切替が取れる。同じ判定で全体設計 (ツールバーの戻る / 進む / リロードの出し分け等) を PWA 前提で切り替える余地もある (kawaz 2026-09-19)。
