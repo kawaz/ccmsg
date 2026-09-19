@@ -24,7 +24,7 @@
 
 webui DR-0005 の閲覧 site ([/Users/kawaz/.local/share/repos/github.com/kawaz/ccmsg-webui/main/docs/decisions/DR-0005-a-viewing-site-draws-files-through-a-service-worker.md](/Users/kawaz/.local/share/repos/github.com/kawaz/ccmsg-webui/main/docs/decisions/DR-0005-a-viewing-site-draws-files-through-a-service-worker.md)) は webui とも endpoint とも site が違うので、閉じ込めは site の分離で効いている。許せばビルドした docs や図が動く形で見え、許さなければ描けるのは静止した物だけ。
 
-同じ CSP が iframe から外へ出る経路 (`target=_blank` / `window.open` / `top`) を塞ぐ側も持つので、1 つの表として決める。
+外へ出る経路は裁定済み (kawaz 2026-09-19): `_top` は sandbox 属性で塞ぐ (`allow-top-navigation` なし)、`_blank` / `window.open` も `allow-popups` なしで封じる (PWA では元々動かない)。残るのは script の可否だけ。統括の推しは a (閉じ込めは別 site + トップレベル遷移不可 + 親経由でしかバイト列が届かない、で効いている。許した上で CSP は `default-src 'self'` 相当に絞る)。
 
 - [ ] a: 許す (site の分離で足りるという判断)
 - [ ] b: 許さない (静止した物だけ描く)
@@ -34,7 +34,7 @@ webui DR-0005 の閲覧 site ([/Users/kawaz/.local/share/repos/github.com/kawaz/
 
 閲覧 site は他のどれとも site が違う必要があり、FQDN の管理はフロント (hosting) の責務。webui はその住所を知る必要がある。
 
-- [ ] a: ビルド時の定数
+- [x] a: ビルド時の定数
 - [ ] b: instance が名乗る (契約に足す)
 - [ ] c: 設定の 1 項 (人が入れる)
 
