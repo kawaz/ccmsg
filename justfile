@@ -28,7 +28,7 @@ default:
 # ---------- main entries ----------
 
 # push (バージョン bump 済みを前提、全 gate 通過後に push)
-push: check-on-default-branch ensure-clean ci check-translations check-version-bumped
+push: check-on-default-branch ensure-clean ci check-outdated check-translations check-version-bumped
     bump-semver vcs push --branch main --jj-bookmark-auto-advance
 
 # version を bump して Release commit を作成 (push は別途 `just push`)
@@ -61,6 +61,10 @@ test: lint typecheck
     bun test
 
 # ---------- check recipes (push の sanity 検証) ----------
+
+# 直接依存に更新が出ていないか確認 (registry 不達時は「未確認」表示で通す)
+check-outdated:
+    scripts/check-outdated.sh
 
 # 現在の bookmark/branch が default (= main) 上にあるか確認
 [private]
