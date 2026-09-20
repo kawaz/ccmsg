@@ -1,6 +1,6 @@
 ---
 title: daemon restart --all leaves supervisor on old build
-status: open
+status: resolved
 category: bug
 created: 2026-09-11T12:59:05+09:00
 last_read:
@@ -9,10 +9,10 @@ wip_entered:
 blocked_entered:
 pending_entered:
 discarded_entered:
-resolved_entered:
+resolved_entered: 2026-09-20T23:21:29+09:00
 discard_reason:
 pending_reason:
-close_reason:
+close_reason: ["implemented","docs/DESIGN.md §8.4","test/daemon.test.ts"]
 blocked_by:
 origin: 自リポ TODO
 ---
@@ -36,8 +36,8 @@ origin: 自リポ TODO
 
 ## 受け入れ条件
 
-- [ ] `daemon restart --all` の監督者取り扱い方針が決まる (再 exec するか、build 不一致を検出・表示するか)
-- [ ] 監督者が子から `unknown_op` を受けた場合の `daemon status --all` 表示が version null 以外の意味のある状態を示す
+- [x] `daemon restart --all` の監督者取り扱い方針が決まる (再 exec するか、build 不一致を検出・表示するか)
+- [x] 監督者が子から `unknown_op` を受けた場合の `daemon status --all` 表示が version null 以外の意味のある状態を示す
 
 ## TODO
 
