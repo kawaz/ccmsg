@@ -1,15 +1,15 @@
 import type { Timestamp } from "@ccmsg/protocol";
-import { sameProcess } from "./processes.ts";
+import { type ProcessStart, sameProcess } from "./processes.ts";
 
 /** When one process started, as the host states it. Undefined where the host
  * stated something this instance could not read as an instant. The effect is
  * injected for the same reason every other process effect is: the answer comes
  * from a child, and a test states it instead. */
-export type StartReader = (pid: number) => Promise<Timestamp | undefined>;
+export type StartReader = (pid: number) => Promise<ProcessStart | undefined>;
 
 /** Read, and what the reading found. `null` is "asked, and the host could not
  * say", which is not the same as not having asked. */
-type Read = Timestamp | null;
+type Read = ProcessStart | null;
 
 /** Whether the process under a state file's pid is the one that file was
  * written for, read once per pid.
@@ -54,6 +54,7 @@ export class StartCache {
     // whose `ps` states elapsed time in some other form would make them
     // unusable there.
     if (read === undefined || read === null) return true;
+    if (read === "gone") return false;
     return sameProcess(read, startedAt);
   }
 
@@ -71,7 +72,7 @@ export class StartCache {
   }
 
   async #fill(pid: number): Promise<void> {
-    let started: Timestamp | undefined;
+    let started: ProcessStart | undefined;
     try {
       started = await this.read(pid);
     } catch {

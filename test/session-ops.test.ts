@@ -30,6 +30,7 @@ import {
   hostProcessDeps,
   lastLivePath,
   type ProcessDeps,
+  processStart,
   sessionCapabilities,
   sessionHandlers,
   SessionProcesses,
@@ -1171,6 +1172,13 @@ describe("how long a process has been running, as `ps` states it", () => {
     // alone rather than on a number read out of the wrong shape.
     expect(elapsedSeconds("")).toBeUndefined();
     expect(elapsedSeconds("Wed Sep  9 02:45:31 2026")).toBeUndefined();
+  });
+
+  test("a zombie is gone, while another process states when it began", () => {
+    const now = 2_000_000;
+    expect(processStart("Z+ 01:02", now)).toBe("gone");
+    expect(processStart("S+ 01:02", now)).toBe(now - 62_000);
+    expect(processStart("unexpected", now)).toBeUndefined();
   });
 });
 

@@ -1612,6 +1612,13 @@ describe("a state file whose pid belongs to somebody else", () => {
     expect(cache.own(7, STARTED_AT)).toBe(true);
   });
 
+  test("a zombie is no run of the session its state file names", async () => {
+    const { cache, read } = reading(async () => "gone");
+    cache.observe([7]);
+    await read;
+    expect(cache.own(7, STARTED_AT)).toBe(false);
+  });
+
   test("a pid the scan no longer holds is read afresh when it comes back", async () => {
     const asked: number[] = [];
     const { cache, read } = reading(async (pid) => {

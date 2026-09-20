@@ -4,6 +4,8 @@ import { isHarness, launchedAs } from "../harness/index.ts";
 import { managerOf, terminalId } from "../terminals/ids.ts";
 import type { TerminalReader } from "./terminals.ts";
 
+export type ProcessStart = Timestamp | "gone";
+
 /** How long a child this instance runs to observe a process may take. A wedged
  * reader must not hold a request open; the answer it would have given is worth
  * less than the connection it would hold. */
@@ -69,7 +71,7 @@ export interface ProcessDeps {
   readonly environment: (pid: number) => Promise<string>;
   /** When the process was started, as the platform states it. Undefined when
    * the platform stated something this instance could not read as an instant. */
-  readonly started: (pid: number) => Promise<Timestamp | undefined>;
+  readonly started: (pid: number) => Promise<ProcessStart | undefined>;
   readonly signal: (pid: number, signal: "SIGTERM" | "SIGKILL") => void;
   readonly alive: (pid: number) => boolean;
   readonly sleep: (ms: number) => Promise<void>;
@@ -281,13 +283,14 @@ export class SessionProcesses {
    * unusable on such a host, which is a certain loss against the one this
    * guards. */
   private async isSameProcess(pid: number, startedAt: Timestamp): Promise<boolean> {
-    let started: Timestamp | undefined;
+    let started: ProcessStart | undefined;
     try {
       started = await this.deps.started(pid);
     } catch {
       return true;
     }
     if (started === undefined) return true;
+    if (started === "gone") return false;
     return sameProcess(started, startedAt);
   }
 
@@ -400,9 +403,19 @@ function hostEnvironment(pid: number): Promise<string> {
  *
  * The format is `[[dd-]hh:]mm:ss`, and its resolution is the second, which is
  * why the guard that compares it allows for one. */
-export async function hostStarted(pid: number): Promise<Timestamp | undefined> {
-  const elapsed = elapsedSeconds((await run(["ps", "-p", String(pid), "-o", "etime="])).trim());
-  return elapsed === undefined ? undefined : Date.now() - elapsed * 1000;
+export async function hostStarted(pid: number): Promise<ProcessStart | undefined> {
+  return processStart(
+    await run(["ps", "-p", String(pid), "-o", "stat=", "-o", "etime="]),
+    Date.now(),
+  );
+}
+
+/** A process state and elapsed time as `ps` states them. */
+export function processStart(row: string, now: Timestamp): ProcessStart | undefined {
+  const [state, elapsed] = row.trim().split(/\s+/, 2);
+  if (state?.startsWith("Z")) return "gone";
+  const seconds = elapsed === undefined ? undefined : elapsedSeconds(elapsed);
+  return seconds === undefined ? undefined : now - seconds * 1000;
 }
 
 /** `[[dd-]hh:]mm:ss` in seconds. Undefined for anything else, which is a host
