@@ -204,25 +204,29 @@ class Patterns implements Query {
    * nothing to read while it is still running. */
   #within(worker: Worker, ask: { texts: readonly string[]; want: number }): Promise<number[]> {
     return new Promise<number[]>((settle, fail) => {
+      const off = (): void => {
+        clearTimeout(timer);
+        worker.off("message", done);
+        worker.off("error", failed);
+      };
+      const done = (answer: number[]): void => {
+        off();
+        settle(answer);
+      };
+      const failed = (cause: Error): void => {
+        off();
+        fail(cause);
+      };
       const timer = setTimeout(
         () => {
+          off();
           this.#give(worker);
           settle([]);
         },
         Math.max(this.#left, 0),
       );
-      const done = (answer: number[]): void => {
-        clearTimeout(timer);
-        worker.off("message", done);
-        worker.off("error", failed);
-        settle(answer);
-      };
-      const failed = (cause: Error): void => {
-        clearTimeout(timer);
-        fail(cause);
-      };
       worker.on("message", done);
-      worker.once("error", failed);
+      worker.on("error", failed);
       worker.postMessage(ask);
     });
   }
