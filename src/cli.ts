@@ -233,7 +233,8 @@ const ROOT: Command = {
         },
         {
           name: "restart",
-          summary: "監督者に、止めてから起こし直させる",
+          summary:
+            "監督者に、止めてから起こし直させる (--all は監督者ごと新しい build に載せ替える)",
           usage: "ccmsg daemon restart <name | dir> | --all",
           run: (args) => supervised("supervise_restart", args),
         },

@@ -701,6 +701,8 @@ instance と監督者が読むのは `$CCMSG_STATE_DIR/config/` の方である:
 
   **instance を起こす経路は監督者だけである。** `ccmsg daemon start / stop / restart / status` は監督者への要求であり、CLI が自分で子を起こす経路は持たない — 別経路で起きた instance は「誰も上げ直さず、誰も知らない」状態になり、常駐が言っていることと食い違うからである。監督者が居なければこれらは `{"error":{"code":"supervisor_not_running"}}` で失敗する。要求は state に置く control socket (`<state root>/supervise.sock`、0600) を JSON lines で流れ、op 名は `supervise_*` で契約の op と区別する — **これは契約ではない**。ホスト上のプロセスについての内部プロトコルであって、webui も mesh の相手もここには来ない。
 
+  **`restart --all` は監督者も含む。**「全部を上げ直す」で人が求めているのは「全部を今入っている build に」であり、監督者は上げ直しが取り残していた唯一のプロセスで、取り残されると自分を起こした build が知っている op 名で喋り続けるからである。ホスト自身が監督者を握っている (pid が launchd / systemd の起こしたもの) 場合、監督者は子を上げ直さずに自分が去る — 次にホストが起こす監督者が各 config home を自分で起こすので、両方やると各 instance が 2 回落ちることになる。誰も起こし直さない場合 (端末から起動した監督者) は、去るとホストの instance ごと落ちるので、従来どおり子を上げ直し、監督者がどの build のままかを答えに載せる。`daemon status` は両方の build を持ち (instance の `version` の隣に `supervisor_version`)、食い違えば `restart_needed` と言う。
+
   `ccmsg daemon add <dir>` は instance id を発行して `instances/instance-<id>.ts` を書き (ラベルは dir 名から、harness は目印ファイルから、port は登録済みの最大 + 1 の空き)、id とその loopback address を `endpoints.json` に、id を `supervisor.json` に載せ、§8.2 の処理を通してから監督者に伝える。proxy が前に居るかどうかはここからは見えない deployment の事実なので、居る場合はその行を人が直す。`remove <name | id | dir>` は両方のファイルから id を外して設定を消し、state dir は残す — そこの id で instance が発行した物すべてが引かれるからである。`remove` は見るのをやめるだけで**子は止めない** — 一覧の編集は shutdown ではなく、その instance と話しているセッションはそのまま話し続ける。
 
   例外は 2 つ。`ccmsg daemon run [dir]` は foreground の単発起動で監督者の管理外 (`status` にも出ない)。`ccmsg daemon log` はファイルを直接読む — ログは死んだ後に読むものなので、監督者が居ないと読めない設計にはしない

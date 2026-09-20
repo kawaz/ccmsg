@@ -1,6 +1,13 @@
 import { afterAll, afterEach, describe, expect, test } from "bun:test";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { basename, join } from "node:path";
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { basename, dirname, join } from "node:path";
 import { main } from "../src/cli.ts";
 import {
   add,
@@ -24,6 +31,7 @@ import {
   ask,
   tailOf,
   targetFor,
+  withSupervisor,
 } from "../src/daemon/index.ts";
 import { applied, DEFAULT_CONFIG, evaluate, TYPES_FILE } from "../src/instance/index.ts";
 import { resolvePaths } from "../src/instance/paths.ts";
@@ -854,3 +862,127 @@ async function waitFor(ready: () => boolean, turns = 1000): Promise<void> {
   }
   throw new Error("what the test was waiting for did not happen");
 }
+
+describe("what a row says about the build behind it (issue: restart --all leaves the supervisor)", () => {
+  const ROW: StatusRow = {
+    id: "0".repeat(32) as InstanceRow["id"],
+    dir: "/nowhere",
+    running: true,
+    config: DEFAULT_CONFIG,
+  };
+
+  test("the supervisor's build is beside the instance's, and a disagreement is said", () => {
+    expect(withSupervisor({ ...ROW, version: "1.7.1" }, "1.7.1")).toMatchObject({
+      supervisor_version: "1.7.1",
+    });
+    expect(withSupervisor({ ...ROW, version: "1.7.1" }, "1.7.1")).not.toHaveProperty(
+      "restart_needed",
+    );
+    // The incident this is for: the supervisor was left on the build it was
+    // started with while its children came back on a newer one.
+    expect(withSupervisor({ ...ROW, version: "1.8.0" }, "1.7.1")).toMatchObject({
+      supervisor_version: "1.7.1",
+      restart_needed: true,
+    });
+    // An instance that said no build is one nothing could be asked of, which
+    // `unreachable` is what says. Two builds cannot disagree when one of them
+    // is not known.
+    expect(
+      withSupervisor({ ...ROW, running: false, unreachable: "silent" }, "1.7.1"),
+    ).not.toHaveProperty("restart_needed");
+  });
+
+  test("an instance that refuses what it is asked is not a running instance", async () => {
+    const at = host();
+    const home = at.home("one");
+    const row = await register(home);
+    const target = targetFor(process.env, home, "one", row.id);
+
+    // Nothing is there at all: no process, nothing to reach.
+    const absent = await statusOfTarget(target);
+    expect([absent.running, absent.unreachable, absent.version]).toEqual([
+      false,
+      undefined,
+      undefined,
+    ]);
+
+    // One that answers the greeting and refuses the question, which is what an
+    // instance of another build does with an op that build does not name.
+    mkdirSync(dirname(target.paths.socket), { recursive: true });
+    const server = Bun.listen({
+      unix: target.paths.socket,
+      socket: {
+        data(socket, chunk) {
+          for (const line of new TextDecoder().decode(chunk).split("\n")) {
+            if (line.trim() === "") continue;
+            const request = JSON.parse(line) as { request_id: string; op: string };
+            const answer =
+              request.op === "hello.user"
+                ? { ok: true, request_id: request.request_id, instances: [] }
+                : {
+                    ok: false,
+                    request_id: request.request_id,
+                    error: { code: "unknown_op", msg: request.op },
+                  };
+            socket.write(`${JSON.stringify(answer)}\n`);
+          }
+        },
+      },
+    });
+    try {
+      const refusing = await statusOfTarget(target);
+      // Running is what answered, not what holds a lock: an instance that will
+      // not answer the question is not one an operator can treat as up.
+      expect([refusing.running, refusing.unreachable, refusing.version]).toEqual([
+        false,
+        "unknown_op",
+        undefined,
+      ]);
+    } finally {
+      server.stop(true);
+      rmSync(target.paths.socket, { force: true });
+    }
+  });
+});
+
+describe("restart --all takes the supervisor with it (issue: restart --all leaves the supervisor)", () => {
+  test("where the host holds it, it leaves and says so rather than restarting its children", async () => {
+    const at = host();
+    const home = at.home("one");
+    await register(home);
+    const supervisor = await supervising({ replaceable: () => Promise.resolve(true) });
+    const before = rowFor(targetFor(process.env, home, "one")).pid;
+
+    const answer = (await supervisor.handle({ op: "supervise_restart", all: true })) as {
+      supervisor: { replaced: boolean; version: string };
+      supervised: string[];
+    };
+
+    expect(answer.supervisor.replaced).toBe(true);
+    expect(answer.supervised).toEqual([home]);
+    // The children it was looking after are not restarted here: they go with
+    // it, and the supervisor the host starts next brings them back.
+    expect(rowFor(targetFor(process.env, home, "one")).pid).toBe(before as number);
+    // And it leaves, which is what the answer promised.
+    await waitFor(() => !existsSync(supervisor.socketPath), 15_000);
+  }, 60_000);
+
+  test("where nothing would start one again, the children are restarted instead", async () => {
+    const at = host();
+    const home = at.home("one");
+    await register(home);
+    const supervisor = await supervising({ replaceable: () => Promise.resolve(false) });
+    const before = rowFor(targetFor(process.env, home, "one")).pid;
+
+    const answer = (await supervisor.handle({ op: "supervise_restart", all: true })) as {
+      instances: StatusRow[];
+      supervisor: { replaced: boolean; version: string };
+    };
+
+    expect(answer.supervisor.replaced).toBe(false);
+    expect(answer.instances.map((row) => row.dir)).toEqual([home]);
+    // A supervisor that stays is one whose children are the thing restarted.
+    expect(rowFor(targetFor(process.env, home, "one")).pid).not.toBe(before as number);
+    expect(existsSync(supervisor.socketPath)).toBe(true);
+  }, 60_000);
+});

@@ -121,6 +121,17 @@ export interface StatusRow extends InstanceRow {
    * secret — the gateway's token is named by the path it is kept at. */
   readonly config: InstanceConfig;
   readonly version?: string;
+  /** Why nothing could be asked of an instance a process is still holding the
+   * lock for: `silent` where the socket answered nothing, or the contract's
+   * code where it answered a refusal — which is what an instance of another
+   * build says to an op that build does not name. Absent where the instance
+   * answered, and where nothing is there at all. */
+  readonly unreachable?: string;
+  /** The build of the supervisor that answered, and whether it and the
+   * instance are the same one. Present only where a supervisor answered, since
+   * a row read without one has no second build to disagree with. */
+  readonly supervisor_version?: string;
+  readonly restart_needed?: boolean;
   readonly network?: InstancePingResult["network"];
   /** The other instances this one names, each with where it is dialled: the id
    * says which instance and the endpoint says how to reach it, and neither
@@ -567,15 +578,20 @@ export async function status(target: Target): Promise<StatusRow> {
     // otherwise is a setting that did not take (DESIGN §8.3).
     ...(read.problems.length === 0 ? {} : { config_problems: read.problems }),
   };
+  // What a lock says is that a process is there, which is not what `running`
+  // answers: an instance is running when it answered. The two coming apart is
+  // the state worth naming — a process holding a config home and serving
+  // nobody — so it is said as `unreachable` rather than left to be read as a
+  // version that did not arrive.
   const conn = await connect(target.paths.socket);
-  if (conn === undefined) return row;
+  if (conn === undefined) return { ...row, running: false, ...silent(row.pid) };
   try {
     const greeting = await greetAsUser(conn);
-    if (greeting["ok"] !== true) return row;
+    if (greeting["ok"] !== true) return { ...row, running: false, ...refused(greeting) };
     const peers =
       (greeting["instances"] as { id: InstanceId; endpoint: Endpoint }[] | undefined) ?? [];
     const answer = await conn.ask({ op: "instance.ping" });
-    if (answer["ok"] !== true) return row;
+    if (answer["ok"] !== true) return { ...row, running: false, ...refused(answer) };
     const ping = answer as unknown as InstancePingResult;
     return {
       ...row,
@@ -591,6 +607,39 @@ export async function status(target: Target): Promise<StatusRow> {
   } finally {
     conn.close();
   }
+}
+
+/** One instance's row with the build of the supervisor that read it.
+ *
+ * A supervisor and the instances it started are processes of what was meant to
+ * be one build, and nothing else compares them: a supervisor left on an older
+ * build goes on speaking the op names that build knew, and an instance
+ * refusing them reads as an instance with nothing to say. So the row carries
+ * which build asked, and says when the two disagree — which is the one thing
+ * an operator can act on, by restarting everything.
+ *
+ * An instance that did not answer states no build, and two builds cannot
+ * disagree when only one of them is known: what that row says is `unreachable`
+ * instead. */
+export function withSupervisor(row: StatusRow, supervisor: string): StatusRow {
+  const differs = row.version !== undefined && row.version !== supervisor;
+  return { ...row, supervisor_version: supervisor, ...(differs ? { restart_needed: true } : {}) };
+}
+
+/** A process holds the lock and the socket answered nothing. Nothing is said
+ * where no process holds it either: that is an instance that is not there,
+ * rather than one that will not speak. */
+function silent(pid: number | undefined): { unreachable?: string } {
+  return pid === undefined ? {} : { unreachable: "silent" };
+}
+
+/** The instance answered, and what it answered was a refusal. The contract's
+ * code is what is kept: `unknown_op` is a build that does not name the op this
+ * one sent, which is the difference an operator has to be shown rather than
+ * left to infer from a version that never arrived. */
+function refused(answer: Record<string, unknown>): { unreachable: string } {
+  const code = (answer["error"] as { code?: unknown } | undefined)?.code;
+  return { unreachable: typeof code === "string" ? code : "refused" };
 }
 
 /** Ask one instance to stop, over its own socket.

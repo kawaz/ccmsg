@@ -1,6 +1,8 @@
 import { chmodSync, mkdirSync, unlinkSync } from "node:fs";
 import { dirname } from "node:path";
 import { type Env, resolveSupervisorSocket } from "../instance/paths.ts";
+import { runCommand, serviceFor } from "../service/index.ts";
+import { VERSION } from "../version.ts";
 import { WriteQueue } from "../transport/index.ts";
 import { CommandError, type SuperviseRequest } from "./link.ts";
 import {
@@ -17,6 +19,7 @@ import {
   START_TIMEOUT_MS,
   type StatusRow,
   status as statusOf,
+  withSupervisor,
   stop as askToStop,
   type Target,
   targetFor,
@@ -51,6 +54,10 @@ export const STOP_TIMEOUT_MS = 10_000;
 
 export interface SuperviseOptions {
   readonly env?: Env;
+  /** Whether a supervisor of the build that is installed now will be here once
+   * this one has gone. Asked rather than assumed: this process leaves on that
+   * answer, and a supervisor nobody would start again must not. */
+  readonly replaceable?: () => Promise<boolean>;
   readonly spawn?: SpawnInstance;
   readonly backoff?: Backoff;
   /** Where the supervisor says what it did. */
@@ -112,6 +119,7 @@ export class Supervisor {
   readonly #spawn: SpawnInstance;
   readonly #backoff: Backoff;
   readonly #log: (line: Record<string, unknown>) => void;
+  readonly #replace: () => Promise<boolean>;
   readonly #startTimeoutMs: number;
   readonly #stopTimeoutMs: number;
   readonly #units = new Map<string, Supervised>();
@@ -128,6 +136,7 @@ export class Supervisor {
     this.#startTimeoutMs = options.startTimeoutMs ?? START_TIMEOUT_MS;
     this.#stopTimeoutMs = options.stopTimeoutMs ?? STOP_TIMEOUT_MS;
     this.#log = options.log ?? ((line) => process.stderr.write(`${JSON.stringify(line)}\n`));
+    this.#replace = options.replaceable ?? (() => heldByHost(this.#env));
   }
 
   /** Read the edited files, check them, write down what held, and look after
@@ -255,9 +264,10 @@ export class Supervisor {
       case "supervise_stop":
         return await this.#over(request, (unit) => this.stopOne(unit.target.dir));
       case "supervise_restart":
+        if (request.all === true) return await this.#restartAll(request);
         return await this.#over(request, (unit) => this.restartOne(unit.target.dir));
       case "supervise_status":
-        return await this.#over(request, (unit) => statusOf(unit.target));
+        return await this.#over(request, (unit) => this.#statusOf(unit));
       case "supervise_add":
         return await this.addOne(this.#named(request));
       case "supervise_remove":
@@ -306,6 +316,39 @@ export class Supervisor {
       answers.push({ dir: unit.target.dir, error: { code: cause.code, msg: cause.message } });
     }
     return answers;
+  }
+
+  /** Every config home on this host, and this supervisor with them.
+   *
+   * A restart of everything that left this process standing left the one thing
+   * a new build does not reach: a supervisor goes on speaking the op names the
+   * build that started it knew, and its children — started fresh, answering the
+   * contract they were built for — read as children with nothing to say.
+   *
+   * So where something will start a supervisor again, this one leaves instead
+   * of restarting its children: the supervisor that arrives starts every config
+   * home itself, and doing both would take each of them down twice. Where
+   * nothing will (a supervisor run from a terminal, or one the host does not
+   * hold), leaving would take the host down, so the children are restarted as
+   * before and the answer says which build the supervisor is still on. */
+  async #restartAll(request: SuperviseRequest): Promise<unknown> {
+    const supervised = Array.from(this.#units.values(), (unit) => unit.target.dir);
+    if (!(await this.#replace())) {
+      return {
+        instances: await this.#over(request, (unit) => this.restartOne(unit.target.dir)),
+        supervisor: { replaced: false, version: VERSION },
+      };
+    }
+    // After the answer, not before it: the stop below takes this socket with
+    // it. A turn of the event loop is what separates them — the answer is
+    // written in the microtask that continues the call this returns to, and a
+    // timer runs after every microtask — so nothing is waited out here.
+    setTimeout(() => void this.stop(), 0);
+    return { supervisor: { replaced: true, version: VERSION }, supervised };
+  }
+
+  async #statusOf(unit: Supervised): Promise<StatusRow> {
+    return withSupervisor(await statusOf(unit.target), VERSION);
   }
 
   #named(request: SuperviseRequest): string {
@@ -606,5 +649,23 @@ async function answer(
         ? { code: cause.code, msg: cause.message }
         : { code: "internal_error", msg: String(cause) };
     queue.push(`${JSON.stringify({ ok: false, error })}\n`);
+  }
+}
+
+/** Whether the host itself is holding this process, which is what says a
+ * supervisor will be here again after this one leaves.
+ *
+ * The pid rather than the registration: a unit file naming a supervisor says
+ * nothing about whether *this* process is the one launchd or systemd started,
+ * and one run from a terminal beside a registered service would otherwise read
+ * itself as replaceable and take the host's instances down with it. Anything
+ * the init system will not answer is read as "nothing will bring one back",
+ * which is the side that leaves the host running. */
+async function heldByHost(env: Env): Promise<boolean> {
+  try {
+    const state = await serviceFor(env).state(runCommand);
+    return state.service?.pid === process.pid;
+  } catch {
+    return false;
   }
 }
