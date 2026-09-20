@@ -1,6 +1,6 @@
 ---
 title: llm-gateway の合図方式 keepalive 撤去に伴う ccmsg 側の受け口撤去
-status: open
+status: resolved
 category: task
 created: 2026-09-14T17:02:13+09:00
 last_read:
@@ -9,10 +9,10 @@ wip_entered:
 blocked_entered:
 pending_entered:
 discarded_entered:
-resolved_entered:
+resolved_entered: 2026-09-20T23:19:36+09:00
 discard_reason:
 pending_reason:
-close_reason:
+close_reason: ["done: cache_keepalive / keepalive_paused / cache_paused の受け口を撤去、約束の名前は request event の cache_notice から取る経路が残り DR-0012 の窓の引き直しは動く", "done: [llm-gateway keepalive ping] を subscribe stream へ流す経路は daemon src に元から無かった", "done: 契約 v2.9.0 で cache_paused を撤去、daemon / webui とも追従済み"]
 blocked_by:
 origin: llm-gateway 統括セッション
 ---
