@@ -1,6 +1,6 @@
 ---
 title: DR-0001 の rp_id/cookie/WS Origin 節を契約 DR-0029/DR-0028 で Superseded 化
-status: open
+status: resolved
 category: task
 created: 2026-09-16T12:22:57+09:00
 last_read: 2026-09-18T10:18:54+09:00
@@ -9,10 +9,10 @@ wip_entered:
 blocked_entered:
 pending_entered:
 discarded_entered:
-resolved_entered:
+resolved_entered: 2026-09-20T22:46:04+09:00
 discard_reason:
 pending_reason:
-close_reason:
+close_reason: ["done:受け入れ条件16件すべて満たした","done:現役文書からのDR-0029名指しは0件","done:DR-0001にDR-0030へのSuperseded注記","done:cookie名__Secure-ccmsg-<hash>実装済み(src/auth/http.ts:110)","done:Sec-Fetch-Site検査実装済み(src/auth/http.ts:55,184)","done:auth_in_use実装済み(src/auth/auth.ts:142)","done:auth.resolve/auth.ownership.remove実装済み","done:userCLI実装済み"]
 blocked_by:
 origin: 契約 v2.2.0 反映作業
 ---
