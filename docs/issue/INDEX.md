@@ -25,6 +25,7 @@ wire の契約は [kawaz/ccmsg-protocol](https://github.com/kawaz/ccmsg-protocol
 
 | date | category | status | slug | 概要 |
 |---|---|---|---|---|
+| 2026-09-20 | bug | open | [llm-read-generated-at-undefined-once](./2026-09-20-llm-read-generated-at-undefined-once.md) | `test/llm-read.test.ts:146` が full run で 1 回だけ失敗した観測記録。`generated_at` が `undef… |
 | 2026-09-16 | design | open | [dr-0008-inbox-snapshot-for-people](./2026-09-16-dr-0008-inbox-snapshot-for-people.md) | DR-0008 §2.5 は sid なし接続に空 snapshot と決めているが、実装は人に全 inbox を非消費 view で返す… |
 | 2026-09-16 | design | open | [refresh-token-store-layer](./2026-09-16-refresh-token-store-layer.md) | refresh token (TokenFamily) のサーバ側置き場をストア層で抽象化する |
 | 2026-09-14 | task | open | [gateway-signal-keepalive-retired](./2026-09-14-gateway-signal-keepalive-retired.md) | llm-gateway v0.48.0 (DR-0027 段階 B) で合図方式の keepalive を撤去、ccmsg 側の受け口を撤去する |
