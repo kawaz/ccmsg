@@ -20,6 +20,16 @@
 
 ## 裁定待ち
 
+### FV-Q9: 閲覧 site の登録可能ドメイン (別 site にするために)
+
+webui DR-0005 の閲覧 site は webui / endpoint と **別 site** (= 別の登録可能ドメイン、cookie の分割単位) でないと隔離が成立しない。今の hosting は全部 `*.kawaz-mbp16-20211217.kawaz.jp` で登録可能ドメインは `kawaz.jp` なので、`ccmsg2-view.kawaz-….kawaz.jp` では同じ site になる。実装 (webui v1.14.0) はビルド時定数 `CCMSG_VIEW_ORIGIN` 未設定なら閲覧機能を出さない形で入っている。
+
+- [ ] a: kawaz が持っている別ドメインの sub を使う (例: `view.<別ドメイン>`。どれかを指定)
+- [ ] b: 新しくドメインを取る
+- [ ] c: 当面は閲覧機能を出さない (定数未設定のまま)
+
+決まれば統括が Caddy (canddy-app-proxy) に静的配信を足し、`CCMSG_VIEW_ORIGIN` / `CCMSG_WEBUI_ORIGIN` を渡して build する。
+
 ### FV-Q6: 閲覧 site の CSP で script を許すか
 
 webui DR-0005 の閲覧 site ([/Users/kawaz/.local/share/repos/github.com/kawaz/ccmsg-webui/main/docs/decisions/DR-0005-a-viewing-site-draws-files-through-a-service-worker.md](/Users/kawaz/.local/share/repos/github.com/kawaz/ccmsg-webui/main/docs/decisions/DR-0005-a-viewing-site-draws-files-through-a-service-worker.md)) は webui とも endpoint とも site が違うので、閉じ込めは site の分離で効いている。許せばビルドした docs や図が動く形で見え、許さなければ描けるのは静止した物だけ。
