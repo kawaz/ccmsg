@@ -10,7 +10,6 @@ import {
 import type { TopicValue, UpstreamResource } from "../topics/index.ts";
 import type {
   CacheExpiredObservation,
-  CacheKeepaliveObservation,
   LlmRequestObservation,
   LlmResponseObservation,
 } from "./events.ts";
@@ -128,16 +127,6 @@ export class LlmRequests implements UpstreamResource {
   note(info: LlmResponseObservation): void {
     this.moved(info.sid, this.active(info.sid, info.at));
     if (info.cache === "written") this.rebuild(info);
-  }
-
-  /** A keepalive the gateway raised names the lifetime it promises. Held
-   * against the series so a withdrawal naming it can be told from one naming a
-   * promise since replaced. A series nothing is held for has no window to
-   * withdraw, so the name has nothing to attach to. */
-  noteKeepalive(info: CacheKeepaliveObservation): void {
-    const series = this.#series.get(seriesKey(info.sid, info.prefix));
-    if (series === undefined) return;
-    series.notice = info.notice;
   }
 
   /** The gateway withdrawing a promised lifetime by name.

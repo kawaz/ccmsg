@@ -42,7 +42,6 @@ function requestEvent(extra: Record<string, unknown> = {}): Record<string, unkno
     origin: "main",
     cache_ttl_secs: 3600,
     cache_expires_at: NOW + 3_600_000,
-    cache_paused: false,
     cache_since: NOW,
     cache_count: 0,
     next_keepalive_at: NOW + 3_300_000,
@@ -83,22 +82,6 @@ function responseEvent(extra: Record<string, unknown> = {}): Record<string, unkn
 /** Two names of a promised lifetime, in the gateway's own alphabet. */
 const NOTICE = "kUu1xR4-tQ9nSp2Zc0dBvA";
 const OTHER_NOTICE = "Zt7mQ0aL2xR9-bNc4dEfGh";
-
-/** One raised keepalive. The promise's name and the signal's own password are
- * the same value on this notice. */
-function keepaliveEvent(extra: Record<string, unknown> = {}): Record<string, unknown> {
-  return {
-    type: "cache_keepalive",
-    ts: NOW + 3_300_000,
-    session_id: SID,
-    prefix: "2cf24dba",
-    nonce: NOTICE,
-    cache_notice: NOTICE,
-    deadline: NOW + 3_330_000,
-    marker: "[llm-gateway keepalive ping] …",
-    ...extra,
-  };
-}
 
 /** One promise withdrawn by name. */
 function expiredEvent(extra: Record<string, unknown> = {}): Record<string, unknown> {
@@ -269,7 +252,6 @@ describe("what the gateway posts (§3.5, §5.1)", () => {
       status: 200,
       cache_ttl_secs: 3600,
       cache_expires_at: NOW + 3_600_000,
-      cache_paused: false,
       cache_count: 0,
       next_keepalive_at: NOW + 3_300_000,
       cache_until_count: 9,
@@ -333,8 +315,7 @@ describe("what the gateway posts (§3.5, §5.1)", () => {
     await nextTopic(client, "llm.requests");
 
     const answer = await started.post([
-      { type: "cache_keepalive", ts: NOW, session_id: SID, prefix: "p", nonce: "n", deadline: NOW },
-      { type: "keepalive_paused", session_id: SID, paused_at: NOW },
+      requestEvent({ session_id: null }),
       "not an event at all",
       requestEvent(),
     ]);
@@ -663,14 +644,11 @@ describe("reading one posted item", () => {
   });
 
   test("a field in a shape this contract does not state is left behind", () => {
-    const item = parseGatewayItem(
-      requestEvent({ cache_until: "later", status: "200", cache_paused: "no", prefix: 7 }),
-    );
+    const item = parseGatewayItem(requestEvent({ cache_until: "later", status: "200", prefix: 7 }));
     expect(item?.kind).toBe("request");
     const info = (item as { info: Record<string, unknown> }).info;
     expect(info).not.toHaveProperty("cache_until_at");
     expect(info).not.toHaveProperty("status");
-    expect(info).not.toHaveProperty("cache_paused");
     expect(info).not.toHaveProperty("prefix");
   });
 
@@ -683,11 +661,7 @@ describe("reading one posted item", () => {
     expect(parseGatewayItem(requestEvent())).not.toHaveProperty("notice");
   });
 
-  test("a signal and a withdrawal each name the promise they are about", () => {
-    expect(parseGatewayItem(keepaliveEvent())).toEqual({
-      kind: "keepalive",
-      info: { sid: SID, prefix: "2cf24dba", notice: NOTICE },
-    });
+  test("a withdrawal names the promise it is about", () => {
     expect(parseGatewayItem(expiredEvent())).toEqual({
       kind: "cache_expired",
       info: { sid: SID, prefix: "2cf24dba", of: NOTICE, at: NOW + 3_600_001 },
@@ -752,19 +726,6 @@ describe("the cache window as the gateway states it happened", () => {
 
     subject.expire({ sid: SID, prefix: "2cf24dba", of: NOTICE, at: now + 2_000 });
     expect(last().map((row) => row.cache_expires_at)).toEqual([now + 1_000 + 3_600_000]);
-  });
-
-  test("a signal's name is what a later withdrawal is matched against", () => {
-    const { subject, last } = requests();
-    const now = Date.now();
-    subject.record(promised(now), NOTICE);
-    subject.noteKeepalive({ sid: SID, prefix: "2cf24dba", notice: OTHER_NOTICE });
-
-    // The request's own name has been replaced by the signal's.
-    subject.expire({ sid: SID, prefix: "2cf24dba", of: NOTICE, at: now + 1_000 });
-    expect(last()).toHaveLength(1);
-    subject.expire({ sid: SID, prefix: "2cf24dba", of: OTHER_NOTICE, at: now + 2_000 });
-    expect(last()).toEqual([]);
   });
 
   test("an answer that says the cache was written redraws the window from there", () => {

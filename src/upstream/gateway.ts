@@ -205,8 +205,6 @@ export class Gateway {
         this.status?.noteRequestStatus(item.info.status);
       } else if (item.kind === "response") {
         this.requests.note(item.info);
-      } else if (item.kind === "keepalive") {
-        this.requests.noteKeepalive(item.info);
       } else if (item.kind === "cache_expired") {
         this.requests.expire(item.info);
       }
