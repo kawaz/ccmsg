@@ -1,16 +1,21 @@
 import { createHash, randomBytes } from "node:crypto";
 import type { AssertionCredential, RegistrationCredential } from "@ccmsg/protocol";
 
+/** The three a page asks for, as the one under test names them. An
+ * authenticator picks one and every message it sends is of that one. */
+export type SoftAlgorithm = "ES256" | "EdDSA" | "RS256";
+
 /** A WebAuthn authenticator in software, for the tests.
  *
  * There is no browser and no Touch ID in a test run, so the two messages an
- * authenticator produces are built here from the same parts a real one uses: an
- * ES256 key pair, the authenticator data the relying party is hashed into, and
- * a signature over it. What it exercises is this instance's verification —
- * every byte it produces goes through the same path a real credential's
- * would. */
+ * authenticator produces are built here from the same parts a real one uses: a
+ * key pair of one of the three algorithms a credential may be made with, the
+ * authenticator data the relying party is hashed into, and a signature over it.
+ * What it exercises is this instance's verification — every byte it produces
+ * goes through the same path a real credential's would. */
 export class SoftAuthenticator {
   #keys: CryptoKeyPair | undefined;
+  readonly algorithm: SoftAlgorithm;
   readonly credentialId = new Uint8Array(randomBytes(16));
   signCount = 0;
   /** What the browser writes beside the origin.
@@ -39,17 +44,53 @@ export class SoftAuthenticator {
 
   constructor(
     readonly rpId: string,
-    options: { crossOrigin?: boolean } = {},
+    options: { crossOrigin?: boolean; algorithm?: SoftAlgorithm } = {},
   ) {
     this.crossOrigin = options.crossOrigin;
+    this.algorithm = options.algorithm ?? "ES256";
   }
 
   async #pair(): Promise<CryptoKeyPair> {
-    this.#keys ??= (await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, [
+    this.#keys ??= (await crypto.subtle.generateKey(GENERATE[this.algorithm], true, [
       "sign",
       "verify",
     ])) as CryptoKeyPair;
     return this.#keys;
+  }
+
+  /** The public key as COSE writes it, which is what the registration carries
+   * and every later assertion is verified with. */
+  async #cose(): Promise<Uint8Array> {
+    const jwk = await crypto.subtle.exportKey("jwk", (await this.#pair()).publicKey);
+    if (this.algorithm === "ES256") {
+      return encodeCbor(
+        new Map<number, unknown>([
+          [1, 2],
+          [3, -7],
+          [-1, 1],
+          [-2, b64(jwk.x as string)],
+          [-3, b64(jwk.y as string)],
+        ]),
+      );
+    }
+    if (this.algorithm === "EdDSA") {
+      return encodeCbor(
+        new Map<number, unknown>([
+          [1, 1],
+          [3, -8],
+          [-1, 6],
+          [-2, b64(jwk.x as string)],
+        ]),
+      );
+    }
+    return encodeCbor(
+      new Map<number, unknown>([
+        [1, 3],
+        [3, -257],
+        [-1, b64(jwk.n as string)],
+        [-2, b64(jwk.e as string)],
+      ]),
+    );
   }
 
   /** What `navigator.credentials.create()` would have produced. */
@@ -59,16 +100,7 @@ export class SoftAuthenticator {
     userId?: string;
   }): Promise<RegistrationCredential> {
     this.userHandle = options.userId;
-    const jwk = await crypto.subtle.exportKey("jwk", (await this.#pair()).publicKey);
-    const cose = encodeCbor(
-      new Map<number, unknown>([
-        [1, 2],
-        [3, -7],
-        [-1, 1],
-        [-2, b64(jwk.x as string)],
-        [-3, b64(jwk.y as string)],
-      ]),
-    );
+    const cose = await this.#cose();
     const authData = this.#authData(true, cose);
     const attestation = encodeCbor(
       new Map<string, unknown>([
@@ -94,17 +126,15 @@ export class SoftAuthenticator {
     signed.set(authData, 0);
     signed.set(new Uint8Array(createHash("sha256").update(client).digest()), authData.length);
     const raw = new Uint8Array(
-      await crypto.subtle.sign(
-        { name: "ECDSA", hash: "SHA-256" },
-        (await this.#pair()).privateKey,
-        signed,
-      ),
+      await crypto.subtle.sign(SIGN[this.algorithm], (await this.#pair()).privateKey, signed),
     );
+    // Only ECDSA is carried in a spelling other than the one WebCrypto
+    // produces, so only it is put back the way an authenticator would.
     return {
       raw_id: url(this.credentialId),
       client_data_json: url(client),
       authenticator_data: url(authData),
-      signature: url(der(raw)),
+      signature: url(this.algorithm === "ES256" ? der(raw) : raw),
       ...(this.userHandle === undefined ? {} : { user_handle: this.userHandle }),
     };
   }
@@ -146,6 +176,23 @@ export class SoftAuthenticator {
     return whole;
   }
 }
+
+const GENERATE: Record<SoftAlgorithm, Record<string, unknown> & { name: string }> = {
+  ES256: { name: "ECDSA", namedCurve: "P-256" },
+  EdDSA: { name: "Ed25519" },
+  RS256: {
+    name: "RSASSA-PKCS1-v1_5",
+    modulusLength: 2048,
+    publicExponent: new Uint8Array([1, 0, 1]),
+    hash: "SHA-256",
+  },
+};
+
+const SIGN: Record<SoftAlgorithm, Record<string, unknown> & { name: string }> = {
+  ES256: { name: "ECDSA", hash: "SHA-256" },
+  EdDSA: { name: "Ed25519" },
+  RS256: { name: "RSASSA-PKCS1-v1_5" },
+};
 
 function url(bytes: Uint8Array): string {
   return Buffer.from(bytes).toString("base64url");

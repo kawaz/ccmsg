@@ -34,7 +34,7 @@ import {
   PERSON_LABEL,
   PREVIOUS_GRACE_MS,
 } from "../src/auth/index.ts";
-import { SoftAuthenticator } from "./authenticator.ts";
+import { type SoftAlgorithm, SoftAuthenticator } from "./authenticator.ts";
 import { connectWs, type LineClient } from "./client.ts";
 import { TestConn } from "./frames.ts";
 import { writeInstanceHome } from "./harness.ts";
@@ -2945,4 +2945,63 @@ describe("where the records are kept is a store this class does not open (issue:
     expect(store.commits).toEqual([{ kept: [familyKey("bb")], dropped: [familyKey("aa")] }]);
     expect(store.held.map((one) => one.key)).toEqual([familyKey("bb")]);
   });
+});
+
+describe("the three algorithms a credential may be made with (contract, DR-0001 §2.11)", () => {
+  /** One registration and one assertion, both signed with one algorithm. */
+  async function roundTrip(algorithm: SoftAlgorithm) {
+    const { auth } = unit({ endpoint: ENDPOINT });
+    const issued = await auth.issue({ purpose: "create_user", origin: ORIGIN });
+    const authenticator = new SoftAuthenticator(issued.rp_id, { algorithm });
+    const made = await auth.challenge();
+    const credential = await authenticator.create({
+      challenge: made.challenge,
+      origin: issued.origin,
+      userId: issued.user as UserId,
+    });
+    await auth.register(
+      { token: tokenOf(issued.url), code: issued.code, credential },
+      { origin: issued.origin },
+    );
+    return { auth, authenticator, origin: issued.origin };
+  }
+
+  for (const algorithm of ["ES256", "EdDSA", "RS256"] as const) {
+    test(`${algorithm}: a key of this algorithm registers and then answers`, async () => {
+      const { auth, authenticator, origin } = await roundTrip(algorithm);
+      authenticator.signCount += 1;
+      const challenge = await auth.challenge();
+      const minted = await auth.assert(
+        {
+          challenge,
+          credential: await authenticator.get({ challenge: challenge.challenge, origin }),
+        },
+        { origin },
+      );
+      expect(minted.session.access.value.length).toBeGreaterThan(0);
+    });
+
+    test(`${algorithm}: one flipped byte of the signature is not this key's`, async () => {
+      const { auth, authenticator, origin } = await roundTrip(algorithm);
+      authenticator.signCount += 1;
+      const challenge = await auth.challenge();
+      const credential = await authenticator.get({ challenge: challenge.challenge, origin });
+      const bytes = Buffer.from(credential.signature, "base64url");
+      // The last byte rather than the first: an ECDSA signature opens with its
+      // ASN.1 header, and a header a decoder refuses would be turned away
+      // before anything was verified.
+      bytes[bytes.length - 1] ^= 0x01;
+      expect(
+        await auth
+          .assert(
+            { challenge, credential: { ...credential, signature: bytes.toString("base64url") } },
+            { origin },
+          )
+          .then(
+            () => undefined,
+            (cause: unknown) => (cause as OpError).code,
+          ),
+      ).toBe("auth_invalid");
+    });
+  }
 });
