@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AuthChallenge, EnrollClaims, InstanceId, UserId } from "@ccmsg/protocol";
 import { AUTH_CHALLENGE_TTL_MS, REGISTER_TTL_MS } from "@ccmsg/protocol";
-import { Auth, AuthRecords, userKey } from "../src/auth/index.ts";
+import { Auth, AuthRecords, fileRecordStore, userKey } from "../src/auth/index.ts";
 import { OpError } from "../src/dispatch/index.ts";
 import { SoftAuthenticator } from "./authenticator.ts";
 import { trackRoot } from "./harness.ts";
@@ -82,7 +82,7 @@ function made(options: { now?: () => number } = {}): Made {
   trackRoot(dir);
   const now = options.now ?? Date.now;
   const peer = new Peer();
-  const records = new AuthRecords({ dir, publish: () => {}, now });
+  const records = new AuthRecords({ store: fileRecordStore(dir), publish: () => {}, now });
   const auth = new Auth({
     self: SELF,
     records,

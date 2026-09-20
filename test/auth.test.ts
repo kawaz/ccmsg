@@ -6,6 +6,7 @@ import {
   type AuthAccountReadResult,
   type AuthRecord,
   type CredentialRecord,
+  type TokenFamily,
   type InstanceId,
   type Origin,
   PROTOCOL_VERSION,
@@ -19,6 +20,10 @@ import {
   ACCESS_TTL_MS,
   Auth,
   AuthRecords,
+  type AuthRecordStore,
+  familyKey,
+  fileRecordStore,
+  userKey,
   authHandlers,
   claimsOf,
   credentialKey,
@@ -245,7 +250,7 @@ function unit(
   const dir = options.dir ?? mkdtempSync(join(tmpdir(), "ccmsg-auth-unit-"));
   const self = options.self ?? SELF;
   const records = new AuthRecords({
-    dir,
+    store: fileRecordStore(dir),
     publish: () => {},
     ...(options.now === undefined ? {} : { now: options.now }),
   });
@@ -290,7 +295,7 @@ function linked(
     const dir = mkdtempSync(join(tmpdir(), "ccmsg-auth-linked-"));
     let auth: Auth | undefined;
     const records = new AuthRecords({
-      dir,
+      store: fileRecordStore(dir),
       publish: (written) => {
         carry(auth as Auth, written);
       },
@@ -2860,5 +2865,84 @@ describe("a registration URL is checked before a form is shown (contract, DR-003
     // The page signing in with a passkey that exists has no URL to be held to.
     const { auth } = unit({ endpoint: ENDPOINT });
     expect((await auth.challenge()).issuer).toBe(SELF);
+  });
+});
+
+describe("where the records are kept is a store this class does not open (issue: refresh token store layer)", () => {
+  /** A store that says what it was asked to keep, and keeps it. */
+  function recording(): AuthRecordStore & {
+    readonly commits: { kept: string[]; dropped: string[] }[];
+    held: AuthRecord[];
+  } {
+    const kept = new Map<string, AuthRecord>();
+    const commits: { kept: string[]; dropped: string[] }[] = [];
+    return {
+      commits,
+      get held(): AuthRecord[] {
+        return [...kept.values()];
+      },
+      set held(records: AuthRecord[]) {
+        kept.clear();
+        for (const record of records) kept.set(record.key, record);
+      },
+      load: () => [...kept.values()],
+      commit: async (records, dropped) => {
+        commits.push({ kept: records.map((one) => one.key), dropped: [...dropped] });
+        for (const record of records) kept.set(record.key, record);
+        for (const key of dropped) kept.delete(key);
+      },
+      flush: async () => {},
+    };
+  }
+
+  function family(user: UserId, expires_at: number): TokenFamily {
+    return {
+      kind: "token_family",
+      user,
+      iss: SELF,
+      origin: ORIGIN,
+      access: { value: "a", expires_at },
+      refresh: { value: "r", expires_at },
+    };
+  }
+
+  test("one family is one thing kept, and the set is built from what the store answers", async () => {
+    const store = recording();
+    const now = Date.now();
+    const first = new AuthRecords({ store, publish: () => {}, now: () => now });
+    await first.write(userKey(TEST_USER), { kind: "user", user: TEST_USER, created_at: now });
+    await first.write(familyKey("aa"), family(TEST_USER, now + 60_000));
+    await first.write(familyKey("bb"), family(TEST_USER, now + 60_000));
+
+    // Each write names the one record it changed, so a store keeping a row per
+    // record writes one row rather than the whole set.
+    expect(store.commits.map((one) => one.kept)).toEqual([
+      [userKey(TEST_USER)],
+      [familyKey("aa")],
+      [familyKey("bb")],
+    ]);
+
+    // Nothing of the file is reached for: another instance over the same store
+    // holds what the first one wrote.
+    const second = new AuthRecords({ store, publish: () => {}, now: () => now });
+    expect(
+      second
+        .families()
+        .map((one) => one.key)
+        .sort(),
+    ).toEqual([familyKey("aa"), familyKey("bb")]);
+  });
+
+  test("a family that has run out is dropped by name", async () => {
+    const store = recording();
+    let now = Date.now();
+    const records = new AuthRecords({ store, publish: () => {}, now: () => now });
+    await records.write(familyKey("aa"), family(TEST_USER, now + 1_000));
+    store.commits.length = 0;
+
+    now += 2_000;
+    await records.write(familyKey("bb"), family(TEST_USER, now + 60_000));
+    expect(store.commits).toEqual([{ kept: [familyKey("bb")], dropped: [familyKey("aa")] }]);
+    expect(store.held.map((one) => one.key)).toEqual([familyKey("bb")]);
   });
 });

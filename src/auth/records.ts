@@ -1,5 +1,3 @@
-import { readFileSync } from "node:fs";
-import { mkdir, rename, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type {
   AuthRecord,
@@ -18,10 +16,10 @@ import {
   FAMILY_TOMBSTONE_RETENTION_MS,
   validationErrors,
 } from "@ccmsg/protocol";
+import type { AuthRecordStore } from "./store.ts";
 import { base64UrlDecode, equalBytes, equalStrings } from "./webauthn.ts";
 
 export const AUTH_DIR = "auth";
-const RECORDS_FILE = "records.json";
 
 /** Where each of the four records lives in the replicated set (contract,
  * `AuthRecord`).
@@ -55,8 +53,10 @@ export function familyKey(id: string): string {
 }
 
 export interface RecordsDeps {
-  /** Where the set is written down (DESIGN §2.5). */
-  readonly dir: string;
+  /** Where the set is kept (DESIGN §2.5). One record at a time, so what keeps
+   * it can be a file, a database or a key-value store without this class
+   * knowing which. */
+  readonly store: AuthRecordStore;
   /** Hand what this instance wrote to the peers, on the `auth.records` topic. */
   readonly publish: (records: readonly AuthRecord[]) => void;
   readonly now?: () => Timestamp;
@@ -86,11 +86,17 @@ export interface Merged {
 export class AuthRecords {
   readonly #records = new Map<string, AuthRecord>();
 
-  /** The writes already asked for, as one chain. */
-  #writing: Promise<void> = Promise.resolve();
+  /** What has run out since the store was last told. Held rather than
+   * committed where it is found, because expiry is read rather than swept
+   * (M3): the read that notices it may be the one building this class, which
+   * is before anything may be awaited. */
+  #dropped: string[] = [];
 
   constructor(private readonly deps: RecordsDeps) {
-    this.#read();
+    // Each one through the same gate a peer's record goes through, so a store
+    // written before this contract's generation leaves nothing behind.
+    for (const record of this.deps.store.load()) this.accept(record);
+    this.#expire();
   }
 
   #now(): Timestamp {
@@ -142,7 +148,7 @@ export class AuthRecords {
     if (!this.accept(record)) return false;
     // Handed to the peers once it is written down, so no peer holds a record
     // this instance would not have after a restart.
-    await this.#persist();
+    await this.#keep([record]);
     this.deps.publish([record]);
     return true;
   }
@@ -155,11 +161,13 @@ export class AuthRecords {
    * having happened. */
   async merge(records: readonly AuthRecord[]): Promise<Merged> {
     let changed = 0;
+    const took: AuthRecord[] = [];
     const revoked: UserId[] = [];
     for (const record of records) {
       const wasHeld = this.#records.get(record.key);
       if (!this.accept(record)) continue;
       changed += 1;
+      took.push(record);
       if (record.body.kind !== "tombstone") continue;
       // What the mark removed is read from what stood under it a moment ago:
       // the key alone says which record went, and the person it belonged to is
@@ -167,7 +175,7 @@ export class AuthRecords {
       const user = userOf(wasHeld);
       if (user !== undefined) revoked.push(user);
     }
-    if (changed > 0) await this.#persist();
+    if (changed > 0) await this.#keep(took);
     return { changed, revoked };
   }
 
@@ -186,7 +194,7 @@ export class AuthRecords {
     const stamped = held === undefined ? at : Math.max(at, held.updated_at + 1);
     const record: AuthRecord = { key, updated_at: stamped, body };
     this.#records.set(key, record);
-    await this.#persist();
+    await this.#keep([record]);
     this.deps.publish([record]);
     return record;
   }
@@ -365,81 +373,32 @@ export class AuthRecords {
     const now = this.#now();
     for (const [key, record] of this.#records) {
       const body = record.body;
-      if (body.kind === "token_family" && body.refresh.expires_at <= now) {
-        this.#records.delete(key);
-      }
-      if (body.kind === "tombstone" && body.expires_at !== undefined && body.expires_at <= now) {
-        this.#records.delete(key);
-      }
+      const over =
+        body.kind === "token_family"
+          ? body.refresh.expires_at <= now
+          : body.kind === "tombstone" && body.expires_at !== undefined && body.expires_at <= now;
+      if (!over) continue;
+      this.#records.delete(key);
+      this.#dropped.push(key);
     }
   }
 
   /** Settle once every write asked for so far has landed. What a stop waits on
    * before it lets go of the config home (DESIGN §8.5 step 4). */
   async flush(): Promise<void> {
-    await this.#writing;
+    await this.deps.store.flush();
   }
 
-  /** The file, read as this is built — before the instance is accepting
-   * anything, so nobody is waiting on it (DR-0015). Reading it when the first
-   * authentication asked would put the read inside the turn that answers it,
-   * and the `auth.records` snapshot is answered from what is held rather than
-   * from a promise. A file that is not there is an instance nobody has
-   * registered against, which is what an empty set says. */
-  #read(): void {
-    let text: string;
-    try {
-      text = readFileSync(this.#file(), "utf8");
-    } catch {
-      return;
-    }
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(text);
-    } catch {
-      // A file a kill damaged states nothing this instance can act on, and the
-      // records it held will come back from the peers that also hold them.
-      return;
-    }
-    if (!Array.isArray(parsed)) return;
-    // Each one through the same gate a peer's record goes through, so a file
-    // written before this contract's generation leaves nothing behind.
-    for (const record of parsed as AuthRecord[]) this.accept(record);
+  /** Put what changed where the set is kept, along with whatever has run out
+   * since the last time. */
+  #keep(changed: readonly AuthRecord[]): Promise<void> {
     this.#expire();
-  }
-
-  /** The set as it stands, written whole.
-   *
-   * The body is taken here, before anything is awaited, so what is written is
-   * the set as it was when the change was answered; the writes are chained so
-   * that two of them cannot be racing for one file and the older land last
-   * (DR-0015). */
-  #persist(): Promise<void> {
-    this.#expire();
-    const body = JSON.stringify([...this.#records.values()]);
-    const written = this.#writing.then(async () => {
-      await mkdir(this.deps.dir, { recursive: true, mode: 0o700 });
-      const file = this.#file();
-      const temporary = `${file}.ccmsg-${String(process.pid)}-${String(Date.now())}`;
-      // The set holds tokens, so the file is the instance's own to read: it is
-      // created with the mode rather than fixed afterwards, so there is no
-      // instant at which it stands readable by anyone else.
-      await writeFile(temporary, body, { mode: 0o600 });
-      try {
-        await rename(temporary, file);
-      } catch (cause) {
-        await unlink(temporary);
-        throw cause;
-      }
-    });
-    // The chain carries the order, not the outcome: a write that failed is
-    // answered to its own caller, and the ones behind it still go.
-    this.#writing = written.catch(() => {});
-    return written;
-  }
-
-  #file(): string {
-    return join(this.deps.dir, RECORDS_FILE);
+    const dropped = this.#dropped;
+    this.#dropped = [];
+    return this.deps.store.commit(
+      changed.filter((record) => !dropped.includes(record.key)),
+      dropped,
+    );
   }
 }
 

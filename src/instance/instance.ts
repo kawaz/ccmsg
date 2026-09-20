@@ -81,6 +81,7 @@ import {
   authHandlers,
   handleAdmin,
   handleAuth,
+  fileRecordStore,
   recordsDir,
 } from "../auth/index.ts";
 import { type Cidr, clientAddress, parseCidr } from "./client.ts";
@@ -687,7 +688,7 @@ export class Instance {
     // Written down beside the store and for the same reason: none of it is
     // derived from anything else this instance holds (DESIGN §2.5).
     const records = new AuthRecords({
-      dir: recordsDir(paths.stateDir),
+      store: fileRecordStore(recordsDir(paths.stateDir)),
       ...(now === undefined ? {} : { now }),
       publish: (written) => {
         this.#topics.publish("auth.records", { records: written });

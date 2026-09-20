@@ -65,7 +65,7 @@ describe("nothing pushes a topic frame outside the topic mechanism (M5)", () => 
       // replicated records written as their file — persistence again, of the
       // third thing of §3.6.
       "auth/auth.ts",
-      "auth/records.ts",
+      "auth/store.ts",
       "cli.ts",
       // What a daemon command answers with and what a supervisor logs: both are
       // the CLI's own JSON output, said where the command lives rather than at

@@ -3,5 +3,6 @@ export * from "./auth.ts";
 export * from "./cbor.ts";
 export * from "./http.ts";
 export * from "./records.ts";
+export * from "./store.ts";
 export * from "./topic.ts";
 export * from "./webauthn.ts";
