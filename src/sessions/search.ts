@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { parse, sep } from "node:path";
+import { Worker } from "node:worker_threads";
 import type {
   InstanceId,
   SessionSearchArgs,
@@ -30,7 +31,7 @@ const MATCH_CHARS = 400;
  * past this it is a program rather than a query. */
 const MAX_CLAUSE_CHARS = 1000;
 
-/** What one regular-expression clause may spend on matching, over the whole
+/** What a query's regular expressions may spend on matching, over the whole
  * search.
  *
  * The contract lets a caller state a regular expression and says nothing about
@@ -39,10 +40,15 @@ const MAX_CLAUSE_CHARS = 1000;
  * prose is quadratic in each record's length, and measured here it spends 86
  * seconds on the scan budget below where a literal or an alternation spends
  * 7 to 12 milliseconds on the same bytes. Two seconds is two orders of
- * magnitude above what a well-formed clause needs and far below what the
- * instance can afford to be blocked for, since it answers one op at a time.
- * Reaching it is `truncated`, which is what every other cap on this op is. */
-const CLAUSE_BUDGET_MS = 2000;
+ * magnitude above what a well-formed query needs, and it is the figure this
+ * op's own condition is written in: an instance answering something else must
+ * not be kept waiting past it.
+ *
+ * It is a deadline rather than an allowance spent between calls, because a
+ * `RegExp` cannot be interrupted: what the budget buys is the moment the
+ * thread running it is ended. Reaching it is `truncated`, which is what every
+ * other cap on this op is. */
+const REGEX_BUDGET_MS = 2000;
 
 export interface SearchDeps {
   readonly self: InstanceId;
@@ -67,7 +73,7 @@ export async function search(
     // which the contract says to ignore — leaving nothing to search.
     return { hits: [], truncated: false };
   }
-  const { clauses, budgets } = compile(args);
+  const query = compile(args);
   const sid = args.sid?.toLowerCase();
   const cwdWords = (args.cwd ?? "").trim().split(/\s+/).filter(Boolean);
   const since = args.modified_within_ms === undefined ? 0 : Date.now() - args.modified_within_ms;
@@ -76,96 +82,207 @@ export async function search(
   const hits: SessionSearchHit[] = [];
   let budget = SCAN_BUDGET_BYTES;
   let truncated = false;
-  for (const candidate of await deps.files.all()) {
-    if (sid !== undefined && !candidate.sid.toLowerCase().includes(sid)) continue;
-    if (candidate.updated_at < since) continue;
-    if (!looksLike(candidate.project, cwdWords)) continue;
-    // Every clause having given up leaves nothing that could still match, so
-    // the rest of the walk would read transcripts to decide nothing.
-    const spent = budgets.length > 0 && budgets.every((each) => each.spent);
-    if (hits.length >= HITS || budget <= 0 || spent) {
-      truncated = true;
-      break;
+  try {
+    for (const candidate of await deps.files.all()) {
+      if (sid !== undefined && !candidate.sid.toLowerCase().includes(sid)) continue;
+      if (candidate.updated_at < since) continue;
+      if (!looksLike(candidate.project, cwdWords)) continue;
+      // A query that has given up leaves nothing that could still match, so
+      // the rest of the walk would read transcripts to decide nothing.
+      if (hits.length >= HITS || budget <= 0 || query.spent) {
+        truncated = true;
+        break;
+      }
+      budget -= candidate.size;
+      const hit = await read(candidate, query, wanted, deps);
+      // The working directory the project directory only approximates: a hit
+      // is kept when the transcript's own `cwd` holds every word asked for.
+      if (hit !== undefined && holds(hit.cwd, cwdWords)) hits.push(hit);
     }
-    budget -= candidate.size;
-    const hit = await read(candidate, clauses, wanted, deps);
-    // The working directory the project directory only approximates: a hit is
-    // kept when the transcript's own `cwd` holds every word asked for.
-    if (hit !== undefined && holds(hit.cwd, cwdWords)) hits.push(hit);
+  } finally {
+    query.close();
   }
-  // A clause that ran out of time answered about fewer records than it was
+  // A query that ran out of time answered about fewer records than it was
   // asked about, whether or not the walk itself reached an end.
-  return { hits, truncated: truncated || budgets.some((each) => each.spent) };
+  return { hits, truncated: truncated || query.spent };
 }
 
-/** One clause of a query: the terms that must all appear for it to match.
+/** What a query does to the texts a transcript holds.
  *
- * Clauses are ORed and the terms within one are ANDed, which is what lets a
- * caller ask for two unrelated passages in one search. A query stating nothing
- * matches every record, so a search by working directory alone is a search. */
-type Clause = (text: string) => boolean;
-
-/** What one clause has left to spend, and whether it has stopped.
+ * Asked of a whole file's candidate rows at once rather than of one row at a
+ * time: matching is where a search spends itself, and when it happens on
+ * another thread the crossing costs more than the comparison does. One
+ * crossing per file keeps that cost proportional to what is read.
  *
- * Only a regular-expression clause carries one. A clause of terms is a
- * substring search per term, linear in what it is given, and the bytes it may
- * be given are already bounded — there is nothing a clock would tell it that
- * the scan budget does not. */
-class Budget {
-  #left = CLAUSE_BUDGET_MS;
-  /** The clause gave up part-way, so what it did not match it did not decide
+ * A query stating nothing matches every record, so a search by working
+ * directory alone is a search. */
+interface Query {
+  /** Whether this query states anything to match. */
+  readonly stated: boolean;
+  /** The query gave up part-way, so what it did not match it did not decide
    * about. */
-  spent = false;
+  readonly spent: boolean;
+  /** Which of these texts match, in order, at most `want` of them. */
+  matching(texts: readonly string[], want: number): Promise<readonly number[]>;
+  /** Let go of whatever the query was holding. */
+  close(): void;
+}
 
-  run(test: () => boolean): boolean {
-    if (this.spent) return false;
+/** A query that states nothing: every text matches, and the first `want` of
+ * them are what a hit shows. */
+const EVERYTHING: Query = {
+  stated: false,
+  spent: false,
+  matching: (texts, want) => Promise.resolve(indexes(Math.min(texts.length, want))),
+  close: () => {},
+};
+
+function indexes(count: number): number[] {
+  return Array.from({ length: count }, (_, at) => at);
+}
+
+/** Clauses are ORed and the terms within one are ANDed, which is what lets a
+ * caller ask for two unrelated passages in one search. Substring matching is
+ * linear in what it is given and the bytes it may be given are already
+ * bounded, so it is done here rather than anywhere else. */
+class Terms implements Query {
+  readonly stated = true;
+  readonly spent = false;
+
+  constructor(private readonly clauses: readonly ((text: string) => boolean)[]) {}
+
+  matching(texts: readonly string[], want: number): Promise<readonly number[]> {
+    const found: number[] = [];
+    for (let at = 0; at < texts.length && found.length < want; at += 1) {
+      const text = texts[at] as string;
+      if (this.clauses.some((clause) => clause(text))) found.push(at);
+    }
+    return Promise.resolve(found);
+  }
+
+  close(): void {}
+}
+
+/** The person's regular expressions, matched on a thread of their own.
+ *
+ * The budget is kept here because it can only be kept here: the thread doing
+ * the matching is inside a call that does not return, and ending it is the one
+ * thing that stops it. What that buys is that an instance answering something
+ * else is never behind a match — the op that asked is, and it is told so as
+ * `truncated`. */
+class Patterns implements Query {
+  readonly stated = true;
+  #spent = false;
+  #worker: Worker | undefined;
+  #left = REGEX_BUDGET_MS;
+
+  constructor(private readonly patterns: readonly RegExp[]) {}
+
+  get spent(): boolean {
+    return this.#spent;
+  }
+
+  async matching(texts: readonly string[], want: number): Promise<readonly number[]> {
+    if (this.#spent || texts.length === 0) return [];
+    const worker = (this.#worker ??= new Worker(new URL("./search-worker.ts", import.meta.url), {
+      workerData: {
+        patterns: this.patterns.map((each) => ({ source: each.source, flags: each.flags })),
+      },
+    }));
     const at = performance.now();
     try {
-      return test();
+      return await this.#within(worker, { texts, want });
     } finally {
       this.#left -= performance.now() - at;
-      if (this.#left <= 0) this.spent = true;
     }
+  }
+
+  /** One ask, answered or given up on.
+   *
+   * The deadline is a timer rather than a reading taken afterwards: a match
+   * that has not come back is exactly the case this bounds, and there is
+   * nothing to read while it is still running. */
+  #within(worker: Worker, ask: { texts: readonly string[]; want: number }): Promise<number[]> {
+    return new Promise<number[]>((settle, fail) => {
+      const timer = setTimeout(
+        () => {
+          this.#give(worker);
+          settle([]);
+        },
+        Math.max(this.#left, 0),
+      );
+      const done = (answer: number[]): void => {
+        clearTimeout(timer);
+        worker.off("message", done);
+        worker.off("error", failed);
+        settle(answer);
+      };
+      const failed = (cause: Error): void => {
+        clearTimeout(timer);
+        fail(cause);
+      };
+      worker.on("message", done);
+      worker.once("error", failed);
+      worker.postMessage(ask);
+    });
+  }
+
+  /** End the thread, which is how a match in progress is stopped. What it was
+   * matching is undecided from here on, and every later ask is answered the
+   * same way without starting another. */
+  #give(worker: Worker): void {
+    this.#spent = true;
+    this.#worker = undefined;
+    void worker.terminate();
+  }
+
+  close(): void {
+    const worker = this.#worker;
+    this.#worker = undefined;
+    if (worker !== undefined) void worker.terminate();
   }
 }
 
-function compile(args: SessionSearchArgs): { clauses: Clause[]; budgets: Budget[] } {
+function compile(args: SessionSearchArgs): Query {
   const query = args.query?.trim();
-  if (query === undefined || query === "") return { clauses: [], budgets: [] };
+  if (query === undefined || query === "") return EVERYTHING;
   const sensitive = args.case_sensitive === true;
-  const budgets: Budget[] = [];
   const clauses = query
     .split("\n")
     .map((clause) => clause.trim())
-    .filter((clause) => clause !== "")
-    .map((clause): Clause => {
-      if (clause.length > MAX_CLAUSE_CHARS) {
-        throw new OpError(
-          "invalid_args",
-          `a query clause may be at most ${MAX_CLAUSE_CHARS} characters, and this one is ${clause.length}`,
-        );
-      }
-      if (args.regex === true) {
-        let matcher: RegExp;
+    .filter((clause) => clause !== "");
+  for (const clause of clauses) {
+    if (clause.length > MAX_CLAUSE_CHARS) {
+      throw new OpError(
+        "invalid_args",
+        `a query clause may be at most ${MAX_CLAUSE_CHARS} characters, and this one is ${clause.length}`,
+      );
+    }
+  }
+  if (clauses.length === 0) return EVERYTHING;
+  if (args.regex === true) {
+    return new Patterns(
+      clauses.map((clause) => {
         try {
-          matcher = new RegExp(clause, sensitive ? "" : "i");
+          return new RegExp(clause, sensitive ? "" : "i");
         } catch (cause) {
           throw new OpError(
             "invalid_args",
             `${clause} is not a regular expression: ${String(cause)}`,
           );
         }
-        const budget = new Budget();
-        budgets.push(budget);
-        return (text: string) => budget.run(() => matcher.test(text));
-      }
+      }),
+    );
+  }
+  return new Terms(
+    clauses.map((clause) => {
       const terms = clause.split(/\s+/).map((term) => (sensitive ? term : term.toLowerCase()));
       return (text: string) => {
         const against = sensitive ? text : text.toLowerCase();
         return terms.every((term) => against.includes(term));
       };
-    });
-  return { clauses, budgets };
+    }),
+  );
 }
 
 /** Read one transcript, and state it as a hit when it matched.
@@ -175,7 +292,7 @@ function compile(args: SessionSearchArgs): { clauses: Clause[]; budgets: Budget[
  * from the reading that decided it rather than from a second one. */
 async function read(
   candidate: TranscriptFile,
-  clauses: readonly Clause[],
+  query: Query,
   wanted: { user: boolean; agent: boolean },
   deps: SearchDeps,
 ): Promise<SessionSearchHit | undefined> {
@@ -186,7 +303,9 @@ async function read(
     // Gone since it was listed, which is a session that ended mid-search.
     return undefined;
   }
-  const matches: SessionSearchMatch[] = [];
+  /** What could be a match, in the order it was said. Gathered first and
+   * matched in one go, because what decides a match may be another thread. */
+  const said: SessionSearchMatch[] = [];
   let cwd: string | undefined;
   let title: string | undefined;
   let model: string | undefined;
@@ -211,17 +330,25 @@ async function read(
       model = record.model;
       effort = record.effort;
     }
-    if (matches.length >= MATCHES_PER_HIT) continue;
-    const said = record.text;
-    if (said === undefined || record.said_by === undefined || !wanted[record.said_by]) continue;
-    if (!says(said, clauses)) continue;
-    matches.push({
+    const text = record.text;
+    if (text === undefined || record.said_by === undefined || !wanted[record.said_by]) continue;
+    said.push({
       role: record.said_by,
-      text: said.length > MATCH_CHARS ? `${said.slice(0, MATCH_CHARS)}…` : said,
+      text,
       ...(record.said_at === undefined ? {} : { said_at: record.said_at }),
     });
   }
-  if (clauses.length > 0 && matches.length === 0) return undefined;
+  const found = await query.matching(
+    said.map((one) => one.text),
+    MATCHES_PER_HIT,
+  );
+  if (query.stated && found.length === 0) return undefined;
+  const matches = found.map((at) => {
+    const one = said[at] as SessionSearchMatch;
+    return one.text.length > MATCH_CHARS
+      ? { ...one, text: `${one.text.slice(0, MATCH_CHARS)}…` }
+      : one;
+  });
   const location = repoLocation(cwd);
   return {
     sid: candidate.sid,
@@ -238,12 +365,6 @@ async function read(
     ...(model === undefined ? {} : { model }),
     ...(effort === undefined ? {} : { effort }),
   };
-}
-
-/** Whether any clause matches. A query stating no clause matches everything,
- * which is what makes a search by working directory alone a search. */
-function says(text: string, clauses: readonly Clause[]): boolean {
-  return clauses.length === 0 || clauses.some((clause) => clause(text));
 }
 
 /** Whether the project directory could be the working directory asked for.

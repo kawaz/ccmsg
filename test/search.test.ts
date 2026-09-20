@@ -2,10 +2,12 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { SessionSearchArgs } from "@ccmsg/protocol";
+import { PROTOCOL_VERSION, type SessionSearchArgs } from "@ccmsg/protocol";
 import { OpError } from "../src/dispatch/index.ts";
+import { type Env, type Instance, isRunning, start } from "../src/instance/index.ts";
 import { search } from "../src/sessions/index.ts";
 import { TranscriptFiles } from "../src/transcript/index.ts";
+import { connectUds, type LineClient } from "./client.ts";
 import { OTHER_SID, SELF, SID } from "./frames.ts";
 
 const homes: string[] = [];
@@ -110,4 +112,97 @@ describe("what a regular-expression query may cost (§5)", () => {
     expect(result.truncated).toBe(false);
     expect(result.hits.map((hit) => hit.sid)).toEqual([SID]);
   });
+});
+
+describe("what else an instance answers while a search is matching (§5)", () => {
+  const running: Instance[] = [];
+  const clients: LineClient[] = [];
+
+  afterEach(async () => {
+    for (const client of clients.splice(0)) await client.close();
+    for (const instance of running.splice(0)) await instance.stop();
+  });
+
+  /** An instance over a config home holding one transcript that defeats the
+   * pattern below. */
+  async function serving(): Promise<Instance> {
+    const root = mkdtempSync(join(tmpdir(), "ccmsg-search-instance-"));
+    homes.push(root);
+    const home = join(root, "home");
+    mkdirSync(home, { recursive: true });
+    writeFileSync(join(home, "settings.json"), "{}\n");
+    const project = join(home, "projects", "-repos-a-repo-main");
+    mkdirSync(project, { recursive: true });
+    writeFileSync(
+      join(project, `${SID}.jsonl`),
+      Array.from(
+        { length: 200 },
+        () =>
+          `${JSON.stringify({
+            type: "user",
+            cwd: "/repos/a-repo/main",
+            timestamp: new Date(1_757_000_000_000).toISOString(),
+            message: { role: "user", content: `${"a".repeat(40)}!` },
+          })}\n`,
+      ).join(""),
+    );
+    const env: Env = {
+      CLAUDE_CONFIG_DIR: home,
+      CCMSG_STATE_DIR: join(root, "state"),
+      CCMSG_CACHE_DIR: join(root, "cache"),
+      CCMSG_CONFIG_DIR: join(root, "config"),
+    };
+    const outcome = await start({ env, echoLog: false });
+    if (!isRunning(outcome)) throw new Error("another instance holds this config home");
+    running.push(outcome);
+    return outcome;
+  }
+
+  async function client(instance: Instance): Promise<LineClient> {
+    const one = await connectUds(instance.socketPath);
+    clients.push(one);
+    one.send({ op: "hello.user", request_id: "hello", protocol_version: PROTOCOL_VERSION });
+    expect((await one.next())["ok"]).toBe(true);
+    return one;
+  }
+
+  test("a ping is answered throughout a match that cannot finish", async () => {
+    const instance = await serving();
+    const searching = await client(instance);
+    const asking = await client(instance);
+
+    // Left running rather than awaited: what it costs is a whole budget, and
+    // the question is what the instance does during it.
+    searching.send({
+      op: "session.search",
+      request_id: "search",
+      query: "^(a+)+$",
+      regex: true,
+    });
+    let done: Record<string, unknown> | undefined;
+    const answered = searching.next().then((answer) => (done = answer));
+
+    // Asked over and over until the search is done, because a single ask could
+    // have been answered before the matching began. Each round trip is a real
+    // op over the socket, so what this measures is the instance's own turn.
+    let worst = 0;
+    let asked = 0;
+    let refused = 0;
+    while (done === undefined) {
+      const at = performance.now();
+      asking.send({ op: "instance.ping", request_id: `ping-${String(asked)}` });
+      if ((await asking.next())["ok"] !== true) refused += 1;
+      worst = Math.max(worst, performance.now() - at);
+      asked += 1;
+    }
+    await answered;
+
+    // The match really did run into its budget, so the asking above happened
+    // while it was going.
+    expect(done?.["truncated"]).toBe(true);
+    expect([asked > 10, refused]).toEqual([true, 0]);
+    // The budget the search is held to. A match on this thread would hold every
+    // one of these past it — one `test()` of this pattern does not return.
+    expect(worst).toBeLessThan(2_000);
+  }, 30_000);
 });
