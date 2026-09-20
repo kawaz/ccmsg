@@ -55,7 +55,6 @@ export interface Upstream {
   launcher?: Launcher;
   /** batch を訳すプログラム。絶対パス。 */
   translate_helper?: string;
-  sandbox_origin?: string;
 }
 
 /** 名前の付いた dump の選択。`types` は型名・その prefix・`-` 付きの除外・

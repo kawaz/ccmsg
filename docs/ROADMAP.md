@@ -21,7 +21,7 @@ kawaz が v1 の webui を使い続けている理由を潰す束。**契約と 
 - webui `2026-09-12-composer-enter-newline.md` — Composer の Enter を改行にする
 - webui `2026-09-12-v1-parity-for-migration.md` — 候補 9 件 (Usage / クォータ、cache リング + LLM status、翻訳タブ、Status タブの中身、Session Search、Session Launcher、LLM stats、dump ボタン、kill / rename / pinned)
 
-契約 / daemon 側から要る 3 件 (sandbox の配信、Composer の添付、`.code-workspace`) は束 2 に寄せる。
+契約 / daemon 側から要る 2 件 (Composer の添付、`.code-workspace`) は束 2 に寄せる。
 
 ## 束 1 — dump と Timeline
 
@@ -43,14 +43,13 @@ kawaz が v1 の webui を使い続けている理由を潰す束。**契約と 
 - 契約 `2026-09-09-file-read-paging-and-external-listing.md` — Files タブの paging と外部ファイル列挙
 - 契約 `2026-09-08-say-unread-on-wire.md` — say の未読を wire に載せる
 - 契約 `2026-09-10-transcript-snapshot-implies-nothing-about-liveness.md` — snapshot が返ることの意味を契約 DESIGN に明記するか
-- ここに束 0 から寄せた 3 件 (sandbox の配信、Composer の添付、`.code-workspace`) が入る
+- ここに束 0 から寄せた 2 件 (Composer の添付、`.code-workspace`) が入る
 
 ## 束 3 — 認証
 
 - daemon [`./issue/2026-09-12-webauthn-tests-library-grade.md`](./issue/2026-09-12-webauthn-tests-library-grade.md) — 自前 WebAuthn のテストを既存ライブラリ水準まで ([DR-0001](./decisions/DR-0001-passkey-auth-for-people.md) §2.11 の条件)
 - 契約 `2026-09-09-passkey-list-for-people.md` — 人が自分の passkey 一覧を保守する op
 - 契約 `2026-09-10-token-family-bound-to-endpoint.md` — **裁定待ち**。TokenFamily を mint 時の endpoint に束縛する
-- daemon [`./issue/2026-09-09-sandbox-grant-delivery-path.md`](./issue/2026-09-09-sandbox-grant-delivery-path.md) — `sandbox_grant` の URL に配信経路が無い
 
 ## 束 4 — 運用の bug
 

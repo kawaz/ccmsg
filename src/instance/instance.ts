@@ -20,14 +20,7 @@ import {
   type Handlers,
   type Requester,
 } from "../dispatch/index.ts";
-import {
-  Containment,
-  fileHandlers,
-  sandboxCapabilities,
-  SandboxGrants,
-  sandboxHandlers,
-  type SessionRoots,
-} from "../files/index.ts";
+import { Containment, fileHandlers, type SessionRoots } from "../files/index.ts";
 import {
   ClaudeCodeSocketRoute,
   CodexQueueRoute,
@@ -459,7 +452,6 @@ export class Instance {
     // than being refused when it does.
     this.#capabilities = new Set([
       ...gatewayCapabilities(setup),
-      ...sandboxCapabilities(config.upstream.sandbox_origin),
       ...launcherCapabilities(config.upstream.launcher),
       ...translateCapabilities(helper),
       ...sessionCapabilities({
@@ -748,8 +740,6 @@ export class Instance {
         };
       },
     });
-    const origin = config.upstream.sandbox_origin;
-
     this.#handlers = completeHandlers({
       "hello.session": this.#sessions.helloSession,
       "hello.user": this.#sessions.helloUser,
@@ -768,10 +758,6 @@ export class Instance {
         presets: config.dump.presets,
         duplicated: (sid) => this.#sessions.duplicated(sid),
       }),
-      // The sandbox ops answer only where an origin is configured. Without one
-      // there is nothing to serve a minted URL, and dispatch already refuses
-      // them for the capability this instance then does not have.
-      ...(origin === undefined ? {} : sandboxHandlers(new SandboxGrants(files, origin))),
       ...(launcher === undefined ? {} : launcherHandlers(launcher)),
       ...(this.#translate === undefined ? {} : translateHandlers(this.#translate)),
       ...gatewayHandlers(setup),

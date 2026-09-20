@@ -102,7 +102,6 @@ export interface UpstreamConfig {
    * is an upstream like any other: this instance speaks to it and does not
    * build it. */
   readonly translate_helper?: string;
-  readonly sandbox_origin?: string;
 }
 
 /** The named selections a person dumps by.

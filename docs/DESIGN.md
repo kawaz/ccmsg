@@ -41,7 +41,6 @@ What M3 names is the **periodic timer**: an interval value decides how often som
 | Value | Kind | What it decides | Rationale |
 |---|---|---|---|
 | The gateway liveness window, 5 minutes (`GATEWAY_LIVE_WINDOW_MS`) | window | How recently the gateway must have seen a session for that **alone** to count as alive (§4.3). Compared against `now` at the moment of reading; there is no timer | The window's role is written in the implementation, but no primary source explains the value of 5 minutes itself (**provisional**) |
-| The sandbox grant expiry, 30 minutes (`GRANT_MS`) | expiry | How long a minted URL works. Minting the same scope again returns the same grant with its expiry moved out, so a preview in use keeps working and a forgotten one stops on its own. Expiry is judged at the moment of reading; there is no timer | The rationale is the shape (use extends it, neglect ends it). 30 minutes is the bound on how long a forgotten URL stays valid, not a measured value |
 | The launcher drain, 500 ms (`DRAIN_MS`) | cut-off | How long the pipes are read after the command has exited. A launch that starts a session in a terminal leaves a grandchild holding the write end, so end-of-file may never arrive, and without a bound the reply would wait for that session to finish. On an ordinary exit every descriptor closes at once and the bound is never reached | Only a detached launch reaches it; everywhere else it costs nothing |
 | The launcher force kill, 500 ms (`FORCE_KILL_MS`) | cut-off | How long a command that outlived its allowance (the config's `timeout_secs`) and was sent SIGTERM is given to leave before SIGKILL | A single grace per launch |
 
@@ -408,7 +407,7 @@ so nothing here knows which part of it is the body and it is kept whole.
 
 What the op adds over reading the transcript is a durable artifact whose path can be handed to a successor session (instead of a body that travels out through a client and back in again), and since the caller never supplies a path, there is nothing for containment to judge. It lives under the state directory because §8.1 derives every per-instance path from the config home.
 
-It does not contradict M4 either. What M4 forbids is putting a derived value on disk and keeping it consistent with its source; the harm is the consistency procedure that creates. A dump is derived from the transcript, but it is a single cut fixed by its generation time and its bounds, never made to follow the source, so no such procedure arises. Its standing is "an artifact a person had an op make": like a child process the launcher started or a URL the sandbox minted, it is an effect the instance leaves in the world on request, not state of the instance. Nothing discards them.
+It does not contradict M4 either. What M4 forbids is putting a derived value on disk and keeping it consistent with its source; the harm is the consistency procedure that creates. A dump is derived from the transcript, but it is a single cut fixed by its generation time and its bounds, never made to follow the source, so no such procedure arises. Its standing is "an artifact a person had an op make": like a child process the launcher started, it is an effect the instance leaves in the world on request, not state of the instance. Nothing discards them.
 
 ## 6. Topics and delivery
 
@@ -653,7 +652,7 @@ socket path / HTTP bind / state dir / data dir / logs. **All are derived from th
 | Own config home | The single config home this instance sees (M6) |
 | endpoints | Every instance of the mesh, this one among them, as `endpoints.json` states them. Which entry is this instance is the row carrying its own id, and the reader takes itself out of what it dials (§7.1). **It is the only list of URLs config carries** |
 | Entry-point permission | bind, source IP |
-| upstream | gateway's URL and webhook source, terminal gateway, launcher (roots and recipes), translation helper, sandbox origin |
+| upstream | gateway's URL and webhook source, terminal gateway, launcher (roots and recipes), translation helper |
 
 `upstream.terminal_gateway` is both the rename route and the value `hello` names as where a person opens a terminal (§3.1).
 

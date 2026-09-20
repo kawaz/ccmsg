@@ -23,13 +23,7 @@ import {
   validationErrors,
 } from "@ccmsg/protocol";
 import { type HandlerInput, OpError } from "../src/dispatch/index.ts";
-import {
-  Containment,
-  fileHandlers,
-  sandboxCapabilities,
-  SandboxGrants,
-  type SessionRoots,
-} from "../src/files/index.ts";
+import { Containment, fileHandlers, type SessionRoots } from "../src/files/index.ts";
 import { sessionStatusOf } from "../src/sessions/index.ts";
 import { TranscriptFold } from "../src/transcript/index.ts";
 import { OTHER_SID, SID, TestConn } from "./frames.ts";
@@ -753,71 +747,6 @@ describe("a session two processes are running", () => {
     );
     expect(existsSync(join(base, "repo/ws/docs/inbox/duplicated.md"))).toBe(false);
     expect(readFileSync(join(base, "repo/ws/hello.txt"), "utf8")).toBe("hello\n");
-  });
-});
-
-describe("sandbox", () => {
-  const origin = "https://ccmsg-files-{gid}.example.test";
-
-  test("the capability is named only where an origin is configured", async () => {
-    expect(sandboxCapabilities(origin)).toEqual(["sandbox"]);
-    expect(sandboxCapabilities(undefined)).toEqual([]);
-    expect(sandboxCapabilities("https://no-placeholder.example.test")).toEqual([]);
-  });
-
-  test("a grant reaches only what the matching read reaches", async () => {
-    const grants = new SandboxGrants(containment(), origin);
-    expect(
-      await refusalOf(() =>
-        grants.mint({
-          sid: SID,
-          kind: "external",
-          path: join(base, "outside/secret.txt"),
-        }),
-      ),
-    ).toBe("path_forbidden");
-    // `sandbox.grant` is a person's op and the table gives it no `scope`, so
-    // there is no visible range to narrow: what a grant refuses is what the
-    // matching read refuses, and nothing else.
-  });
-
-  test("the same scope keeps its id and moves its expiry out", async () => {
-    const grants = new SandboxGrants(containment(), origin);
-    const first = await grants.mint(
-      { sid: SID, kind: "contained", path: "ws/hello.txt" },
-      undefined,
-      1000,
-    );
-    expect(first.url).toBe(
-      `https://ccmsg-files-${first.gid}.example.test/${first.token}/hello.txt`,
-    );
-    const again = await grants.mint(
-      { sid: SID, kind: "contained", path: "ws/sub/../hello.txt" },
-      {},
-      2000,
-    );
-    expect(again.gid).toBe(first.gid);
-    expect(again.token).toBe(first.token);
-    expect(again.expires_at).toBeGreaterThan(first.expires_at);
-    expect(grants.find(first.gid, 2000)).toBeDefined();
-  });
-
-  test("a grant stops at its expiry, and revoking one is best effort", async () => {
-    const grants = new SandboxGrants(containment(), origin);
-    const grant = await grants.mint({ sid: SID, kind: "contained", path: "ws/hello.txt" }, {}, 0);
-    expect(grants.find(grant.gid, grant.expires_at + 1)).toBeUndefined();
-    expect(grants.revoke({ gid: grant.gid })).toEqual({});
-    expect(grants.revoke({ gid: "never-minted" })).toEqual({});
-  });
-
-  test("an external grant is bound to the one file", async () => {
-    const grants = new SandboxGrants(containment(), origin);
-    const grant = await grants.mint({
-      sid: SID,
-      kind: "external",
-      path: join(base, "outside/named.txt"),
-    });
-    expect(grant.url.endsWith(grant.token)).toBe(true);
   });
 });
 

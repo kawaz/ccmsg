@@ -41,7 +41,6 @@ M3 が名指すのは**周期タイマー**である: 間隔値が「どれだ�
 | 値 | 種類 | 何を決めるか | 根拠 |
 |---|---|---|---|
 | gateway の生存窓 5 分 (`GATEWAY_LIVE_WINDOW_MS`) | 窓 | gateway の観測**だけ**を根拠に「生存」と言える新しさ (§4.3)。読む瞬間に `now` と比べるだけで、タイマーは無い | 窓の役割は実装に書かれているが、5 分という値そのものを説明する一次資料は無い (**仮値**) |
-| sandbox grant の期限 30 分 (`GRANT_MS`) | 期限 | mint した URL が使える長さ。同じ scope を mint し直すと同じ grant の期限が延びるので、使われている preview は生き続け、忘れられたものは自然に止まる。期限切れは読む瞬間に判定し、タイマーは無い | 根拠は形 (使えば延びる・放置すれば止まる) にある。30 分は「忘れられた URL が有効なままでいる上限」であって、実測から導いた値ではない |
 | launcher の drain 500ms (`DRAIN_MS`) | 打ち切り | コマンド終了後に pipe を読み続ける長さ。terminal にセッションを立てる launch は孫プロセスが pipe の書き込み側を持ち続けるので EOF が来ないことがあり、上限が無ければ応答はそのセッションの終了まで待つ。普通の exit では全 descriptor が同時に閉じるので、この上限には達しない | 到達するのは detach した launch だけで、それ以外では費用が無い |
 | launcher の force kill 500ms (`FORCE_KILL_MS`) | 打ち切り | 制限時間 (config の `timeout_secs`) を超えて SIGTERM された command が退去するまでの猶予。過ぎれば SIGKILL | 1 回の launch につき 1 度だけの猶予 |
 
@@ -139,7 +138,7 @@ auth records も同じ理屈で M4 の対象外である: credential は authent
 
 inbox と kv は M4 の例外ではなく、M4 の対象外である。M4 が禁じるのは**派生値**の永続化であり、未配送メッセージは派生値ではない。送信側の `message.send` は既に応答を返して終わっており、transcript にも upstream にも「まだ届いていない本文」はどこにも無い。daemon が失えば本文ごと消える。kv も同じ理屈で、テーマ等の保存値は daemon が失えばユーザの設定ごと消える (契約 kv.ts が instance 間ミラーと `updated_at` による決着を前提にしているのも、値がプロセスより長く生きることを前提にしているため)。
 
-room jsonl は無い (契約 §2.1 で会話ログの正本は transcript)。sandbox grant・購読状態・fold の途中結果・config dir の一覧はいずれも再構成できるので書かない (M4)。pid / socket / lock は資源ハンドルであって状態ではない。**instance id はその対極で、資源ハンドルではなく identity だから書く**: 発行したものすべて (`mid`、store の鍵、`last_live`、レコードの発行者) がこの値で引かれるので、プロセスや置き場所から導くと、導出元が変わった瞬間にそれらが一斉に指し先を失う。引っ越しは state ごと移すことであり、id が state と一緒に動くことがそれらを無効にしない唯一の形である (contract DR-0001 §2.1)。**mesh の署名鍵は書かない**: 接続 1 本ごとに生成して ack で捨てるエフェメラル鍵であり ([mesh-peer-auth](./design/mesh-peer-auth.md) §7)、メモリ上にしか存在しない。state dir に置くと保存場所と復旧手順という管理対象が生まれ、§1.1 に反する。
+room jsonl は無い (契約 §2.1 で会話ログの正本は transcript)。購読状態・fold の途中結果・config dir の一覧はいずれも再構成できるので書かない (M4)。pid / socket / lock は資源ハンドルであって状態ではない。**instance id はその対極で、資源ハンドルではなく identity だから書く**: 発行したものすべて (`mid`、store の鍵、`last_live`、レコードの発行者) がこの値で引かれるので、プロセスや置き場所から導くと、導出元が変わった瞬間にそれらが一斉に指し先を失う。引っ越しは state ごと移すことであり、id が state と一緒に動くことがそれらを無効にしない唯一の形である (contract DR-0001 §2.1)。**mesh の署名鍵は書かない**: 接続 1 本ごとに生成して ack で捨てるエフェメラル鍵であり ([mesh-peer-auth](./design/mesh-peer-auth.md) §7)、メモリ上にしか存在しない。state dir に置くと保存場所と復旧手順という管理対象が生まれ、§1.1 に反する。
 
 ## 3. 認証と入口
 
@@ -400,7 +399,7 @@ state dir にはもう 1 つ、`dumps/` がある。`session.dump.write` が tra
 
 op が transcript の読み出しに足しているのは「path を後継セッションに渡せる耐久性のある成果物」であって (本文を client 経由で外に出してまた入れ直す代わりに)、path は呼び出し側が渡さないので封じ込めの判定対象も無い。state dir の下に置くのは、instance ごとの path をすべて config home から導く §8.1 に従うためである。
 
-M4 とも矛盾しない。M4 が禁じるのは派生値をディスクに置いて正本と整合させ続けることで、害は整合の手順が生まれることにある。dump は transcript から導いた派生物だが、生成時刻と境界で確定した 1 回の切り出しであり、正本に追従させるものではないから整合の手順は生まれない。位置づけは「人が op で作らせた成果物」で、launcher が立てた子プロセスや sandbox が発行した URL と同じく、instance が要求に応じて世界に残す作用であって instance の状態ではない。破棄する仕組みは持たない。
+M4 とも矛盾しない。M4 が禁じるのは派生値をディスクに置いて正本と整合させ続けることで、害は整合の手順が生まれることにある。dump は transcript から導いた派生物だが、生成時刻と境界で確定した 1 回の切り出しであり、正本に追従させるものではないから整合の手順は生まれない。位置づけは「人が op で作らせた成果物」で、launcher が立てた子プロセスと同じく、instance が要求に応じて世界に残す作用であって instance の状態ではない。破棄する仕組みは持たない。
 
 ## 6. topic と配送
 
@@ -645,7 +644,7 @@ socket path / HTTP の bind / state dir / data dir / ログ。**すべて config
 | 自 config home | この instance が見る唯一の config home (M6) |
 | endpoints | mesh の全 instance、自分も含む。`endpoints.json` が述べる物そのもの。どれが自分かは自分の id の行で、dial する先からは読む側が自分を除く (§7.1)。**config に載る URL の一覧はこれだけ**である |
 | 入口の許可 | bind、source IP |
-| upstream | gateway の URL と webhook source、terminal gateway、launcher (root と テンプレ)、translate helper、sandbox origin |
+| upstream | gateway の URL と webhook source、terminal gateway、launcher (root と テンプレ)、translate helper |
 
 `upstream.terminal_gateway` は rename の経路であると同時に、人が terminal を開く先として `hello` で名乗る値でもある (§3.1)。
 
