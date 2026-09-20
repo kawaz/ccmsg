@@ -1,6 +1,6 @@
 ---
 title: `session.search` のユーザ指定正規表現が 1 回の `test()` でイベントループを塞ぎ切る
-status: open
+status: resolved
 category: design
 created: 2026-09-14T12:07:23+09:00
 last_read:
@@ -9,10 +9,10 @@ wip_entered:
 blocked_entered:
 pending_entered:
 discarded_entered:
-resolved_entered:
+resolved_entered: 2026-09-20T23:20:31+09:00
 discard_reason:
 pending_reason:
-close_reason:
+close_reason: ["done"]
 blocked_by:
 origin: 自リポ TODO
 ---
