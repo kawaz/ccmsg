@@ -1,6 +1,6 @@
 ---
 title: sandbox_grant が URL を発行するが配信経路が無い
-status: open
+status: resolved
 category: design
 created: 2026-09-09T00:19:04+09:00
 last_read:
@@ -9,10 +9,10 @@ wip_entered:
 blocked_entered:
 pending_entered:
 discarded_entered:
-resolved_entered:
+resolved_entered: 2026-09-20T23:18:58+09:00
 discard_reason:
 pending_reason:
-close_reason:
+close_reason: ["done: capability sandbox 撤去完了 (daemon から src/files/sandbox.ts ごと撤去、upstream.sandbox_origin・テスト・DESIGN 日英・ROADMAP を追従)。契約 v2.9.0 で sandbox.grant/sandbox.revoke と capability sandbox を撤去、daemon は 2.9.0 に追従済み"]
 blocked_by:
 origin: 2026-09-08 の設計監査 (fable5-high)
 ---
@@ -42,4 +42,4 @@ URL に権限を載せる形は、漏れれば権限も漏れる・失効を別�
 ## 受け入れ条件
 
 - [x] capability 撤回 or 配信実装のどちらで進めるか判断する (撤回。上記「方針」)
-- [ ] 選んだ側の実装 (or 削除) を完了する
+- [x] 選んだ側の実装 (or 削除) を完了する
