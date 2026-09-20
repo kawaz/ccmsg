@@ -102,6 +102,8 @@ For a single frame, in order:
 
 **Steps 1–6 are never written per op.** They are mechanically derived from the attribute table, so adding an op is closed to "add one row to the attribute table and write the schema and the implementation" (M1). Only ops that carry `scope: "role"` (`auth.account.read`, `auth.ownership.remove`, `auth.credential.remove`, `transcript.read`, `transcript.items.read`, `dir.list`, `file.read`) change the visible range rather than the allow/deny decision, so the role is passed into the implementation. **Passing the role to the implementation is the only route, and it is limited to ops whose attribute table declares `scope`.**
 
+**One thread answers every op, with one exception: `session.search` matches a person's regular expressions on a worker of its own.** A `RegExp` cannot be interrupted — a pattern that backtracks super-linearly runs to its end — so the only way to bound one is to end the thread running it, and the only thread this instance can afford to end is not the one answering everything else. It is the daemon's only worker: a search holds one for as long as it matches, the budget is a deadline on it rather than an allowance spent between calls, and reaching the deadline ends the thread and answers `truncated`.
+
 ### 2.3 domain
 
 | Module | Holds | Source of truth |

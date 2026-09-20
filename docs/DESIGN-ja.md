@@ -102,6 +102,8 @@ frame 1 個に対して、順に:
 
 **1〜6 は op ごとに書かない。** 属性表から機械的に導かれるので、op を足すことは「属性表に 1 行足して schema と実装を書く」ことに閉じる (M1)。`scope: "role"` が付いた op (`auth.account.read`・`auth.ownership.remove`・`auth.credential.remove`・`transcript.read`・`transcript.items.read`・`dir.list`・`file.read`) だけは、可否ではなく可視範囲が変わるので、実装に role を渡す。**渡すのは属性表が `scope` を宣言している op に限る**、というのが role を実装に露出させる唯一の経路である。
 
+**op に答えるスレッドは 1 本で、例外は 1 つ、`session.search` の正規表現の照合だけが専用の worker で走る。** `RegExp` は途中で止められない — 超線形に backtrack する pattern は最後まで走り切る — ので、1 回の照合を縛る唯一の方法はそれを走らせているスレッドを終わらせることであり、終わらせてよいスレッドは「他の全部に答えている方」ではない。daemon が持つ worker はこれだけで、検索は照合している間 1 本を握り、予算は呼び出しの合間に引く残高ではなくそのスレッドへの期限であり、期限に達すればスレッドを終わらせて `truncated` と答える。
+
 ### 2.3 domain
 
 | モジュール | 持つもの | 正本 |
