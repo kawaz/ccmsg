@@ -31,7 +31,7 @@ wire の契約は [kawaz/ccmsg-protocol](https://github.com/kawaz/ccmsg-protocol
 | 2026-09-14 | design | open | [translate-queue-instance-wide](./2026-09-14-translate-queue-instance-wide.md) | 翻訳の待ち行列が instance 全体で 1 本なので、無関係なセッションの翻訳が互いを待つ |
 | 2026-09-12 | task | open | [webauthn-tests-library-grade](./2026-09-12-webauthn-tests-library-grade.md) | WebAuthn の検証を自前 (`src/auth/webauthn.ts` 401 行 + `cbor.ts` 150 行、DR-0001 §2.11) で… |
 | 2026-09-11 | design | open | [dump-timeline-shared-selection](./2026-09-11-dump-timeline-shared-selection.md) | dump と timeline (webui の TL) は「型の階層で item を選ぶ」設計を共有している (kawaz 2026-09-11)… |
-| 2026-09-10 | bug | open | [service-stop-wedges-with-sockets-unlinked](./2026-09-10-service-stop-wedges-with-sockets-unlinked.md) | 本運用 (v0.2.13 監督者 + 3 instance) で `service stop` が socket unlink 後に wedge し、応答は `run… |
+| 2026-09-10 | bug | pending | [service-stop-wedges-with-sockets-unlinked](./2026-09-10-service-stop-wedges-with-sockets-unlinked.md) | 本運用 (v0.2.13 監督者 + 3 instance) で `service stop` が socket unlink 後に wedge し、応答は `run… |
 
 <!--
 INDEX の列構成・canonical 順序・行形式の唯一の正本:

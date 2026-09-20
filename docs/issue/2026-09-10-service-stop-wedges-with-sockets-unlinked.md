@@ -1,17 +1,17 @@
 ---
 title: service stop が socket unlink 後に wedge し、応答と実態が乖離する
-status: open
+status: pending
 category: bug
 created: 2026-09-10T16:21:32+09:00
 last_read: 2026-09-10T18:21:21+09:00
 open_entered: 2026-09-10T16:21:32+09:00
 wip_entered:
 blocked_entered:
-pending_entered:
+pending_entered: 2026-09-20T23:22:12+09:00
 discarded_entered:
 resolved_entered:
 discard_reason:
-pending_reason:
+pending_reason: ["v0.3.3 の手当て (段階 log、launchctl bootout) は実装済み (src/daemon/supervise.ts:544-557、src/service/service.ts:276,324)。残るのは「どこで止まるか」の特定のみで隔離環境 36 回未再現、再現待ち (2026-09-20)"]
 close_reason:
 blocked_by:
 origin: 自リポ TODO
