@@ -38,3 +38,7 @@ dump (`--types` 等の CLI 選択子) と timeline (webui の型ごとの表示�
 - [ ] subject (main/team/sub) を選択子の構文にどう載せるか決める (例 `subject:sub` / `@sub`)
 - [ ] webui 側が preset を読む時の localStorage 表示設定との優先関係を決める
 - [ ] DESIGN の dump / TL 節に「一方で論点が出たらもう一方も検討する」チェック項目を追記する
+
+## 進め方
+
+契約側の DR として subject の構文を起草してから着手する (webui と揃えるため)。2026-09-20 の daemon issue バッチでは、受け入れ条件 3 件がすべて未決で webui / 契約に跨るため見送った。
