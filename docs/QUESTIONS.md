@@ -20,6 +20,13 @@
 
 ## 裁定待ち
 
+### TQ-Q1: 翻訳の待ち行列を分けるか、要求ごとに予算を切るか
+
+翻訳の待ち行列は instance 全体で 1 本なので、無関係なセッションの翻訳が互いを待つ (最悪 `MAX_MS` 120 秒 × 待ち行列長、[./issue/2026-09-14-translate-queue-instance-wide.md](./issue/2026-09-14-translate-queue-instance-wide.md))。helper は 1 行 1 答なので、1 本の helper に対する直列化自体は避けられない。統括の推しは a。
+
+- [ ] a: helper 1 本のまま、要求ごとに予算を切る (helper を増やすと上限・増減の契機・異常時の回収という管理対象が生まれる。ただし行列の順番は変わらないので、issue の受け入れ条件を「1 要求が行列を `MAX_MS` 以上塞がない」に改める必要がある)
+- [ ] b: セッション (または要求元の接続) 単位に行列を分け、helper を複数持つ (受け入れ条件のとおり「別セッションの短い翻訳が待たずに返る」が成り立つ。helper の上限と増減の契機を決める必要がある)
+
 ### FV-Q9: 閲覧 site の登録可能ドメイン (別 site にするために)
 
 webui DR-0005 の閲覧 site は webui / endpoint と **別 site** (= 別の登録可能ドメイン、cookie の分割単位) でないと隔離が成立しない。今の hosting は全部 `*.kawaz-mbp16-20211217.kawaz.jp` で登録可能ドメインは `kawaz.jp` なので、`ccmsg2-view.kawaz-….kawaz.jp` では同じ site になる。実装 (webui v1.14.0) はビルド時定数 `CCMSG_VIEW_ORIGIN` 未設定なら閲覧機能を出さない形で入っている。
