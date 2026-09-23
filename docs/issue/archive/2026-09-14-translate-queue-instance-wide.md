@@ -1,6 +1,6 @@
 ---
 title: 翻訳の待ち行列が instance 全体で 1 本なので、無関係なセッションの翻訳が互いを待つ
-status: open
+status: resolved
 category: design
 created: 2026-09-14T12:13:47+09:00
 last_read: 2026-09-24T00:47:48+09:00
@@ -9,10 +9,10 @@ wip_entered:
 blocked_entered:
 pending_entered:
 discarded_entered:
-resolved_entered:
+resolved_entered: 2026-09-24T01:04:26+09:00
 discard_reason:
 pending_reason:
-close_reason:
+close_reason: ["done:kawaz裁定(2026-09-24)、行列は分けない・helperは増やさない(v1で並列にしても処理時間は変わらなかった、人が読める速さが上限)","done:行列を短く保つのは頼む側の責務。webuiはdrawing中のitemしか頼まず窓の外は頼まない、実装済み(ccmsg-webui/main/src/timeline/use-translated.ts)","done:daemon側は要求ごとの予算(MAX_MS)が既存、DESIGN{,-ja}.mdの翻訳helper段落に行列の単位と含意を追記済み","done:無関係なセッション間の待ちは考慮不要と裁定"]
 blocked_by:
 origin: 自リポ TODO
 ---

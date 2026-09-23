@@ -29,7 +29,6 @@ wire の契約は [kawaz/ccmsg-protocol](https://github.com/kawaz/ccmsg-protocol
 | 2026-09-20 | bug | open | [llm-read-generated-at-undefined-once](./2026-09-20-llm-read-generated-at-undefined-once.md) | `test/llm-read.test.ts:146` が full run で 1 回だけ失敗した観測記録。`generated_at` が `undef… |
 | 2026-09-16 | design | open | [dr-0008-inbox-snapshot-for-people](./2026-09-16-dr-0008-inbox-snapshot-for-people.md) | DR-0008 §2.5 は sid なし接続に空 snapshot と決めているが、実装は人に全 inbox を非消費 view で返す… |
 | 2026-09-16 | design | open | [refresh-token-store-layer](./2026-09-16-refresh-token-store-layer.md) | refresh token (TokenFamily) のサーバ側置き場をストア層で抽象化する |
-| 2026-09-14 | design | open | [translate-queue-instance-wide](./2026-09-14-translate-queue-instance-wide.md) | 翻訳の待ち行列が instance 全体で 1 本なので、無関係なセッションの翻訳が互いを待つ |
 | 2026-09-12 | task | open | [webauthn-tests-library-grade](./2026-09-12-webauthn-tests-library-grade.md) | WebAuthn の検証を自前 (`src/auth/webauthn.ts` 401 行 + `cbor.ts` 150 行、DR-0001 §2.11) で… |
 | 2026-09-11 | design | open | [dump-timeline-shared-selection](./2026-09-11-dump-timeline-shared-selection.md) | dump と timeline (webui の TL) は「型の階層で item を選ぶ」設計を共有している (kawaz 2026-09-11)… |
 | 2026-09-10 | bug | pending | [service-stop-wedges-with-sockets-unlinked](./2026-09-10-service-stop-wedges-with-sockets-unlinked.md) | 本運用 (v0.2.13 監督者 + 3 instance) で `service stop` が socket unlink 後に wedge し、応答は `run… |
