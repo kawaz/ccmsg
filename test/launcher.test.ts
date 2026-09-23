@@ -1,5 +1,5 @@
-import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { afterEach, describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -14,12 +14,19 @@ import type { LauncherConfig } from "../src/instance/index.ts";
 import { type Launch, Launcher, launcherHandlers, program } from "../src/launcher/index.ts";
 import { TestConn } from "./frames.ts";
 
+const dirs: string[] = [];
+
+afterEach(() => {
+  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+});
+
 /** A tree of directories to browse and launch in, with a dot-directory and a
  * link out of the roots to be refused. */
 function host(): { root: string; outside: string; spelled: string } {
   // What the filesystem calls it: every path in a reply is the resolved one,
   // and on this host the temporary directory is reached through a link.
   const base = realpathSync(mkdtempSync(join(tmpdir(), "ccmsg-launcher-")));
+  dirs.push(base);
   const root = join(base, "repos");
   mkdirSync(join(root, "one", "src", "deep"), { recursive: true });
   mkdirSync(join(root, "two"), { recursive: true });

@@ -6,7 +6,7 @@
  * travels over it once there is one — and a second copy of "how an instance is
  * started" would let the two drift into testing different deployments. */
 import { expect } from "bun:test";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { type Endpoint, type InstanceId, PROTOCOL_VERSION } from "@ccmsg/protocol";
@@ -20,6 +20,7 @@ import {
   type ProofClaim,
 } from "../src/mesh/index.ts";
 
+const dirs: string[] = [];
 const running: Instance[] = [];
 const closing: (() => void)[] = [];
 
@@ -34,6 +35,7 @@ export async function release(): Promise<void> {
   // Nothing here starts a process of its own, so anything still running against
   // one of these homes got there by way of the daemon and is a leak.
   expect(await reapOrphans()).toEqual([]);
+  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 }
 
 /** A port held for the listener that is going to take it.
@@ -137,6 +139,7 @@ const leaseOf = new WeakMap<Env, PortLease>();
 export function homeFor(lease: PortLease, peers: readonly Endpoint[], endpoint?: Endpoint): Env {
   const port = lease.port;
   const root = mkdtempSync(join(tmpdir(), "ccmsg-mesh-"));
+  dirs.push(root);
   trackRoot(root);
   const home = join(root, "home");
   mkdirSync(join(home, "sessions"), { recursive: true });

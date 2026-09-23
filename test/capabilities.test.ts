@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PROTOCOL_VERSION } from "@ccmsg/protocol";
@@ -7,12 +7,14 @@ import { ConfigError, type Env, type Instance, isRunning, start } from "../src/i
 import { connectUds, type LineClient } from "./client.ts";
 import { writeInstanceHome } from "./harness.ts";
 
+const dirs: string[] = [];
 const running: Instance[] = [];
 const clients: LineClient[] = [];
 
 afterEach(async () => {
   for (const client of clients.splice(0)) await client.close();
   for (const instance of running.splice(0)) await instance.stop();
+  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
 /** A config home with the config file this test wants, and a directory the
@@ -22,6 +24,7 @@ function disposable(config: (root: string) => Record<string, unknown> = () => ({
   root: string;
 } {
   const root = mkdtempSync(join(tmpdir(), "ccmsg-caps-"));
+  dirs.push(root);
   mkdirSync(join(root, "home", "sessions"), { recursive: true });
   mkdirSync(join(root, "repos"), { recursive: true });
   writeInstanceHome(join(root, "config"), join(root, "home"), config(root));

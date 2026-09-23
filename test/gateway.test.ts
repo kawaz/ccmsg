@@ -1,6 +1,6 @@
 import { personToken } from "./person.ts";
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -123,6 +123,7 @@ const REPORT = {
   ],
 };
 
+const dirs: string[] = [];
 const running: Instance[] = [];
 const clients: LineClient[] = [];
 const servers: ReturnType<typeof Bun.serve>[] = [];
@@ -131,6 +132,7 @@ afterEach(async () => {
   for (const client of clients.splice(0)) await client.close();
   for (const instance of running.splice(0)) await instance.stop();
   for (const server of servers.splice(0)) await server.stop(true);
+  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
 /** A gateway that answers its status endpoint, and counts the reads. */
@@ -167,6 +169,7 @@ async function startWith(
   upstream?: (tokenFile: string) => Record<string, string>,
 ): Promise<Started> {
   const root = mkdtempSync(join(tmpdir(), "ccmsg-gateway-"));
+  dirs.push(root);
   const home = join(root, "home");
   mkdirSync(join(home, "sessions"), { recursive: true });
   const tokenFile = join(root, "webhook.token");

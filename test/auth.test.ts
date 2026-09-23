@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -51,12 +51,16 @@ import { knownAt, OTHER_USER, personSession, TEST_USER } from "./person.ts";
  * carries, and what a WebSocket handshake presents. Where what decides a case
  * is a clock or an interleaving, `Auth` is driven over its records directly. */
 
+const dirs: string[] = [];
+const settleLinks: (() => Promise<void>)[] = [];
 const running: Instance[] = [];
 const clients: LineClient[] = [];
 
 afterEach(async () => {
   for (const client of clients.splice(0)) await client.close();
   for (const instance of running.splice(0)) await instance.stop();
+  for (const settled of settleLinks.splice(0)) await settled();
+  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
 const SELF: InstanceId = "0".repeat(32);
@@ -77,6 +81,7 @@ async function serving(
   const port = lease.port;
   const origin = `http://127.0.0.1:${String(port)}`;
   const root = mkdtempSync(join(tmpdir(), "ccmsg-auth-"));
+  dirs.push(root);
   mkdirSync(join(root, "home", "sessions"), { recursive: true });
   writeInstanceHome(join(root, "config"), join(root, "home"), {
     entry: { host: "127.0.0.1", port },
@@ -248,6 +253,7 @@ function unit(
   options: { self?: InstanceId; endpoint?: string; now?: () => number; dir?: string } = {},
 ): { auth: Auth; records: AuthRecords; dir: string } {
   const dir = options.dir ?? mkdtempSync(join(tmpdir(), "ccmsg-auth-unit-"));
+  if (options.dir === undefined) dirs.push(dir);
   const self = options.self ?? SELF;
   const records = new AuthRecords({
     store: fileRecordStore(dir),
@@ -293,6 +299,7 @@ function linked(
   };
   for (const { self, endpoint } of instances) {
     const dir = mkdtempSync(join(tmpdir(), "ccmsg-auth-linked-"));
+    dirs.push(dir);
     let auth: Auth | undefined;
     const records = new AuthRecords({
       store: fileRecordStore(dir),
@@ -329,6 +336,7 @@ function linked(
   const settled = async (): Promise<void> => {
     await Promise.all(inflight.splice(0));
   };
+  settleLinks.push(settled);
   return {
     peers,
     cut: () => {
@@ -1302,6 +1310,7 @@ describe("a token reused after its grace fails the family (contract, DR-0030 §5
     // The digests travel with the family, so an instance that restarts — or a
     // peer the reused value is presented to — still recognises it (M4).
     const dir = mkdtempSync(join(tmpdir(), "ccmsg-auth-retired-"));
+    dirs.push(dir);
     let now = 1_000_000;
     const before = unit({ dir, now: () => now }).auth;
     await before.grant(TEST_USER, [SELF], { kind: "instance", instance: SELF });
@@ -1883,6 +1892,7 @@ describe("what a peer's records may and may not do (contract, DR-0030 §3, §5)"
     // The file the previous generation left behind, read on start: nothing of
     // it is kept, and the first write leaves a file of the contract's shape.
     const dir = mkdtempSync(join(tmpdir(), "ccmsg-auth-old-file-"));
+    dirs.push(dir);
     writeFileSync(join(dir, "records.json"), JSON.stringify(foreign.map(({ record }) => record)));
     const fresh = unit({ dir, endpoint: ENDPOINT });
     expect(fresh.records.all()).toEqual([]);

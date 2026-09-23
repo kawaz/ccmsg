@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -75,10 +75,12 @@ interface Bound {
   transport: Transport;
 }
 
+const dirs: string[] = [];
 const running: Transport[] = [];
 
 afterEach(async () => {
   for (const transport of running.splice(0)) await transport.close();
+  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
 describe("the driver answers what the handler could not", () => {
@@ -107,7 +109,9 @@ describe("the driver answers what the handler could not", () => {
 function bindUds(): Bound {
   const conns = new ConnRegistry();
   const seen: Conn[] = [];
-  const path = join(mkdtempSync(join(tmpdir(), "ccmsg-transport-")), "ccmsg.sock");
+  const root = mkdtempSync(join(tmpdir(), "ccmsg-transport-"));
+  dirs.push(root);
+  const path = join(root, "ccmsg.sock");
   const transport = new Transport();
   transport.add(listenUds({ path, conns, handle, onConn: (conn) => seen.push(conn) }));
   running.push(transport);

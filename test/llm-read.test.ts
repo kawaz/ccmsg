@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -72,11 +72,13 @@ const STATS = {
 const running: Instance[] = [];
 const clients: LineClient[] = [];
 const servers: ReturnType<typeof Bun.serve>[] = [];
+const dirs: string[] = [];
 
 afterEach(async () => {
   for (const client of clients.splice(0)) await client.close();
   for (const instance of running.splice(0)) await instance.stop();
   for (const server of servers.splice(0)) await server.stop(true);
+  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
 /** A gateway answering its three endpoints, recording what was asked of it. */
@@ -102,6 +104,7 @@ function fakeGateway(): { url: string; asked: () => string[] } {
 
 async function greet(gatewayUrl?: string): Promise<LineClient> {
   const root = mkdtempSync(join(tmpdir(), "ccmsg-llm-"));
+  dirs.push(root);
   mkdirSync(join(root, "home", "sessions"), { recursive: true });
   writeInstanceHome(
     join(root, "config"),
@@ -138,11 +141,21 @@ async function ask(
   return answer;
 }
 
+async function answered(
+  client: LineClient,
+  op: "llm.usage.read" | "llm.stats.read",
+  args: Record<string, unknown> = {},
+): Promise<Record<string, unknown>> {
+  const answer = await ask(client, op, args);
+  expect(answer).toMatchObject({ ok: true });
+  return answer;
+}
+
 describe("what quota is left (llm.usage.read)", () => {
   test("the gateway's document arrives under this contract's names (§3.5)", async () => {
     const gateway = fakeGateway();
     const client = await greet(gateway.url);
-    const answer = (await ask(client, "llm.usage.read")) as unknown as LlmUsageReadResult;
+    const answer = (await answered(client, "llm.usage.read")) as unknown as LlmUsageReadResult;
     expect(answer.generated_at).toBe(NOW);
     expect(answer.credentials.length).toBe(1);
     const credential = answer.credentials[0];
@@ -170,7 +183,7 @@ describe("what quota is left (llm.usage.read)", () => {
   test("the login path becomes an address on the gateway's own origin", async () => {
     const gateway = fakeGateway();
     const client = await greet(gateway.url);
-    const answer = (await ask(client, "llm.usage.read")) as unknown as LlmUsageReadResult;
+    const answer = (await answered(client, "llm.usage.read")) as unknown as LlmUsageReadResult;
     expect(answer.credentials[0]?.auth?.login_url).toBe(
       `${gateway.url}/llm-gateway/login/personal/start`,
     );
@@ -204,7 +217,7 @@ describe("what it cost (llm.stats.read)", () => {
   test("the days are the gateway's own, with the counters it reported", async () => {
     const gateway = fakeGateway();
     const client = await greet(gateway.url);
-    const answer = (await ask(client, "llm.stats.read")) as unknown as LlmStatsReadResult;
+    const answer = (await answered(client, "llm.stats.read")) as unknown as LlmStatsReadResult;
     expect(Object.keys(answer.days)).toEqual(["2026-09-07"]);
     const day = answer.days["2026-09-07"];
     expect(day?.total_usd).toBe(0.25);

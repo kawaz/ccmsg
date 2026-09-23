@@ -1,6 +1,6 @@
 import { personToken } from "./person.ts";
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PROTOCOL_VERSION } from "@ccmsg/protocol";
@@ -16,17 +16,20 @@ import { writeInstanceHome } from "./harness.ts";
  * and the `Origin` before anything is done with the request, the upgrade
  * itself afterwards — and only a real handshake puts them in that order. */
 
+const dirs: string[] = [];
 const running: Instance[] = [];
 const clients: LineClient[] = [];
 
 afterEach(async () => {
   for (const client of clients.splice(0)) await client.close();
   for (const instance of running.splice(0)) await instance.stop();
+  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
 /** An instance serving a WebSocket, with the entry section the test wants. */
 async function serving(entry: Record<string, unknown> = {}): Promise<Instance> {
   const root = mkdtempSync(join(tmpdir(), "ccmsg-entry-"));
+  dirs.push(root);
   mkdirSync(join(root, "home", "sessions"), { recursive: true });
   writeInstanceHome(join(root, "config"), join(root, "home"), {
     entry: { host: "127.0.0.1", port: 0, ...entry },

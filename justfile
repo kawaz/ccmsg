@@ -57,8 +57,11 @@ typecheck: lint
     bun x tsc --noEmit
 
 # テスト (dispatch の認可境界と、属性表を走査する M1 の固定)
+[script]
 test: lint typecheck
-    bun test
+    test_tmpdir=$(mktemp -d /tmp/ccmsg-test.XXXXXX)
+    trap 'rm -rf "$test_tmpdir"' EXIT
+    TMPDIR="$test_tmpdir" bun test
 
 # ---------- check recipes (push の sanity 検証) ----------
 

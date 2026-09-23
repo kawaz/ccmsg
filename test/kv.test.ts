@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -15,16 +15,19 @@ import { type Env, type Instance, isRunning, start } from "../src/instance/index
 import { connectUds, type LineClient } from "./client.ts";
 import { SELF } from "./frames.ts";
 
+const dirs: string[] = [];
 const running: Instance[] = [];
 const clients: LineClient[] = [];
 
 afterEach(async () => {
   for (const client of clients.splice(0)) await client.close();
   for (const instance of running.splice(0)) await instance.stop();
+  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
 function disposable(): { env: Env; state: string } {
   const root = mkdtempSync(join(tmpdir(), "ccmsg-kv-"));
+  dirs.push(root);
   const home = join(root, "home");
   mkdirSync(join(home, "sessions"), { recursive: true });
   const state = join(root, "state");

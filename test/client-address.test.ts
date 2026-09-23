@@ -1,6 +1,6 @@
 import { knownAt, TEST_USER } from "./person.ts";
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cookieName } from "../src/auth/index.ts";
@@ -23,10 +23,12 @@ async function problems(dir: string): Promise<string> {
  * address wrongly trusts the wrong hop, and a header read wrongly keeps a value
  * the hop never vouched for. */
 
+const dirs: string[] = [];
 const running: Instance[] = [];
 
 afterEach(async () => {
   for (const instance of running.splice(0)) await instance.stop();
+  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
 function blocks(...texts: string[]) {
@@ -152,6 +154,7 @@ describe("what the instance keeps (DR-0001 §2.2)", () => {
     const lease = leasePort();
     const port = lease.port;
     const root = mkdtempSync(join(tmpdir(), "ccmsg-forwarded-"));
+    dirs.push(root);
     mkdirSync(join(root, "home", "sessions"), { recursive: true });
     writeConfigHome(
       join(root, "config"),
@@ -232,6 +235,7 @@ describe("what the instance keeps (DR-0001 §2.2)", () => {
 
   test("a block that is not one is refused where it is written", async () => {
     const root = mkdtempSync(join(tmpdir(), "ccmsg-forwarded-config-"));
+    dirs.push(root);
     const dir = join(root, "config");
     writeConfigHome(
       dir,
@@ -255,6 +259,7 @@ describe("what the instance keeps (DR-0001 §2.2)", () => {
 describe("upstream.terminal_gateway", () => {
   function writeUpstream(terminal_gateway: unknown): { dir: string; home: string } {
     const root = mkdtempSync(join(tmpdir(), "ccmsg-terminal-gateway-config-"));
+    dirs.push(root);
     const dir = join(root, "config");
     writeConfigHome(
       dir,

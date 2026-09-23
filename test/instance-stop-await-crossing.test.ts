@@ -1,5 +1,5 @@
 import { afterAll, afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AuthRecord } from "@ccmsg/protocol";
@@ -19,6 +19,7 @@ import { leasePort } from "./mesh.ts";
  * write yet, and a loop asked to leave spawns nothing. These tests hold each
  * one open across the moment the stop begins. */
 
+const dirs: string[] = [];
 const running: Instance[] = [];
 const hosts: Host[] = [];
 const supervisors: Supervisor[] = [];
@@ -29,6 +30,7 @@ afterEach(async () => {
   for (const supervisor of supervisors.splice(0)) await supervisor.stop();
   await Promise.all(runs.splice(0));
   for (const one of hosts.splice(0)) one.release();
+  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
 afterAll(async () => {
@@ -48,6 +50,7 @@ describe("an instance's stop and a request already past the door", () => {
     const port = lease.port;
     const origin = `http://127.0.0.1:${String(port)}`;
     const root = mkdtempSync(join(tmpdir(), "ccmsg-stop-crossing-"));
+    dirs.push(root);
     trackRoot(root);
     mkdirSync(join(root, "home", "sessions"), { recursive: true });
     writeInstanceHome(join(root, "config"), join(root, "home"), {

@@ -55,6 +55,7 @@ const CLI = join(import.meta.dir, "..", "src", "cli.ts");
  * makes "what did a run leave behind" a directory listing (M4). */
 function disposable(): { env: Env; root: string; home: string } {
   const root = mkdtempSync(join(tmpdir(), "ccmsg-instance-"));
+  dirs.push(root);
   trackRoot(root);
   const home = join(root, "home");
   mkdirSync(join(home, "sessions"), { recursive: true });
@@ -73,6 +74,7 @@ function disposable(): { env: Env; root: string; home: string } {
   };
 }
 
+const dirs: string[] = [];
 const running: Instance[] = [];
 const clients: LineClient[] = [];
 
@@ -99,6 +101,7 @@ async function greet(instance: Instance): Promise<LineClient> {
 afterEach(async () => {
   for (const client of clients.splice(0)) await client.close();
   for (const instance of running.splice(0)) await instance.stop();
+  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
 // A daemon this file spawned and did not collect is a process left on the
@@ -881,6 +884,7 @@ describe("a session that never greeted this instance", () => {
     // Short by construction: the path has to fit in `sun_path`, and a
     // temporary directory plus a name is already most of it.
     const socketDir = mkdtempSync(join(tmpdir(), "ccs-"));
+    dirs.push(socketDir);
     trackRoot(socketDir);
     const socketPath = join(socketDir, `${process.pid}.sock`);
     writeFileSync(
