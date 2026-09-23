@@ -21,7 +21,7 @@
   },
   "dependencies": {
     "@ccmsg/protocol": "2.10.0",
-    "tldts": "^7.4.14"
+    "tldts": "^7.4.15"
   },
   "devDependencies": {
     "@types/bun": "^1.4.2",
