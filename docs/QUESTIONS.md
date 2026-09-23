@@ -18,13 +18,6 @@
 
 ## 裁定待ち
 
-### FV-Q9: 閲覧 site の FQDN は `tmpspace.net` 側の sub でよいか
-
-webui DR-0005 の閲覧 site は webui (`ccmsg2.kawaz-mbp16-20211217.kawaz.jp`、site = `kawaz.jp`) と**別 site** (= 別の登録可能ドメイン) に置く。hosting (canddy-app-proxy の Caddyfile) には `*.kawaz-mbp16-20211217.tmpspace.net` の wildcard が既にあり (tailnet only、WebAuthn 封じ済み、今は DR-0030 の `ccmsg-files-<sbx>` 配信に使っている)、site = `tmpspace.net` なので分離が成立する。統括の案は a。
-
-- [ ] a: `ccmsg2-view.kawaz-mbp16-20211217.tmpspace.net` (統括が Caddy に静的配信を足し、`CCMSG_VIEW_ORIGIN` / `CCMSG_WEBUI_ORIGIN` を渡して build する)
-- [ ] b: 別の名前 (指定してほしい)
-
 ## 確認待ち
 
 ### FV-C1: iPhone の PWA で `_blank` / `window.open` がどう動くか (FV-Q6 の前提)
