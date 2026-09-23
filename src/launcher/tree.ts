@@ -15,7 +15,7 @@ const MAX_DEPTH = 5;
 /** The directories a session could be started in.
  *
  * Directories only, and only below the configured roots. A root the config does
- * not hold contributes nothing rather than failing the request: the op states no
+ * not hold contributes no node rather than failing the request: the op states no
  * refusal for a path, and a tree assembled from several roots would otherwise be
  * lost whole because one of them went away. */
 export async function dirTree(config: LauncherConfig, args: DirTreeArgs): Promise<DirTreeResult> {
@@ -27,9 +27,16 @@ export async function dirTree(config: LauncherConfig, args: DirTreeArgs): Promis
   for (const root of args.roots) {
     const real = await insideRoots(config, root);
     if (real === undefined) continue;
-    entries.push(...(await walk(config, real, real, depth, filter)));
+    // The root asked for is a node of its own: its `path` is the resolved
+    // spelling, which the client cannot derive from what it spelled, and a root
+    // may sit below another root, so a flat answer could not be split back up.
+    // A filter that leaves nothing under it still answers the root, with an
+    // empty `children` — drawing an empty one is the client's call.
+    entries.push({ path: real, children: sorted(await walk(config, real, real, depth, filter)) });
   }
-  return { entries: sorted(entries) };
+  // The order is the order the roots were asked for; only what is under a root
+  // is sorted.
+  return { entries };
 }
 
 async function walk(

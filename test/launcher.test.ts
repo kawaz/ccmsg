@@ -16,7 +16,7 @@ import { TestConn } from "./frames.ts";
 
 /** A tree of directories to browse and launch in, with a dot-directory and a
  * link out of the roots to be refused. */
-function host(): { root: string; outside: string } {
+function host(): { root: string; outside: string; spelled: string } {
   // What the filesystem calls it: every path in a reply is the resolved one,
   // and on this host the temporary directory is reached through a link.
   const base = realpathSync(mkdtempSync(join(tmpdir(), "ccmsg-launcher-")));
@@ -28,7 +28,11 @@ function host(): { root: string; outside: string } {
   const outside = join(base, "elsewhere");
   mkdirSync(outside, { recursive: true });
   symlinkSync(outside, join(root, "away"));
-  return { root, outside };
+  // Another way to write the root: what a client spells is not what the
+  // filesystem calls it.
+  const spelled = join(base, "repos-link");
+  symlinkSync(root, spelled);
+  return { root, outside, spelled };
 }
 
 function config(root: string, extra: Partial<LauncherConfig> = {}): LauncherConfig {
@@ -144,21 +148,42 @@ describe("where a session could run (dir.tree)", () => {
     const { root } = host();
     const answer = await tree(root, { roots: [root] });
     expect(paths(answer["entries"] as DirTreeEntry[])).toEqual([
+      root,
       join(root, "one"),
       join(root, "one", "src"),
       join(root, "two"),
     ]);
   });
 
+  test("each root asked for is a node of its own, in the order asked", async () => {
+    const { root } = host();
+    const answer = await tree(root, { roots: [join(root, "two"), join(root, "one")], depth: 1 });
+    const entries = answer["entries"] as DirTreeEntry[];
+    expect(entries.map((entry) => entry.path)).toEqual([join(root, "two"), join(root, "one")]);
+    expect(entries[0]?.children).toEqual([]);
+    expect(entries[1]?.children?.map((child) => child.path)).toEqual([join(root, "one", "src")]);
+  });
+
+  test("the node's path is the resolved spelling, not the one asked for", async () => {
+    const { root, spelled } = host();
+    const answer = await tree(root, { roots: [spelled], depth: 1 });
+    const entries = answer["entries"] as DirTreeEntry[];
+    expect(spelled).not.toBe(root);
+    expect(entries.map((entry) => entry.path)).toEqual([root]);
+  });
+
   test("one level says nothing about what is below it, so a client may ask", async () => {
     const { root } = host();
     const answer = await tree(root, { roots: [root], depth: 1 });
     const entries = answer["entries"] as DirTreeEntry[];
-    expect(entries.map((entry) => entry.path)).toEqual([join(root, "one"), join(root, "two")]);
-    expect(entries[0]?.children).toBeUndefined();
-    // The lazy expansion the absence invites, asked for as a descendant.
+    // The root and what is directly under it; the level below stays unstated.
+    expect(paths(entries)).toEqual([root, join(root, "one"), join(root, "two")]);
+    expect(entries[0]?.children?.[0]?.children).toBeUndefined();
+    // The lazy expansion the absence invites, asked for as a descendant: the
+    // same shape again, with the asked-for directory as the node.
     const below = await tree(root, { roots: [join(root, "one")], depth: 1 });
-    expect((below["entries"] as DirTreeEntry[]).map((entry) => entry.path)).toEqual([
+    expect(paths(below["entries"] as DirTreeEntry[])).toEqual([
+      join(root, "one"),
       join(root, "one", "src"),
     ]);
   });
@@ -166,7 +191,7 @@ describe("where a session could run (dir.tree)", () => {
   test("a directory with no subdirectories says so rather than staying silent", async () => {
     const { root } = host();
     const answer = await tree(root, { roots: [join(root, "two")] });
-    expect(answer["entries"]).toEqual([]);
+    expect(answer["entries"]).toEqual([{ path: join(root, "two"), children: [] }]);
     const one = await tree(root, { roots: [root], depth: 3 });
     const deep = paths(one["entries"] as DirTreeEntry[]);
     expect(deep).toContain(join(root, "one", "src", "deep"));
@@ -176,30 +201,34 @@ describe("where a session could run (dir.tree)", () => {
     const { root } = host();
     const answer = await tree(root, { roots: [root], depth: 3, filter: "deep" });
     expect(paths(answer["entries"] as DirTreeEntry[])).toEqual([
+      root,
       join(root, "one"),
       join(root, "one", "src"),
       join(root, "one", "src", "deep"),
     ]);
     // An emptied search box is not a filter that matches nothing.
     const cleared = await tree(root, { roots: [root], filter: "" });
-    expect((cleared["entries"] as DirTreeEntry[]).length).toBe(2);
+    expect((cleared["entries"] as DirTreeEntry[])[0]?.children?.length).toBe(2);
   });
 
-  test("a root outside the configured ones contributes nothing, and refuses nothing", async () => {
+  test("a root a filter leaves nothing under is still a node", async () => {
+    const { root } = host();
+    const answer = await tree(root, { roots: [root], depth: 3, filter: "nowhere" });
+    expect(answer["entries"]).toEqual([{ path: root, children: [] }]);
+  });
+
+  test("a root outside the configured ones contributes no node, and refuses nothing", async () => {
     const { root, outside } = host();
     const answer = await tree(root, { roots: [outside, root], depth: 1 });
     // The op states no refusal for a path: the reply is the roots it could
     // answer for, and the one it could not is simply not in it.
-    expect((answer["entries"] as DirTreeEntry[]).map((entry) => entry.path)).toEqual([
-      join(root, "one"),
-      join(root, "two"),
-    ]);
+    expect((answer["entries"] as DirTreeEntry[]).map((entry) => entry.path)).toEqual([root]);
   });
 
   test("dot-directories and links out of the roots are not places to run", async () => {
     const { root } = host();
     const answer = await tree(root, { roots: [root], depth: 1 });
-    const shown = (answer["entries"] as DirTreeEntry[]).map((entry) => entry.path);
+    const shown = paths(answer["entries"] as DirTreeEntry[]);
     expect(shown).not.toContain(join(root, ".hidden"));
     expect(shown).not.toContain(join(root, "away"));
   });
