@@ -18,32 +18,12 @@
 
 ## 裁定待ち
 
-### TQ-Q1: 翻訳の待ち行列を分けるか、要求ごとに予算を切るか
+### FV-Q9: 閲覧 site の FQDN は `tmpspace.net` 側の sub でよいか
 
-翻訳の待ち行列は instance 全体で 1 本なので、無関係なセッションの翻訳が互いを待つ (最悪 `MAX_MS` 120 秒 × 待ち行列長、[./issue/2026-09-14-translate-queue-instance-wide.md](./issue/2026-09-14-translate-queue-instance-wide.md))。helper は 1 行 1 答なので、1 本の helper に対する直列化自体は避けられない。統括の推しは a。
+webui DR-0005 の閲覧 site は webui (`ccmsg2.kawaz-mbp16-20211217.kawaz.jp`、site = `kawaz.jp`) と**別 site** (= 別の登録可能ドメイン) に置く。hosting (canddy-app-proxy の Caddyfile) には `*.kawaz-mbp16-20211217.tmpspace.net` の wildcard が既にあり (tailnet only、WebAuthn 封じ済み、今は DR-0030 の `ccmsg-files-<sbx>` 配信に使っている)、site = `tmpspace.net` なので分離が成立する。統括の案は a。
 
-- [ ] a: helper 1 本のまま、要求ごとに予算を切る (helper を増やすと上限・増減の契機・異常時の回収という管理対象が生まれる。ただし行列の順番は変わらないので、issue の受け入れ条件を「1 要求が行列を `MAX_MS` 以上塞がない」に改める必要がある)
-- [ ] b: セッション (または要求元の接続) 単位に行列を分け、helper を複数持つ (受け入れ条件のとおり「別セッションの短い翻訳が待たずに返る」が成り立つ。helper の上限と増減の契機を決める必要がある)
-
-### FV-Q9: 閲覧 site の登録可能ドメイン (別 site にするために)
-
-webui DR-0005 の閲覧 site は webui / endpoint と **別 site** (= 別の登録可能ドメイン、cookie の分割単位) でないと隔離が成立しない。今の hosting は全部 `*.kawaz-mbp16-20211217.kawaz.jp` で登録可能ドメインは `kawaz.jp` なので、`ccmsg2-view.kawaz-….kawaz.jp` では同じ site になる。実装 (webui v1.14.0) はビルド時定数 `CCMSG_VIEW_ORIGIN` 未設定なら閲覧機能を出さない形で入っている。
-
-- [ ] a: kawaz が持っている別ドメインの sub を使う (例: `view.<別ドメイン>`。どれかを指定)
-- [ ] b: 新しくドメインを取る
-- [ ] c: 当面は閲覧機能を出さない (定数未設定のまま)
-
-決まれば統括が Caddy (canddy-app-proxy) に静的配信を足し、`CCMSG_VIEW_ORIGIN` / `CCMSG_WEBUI_ORIGIN` を渡して build する。
-
-### FV-Q6: 閲覧 site の CSP で script を許すか
-
-webui DR-0005 の閲覧 site ([/Users/kawaz/.local/share/repos/github.com/kawaz/ccmsg-webui/main/docs/decisions/DR-0005-a-viewing-site-draws-files-through-a-service-worker.md](/Users/kawaz/.local/share/repos/github.com/kawaz/ccmsg-webui/main/docs/decisions/DR-0005-a-viewing-site-draws-files-through-a-service-worker.md)) は webui とも endpoint とも site が違うので、閉じ込めは site の分離で効いている。許せばビルドした docs や図が動く形で見え、許さなければ描けるのは静止した物だけ。
-
-外へ出る経路は裁定済み (kawaz 2026-09-19): `_top` は sandbox 属性で塞ぐ (`allow-top-navigation` なし)、`_blank` / `window.open` は `allow-popups` で許す (PWA で動かないのは PWA の制限として受ける)。残るのは script の可否だけ。統括の推しは a (閉じ込めは別 site + トップレベル遷移不可 + 親経由でしかバイト列が届かない、で効いている。許した上で CSP は `default-src 'self'` 相当に絞る)。
-
-- [ ] a: 許す (site の分離で足りるという判断)
-- [ ] b: 許さない (静止した物だけ描く)
-- [ ] c: 先に「閲覧 site から何が届くか」(endpoint への CORS、閲覧 site 自身の storage) を洗ってから決める
+- [ ] a: `ccmsg2-view.kawaz-mbp16-20211217.tmpspace.net` (統括が Caddy に静的配信を足し、`CCMSG_VIEW_ORIGIN` / `CCMSG_WEBUI_ORIGIN` を渡して build する)
+- [ ] b: 別の名前 (指定してほしい)
 
 ## 確認待ち
 
