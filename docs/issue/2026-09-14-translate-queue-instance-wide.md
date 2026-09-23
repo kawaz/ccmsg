@@ -3,7 +3,7 @@ title: 翻訳の待ち行列が instance 全体で 1 本なので、無関係な
 status: open
 category: design
 created: 2026-09-14T12:13:47+09:00
-last_read:
+last_read: 2026-09-24T00:47:48+09:00
 open_entered: 2026-09-14T12:13:47+09:00
 wip_entered:
 blocked_entered:
