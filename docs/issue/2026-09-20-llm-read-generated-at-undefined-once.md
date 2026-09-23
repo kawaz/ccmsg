@@ -3,7 +3,7 @@ title: llm-read-generated-at-undefined-once
 status: open
 category: bug
 created: 2026-09-20T22:50:31+09:00
-last_read: 2026-09-24T00:47:45+09:00
+last_read: 2026-09-24T00:52:04+09:00
 open_entered: 2026-09-20T22:50:31+09:00
 wip_entered:
 blocked_entered:
