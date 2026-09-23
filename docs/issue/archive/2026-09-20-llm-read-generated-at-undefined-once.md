@@ -1,6 +1,6 @@
 ---
 title: llm-read-generated-at-undefined-once
-status: wip
+status: resolved
 category: bug
 created: 2026-09-20T22:50:31+09:00
 last_read: 2026-09-24T00:54:31+09:00
@@ -9,10 +9,10 @@ wip_entered: 2026-09-24T01:23:44+09:00
 blocked_entered:
 pending_entered:
 discarded_entered:
-resolved_entered:
+resolved_entered: 2026-09-24T01:34:50+09:00
 discard_reason:
 pending_reason:
-close_reason:
+close_reason: ["journal/2026-09-24-test-timeout-from-bloated-tmpdir","done:commit 7714a9a"]
 blocked_by:
 origin: 自リポ TODO
 ---
@@ -31,7 +31,7 @@ origin: 自リポ TODO
 
 ## 受け入れ条件
 
-- [ ] 失敗時に `llm.usage.read` が何を返したか (error code / 本文) が分かる形で記録できていること
+- [x] 失敗時に `llm.usage.read` が何を返したか (error code / 本文) が分かる形で記録できていること
 - [x] 再現条件が特定できていること
 
 ## 真因 (2026-09-24、worker Opus 5.5 の調査を統括が確認)
@@ -51,10 +51,10 @@ origin: 自リポ TODO
 
 ## TODO
 
-- [ ] 成功を期待する呼び出し (145 / 173 / 207 行目) を `expect(answer).toMatchObject({ ok: true })` で確かめる helper に置き換える (失敗時に `error.code` / `msg` が差分に出る = 受け入れ条件 1)
-- [ ] `just test` を `/tmp` 配下の小さな専用 `TMPDIR` で走らせ、終わったら消す (`$TMPDIR` の中に作ると祖先に T が残るので効かない)
-- [ ] 後始末をしない test (capabilities / llm-read / entry / launcher / kv / gateway / transport) に `afterEach` で root を `rmSync` する処理を足す (`plugin.test.ts` の `dirs` 方式)
-- [ ] `$TMPDIR` の既存の `ccmsg-*` 残骸を掃除する (統括)
-- [ ] 「最初の import のコストが祖先ディレクトリのサイズに比例する」を `called` の性質として docs に残す (本番の config は XDG 配下で祖先が小さいので実害は薄い)
+- [x] 成功を期待する呼び出し (145 / 173 / 207 行目) を `expect(answer).toMatchObject({ ok: true })` で確かめる helper に置き換える (失敗時に `error.code` / `msg` が差分に出る = 受け入れ条件 1)
+- [x] `just test` を `/tmp` 配下の小さな専用 `TMPDIR` で走らせ、終わったら消す (`$TMPDIR` の中に作ると祖先に T が残るので効かない)
+- [x] 後始末をしない test (capabilities / llm-read / entry / launcher / kv / gateway / transport) に `afterEach` で root を `rmSync` する処理を足す (`plugin.test.ts` の `dirs` 方式)
+- [x] `$TMPDIR` の既存の `ccmsg-*` 残骸を掃除する (統括)
+- [x] 「最初の import のコストが祖先ディレクトリのサイズに比例する」を `called` の性質として docs に残す (本番の config は XDG 配下で祖先が小さいので実害は薄い)
 
 timeout の延長と warm-up は症状を隠すだけなので採らない。
