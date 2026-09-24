@@ -176,7 +176,14 @@ export function verifyRegistration(
   }
   const data = parseAuthenticatorData(authData);
   checkAuthenticator(data, [expected.rpId]);
-  if (data.credentialId === undefined || data.publicKey === undefined) {
+  // An empty id is a credential nothing can name later: `allowCredentials`
+  // has no way to point at it, so a registration that carries one records a
+  // key no authentication will ever reach.
+  if (
+    data.credentialId === undefined ||
+    data.credentialId.length === 0 ||
+    data.publicKey === undefined
+  ) {
     throw new WebAuthnError("the registration carries no credential");
   }
   // The id the browser reported and the one the authenticator signed are the

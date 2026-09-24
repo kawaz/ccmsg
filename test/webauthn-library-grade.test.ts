@@ -246,7 +246,7 @@ describe("登録の none attestation と attested credential data", () => {
     expect(await accept(() => libraryRegistration(candidate))).toBe(true);
   });
 
-  test.skip("BUG: 空の credential ID を拒否する (自前実装は受理、比較ライブラリーは拒否)", async () => {
+  test("空の credential ID は両検証器が拒否する (認証で指せない鍵を記録しないため)", async () => {
     const candidate = await registrationWithIdLength(0);
     expect(await accept(() => verifyRegistration(candidate, expectedRegistration))).toBe(false);
     expect(await accept(() => libraryRegistration(candidate))).toBe(false);
