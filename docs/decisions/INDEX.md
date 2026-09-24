@@ -20,7 +20,7 @@ Status は各 DR ファイルの `Status:` 行が正本。
 | [DR-0006](DR-0006-dump-writes-typed-items.md) | ✅ 実装済 | dump は行ではなく型付き item を書く。呼び出しと答えは 2 item、畳むのは描画側 |
 | [DR-0007](DR-0007-classify-by-who-the-conversation-is-with.md) | ✅ 実装済 | transcript の item 分類は「相手が誰か」で決める。立場は開いた側が決め、嗅ぎ分けない |
 | [DR-0008](DR-0008-direct-route-first-inbox-persisted.md) | 🟡 部分実装 | 配送は harness 直送を優先し topic へ落ちる。inbox は永続、drop は配送済みにしない |
-| [DR-0009](DR-0009-daemon-derives-session-state.md) | ✅ 実装済 | セッションの分類は daemon が導出する。busy の正本は gateway、fold は 1 本 |
+| [DR-0009](DR-0009-daemon-derives-session-state.md) | ✅ 実装済 | daemon は行に観測を載せ、分類は契約の関数 (`liveness` / `reachable` / `waiting`) が読む。busy の正本は gateway、fold は 1 本 |
 | [DR-0010](DR-0010-one-topic-mechanism-one-egress-layer.md) | ✅ 実装済 | 抑止は topic の仕組みに 1 実装。送出は終端ごとに 1 つのキューを通り、超過は突き返す |
 | [DR-0011](DR-0011-peers-is-a-topic-of-rows.md) | ✅ 実装済 | `peers` は element 粒度の 1 種類の行。gateway が時刻を動かしても出るのは行 1 つ |
 | [DR-0012](DR-0012-gateway-cache-window.md) | ✅ 実装済 | gateway の cache 窓は約束 (`cache_notice`) で仮に引き、実結果 (`cache`) で引き直す |

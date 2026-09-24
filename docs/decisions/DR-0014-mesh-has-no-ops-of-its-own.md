@@ -15,9 +15,18 @@ instance 同士のやり取りをどう表すかに 2 案あった。mesh 専用
 
 ### 2.1 mesh は専用の op を持たない
 
-instance 同士のやり取りは **`hello.instance` と、転送の封筒 (`RequestEnvelope`) の 3 欄**で表される。surface ごとに op を複製すると二重定義になる。
+instance 同士のやり取りは **`hello.instance` と、転送の封筒 (`RequestEnvelope`) の mesh の 4 欄**で表される。surface ごとに op を複製すると二重定義になる。
 
-封筒が運ぶのは契約の 3 欄だけ (`to_instance` / `from_instance` / `hops`)。`hops` に既に自分が入っている request は捨てる (周回しない)。
+封筒が mesh のために運ぶのは契約の 4 欄だけで、転送された request は同じ op の同じ形のまま、これに包まれる。
+
+| 欄 | 中身 |
+|---|---|
+| `to_instance` | その op を走らせる instance |
+| `from_instance` | 転送した instance。答えを返す先 |
+| `hops` | 既に通った instance を順に。既に自分が入っている request は捨てる (周回しない) |
+| `caller` | 転送先が認可をやり直す相手の identity (§2.2) |
+
+`caller` は転送元が request を受けた接続から書くもので、request 自身が名乗ったものを引き継がない — 引き継げば、client が自分の転送される identity を選べることになる。
 
 ### 2.2 転送先でも認可をやり直す
 

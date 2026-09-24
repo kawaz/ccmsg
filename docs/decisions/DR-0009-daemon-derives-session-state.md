@@ -1,4 +1,4 @@
-# DR-0009: セッションの分類は daemon が導出し、busy は gateway が正本
+# DR-0009: セッションの分類の入力は daemon が揃え、busy は gateway が正本
 
 Status: Accepted (2026-09-08。統括裁定 DV-Q5 / DV-Q6 / DV-Q7)
 Date: 2026-09-08
@@ -13,9 +13,11 @@ v1 の daemon には 4 つの負債があった。`claude agents` を 5 秒ご�
 
 ## 2. 決定
 
-### 2.1 分類は daemon が導出する
+### 2.1 daemon は観測を述べ、分類は契約の関数が読む
 
-一覧の分類は daemon が出す。webui は受け取った分類を描く。
+daemon は行に**観測**を載せる (`runs` / `session_status` / `stopped_at` / `gateway_active_at`、`agents` の `waiting_for` 等)。セッションがどこに立っているか (alive / duplicated / Paused / Disappeared)・こちらから届く口があるか・人が答えるべきものがあるかは、その観測から**契約が export する関数** (`liveness` / `reachable` / `waiting`) が読み、分類そのものは wire に出さない (契約 DR-0001 §2)。instance も webui も同じ関数を呼ぶ。
+
+分類を daemon の中にも webui の中にも書かないのは、両側がそれぞれ算術を書けば同じ行が 2 通りに見えるからである。分類の入力を揃えるのは daemon の仕事で (§2.2〜§2.6)、入力から分類を読む実装は契約に 1 つだけ置く。
 
 ### 2.2 busy の正本は gateway、生 status の用途は 2 つに絞る
 
@@ -37,7 +39,7 @@ tail 1 本 → fold 1 本 → そこから各 topic の値を導く (M5)。「�
 
 ### 2.5 `peers` は接続の有無で分けない
 
-挨拶するのは `SessionStart` hook だけなので、instance が再起動すると **既に走っているセッションは二度と挨拶しない**。接続を持つものだけを載せると、走っているセッションで一杯のホストが「何も生きていない」と読める。`sessions/` が名指すセッションは、挨拶したことがあるかに関わらず 1 行であり、今どうなっているかは行の `state` が言う (DR-0011)。
+挨拶するのは `SessionStart` hook だけなので、instance が再起動すると **既に走っているセッションは二度と挨拶しない**。接続を持つものだけを載せると、走っているセッションで一杯のホストが「何も生きていない」と読める。`sessions/` が名指すセッションは、挨拶したことがあるかに関わらず 1 行であり、今どうなっているかはその行から契約の `liveness` が読む (§2.1)。
 
 ### 2.6 分類の入力は購読に従属しない
 

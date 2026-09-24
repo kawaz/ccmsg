@@ -45,13 +45,23 @@ transcript の行を **item に分類してから**書く。型名は `.` 区切
 
 応答は item ではなくパスを返すので、そのパスを渡された後任セッションが、何も規定していない形式を読むことになってはいけない。`SessionDumpFile` = `{sid, agent_id?, written_at, types, items, ids}`。`types` は **適用後の選択** (preset を展開し、除外を含んだ形) — ファイルは作った request より長く生きるので、何の dump で何が落とされたかを自分で言えなければならない。`ids` ledger は型ではなく、選択で落とせない。
 
-### 2.6 出力は 3 形式、今あるのは 1 つ
+### 2.6 出力は 3 形式で、どれも同じ選択を書く
 
-| 形式 | 状態 |
-|---|---|
-| item の JSON (`session.dump.write`) | 実装済み。機械が読む形 |
-| 元 jsonl を型で grep した生の行 | issue `2026-09-11-dump-raw-jsonl-format` |
-| 人が読むテキスト | 実装済み (`ccmsg dump` の描画)。webui の Timeline と選択を共有する形は issue `2026-09-11-dump-timeline-shared-selection` |
+`session.dump.write` の `format` で選ぶ。省略時は `items`。
+
+| 形式 | 中身 | 読み手 |
+|---|---|---|
+| `items` | §2.5 の `SessionDumpFile` | 機械 |
+| `records` | 選んだ item が読まれた元の transcript record を、読んだバイトのまま 1 行 1 record の jsonl で | harness の jsonl を既に読める外部の道具 (分類だけを借りる) |
+| `text` | item を人が読む markdown に描画したもの | 人 |
+
+**選択と書き方は別のもの**である。どの item の dump かは範囲と `types` で決まり、形式はファイルがその item について何を言うかだけを決める。だから応答の `entries` / `ids` は、どの形式を頼まれても同じ選択について述べる。`records` は ccmsg のものを周りに何も足さない — 読み手は harness の形式をそのまま読む道具だからである。item は自分の record を名指すので、1 record から出た複数 item は 1 行になり、行数は item 数と一致しない。1 つの dump は 1 つの transcript (セッション本体か agent 1 体) に閉じるので、どのファイル由来かを行が言う必要は無い。
+
+§2.5 の形は `items` のファイルの形で、`records` は harness 自身の行、`text` は文章なのでその形を取らない。どの形式かはファイル名の拡張子が言う (`.dump.json` / `.jsonl` / `.md`)。パスを渡された側は、その種類を読む道具でファイルを開くためである。
+
+`ccmsg dump` は `--format` を付けなければ `items` を受け取って CLI 側で描画する (1 item の本文を切る `--max-chars` は op の引数に無く、CLI の描画だけが持つため)。`--format` を付けた時は instance が書いたファイルをそのまま渡す。
+
+webui の Timeline と選択の言語を共有する形は issue `2026-09-11-dump-timeline-shared-selection`。
 
 ### 2.7 M4 との関係
 

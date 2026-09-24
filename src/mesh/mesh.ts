@@ -441,7 +441,7 @@ export class Mesh {
   /** Carry one op to the instance that owns its subject, and bring the answer
    * back.
    *
-   * The request keeps its shape and gains the envelope's three fields. Its
+   * The request keeps its shape and gains the envelope's four fields. Its
    * `request_id` is reissued because uniqueness has to hold among one
    * connection's in-flight requests (contract, `RequestEnvelope`) and this
    * connection is the link, not the caller's; the caller's id is put back on

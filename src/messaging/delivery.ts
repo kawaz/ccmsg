@@ -327,9 +327,7 @@ export class Delivery implements UpstreamResource {
    *
    * Subscribing is receiving, so the snapshot empties the inbox: the frame is
    * queued on the connection before this returns, and a message the session has
-   * been handed is not one that is still waiting for it (DESIGN §6.7). A connection
-   * with no session — a person watching — is handed nothing, because the topic
-   * carries what was said to a session and they are not one.
+   * been handed is not one that is still waiting for it (DESIGN §6.7).
    *
    * A message an offer over route (a) has claimed is left out: it is on its way
    * on the other route, and the session subscribing while that runs must not
