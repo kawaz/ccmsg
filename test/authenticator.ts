@@ -119,12 +119,22 @@ export class SoftAuthenticator {
   }
 
   /** What `navigator.credentials.get()` would have produced. */
-  async get(options: { challenge: string; origin: string }): Promise<AssertionCredential> {
+  async get(options: {
+    challenge: string;
+    origin: string;
+    reversedSignedBytes?: boolean;
+  }): Promise<AssertionCredential> {
     const authData = this.#authData(false);
     const client = this.#clientData("webauthn.get", options.challenge, options.origin);
+    const hash = new Uint8Array(createHash("sha256").update(client).digest());
     const signed = new Uint8Array(authData.length + 32);
-    signed.set(authData, 0);
-    signed.set(new Uint8Array(createHash("sha256").update(client).digest()), authData.length);
+    if (options.reversedSignedBytes) {
+      signed.set(hash, 0);
+      signed.set(authData, 32);
+    } else {
+      signed.set(authData, 0);
+      signed.set(hash, authData.length);
+    }
     const raw = new Uint8Array(
       await crypto.subtle.sign(SIGN[this.algorithm], (await this.#pair()).privateKey, signed),
     );

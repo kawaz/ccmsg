@@ -426,6 +426,59 @@ describe("what an enrolment URL hands over (contract, `EnrollClaims.instances`)"
   });
 });
 
+describe("a challenge handed to another instance (DR-0001 §2.11)", () => {
+  test("the issuer checks the stated challenge and its five-minute lifetime on the receiving instance's behalf", async () => {
+    let now = 1_000_000;
+    const { peers, settled } = linked(
+      [
+        { self: SELF, endpoint: ENDPOINT },
+        { self: OTHER_INSTANCE, endpoint: "https://next.example/" },
+      ],
+      { now: () => now },
+    );
+    const [issuer, receiver] = peers as [Auth, Auth];
+    const issued = await issuer.issue({ purpose: "create_user", origin: ORIGIN });
+    const authenticator = new SoftAuthenticator(issued.rp_id);
+    const registrationChallenge = await issuer.challenge();
+    const credential = await authenticator.create({
+      challenge: registrationChallenge.challenge,
+      origin: ORIGIN,
+      userId: issued.user,
+    });
+    await issuer.register({
+      token: tokenOf(issued.url),
+      code: issued.code,
+      credential,
+      challenge: registrationChallenge,
+    });
+    await settled();
+    await issuer.grant(issued.user as UserId, [receiver.self], {
+      kind: "instance",
+      instance: issuer.self,
+    });
+    await settled();
+
+    const first = await issuer.challenge();
+    const answer = await authenticator.get({ challenge: first.challenge, origin: ORIGIN });
+    const second = await issuer.challenge();
+    // 応答した challenge と名乗った challenge が違えば、発行者へ転送せず拒否する。
+    expect(await refusal(receiver.assert({ challenge: second, credential: answer }))).toBe(
+      "auth_invalid",
+    );
+    expect(issuer.heldCounts.challenges).toBe(2);
+
+    // The issuer's clock determines whether a challenge issued by it still exists.
+    now = first.expires_at;
+    expect(await refusal(receiver.assert({ challenge: first, credential: answer }))).toBe(
+      "auth_invalid",
+    );
+    const fresh = await issuer.challenge();
+    const freshAnswer = await authenticator.get({ challenge: fresh.challenge, origin: ORIGIN });
+    const minted = await receiver.assert({ challenge: fresh, credential: freshAnswer });
+    expect(minted.session.user).toBe(issued.user as UserId);
+  });
+});
+
 describe("making a person (contract, DR-0030 §4)", () => {
   test("the URL and the code are two halves, and only both together register", async () => {
     const at = await serving();
