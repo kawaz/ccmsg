@@ -59,3 +59,39 @@ DR-0001 §2.11 の要求は: `none` attestation の passkey を登録し、UV + 
 - 自前を続ける条件: 差分テスト (今回 1 件の不一致を拾った) を持ち続けること、upstream の advisory (simplewebauthn の GHSA 3 件のような判断の変化) を追うこと、負例と既知ベクタを増やすこと。557 行 + 現在の test 数は成熟ライブラリと同等とは言えない
 - どちらでも要る物: 差分テストは「自前の審判」としても「ライブラリを取り込んだ後の回帰」としても効くので、dev dependency として残す価値がある
 - 自前が simplewebauthn より厳しい点が 2 つある (登録の crossOrigin / topOrigin 拒否、`none` 固定)。替えるとこの 2 点は自分のコードで補う形に戻るので、「ライブラリに任せて薄くなる」量は見た目ほど大きくない
+
+## 6. interface (型定義と README から。実測は worker opus-medium、2026-09-24)
+
+| 観点 | 自前 | @simplewebauthn/server | fido2-lib | @passwordless-id/webauthn | @hexagon/webauthn |
+|---|---|---|---|---|---|
+| (a) 入力の形 | 契約の snake_case の wire 型 (`raw_id` / `client_data_json` / `attestation_object`、base64url)。ブラウザの `toJSON()` とは綴りが違い、写像は client 側。wire 契約と一致しているのが利点 | `RegistrationResponseJSON` / `AuthenticationResponseJSON` = Level 3 の `toJSON()` そのまま。ブラウザ標準を直接渡せる | `id` / `rawId` は ArrayBuffer 必須、clientDataJSON は string、authenticatorData は ArrayBuffer と混在。呼び出し側で変換が要り型も不揃い | `toJSON()` 形 + 独自の `user`。登録で `response.publicKey` / `publicKeyAlgorithm` / `authenticatorData` が必須で、`getPublicKey()` を出さない client (README によれば iOS / macOS のネイティブ) では使えない | fido2-lib と同じ |
+| (b) 期待値の渡し方 | 1 つの `expected` (登録 `{challenge, origin, rpId}`、認証 `{challenge, origin, rpIds[]}` + `known {publicKey, signCount}`)。origin は 1 つ、UV は常に必須で選べない (決める余地が無い) | 1 つの options。`expectedOrigin` / `expectedRPID` は `string \| string[]`、challenge は関数でも可、`requireUserVerification` 既定 true。複数 origin / rpId を扱える | インスタンス生成時の config (rpId 等) と呼び出しごとの `expected` に分散。origin / rpId は 1 つ。UV は `factor: "first"` | 1 つの `expected`。origin / challenge は値か関数、rpId は `domain` (省略時は origin の host)。登録の `userVerified` は既定で検査しない (緩い) | fido2-lib と同じ |
+| (c) 出力の形 | 登録: `{credentialId, publicKey (COSE, base64url), signCount, backupEligible, backupState}`、認証: `{signCount}`。保存する物だけを返す。transports は返さない | `{verified, registrationInfo: {credential: {id, publicKey: COSE Uint8Array, counter, transports}, credentialDeviceType, credentialBackedUp, aaguid, fmt, userVerified, origin, rpID, …}}`。BE / BS は deviceType / backedUp に写像。保存時に publicKey の符号化が要る | `Fido2AttestationResult` の `authnrData: Map<string, any>` から取り出す。BE / BS を解釈せず "RFU3" / "RFU4" (`lib/parser.js`)。文字列キーの Map で型が効かない | `{credential: {id, publicKey: SPKI base64url, algorithm, transports}, authenticator: {aaguid, counter, …}, synced (= BE), userVerified, user}`。BS 無し。**publicKey は client の申告値で検証されていない** (下の probe) | fido2-lib と同じ |
+| (d) 失敗の伝え方 | 全部 `WebAuthnError` 1 クラスの throw、message に段階。署名不一致も throw。呼び出し側 (`auth.ts` の `asRefusal`) は instanceof だけで振り分けられる | 大半は素の `Error` の throw (message に詳細)、署名不一致だけ `verified: false` で返る。`SimpleWebAuthnError.code` は 2 値 (PQC / 証明書パス)。例外と戻り値の 2 経路で、素の Error なので bug と入力不正を型で区別できない | 素の Error / TypeError / RangeError (lib 全体で Error 239 箇所、TypeError 66 箇所)。reason の enum 無し | 素の `Error`、壊れた JSON は SyntaxError がそのまま漏れる | fido2-lib と同じ。EdDSA では ReferenceError (内部の bug) が漏れる |
+| (e) options 生成との対 | サーバ側には無い (options はページ側が組む) | `generateRegistrationOptions` / `generateAuthenticationOptions` が verify と対 | `attestationOptions` / `assertionOptions` と対 | サーバ側は `randomChallenge()` だけ | fido2-lib と同じ |
+| (f) challenge の管理 | 呼び出し側 (`auth.ts` が clientData から読み、検証してから消費) | 呼び出し側 (値か関数で照合) | 呼び出し側 | 呼び出し側 | 同 |
+| (g) 型の厳しさ | 公開型あり、any 無し (契約の TypeBox の Static 型) | `.d.ts` 同梱、`Uint8Array_` まで厳密、any ほぼ無し | 手書きの `types/main.d.ts`、結果は `Map<string, any>`、extensionOptions は any | `.d.ts` 同梱、関数型の引数が素の `Function` | 生成された `.d.ts`、厳しさは未確認 |
+| (h) 置き換え時に呼び出し側が変わる量 | — | 中: snake_case → toJSON 形の写像、publicKey の Uint8Array → base64url、deviceType / backedUp → BE / BS、`verified: false` → throw、`asRefusal` が素の Error を拒否として扱う、**登録時の crossOrigin 拒否を別途足す**。counter の規則は同じ | 大: ArrayBuffer への変換、保存形式が COSE → PEM で既存 record の移行、rpIds を 1 つに、BE / BS を自前で読む、EdDSA を捨てる | 大かつ危険: wire に publicKey / publicKeyAlgorithm / authenticatorData を足す (契約の変更)、保存鍵が SPKI で既存 record の移行、EdDSA を捨てる、鍵の拘束を自前で足す | fido2-lib と同じ + 2022 年から更新無し |
+
+probe で分かったこと (Bun で実行): 登録の `crossOrigin: true` は自前だけが拒否し、simplewebauthn と fido2-lib は通す (simplewebauthn は認証でだけ、しかも `topOrigin` がある時だけ見る。Safari 対策の TODO 付き)。passwordless-id は `response.publicKey` を無関係な鍵に差し替え attestationObject をゴミにしても登録が通り、その鍵を保存する (attestationObject を読まず、credential ID も照合しない)。
+
+出典: [simplewebauthn docs](https://simplewebauthn.dev/docs/packages/server) と同梱の `.d.ts` (`registration/verifyRegistrationResponse.d.ts`、`authentication/verifyAuthenticationResponse.d.ts`、`errors/index.d.ts`)、[fido2-lib types/main.d.ts](https://github.com/webauthn-open-source/fido2-lib/blob/master/types/main.d.ts) (BE / BS は `lib/parser.js` 305-310 行、factor は `lib/main.js` 821 行、counter は `lib/validator.js` 659-664 行)、[passwordless-id](https://github.com/passwordless-id/webauthn) の `dist/esm/server.js` / `parsers.js` と README 159 / 169 行 (`getPublicKey` 前提、issue #95)、[hexagon](https://github.com/Hexagon/webauthn) README ("Heavily based on fido2-lib"、"Currently in pre-release")。
+
+## 7. bundle と実動 (実測、bun 1.3.13 / node v26.9.0、`bun build --target=<bun|node> --minify`)
+
+| 実装 | entry | minify bun (gzip -9) | minify node (gzip -9) | node_modules (本体 / 依存込み) | Bun での実動 (ES256 / RS256 / EdDSA) |
+|---|---|---|---|---|---|
+| 自前 (webauthn.ts + cbor.ts) | verifyRegistration / verifyAssertion / checkPublicKey | 7,210 B (2,662) | 7,207 B (2,659) | 依存 0 | 全部 OK |
+| @simplewebauthn/server 14.0.2 | verify × 2 | 319,603 B (88,510) | 484,117 B (125,547) | 2,132 KiB / 7,004 KiB・24 pkg | 全部 OK |
+| 同 + generate*Options | 4 関数 | 321,775 B | 486,289 B | 同上 | — |
+| fido2-lib 3.5.9 | Fido2Lib | 770,442 B (200,735) | 893,884 B (227,205) | 4,996 KiB / 16,240 KiB・23 pkg (`cbor-extract` のネイティブ optional 込み) | ES256 / RS256 OK、**EdDSA 失敗** (`lib/keyUtils.js` に "EdDSA is untested and unfinished") |
+| @passwordless-id/webauthn 2.4.0 | server.verify × 2 | 31,789 B (13,558) | 36,346 B (15,369) | 280 KiB・依存 0 | ES256 / RS256 OK、**EdDSA は登録が通って認証で失敗** ("Only 'RS256' and 'ES256' are supported") |
+| @hexagon/webauthn 0.9.14 | Webauthn | 550,190 B (145,368) | 546,888 B (145,088) | 1,948 KiB・依存 0 (fido2-lib 系を 1 つの dist に同梱) | ES256 / RS256 OK、**EdDSA 失敗** (ReferenceError) |
+
+実動の確認は、壊れた入力 (API があって入力を断るか) と、`test/authenticator.ts` の SoftAuthenticator で作った正しい登録 + 認証 (3 アルゴリズム) を Bun で直接、Node では bundle してから実行。結果は両者で同じ。simplewebauthn の node 向けが 1.5 倍大きいのは依存 (`@peculiar/*`) が CJS 側に解決されて tree-shake が効かないためと推定 (未確認)。Node では PQC 判定の `ExperimentalWarning: ML-DSA-44` が stderr に出る。
+
+## 8. 所見の追記 (§6 / §7 を受けて)
+
+- 現実的な置き換え先はやはり simplewebauthn だけ (他 3 つは EdDSA が動かないか、鍵の拘束を検証しない)。サイズは自前の 7 KB に対し 320 KB (Bun、gzip 89 KB)、node_modules は依存込み 7 MB。daemon は bundle しないので実害はディスクと起動時の読み込みだけ
+- interface は simplewebauthn の方が「ブラウザ標準の形をそのまま受ける」「複数 origin」「options 生成との対」で広い。自前は「決める余地が無い」「失敗が 1 クラス」で狭く、ccmsg の使い方 (契約の wire 型、UV 必須固定、埋め込み拒否) にはこちらの方が嵌まっている
+- 置き換えると呼び出し側の変更は中程度で、しかも自前が持つ厳しさ 2 点 (登録の crossOrigin 拒否、none 固定) を自分で足し直す。得るのは「成熟したテストと advisory の追跡を上流に任せられること」で、失うのは「7 KB で読み切れる」こと
