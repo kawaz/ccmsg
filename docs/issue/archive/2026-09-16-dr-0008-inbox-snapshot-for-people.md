@@ -1,6 +1,6 @@
 ---
 title: DR-0008 §2.5 の inbox snapshot 規定と実装が逆向き
-status: open
+status: resolved
 category: design
 created: 2026-09-16T16:03:27+09:00
 last_read:
@@ -9,10 +9,10 @@ wip_entered:
 blocked_entered:
 pending_entered:
 discarded_entered:
-resolved_entered:
+resolved_entered: 2026-09-24T12:24:29+09:00
 discard_reason:
 pending_reason:
-close_reason:
+close_reason: ["dr/DR-0006:implemented — §2.6 dump 3形式に修正 (ccmsg c7dac1f4)", "dr/DR-0008:implemented — §2.5 人の購読は閲覧に修正 (ccmsg c7dac1f4)", "dr/DR-0009:implemented — §2.1 分類は契約の関数が読むに修正、題名とINDEXも (ccmsg c7dac1f4)", "dr/DR-0014:implemented — §2.1 封筒4欄に修正 (ccmsg c7dac1f4)", "dr/DR-0026:implemented — §2 にHARNESS_COMMANDSの条件を追記 (契約リポ 9aae9e7e)", "done:DESIGN{,-ja}.mdは実装側記述で一致済み、旧doc comment(delivery.ts/mesh.ts)も同commitで修正"]
 blocked_by:
 origin: DR の状態列を入れる作業 (2026-09-16) で発見
 ---
