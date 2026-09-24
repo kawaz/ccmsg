@@ -29,13 +29,19 @@ WebAuthn の検証を自前 (`src/auth/webauthn.ts` 401 行 + `cbor.ts` 150 行�
 
 ## 受け入れ条件
 
-- [ ] 登録: attestationObject (`none` 形式) の CBOR / authData の解析、COSE 鍵 (ES256 / RS256 / Ed25519) → WebCrypto 形式の変換、`rpIdHash` / flags (UP / UV / AT) / counter / AAGUID / credentialId 長の境界値、壊れた CBOR (途中で切れる、入れ子過多、不正な major type) の拒否
-- [ ] 認証: `clientDataJSON` の `type` / `challenge` / `origin` の照合 (大文字小文字、末尾 `/`、port)、`rpIdHash` 不一致、UV 必須時の flag 欠落、counter の巻き戻し、署名の各アルゴリズムの正例と改竄例 (1 byte 反転)、`authenticatorData` と `clientDataHash` の連結順
-- [ ] 転送: 発行 instance と検証 instance が違う時の challenge の一致と期限
-- [ ] 既知のテストベクタ (WebAuthn spec の例、FIDO conformance の公開ベクタ、`@simplewebauthn` のテスト fixture のうちライセンス上流用できるもの) を通す
-- [ ] 自前と `@simplewebauthn/server` に同じ入力を与えて結果 (accept / reject) が一致することを差分テストで確認 (dev dependency として入れてテストだけで使う)
+- [x] 登録: attestationObject (`none` 形式) の CBOR / authData の解析、COSE 鍵 (ES256 / RS256 / Ed25519) → WebCrypto 形式の変換、`rpIdHash` / flags (UP / UV / AT) / counter / AAGUID / credentialId 長の境界値、壊れた CBOR (途中で切れる、入れ子過多、不正な major type) の拒否
+- [x] 認証: `clientDataJSON` の `type` / `challenge` / `origin` の照合 (大文字小文字、末尾 `/`、port)、`rpIdHash` 不一致、UV 必須時の flag 欠落、counter の巻き戻し、署名の各アルゴリズムの正例と改竄例 (1 byte 反転)、`authenticatorData` と `clientDataHash` の連結順
+- [x] 転送: 発行 instance と検証 instance が違う時の challenge の一致と期限
+- [x] 既知のテストベクタ (WebAuthn spec の例、FIDO conformance の公開ベクタ、`@simplewebauthn` のテスト fixture のうちライセンス上流用できるもの) を通す
+- [x] 自前と `@simplewebauthn/server` に同じ入力を与えて結果 (accept / reject) が一致することを差分テストで確認 (dev dependency として入れてテストだけで使う)
 - [ ] 決めること: 差分テストを恒久的に持つか、比較の時だけか (決めた結果をここに追記する)
 - [ ] 上記が揃った時点で既存ライブラリを改めて調査・比較し、書き直す/自前を仕上げ直すの判断を記録する
+
+## 実装の記録 (2026-09-24)
+
+`test/webauthn-library-grade.test.ts` (登録の境界、CBOR の異常形、COSE 3 種の import、署名の正例 / 1 byte 改竄 / 連結順の逆、認証の受理表を `@simplewebauthn/server` と照らす差分テスト、WebAuthn Level 2 §6.5.1.1 の固定 COSE 鍵)、`test/auth.test.ts` (発行 instance と検証 instance が違う時の challenge の一致と期限)、`test/authenticator.ts` (逆順署名の option)。既存の `test/auth.test.ts` / `test/webauthn.test.ts` / `test/cbor.test.ts` と重複する観点は足していない。差分テストで 1 件の不一致: 空の credential ID を自前実装は受理し、ライブラリは拒否 → issue `webauthn-accepts-empty-credential-id`。FIDO conformance の公開ベクタは、ライセンス上流用できる形の物が見当たらず未使用 (spec の例だけ)。
+
+残り 2 項目 (差分テストを恒久に持つか、ライブラリに書き直すか) は kawaz の裁定。統括の所感: 差分テストは dev dependency 1 つで維持でき、ライブラリ側の判断の変化 (今回の空 ID のような) を拾えるので恒久に持つ価値がある。書き直しの判断は空 ID の bug を直してから。
 
 ## 先例
 
