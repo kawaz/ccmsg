@@ -1,6 +1,6 @@
 ---
 title: 登録の検証が credential ID 0 byte の attestation を受理する (@simplewebauthn/server は拒否)
-status: open
+status: resolved
 category: bug
 created: 2026-09-24T12:45:04+09:00
 last_read:
@@ -9,10 +9,10 @@ wip_entered:
 blocked_entered:
 pending_entered:
 discarded_entered:
-resolved_entered:
+resolved_entered: 2026-09-24T12:49:27+09:00
 discard_reason:
 pending_reason:
-close_reason:
+close_reason: ["done: commit e8acb155"]
 blocked_by:
 origin: 自リポ TODO
 ---
