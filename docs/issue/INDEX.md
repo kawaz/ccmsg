@@ -26,6 +26,7 @@ wire の契約は [kawaz/ccmsg-protocol](https://github.com/kawaz/ccmsg-protocol
 | date | category | status | slug | 概要 |
 |---|---|---|---|---|
 | 2026-09-24 | idea | open | [harnessrouter-research-review-for-ccmsg](./2026-09-24-harnessrouter-research-review-for-ccmsg.md) | harnessrouter 研究 (llm-gateway 側で実施) の ccmsg 向け所見を読んで評価・感想を返す |
+| 2026-09-24 | bug | open | [webauthn-accepts-empty-credential-id](./2026-09-24-webauthn-accepts-empty-credential-id.md) | `verifyRegistration` が credential ID 0 byte の attestation を受理する (@simplewebauthn/server は拒否) |
 | 2026-09-16 | design | open | [refresh-token-store-layer](./2026-09-16-refresh-token-store-layer.md) | refresh token (TokenFamily) のサーバ側置き場をストア層で抽象化する |
 | 2026-09-12 | task | open | [webauthn-tests-library-grade](./2026-09-12-webauthn-tests-library-grade.md) | WebAuthn の検証を自前 (`src/auth/webauthn.ts` 401 行 + `cbor.ts` 150 行、DR-0001 §2.11) で… |
 | 2026-09-11 | design | open | [dump-timeline-shared-selection](./2026-09-11-dump-timeline-shared-selection.md) | dump と timeline (webui の TL) は「型の階層で item を選ぶ」設計を共有している (kawaz 2026-09-11)… |
