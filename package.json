@@ -27,7 +27,7 @@
     "@simplewebauthn/server": "^14.0.2",
     "@types/bun": "^1.4.2",
     "oxfmt": "0.70.0",
-    "oxlint": "1.85.0",
+    "oxlint": "1.86.0",
     "oxlint-tsgolint": "7.0.2002",
     "typescript": "7.0.2"
   }
